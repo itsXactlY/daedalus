@@ -1,0 +1,159 @@
+# ═══════════════════════════════════════════════════════════════════════
+# daedalus-backup — Code + Config + Skills backup
+# ═══════════════════════════════════════════════════════════════════════
+
+# ─── Virtual Environments (regenerable) ───────────────────────────────
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# ─── Submodules (have their own remotes) ──────────────────────────────
+daedalus/
+tinker-atropos/
+
+# ─── Node (regenerable) ──────────────────────────────────────────────
+node_modules/
+
+# ─── Transient / Runtime State ───────────────────────────────────────
+.snapshots/
+logs/
+pastes/
+images/
+.tmp/
+tmp/
+temp_vision_images/
+
+# ─── Large Binary State (not code) ───────────────────────────────────
+state.db
+state.db-shm
+state.db-wal
+.daedalus_history
+models_dev_cache.json
+skills.tar.gz
+checkpoints/
+
+# ─── Sessions (too many small files, transient) ──────────────────────
+sessions/
+
+# ─── Egg-info / Build artifacts ──────────────────────────────────────
+daedalus_agent.egg-info/
+*.egg-info/
+wandb/
+
+# ─── IDE / Editor ────────────────────────────────────────────────────
+.vscode/
+.direnv/
+.pytest_cache/
+
+# ─── Private keys ────────────────────────────────────────────────────
+*.ppk
+*.pem
+privvy*
+
+# ─── Misc ────────────────────────────────────────────────────────────
+.skills_prompt_snapshot.json
+auth.lock
+.update_check
+.worktrees/
+mini-swe-agent/
+
+# ─── Backup files (auto-backup cron occasionally swallows giant blobs) ───
+*.bak
+*.bak.*
+config.yaml.bak
+config.yaml.bak-*
+config.yaml.backup.*
+config.yaml.pre*
+MEMORY.md.backup.*
+
+# ─── Ephemeral runtime state (regenerable, polluted by every run) ───
+gateway_state.json
+state.db
+state.db-shm
+state.db-wal
+*.session
+.compact-markers/
+
+# ─── Safety tarballs (regenerable backups) ────────────────
+*.tar.gz
+
+# ─── Runtime DBs (regenerable empty state) ───────────────
+daedalus_state.db
+sessions.db
+palace/jobs.sqlite
+.cache/
+cache/
+website/
+channel_directory.json
+
+# ─── Audit 2026-08-09 additions ───────────────────────────────────
+*.log
+interrupt_debug.log
+state.db*
+sessions/
+logs/
+cache/
+sandboxes/
+pastes/
+checkpoints/
+skills/index-cache/
+skills/.usage.json
+skills/.usage.json.lock
+skills/.curator_state
+skills/.curator_backups/
+.archive-*/
+*.lock
+_backup/
+
+# ---------------------------------------------------------------------------
+# Daedalus 0.8.1 — secret hygiene
+#
+# Upstream shipped auth.json and config.yaml as TRACKED files, so live API
+# keys landed in git history. Both are runtime state generated on first run;
+# the committed artifacts are the .example templates next to them. Never
+# un-ignore these.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+auth.json
+auth.lock
+config.yaml
+config.yaml.*
+!config.yaml.example
+cli-config.yaml
+!cli-config.yaml.example
+*.pem
+*.key
+!**/skills/**/*.key
+credentials.json
+token.json
+processes.json
+gateway.pid
+gateway_state.json
+channel_directory.json
+discord_threads.json
+models_dev_cache.json
+context_length_cache.yaml
+
+# Runtime state directories
+sessions/
+checkpoints/
+memories/
+pastes/
+plans/
+palace/
+logs/
+cache/
+sandboxes/
+discord-outbox/
+cron/*/
+!cron/__init__.py
+
+# Build artefacts — never tracked. They are stale copies of the source and
+# drift out of sync with every rename.
+build/
+dist/
+*.egg-info/

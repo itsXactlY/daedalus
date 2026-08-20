@@ -1,0 +1,12 @@
+name: mazemaker
+version: 2.0.0
+description: |
+  Mazemaker memory provider — persistent memory across sessions, machines and
+  restarts. Writes each completed turn to a Mazemaker pod and pulls back what
+  is relevant before the next one, so the agent retrieves history instead of
+  carrying it.
+
+  Activates when memory.provider is set to "mazemaker". Endpoint defaults to
+  http://127.0.0.1:8765 and is overridden with MM_WONDERLAND_URL. If the pod is
+  unreachable both paths fail silently and the agent runs on its normal context
+  window.

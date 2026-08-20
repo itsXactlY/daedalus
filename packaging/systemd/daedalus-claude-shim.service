@@ -1,0 +1,45 @@
+# Daedalus — Claude Code transport shim  [EXPERIMENTAL — NOT ENABLED BY DEFAULT]
+#
+# Installing this file does nothing on its own; a unit only runs once enabled.
+# Tool-calling through the shim is not yet reliable (intermittent empty turns),
+# so leave it disabled unless you are actively working on it.
+#
+# Runs the OpenAI-compatible shim that lets Daedalus use a Claude subscription
+# via the Claude Code CLI. See scripts/claude_code_shim.py.
+#
+# Install (user scope):
+#   cp packaging/systemd/daedalus-claude-shim.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now daedalus-claude-shim
+#
+# WantedBy below binds it to the gateway: enabling this unit makes systemd pull
+# it in whenever daedalus-gateway starts, and PartOf makes it stop and restart
+# with the gateway. Nothing in the gateway unit needs editing — that is the
+# point, so an agent upgrade that regenerates the gateway unit cannot silently
+# drop the shim.
+#
+# Standalone use (no gateway) works too: systemctl --user start daedalus-claude-shim
+
+[Unit]
+Description=Daedalus Claude Code transport shim
+Documentation=file:%h/.daedalus/scripts/claude_code_shim.py
+PartOf=daedalus-gateway.service
+Before=daedalus-gateway.service
+After=network-online.target
+
+[Service]
+Type=simple
+# The shim shells out to `claude`, which lives in the user's PATH.
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# Claude Code owns authentication. No API key is passed, and an inherited one
+# would only confuse it.
+Environment="ANTHROPIC_API_KEY="
+ExecStart=/usr/bin/python3 %h/.daedalus/scripts/claude_code_shim.py --port 8790 --model sonnet
+Restart=on-failure
+RestartSec=2
+# It spawns one `claude` process per request; give those room to exit cleanly.
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=daedalus-gateway.service
