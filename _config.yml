@@ -1,0 +1,12 @@
+---
+title: "Daedalus"
+description: "Autonomous agent harness on the Mazemaker memory engine"
+url: "https://itsxactly.github.io"
+baseurl: "/daedalus"
+markdown: kramdown
+kramdown:
+  syntax_highlighter: rouge
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+---
