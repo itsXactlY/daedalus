@@ -1,5 +1,5 @@
 ---
-name: daedalus-observability-patterns
+name: daedalus-agent-observability-patterns
 title: Daedalus Agent Observability Patterns
 description: Pattern catalog for LLM agent observability, recovery, and identity stability. Maps three academic patterns (CYGNET pre-execution gate, Model-Native Computing Architecture, Semantic Invariance testing) to failure modes operators see in production agent deployments.
 trigger: agent crash loops in logs; missing telemetry in production rollout; canary identity drift after model swap

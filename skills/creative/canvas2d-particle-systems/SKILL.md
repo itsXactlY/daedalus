@@ -224,6 +224,248 @@ Key design decisions:
 - **CSS for overlays, canvas for content.** Scanlines, vignette, cursor glow — all pure CSS. Canvas is expensive.
 - **Particle density = spacing².** A spacing of 3px gives ~1/9 the particles of 1px spacing. Tune to target FPS.
 
+## Advanced visualization patterns
+
+### Phase state machine (NREM → REM → INSIGHT)
+
+Drive visual transitions between discrete states with timed duration and per-phase behavior:
+
+```js
+const PHASE_DURATIONS = { AWAKE: 4, NREM: 6, REM: 5, INSIGHT: 3 }; // seconds
+let currentPhase = "AWAKE";
+let phaseTimer = 0;
+
+function updatePhase(elapsed) {
+  const duration = PHASE_DURATIONS[currentPhase];
+  phaseTimer += 1/60;
+
+  if (phaseTimer >= duration) {
+    phaseTimer = 0;
+    const phases = ["AWAKE", "NREM", "REM", "INSIGHT"];
+    const idx = phases.indexOf(currentPhase);
+    currentPhase = phases[(idx + 1) % phases.length];
+    // Phase transition: trigger effects
+    onPhaseChange(currentPhase);
+  }
+
+  // UI update
+  document.getElementById("statPhase").textContent = "phase: " + currentPhase;
+}
+
+function onPhaseChange(phase) {
+  if (phase === "NREM") {
+    // Slow drift, grey tones, dim connections
+    particles.forEach(p => { p.vx *= 0.5; p.vy *= 0.5; });
+  } else if (phase === "REM") {
+    // Attraction to targets, ember flickering
+    particles.forEach(p => {
+      const target = memories[Math.floor(Math.random() * memories.length)];
+      p.vx = (target.x - p.x) * 0.02;
+      p.vy = (target.y - p.y) * 0.02;
+    });
+  } else if (phase === "INSIGHT") {
+    // Burst of energy, golden particles, memory consolidation
+    consolidateMemories();
+    particles.forEach(p => {
+      p.vx = (Math.random() - 0.5) * 6;
+      p.vy = (Math.random() - 0.5) * 6;
+    });
+  }
+}
+```
+
+Per-phase visual effects map to colors, particle speed, connection density, and trail alpha:
+
+| Phase | Particle color | Trail alpha | Connection style | Special effect |
+|-------|---------------|-------------|-----------------|----------------|
+| AWAKE | violet (139,92,246) | 0.10 | moderate glow | subtle breathing pulse |
+| NREM | grey (107,114,128) | 0.12 | dim, sparse | slow drift, nodes dim randomly |
+| REM | ember (209,85,43) | 0.08 | flickering lines | random horizontal flicker strips |
+| INSIGHT | amber (245,158,11) | 0.06 | bright, dense | golden burst particles |
+
+### Maze / node graph generation
+
+Build a grid-based node structure with adjacency edges — useful for architecture diagrams, knowledge graphs, and maze-like visuals:
+
+```js
+const gridSize = 6;
+const cellSize = 80;
+const grid = {};
+const nodes = [];
+const edges = [];
+
+// Generate grid nodes with random gaps
+for (let gx = -gridSize; gx <= gridSize; gx++) {
+  for (let gz = -gridSize; gz <= gridSize; gz++) {
+    if (Math.random() < 0.3) continue; // random gaps
+    const node = {
+      x: gx * cellSize + (Math.random() - 0.5) * 20,
+      y: (Math.random() - 0.5) * 100,
+      z: gz * cellSize + (Math.random() - 0.5) * 20,
+      gx, gz, // grid coordinates for edge generation
+      pulse: Math.random() * Math.PI * 2,
+      active: true
+    };
+    nodes.push(node);
+    grid[`${gx},${gz}`] = node;
+  }
+}
+
+// Connect adjacent grid nodes (with probability for organic feel)
+nodes.forEach(n => {
+  const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+  dirs.forEach(([dx, dz]) => {
+    const key = `${n.gx + dx},${n.gz + dz}`;
+    if (grid[key] && Math.random() < 0.7) {
+      edges.push({ from: n, to: grid[key], strength: Math.random() * 0.5 + 0.3 });
+    }
+  });
+});
+```
+
+### Memory nodes with consolidation mechanics
+
+Special persistent nodes that "consolidate" during certain phases — useful for dream visualization, knowledge graph evolution, and state persistence:
+
+```js
+const memories = [];
+
+// Create memory nodes at random positions
+for (let i = 0; i < 15; i++) {
+  const angle = Math.random() * Math.PI * 2;
+  const radius = 150 + Math.random() * 200;
+  memories.push({
+    x: Math.cos(angle) * radius,
+    y: (Math.random() - 0.5) * 150,
+    z: Math.sin(angle) * radius,
+    pulse: Math.random() * Math.PI * 2,
+    active: true,
+    memory: true,
+    id: "M" + i,
+    strength: Math.random() // 0-1, increases on consolidation
+  });
+}
+
+function consolidateMemories() {
+  let count = 0;
+  memories.forEach(m => {
+    if (!m.consolidated && Math.random() < 0.3) {
+      m.strength = Math.min(1, m.strength + 0.3);
+      m.consolidated = true;
+      count++;
+    }
+  });
+  // Reset some for continuous dreaming
+  if (count > 5) {
+    memories.forEach(m => {
+      if (m.consolidated && Math.random() < 0.2) {
+        m.consolidated = false;
+        m.strength *= 0.7; // partial decay
+      }
+    });
+  }
+}
+
+// Draw memory nodes with glow proportional to strength
+memories.forEach(m => {
+  const size = (4 + m.strength * 8) * scale;
+  const glowColor = m.consolidated
+    ? `rgba(245,158,11,${0.3 * scale})` // amber for consolidated
+    : `rgba(139,92,246,${0.15 * scale})`; // violet for unconsolidated
+  ctx.beginPath();
+  ctx.arc(sx, sy, size * 2, 0, Math.PI * 2);
+  ctx.fillStyle = glowColor;
+  ctx.fill();
+});
+```
+
+### Zoom camera + mouse orbit
+
+Combine scroll-to-zoom with mouse-driven rotation:
+
+```js
+let zoom = 1;
+document.addEventListener("wheel", e => {
+  zoom = Math.max(0.3, Math.min(2.5, zoom - e.deltaY * 0.001));
+});
+
+function project(x, y, z) {
+  const scale = (FOV * zoom) / (FOV + z); // zoom scales FOV
+  return { sx: x * scale + W / 2, sy: y * scale + H / 2, scale: scale };
+}
+
+// Mouse orbit vs auto-orbit fallback
+let mouseX = 0, mouseY = 0;
+let autoOrbit = true;
+document.addEventListener("mousemove", e => {
+  mouseX = (e.clientX / W - 0.5) * 2;
+  mouseY = (e.clientY / H - 0.5) * 2;
+  autoOrbit = false;
+  clearTimeout(window._orbitTimer);
+  window._orbitTimer = setTimeout(() => { autoOrbit = true; }, 5000);
+});
+
+function rotatePoint(x, y, z) {
+  const camRotX = autoOrbit ? elapsed * 0.03 : mouseY * 0.4;
+  const camRotY = autoOrbit ? elapsed * 0.06 : mouseX * 0.6;
+  // Rotate around Y then X
+  const cosA = Math.cos(camRotY), sinA = Math.sin(camRotY);
+  const rx = x * cosA - z * sinA;
+  const rz = z * cosA + x * sinA;
+  const cosB = Math.cos(camRotX), sinB = Math.sin(camRotX);
+  const ry = y * cosB - rz * sinB;
+  return { x: rx, y: ry, z: rz };
+}
+```
+
+### Trail effects with phase-specific alpha
+
+Clear the canvas with partial transparency to create motion trails. The alpha value changes per phase for different "feel":
+
+```js
+let trailAlpha = 0.10; // default AWAKE
+if (currentPhase === "NREM") trailAlpha = 0.12; // slightly more trail
+else if (currentPhase === "REM") trailAlpha = 0.08; // less trail, sharper motion
+else if (currentPhase === "INSIGHT") trailAlpha = 0.06; // very sharp, fast
+
+ctx.fillStyle = `rgba(8,6,4,${trailAlpha})`;
+ctx.fillRect(0, 0, W, H);
+```
+
+### DOM overlay labels tracking projected screen positions
+
+For node labels that track their 3D position on screen, update DOM element positions each frame:
+
+```js
+// Create a DOM label for each memory node
+memories.forEach(m => {
+  const label = document.createElement("div");
+  label.className = "node-label";
+  label.textContent = m.id;
+  label.style.position = "fixed";
+  label.style.pointerEvents = "none";
+  label.style.zIndex = "10";
+  label.style.fontFamily = '"JetBrains Mono", monospace';
+  label.style.fontSize = "8px";
+  label.style.color = "rgba(245,158,11,0.6)";
+  document.body.appendChild(label);
+  m.labelEl = label; // store reference
+});
+
+// In animation loop, update positions:
+memories.forEach(m => {
+  const rn = rotatePoint(m.x, m.y, m.z);
+  const pn = project(rn.x, rn.y, rn.z + 300);
+  if (pn.scale > 0.6) { // only show when close enough
+    m.labelEl.style.left = pn.sx + "px";
+    m.labelEl.style.top = (pn.sy - 12) + "px";
+    m.labelEl.style.display = "block";
+  } else {
+    m.labelEl.style.display = "none";
+  }
+});
+```
+
 ## Pitfalls
 
 - **`getImageData` is synchronous and blocks.** Don't call it per-frame on large regions. Only use it for glitch effects (small strips) or pre-rendering textures (once).
@@ -231,3 +473,6 @@ Key design decisions:
 - **No depth buffer.** Painter's algorithm (sort by Z before drawing) is the only way to handle overlapping 3D objects in Canvas 2D.
 - **Text rendering on canvas uses system fonts.** Always provide fallbacks: `'bold 22px "JetBrains Mono", monospace'`.
 - **`textToParticles` scan is O(W×H).** For large canvases, increase `spacing` or reduce resolution. A 1920×200 canvas at spacing=3 scans ~128K pixels — fast enough for init, not for per-frame use.
+- **Phase state machine timing.** Use `1/60` (not `elapsed`) for phase timer increments to avoid drift from variable frame rates. If you need precise timing, track `phaseStartTime` and compute `elapsed - phaseStartTime`.
+- **DOM overlay labels get expensive.** Don't create more than ~30 tracked DOM elements — each one needs a position update per frame. For larger sets, render labels to offscreen canvas textures instead.
+- **Trail alpha too low = ghosting.** Below 0.05 the screen never fully clears and colors bleed into each other. Above 0.20 there's no trail effect at all. Sweet spot: 0.06–0.15.

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+</Project>
+
+<!-- 
+  Build commands:
+  
+  # Framework-dependent (recommended for WinForms - smaller, trimming issues avoided)
+  dotnet publish -c Release -r win-x64
+  
+  # Self-contained (larger, but runs without .NET runtime installed)
+  dotnet publish -c Release -r win-x64 --self-contained true
+  
+  # Output: bin/Release/net10.0-windows/win-x64/publish/
+  # Deploy: exe + dll + deps.json + runtimeconfig.json
+  
+  # WARNING: -p:PublishSingleFile=true -p:PublishTrimmed=true FAILS with WinForms
+  # Error: NETSDK1175 "Windows Forms wird nicht unterstützt oder empfohlen, wenn das Zuschneiden aktiviert ist"
+  # Fix: Use framework-dependent (default) or self-contained WITHOUT trimming
+-->

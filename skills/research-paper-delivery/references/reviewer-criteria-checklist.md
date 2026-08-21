@@ -1,6 +1,6 @@
 # Reviewer Criteria Checklist
 
-Checklist derived from a simulated NeurIPS-style review.
+Checklist derived from a simulated NeurIPS review of the Mazemaker paper (2026-06-28).
 Use this when self-reviewing any academic paper before submission.
 
 ## 1. Claims must match evidence

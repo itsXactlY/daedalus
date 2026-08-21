@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Living Scene — Starter</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:100%;height:100%;overflow:hidden;background:#040210}
+  canvas{display:block}
+  #load{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:100;background:#040210;font-family:monospace;color:rgba(191,0,255,0.5);font-size:11px;letter-spacing:0.2em;transition:opacity 1.5s}
+  #load.hidden{opacity:0;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="load">INITIALIZING...</div>
+
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { RGBShiftShader } from 'three/addons/shaders/RGBShiftShader.js';
+
+// ═══ CONFIG ══════════════════════════════════════════════════════════
+
+const PHASES = {
+  AWAKE:   { dur:16000, bloom:0.55, speed:1.0, bg:0x040210, node:0xBF00FF, neb:0x1a0a2e, hb:2 },
+  NREM:    { dur:24000, bloom:0.22, speed:0.3, bg:0x020008, node:0x6a0dad, neb:0x0a0420, hb:0.5 },
+  REM:     { dur:14000, bloom:1.0,  speed:2.8, bg:0x080010, node:0xFF69B4, neb:0x2a0a3e, hb:3.5 },
+  INSIGHT: { dur:18000, bloom:0.75, speed:0.7, bg:0x000a10, node:0x00FA9A, neb:0x0a1a2e, hb:1.8 },
+};
+const PHASE_ORDER = ['AWAKE','NREM','REM','INSIGHT'];
+
+// ═══ THREE.JS ═══════════════════════════════════════════════════════
+
+const canvas = document.body.appendChild(document.createElement('canvas'));
+const R = new THREE.WebGLRenderer({canvas,antialias:true,alpha:false,powerPreference:"high-performance"});
+R.setPixelRatio(Math.min(devicePixelRatio,2));
+R.toneMapping=THREE.ACESFilmicToneMapping;R.toneMappingExposure=0.7;R.outputColorSpace=THREE.SRGBColorSpace;
+
+const S = new THREE.Scene();
+const C = new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.1,400);
+C.position.set(0,3,20);
+
+const O = new OrbitControls(C,canvas);
+O.enableDamping=true; O.dampingFactor=0.04; O.autoRotate=true;
+O.autoRotateSpeed=0.35; O.minDistance=4; O.maxDistance=60; O.enablePan=false;
+O.target.set(0,0,0);
+
+const CP = new EffectComposer(R);
+CP.addPass(new RenderPass(S,C));
+CP.addPass(new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),0.55,0.3,0.05));
+const RS = new ShaderPass(RGBShiftShader);
+RS.uniforms['amount'].value=0; CP.addPass(RS);
+
+addEventListener('resize',()=>{C.aspect=innerWidth/innerHeight; C.updateProjectionMatrix(); R.setSize(innerWidth,innerHeight); CP.setSize(innerWidth,innerHeight)});
+
+// ═══ GLOW TEXTURE ═══════════════════════════════════════════════════
+
+const GT = function(){
+  const c=document.createElement('canvas'); c.width=c.height=64;
+  const x=c.getContext('2d'), g=x.createRadialGradient(32,32,0,32,32,32);
+  g.addColorStop(0,'rgba(255,255,255,1)'); g.addColorStop(0.15,'rgba(255,255,255,0.8)');
+  g.addColorStop(0.35,'rgba(191,0,255,0.4)'); g.addColorStop(1,'rgba(191,0,255,0)');
+  x.fillStyle=g; x.fillRect(0,0,64,64); return new THREE.CanvasTexture(c);
+}();
+
+// ═══ GENERATE DATA ══════════════════════════════════════════════════
+
+const N = 120, CL = 5, PREFIXES = ['#BF00FF','#FF8C00','#FF4444','#00FA9A','#76d9ff'];
+const CC = []; for(let i=0;i<CL;i++){const a=(i/CL)*Math.PI*2; CC.push({cx:Math.cos(a)*3.5,cy:(Math.random()-0.5)*1.5,cz:Math.sin(a)*3.5})}
+
+const pos = new Float32Array(N*3), col = new Float32Array(N*3), sz = new Float32Array(N);
+for(let i=0;i<N;i++){
+  const sal=0.2+Math.random()*0.8, cc=CC[i%CL];
+  const a=(i/N)*Math.PI*8+(Math.random()-0.5)*0.4, r=0.3+sal*2.5;
+  pos[i*3]=cc.cx+Math.cos(a)*r+(Math.random()-0.5)*0.8;
+  pos[i*3+1]=cc.cy+(Math.random()-0.5)*1.5*sal;
+  pos[i*3+2]=cc.cz+Math.sin(a)*r+(Math.random()-0.5)*0.8;
+  const tc=new THREE.Color(PREFIXES[i%CL]).lerp(new THREE.Color(0xFFFFFF),sal*0.15);
+  col[i*3]=tc.r;col[i*3+1]=tc.g;col[i*3+2]=tc.b;sz[i]=0.08+sal*0.5;
+}
+
+const epos=new Float32Array(500*6), ecol=new Float32Array(500*6);
+for(let i=0;i<500;i++){
+  let s=Math.floor(Math.random()*N),t=Math.floor(Math.random()*N);if(t===s)t=(s+1+Math.floor(Math.random()*5))%N;
+  const ec=new THREE.Color(PREFIXES[Math.floor(Math.random()*PREFIXES.length)]);
+  const a=0.04+Math.random()*0.06;
+  epos[i*6]=pos[s*3];epos[i*6+1]=pos[s*3+1];epos[i*6+2]=pos[s*3+2];
+  epos[i*6+3]=pos[t*3];epos[i*6+4]=pos[t*3+1];epos[i*6+5]=pos[t*3+2];
+  ecol[i*6]=ec.r*a;ecol[i*6+1]=ec.g*a;ecol[i*6+2]=ec.b*a;
+  ecol[i*6+3]=ec.r*a;ecol[i*6+4]=ec.g*a;ecol[i*6+5]=ec.b*a;
+}
+
+// ═══ RENDER OBJECTS ══════════════════════════════════════════════════
+
+const ng=new THREE.BufferGeometry;
+ng.setAttribute('position',new THREE.BufferAttribute(pos,3));
+ng.setAttribute('color',new THREE.BufferAttribute(col,3));
+ng.setAttribute('size',new THREE.BufferAttribute(sz,1));
+const NS=new THREE.Points(ng,new THREE.PointsMaterial({size:0.4,map:GT,blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,opacity:0.85,vertexColors:true,sizeAttenuation:true}));
+S.add(NS);
+
+const lg=new THREE.BufferGeometry;
+lg.setAttribute('position',new THREE.BufferAttribute(epos,3));
+lg.setAttribute('color',new THREE.BufferAttribute(ecol,3));
+lg.computeLineDistances();
+const LM=new THREE.LineDashedMaterial({vertexColors:true,transparent:true,opacity:0.35,blending:THREE.AdditiveBlending,depthWrite:false,dashSize:0.12,gapSize:0.25,scale:1});
+const LS=new THREE.LineSegments(lg,LM); LS.computeLineDistances(); S.add(LS);
+
+// ═══ PHASE STATE ═════════════════════════════════════════════════════
+
+let phaseName='AWAKE', phaseStart=performance.now(), phaseProgress=0;
+
+function advancePhase(){
+  const idx=PHASE_ORDER.indexOf(phaseName);
+  phaseName=PHASE_ORDER[(idx+1)%PHASE_ORDER.length];
+  phaseStart=performance.now(); phaseProgress=0;
+  const ph=PHASES[phaseName];
+  S.background=new THREE.Color(ph.bg);
+  // Trigger RGB shift on transition
+  RS.uniforms['amount'].value=0.01;
+  setTimeout(()=>{RS.uniforms['amount'].value=0},1200);
+}
+
+// ═══ ANIMATE ═════════════════════════════════════════════════════════
+
+const clock=new THREE.Clock();
+
+function animate(){
+  requestAnimationFrame(animate);
+  const el=clock.getElapsedTime(), ph=PHASES[phaseName];
+  const pe=performance.now()-phaseStart; phaseProgress=Math.min(1,pe/ph.dur);
+  if(phaseProgress>=1)advancePhase();
+
+  // Edge dash flow
+  LM.dashOffset=-el*(ph.speed*0.25);
+  LM.dashSize=0.08+ph.speed*0.06;
+  LM.gapSize=0.2+(1-ph.speed*0.12);
+  LM.needsUpdate=true;
+
+  // Node breath
+  const sizes=ng.attributes.size.array;
+  const br=phaseName==='NREM'?Math.sin(el*0.35)*0.1:phaseName==='REM'?Math.sin(el*2.2)*0.16:Math.sin(el*0.5)*0.07;
+  for(let i=0;i<N;i++)sizes[i]=Math.max(0.03,sz[i]+br);
+  ng.attributes.size.needsUpdate=true;
+
+  O.update(); CP.render();
+}
+
+S.background=new THREE.Color(PHASES.AWAKE.bg);
+document.getElementById('load').classList.add('hidden');
+animate();
+</script>
+</body>
+</html>

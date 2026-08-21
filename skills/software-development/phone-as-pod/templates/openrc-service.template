@@ -1,0 +1,74 @@
+#!/sbin/openrc-run
+# OpenRC init script template for a phone-as-pod backend service.
+# Copy this to /etc/init.d/<service-name> in your overlay tarball,
+# chmod 0755 it, and customize the IRIS_* env vars for your service.
+#
+# Trigger: the phone-as-pod skill recommends OpenRC for the iris-pod
+# service that runs inside Podroid's Alpine VM. This template is the
+# pattern. Adapt IRIS_IMAGE / IRIS_CONTAINER_NAME / IRIS_DATA_DIR /
+# port mappings to your service.
+# -------------------------------------------------------------------
+
+name="iris-pod"
+description="Iris Messenger pod (rootless container on Podroid)"
+
+# Image name (must match the local-loaded arm64 image produced by
+# Containerfile.multiarch on the iris-messenger side).
+IRIS_IMAGE="${IRIS_IMAGE:-localhost/iris-messenger:arm64}"
+IRIS_CONTAINER_NAME="${IRIS_CONTAINER_NAME:-iris-messenger}"
+
+# Where persistent state lives (overlaid on the ext4 persistent volume
+# that Podroid creates at /var/lib/podroid/upper, bind-mounted into the
+# container).
+IRIS_DATA_DIR="${IRIS_DATA_DIR:-/var/lib/iris}"
+IRIS_CONFIG="${IRIS_CONFIG:-/etc/iris/runtime.env}"
+
+# Container runtime knobs.
+IRIS_HOST_PORT_REST="${IRIS_HOST_PORT_REST:-9091}"
+IRIS_HOST_PORT_WS="${IRIS_HOST_PORT_WS:-9092}"
+IRIS_CONTAINER_PORT_REST="${IRIS_CONTAINER_PORT_REST:-9091}"
+IRIS_CONTAINER_PORT_WS="${IRIS_CONTAINER_PORT_WS:-9092}"
+
+command="/usr/local/bin/iris-pod-start.sh"
+command_background="yes"
+pidfile="/run/${name}.pid"
+start_stop_daemon_args="--background --make-pidfile --pidfile ${pidfile}"
+
+depend() {
+    need net
+    need podman
+    after podman
+}
+
+start_pre() {
+    # Ensure persistent state dir exists with sane perms.
+    if [ ! -d "${IRIS_DATA_DIR}" ]; then
+        einfo "Creating ${IRIS_DATA_DIR} with mode 0700"
+        mkdir -m 0700 -p "${IRIS_DATA_DIR}"
+    fi
+    # If the image isn't present yet, try to load it from the vendor
+    # tarball at /usr/local/share/iris/iris-messenger-arm64.tar (built
+    # by android/vm-image/scripts/build.sh on the host).
+    if ! podman image exists "${IRIS_IMAGE}" 2>/dev/null; then
+        if [ -f /usr/local/share/iris/iris-messenger-arm64.tar ]; then
+            einfo "Loading iris-messenger arm64 image from vendor tarball"
+            podman load -i /usr/local/share/iris/iris-messenger-arm64.tar
+        else
+            eerror "iris-messenger image not present and no vendor tarball found"
+            eerror "Expected: ${IRIS_IMAGE}"
+            eerror "Or:      /usr/local/share/iris/iris-messenger-arm64.tar"
+            return 1
+        fi
+    fi
+}
+
+stop() {
+    einfo "Stopping iris-messenger pod (if running)"
+    podman stop "${IRIS_CONTAINER_NAME}" 2>/dev/null || true
+    podman rm -f "${IRIS_CONTAINER_NAME}" 2>/dev/null || true
+    return 0
+}
+
+status() {
+    podman ps -a --filter "name=${IRIS_CONTAINER_NAME}" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+}

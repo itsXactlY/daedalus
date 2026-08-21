@@ -1,14 +1,14 @@
 ---
 name: gpu-container-debugging
 description: "Use when GPU containers show active but CUDA ops fail OOM"
-version: 1.0.0
 author: Daedalus Agent
 license: MIT
+dependencies: []
 platforms: [linux]
 metadata:
   daedalus:
     tags: [gpu, cuda, vram, podman, containers, debugging, oom]
-    related_skills: [systematic-debugging, docker-to-podman-migration]
+    related_skills: [systematic-debugging, mazemaker, docker-to-podman-migration]
 ---
 
 # GPU Container Debugging
@@ -160,4 +160,5 @@ When writing `debug.sh`-style diagnostic scripts for GPU container stacks:
 ## References
 
 - `references/gpu-vram-contention-cascade.md` — full error transcripts and
-  timeline from a a verified incident
+  timeline from a verified incident (mazemaker stack, RTX 4060 Ti 16GB,
+  2026-08-02)

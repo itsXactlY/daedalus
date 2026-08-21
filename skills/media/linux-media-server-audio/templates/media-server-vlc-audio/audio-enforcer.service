@@ -1,0 +1,21 @@
+# Systemd Service for Audio Level Enforcer
+
+Place in: ~/.config/systemd/user/audio-enforcer.service
+
+```ini
+[Unit]
+Description=VLC Audio Level Enforcer - Fixed -2.0dB
+After=pipewire.service
+Requires=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/alca/.local/bin/audio-level-enforcer.py --daemon
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+```
+
+CRITICAL: Use ABSOLUTE path for ExecStart. Mixing %h with ~ creates broken paths like /home/alca/~/.local/bin/…

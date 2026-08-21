@@ -1,5 +1,5 @@
 ---
-name: daedalus-setup
+name: daedalus-agent-setup
 description: Help users configure Daedalus Agent — CLI usage, setup wizard, model/provider selection, tools, skills, voice/STT/TTS, gateway, and troubleshooting. Use when someone asks to enable features, configure settings, or needs help with Daedalus itself.
 version: 1.1.0
 author: Daedalus Agent

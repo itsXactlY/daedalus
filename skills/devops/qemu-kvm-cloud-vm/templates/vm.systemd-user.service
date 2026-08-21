@@ -1,0 +1,15 @@
+[Unit]
+Description=Debian VM (2 vCPU / 2GB) in ~/vm
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+WorkingDirectory=%h/vm
+PIDFile=%h/vm/NAME.pid
+ExecStart=%h/vm/start-NAME.sh
+ExecStop=%h/vm/stop-NAME.sh
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

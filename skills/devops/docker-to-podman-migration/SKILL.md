@@ -1,6 +1,6 @@
 ---
 name: docker-to-podman-migration
-description: Migrate Docker to Podman (CLI, Containerfile, compose, GPU/CDI, platform pinning).
+description: Migrate Docker to Podman (CLI, Containerfile, compose, GPU/CDI, platform pinning) AND deploy/wire the Turbofit->Turbohaul local-inference chain (control-plane proxy routing, model residency, Hermes dashboard provider registration).
 ---
 
 # Docker → Podman Migration
@@ -152,6 +152,58 @@ a handful of flags and image-format behaviors differ and will bite you.
   pod (see bind-mount pitfall above), then verify a real completion. Note that
   Ollama `*:cloud` models require a paid subscription — use a local model
   (`qwen2.5:3b`) for an end-to-end proxy smoke test.
+- **Turbofit control-plane `state.json` must carry the REAL registered model
+  tag, not the turbofit stable-id `auto`.** When the control plane proxies to
+  Turbohaul Manager (`"base_url": "http://127.0.0.1:11401"`), the `model` field
+  is forwarded VERBATIM to Turbohaul, which looks it up in its OWN manifest
+  registry (`/api/tags`). Turbofit's stable IDs (`auto`, `active:main`,
+  `active:aux`) are meaningless to Turbohaul → inference returns
+  `{"detail":"model not found: auto"}` even though the control plane itself is
+  healthy. FIX: set `"model"` (and `"alias"`) to the real registered manifest
+  tag after the model is resident, e.g. `bonsai-27b-1bit-64k-main`, then
+  recreate the pod (see bind-mount pitfall) and re-test. The manifest tag is
+  what `GET /api/tags` returns under `models[].name`.
+
+- **Turbofit full-install orchestration (how the "magic" actually works).**
+  Turbofit is the ORCHESTRATOR; Turbohaul Manager owns model lifecycle. To make
+  a local model resident end-to-end:
+  1. `scripts/turbofit-runtime set auto` → picks a hardware profile (e.g.
+     `hardware-8gb` for an 8GB card) and sets `controller_pending: true` in
+     `~/.config/turbofit/selection.json`. This only writes the selection — it
+     does NOT spawn anything.
+  2. `scripts/turbofit-controller --once` (run repeatedly, or as a daemon with
+     `--interval`) → drives Turbohaul via `POST /api/pull-hf` to download the
+     GGUF, auto-writes the manifest yaml, and spawns GPU-resident `llama-server`
+     (visible via `podman exec <manager> nvidia-smi` / `pgrep llama-server`).
+     Repeat ticks until it reports `"action":"none"` + a stable reason
+     (`deficit dwell started` then `no contraction rung fits` = converged).
+  3. The first pull of a multi-GB GGUF can fail mid-stream with an httpx
+     502 (`Turbohaul POST /api/pull-hf returned HTTP 502: {"detail":""}`) —
+     a TRANSIENT network drop that rolls the partial blob back to 0. Just
+     re-run `turbofit-controller --once`; the retry typically succeeds. Verify
+     the model is resident before wiring state.json to its tag.
+  Confirm the chain: `curl localhost:11401/api/tags` lists the model, then a
+  real `POST /v1/chat/completions` through the control plane returns tokens
+  (not `model not found`). The GPU must be in the manager container for the
+  spawn to use `--n-gpu-layers 999` (else it falls back / fails).
+
+- **Registering the pod's provider in the Hermes dashboard — `custom_providers`
+  must be a LIST, not a dict.** After deploying a control-plane pod, users expect
+  it to appear as a "registered" provider in the Hermes web dashboard. The plugin
+  reads the top-level `custom_providers:` key from `~/.hermes/config.yaml` as a
+  **list** of provider dicts (`status_snapshot` iterates with
+  `isinstance(item, Mapping)`). TRAP: `hermes config set custom_providers.0.name
+  turbofit` writes it as a **dict keyed `'0'`** (`custom_providers: {'0': {name:…}}`),
+  so `registered` stays `False` even though the entry "exists". FIX: use the
+  plugin's OWN `apply_configuration()` (the code the dashboard Configure button
+  calls), which appends a correctly-shaped list entry. Verify by importing the
+  plugin's `status_snapshot` against a fresh `load_config()` and asserting
+  `provider.registered is True`. Pass `primary=False` to register without
+  hijacking your active `model.provider`; the running dashboard process loaded
+  config at startup so it needs a page refresh or restart to reflect the change.
+  Note gateway reachability (`/v1/models` → `reachable`) is independent of
+  registration (`registered`) — diagnose each separately.
+
 - **llama.cpp-derived engine builds fail offline on the embedded-UI download.**
   Building a self-contained image that compiles vendored llama.cpp from source
   (a `Containerfile.engine-src`-style build) fails at the `llama-server` link

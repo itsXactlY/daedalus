@@ -28,6 +28,8 @@ Recent archives: 29MB → 894MB → 1.7GB. Monitor for session DBs or audio cach
 ## Script Location
 `/home/alca/.daedalus/scripts/daedalus-zip-backup.sh`
 
+> NOTE (2026-08-21 audit): this script file does NOT currently exist on disk or in any repo. Recreate it from *Script Behavior* below before relying on NAS zip backups; the hourly GitHub backup (`~/.daedalus/scripts/daedalus-backup-sync.sh`) is the active backup path.
+
 ## Script Behavior
 - Trigger autofs mount, verify it's live
 - `zip -9 -r` with exclusions (logs, audio_cache, WAL/SHM)
