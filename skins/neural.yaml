@@ -1,0 +1,110 @@
+name: mazemaker
+description: "Mazemaker Memory skin with alien brain — deep violet/purple matrix theme"
+
+colors:
+  # Banner panel
+  banner_border: "#9B30FF"
+  banner_title: "#BF00FF"
+  banner_accent: "#DA70D6"
+  banner_dim: "#8B008B"
+  banner_text: "#E6E6FA"
+
+  # UI elements
+  ui_accent: "#DA70D6"
+  ui_label: "#BF00FF"
+  ui_ok: "#00FA9A"
+  ui_error: "#FF6B6B"
+  ui_warn: "#FFD700"
+
+  # Input area
+  prompt: "#E6E6FA"
+  input_rule: "#9B30FF"
+
+  # Response box
+  response_border: "#BF00FF"
+
+  # Session display
+  session_label: "#DA70D6"
+  session_border: "#8B008B"
+
+  # TUI surfaces
+  status_bar_bg: "#1a0a2e"
+  voice_status_bg: "#1a0a2e"
+  completion_menu_bg: "#1a0a2e"
+  completion_menu_current_bg: "#2d1a4a"
+  completion_menu_meta_bg: "#1a0a2e"
+  completion_menu_meta_current_bg: "#2d1a4a"
+
+banner_logo: |
+  [#E6E6FA]██████╗ ██████╗  ██████╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+  [#DA70D6]██╔═══██╗██╔══██╗██╔═══██╗    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+  [#BF00FF]██║   ██║██████╔╝██║   ██║    ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║  [/]
+  [#9B30FF]██║   ██║██╔══██╗██║   ██║    ██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║  [/]
+  [#8B008B]╚█████╔╝██║  ██║╚█████╔╝    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║  [/]
+  [#4B0082] ╚════╝ ╚═╝  ╚═╝ ╚════╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝  [/]
+banner_hero: |
+  [#BF00FF]               ...
+  [#BF00FF]             ;::::;
+  [#BF00FF]           ;::::; :
+  [#BF00FF]         ;:::::'   :;
+  [#BF00FF]        ;:::::;     ;.
+  [#DA70D6]       ,:::::'       ;           OOa\
+  [#DA70D6]       ::::::;       ;          OOOOL\
+  [#DA70D6]       ;:::::;       ;         OOOOOcO
+  [#DA70D6]      ,;::::::;     ;'         / OOOOOaO
+  [#E6E6FA]    ;:::::::::`. ,,,;.        /  / DOOOWOO
+  [#E6E6FA]  .';:::::::::::::::::;,     /  /     OOAOO
+  [#E6E6FA] ,::::::;::::::;;;;::::;,   /  /        OSOO
+  [#E6E6FA];`::::::`'::::::;;;::::: ,#/  /          DHOO
+  [#E6E6FA]:`:::::::`;::::::;;::: ;::#  /            DEOO
+  [#E6E6FA]::`:::::::`;:::::::: ;::::# /              ORO
+  [#E6E6FA]`:`:::::::`;:::::: ;::::::#/               DOE
+  [#DA70D6] :::`:::::::`;; ;:::::::::##                OO
+  [#DA70D6] ::::`:::::::`;::::::::;:::#                OO
+  [#BF00FF] `:::::`::::::::::::;'`;::#                O
+  [#BF00FF]  `:::::`::::::::;' /  / `:#
+  [#9B30FF]   ::::::`:::::;'  /  /   `#
+
+
+  🦞 Ready to slurp lobster brains...
+
+prompt-working: "#BF00FF italic"
+prompt-idle: "#9B30FF"
+
+spinner:
+  waiting_faces:
+    - "(◉)"
+    - "(◈)"
+    - "(⬡)"
+    - "(◐)"
+    - "(◑)"
+  thinking_faces:
+    - "(◈)"
+    - "(⬡)"
+    - "(◉)"
+    - "(◐)"
+    - "(◑)"
+  thinking_verbs:
+    - "weaving synapses"
+    - "firing neurons"
+    - "spiking gradients"
+    - "routing signals"
+    - "forming connections"
+    - "consolidating memories"
+    - "growing dendrites"
+    - "oscillating"
+  wings:
+    - ["⟪◉", "◉⟫"]
+    - ["⟪◈", "◈⟫"]
+    - ["⟪⬡", "⬡⟫"]
+    - ["⟪◐", "◐⟫"]
+
+branding:
+  agent_name: "Daedalus Agent"
+  welcome: "Mazemaker memory online. Synapses ready."
+  goodbye: "Goodbye! Mazemaker dark"
+  response_label: " ⚡ Mazemaker "
+  prompt_symbol: "⚡ ❯ "
+  help_header: "(◉) Available Commands"
+
+tool_prefix: "╎"

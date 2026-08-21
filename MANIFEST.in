@@ -1,0 +1,5 @@
+recursive-include plugins *.yaml
+graft skills
+graft optional-skills
+global-exclude __pycache__
+global-exclude *.py[cod]

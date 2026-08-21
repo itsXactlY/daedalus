@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "daedalus",
+  "display_name": "Daedalus Agent",
+  "description": "AI agent by Nous Research with 90+ tools, persistent memory, and multi-platform support",
+  "icon": "icon.svg",
+  "distribution": {
+    "type": "command",
+    "command": "daedalus",
+    "args": ["acp"]
+  }
+}
