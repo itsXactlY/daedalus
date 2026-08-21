@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daedalus — Index</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: #24292e; line-height: 1.6; max-width: 860px; margin: 0 auto; padding: 2rem; }
+  h1 { font-size: 2rem; border-bottom: 1px solid #d0d7de; padding-bottom: 0.5rem; margin-bottom: 1rem; }
+  h2 { font-size: 1.4rem; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3rem; margin-top: 2rem; margin-bottom: 0.8rem; }
+  h3 { font-size: 1.15rem; margin-top: 1.2rem; margin-bottom: 0.4rem; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  blockquote { background: #f6f8fa; border-left: 4px solid #d0d7de; padding: 1rem; margin: 1rem 0; border-radius: 0 4px 4px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0 1.5rem; }
+  th, td { border: 1px solid #d0d7de; padding: 0.5rem 0.75rem; text-align: left; }
+  th { background: #f6f8fa; font-weight: 600; }
+  tr:nth-child(even) { background: #fafbfc; }
+  code { background: #eef1f5; padding: 0.15em 0.35em; border-radius: 4px; font-size: 0.9em; }
+  .tagline { font-size: 1.1rem; color: #57606a; margin-bottom: 1.5rem; }
+  .footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #d0d7de; color: #57606a; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+
+<h1><a href="/daedalus/">Daedalus</a></h1>
+
+<p class="tagline">An autonomous agent harness built to retrieve its history instead of hauling it.<br>
+Fork of <a href="https://github.com/NousResearch/hermes-agent" target="_blank">Hermes Agent 0.8.0</a>. Requires Python 3.14+.</p>
+
+<blockquote>
+<strong>This is not a drop-in upstream replacement.</strong> Daedalus was deliberately taught to stop carrying its own history — it only works with a Mazemaker backend. Run without Mazemaker and you get an amnesiac agent, worse than upstream by construction. See <a href="https://mazemaker.online" target="_blank">mazemaker.online</a> for the backend.
+</blockquote>
+
+<h2 id="docs">Documentation</h2>
+<table>
+<tr><th>Doc</th><th>Covers</th></tr>
+<tr><td><a href="/daedalus/">README</a></td><td>Full overview: receipts, features, install</td></tr>
+<tr><td><a href="/daedalus/CHANGELOG.html">CHANGELOG</a></td><td>Version history and breaking changes</td></tr>
+<tr><td><a href="/daedalus/SOUL.md">SOUL.md</a></td><td>Identity, philosophy, operating principles</td></tr>
+<tr><td><a href="/daedalus/CONTRIBUTING.md">CONTRIBUTING</a></td><td>How to contribute, PR process</td></tr>
+<tr><td><a href="/daedalus/SNAPSHOT_ENGINE.md">SNAPSHOT ENGINE</a></td><td>Runtime Snapshot Engine with WAL and branching</td></tr>
+</table>
+
+<h2 id="architecture">Architecture</h2>
+<table>
+<tr><th>Component</th><th>Path</th><th>Purpose</th></tr>
+<tr><td>CLI entry</td><td><code>cli.py</code></td><td>Main command-line interface</td></tr>
+<tr><td>Agent loop</td><td><code>run_agent.py</code></td><td>Core autonomous execution loop</td></tr>
+<tr><td>Gateway</td><td><code>gateway/</code></td><td>OpenAI-compatible API server</td></tr>
+<tr><td>Cron system</td><td><code>cron/</code></td><td>Scheduled task engine</td></tr>
+<tr><td>ACP adapter</td><td><code>acp_adapter/</code></td><td>Agent Communication Protocol bridge</td></tr>
+<tr><td>MCP server</td><td><code>mcp_serve.py</code></td><td>Model Context Protocol integration</td></tr>
+<tr><td>Toolsets</td><td><code>toolsets.py</code></td><td>Tool registration and distribution</td></tr>
+<tr><td>State manager</td><td><code>daedalus_state*.py</code></td><td>Persistent state, schema, search</td></tr>
+<tr><td>Trajectory compressor</td><td><code>trajectory_compressor.py</code></td><td>Context window compression</td></tr>
+<tr><td>Batch runner</td><td><code>batch_runner.py</code></td><td>Multi-agent batch execution</td></tr>
+</table>
+
+<h2 id="scripts">Key Scripts</h2>
+<table>
+<tr><th>Script</th><th>Purpose</th></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/install.sh" target="_blank"><code>install.sh</code></a></td><td>Bootstrap and install (persistent, one-shot, dev, extras)</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/setup-daedalus.sh" target="_blank"><code>setup-daedalus.sh</code></a></td><td>System-level setup script</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/scripts/claude_code_shim.py" target="_blank"><code>scripts/claude_code_shim.py</code></a></td><td>Claude Code as model backend (experimental)</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/mini_swe_runner.py" target="_blank"><code>mini_swe_runner.py</code></a></td><td>SWE-bench mini evaluation runner</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/rl_cli.py" target="_blank"><code>rl_cli.py</code></a></td><td>Reinforcement learning CLI</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/flake.nix" target="_blank"><code>flake.nix</code></a></td><td>Nix package definition</td></tr>
+</table>
+
+<h2 id="docs-ref">Documentation (detailed)</h2>
+<table>
+<tr><th>Doc</th><th>Path in repo</th></tr>
+<tr><td>ACP setup</td><td><code>docs/acp-setup.md</code></td></tr>
+<tr><td>Snapshot Engine</td><td><code>docs/snapshot-engine.md</code></td></tr>
+</table>
+
+<h2 id="skills">Skills</h2>
+<p>100 curated skills across 20 packs. Catalogue is prompt-weighted — curated, not accumulated.<br>
+Location: <code>skills/</code> in the repo tree, served from <code>~/.daedalus/skills/</code> at runtime.</p>
+
+<h2 id="config">Configuration</h2>
+<table>
+<tr><th>File</th><th>Purpose</th></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/.env.example" target="_blank"><code>.env.example</code></a></td><td>API key template — copy to <code>.env</code>, never commit</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/cli-config.yaml.example" target="_blank"><code>cli-config.yaml.example</code></a></td><td>Annotated reference config</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/pyproject.toml" target="_blank"><code>pyproject.toml</code></a></td><td>Python package metadata and dependencies</td></tr>
+<tr><td><a href="https://github.com/itsXactlY/daedalus/blob/main/requirements.txt" target="_blank"><code>requirements.txt</code></a></td><td>Pinned dependency list</td></tr>
+</table>
+
+<h2 id="env">Environment Variables</h2>
+<table>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+<tr><td><code>DAEDALUS_HOME</code></td><td><code>~/.daedalus/</code></td><td>Agent home directory</td></tr>
+<tr><td><code>MM_WONDERLAND_URL</code></td><td><code>http://127.0.0.1:8765</code></td><td>Mazemaker backend endpoint</td></tr>
+</table>
+
+<h2 id="running">Running Anywhere</h2>
+<p>Daedalus runs on any OpenAI-compatible endpoint: llama.cpp, Ollama, vLLM, Unsloth Studio, OpenRouter, Anthropic.<br>
+Model choice is a config line — no rewrite needed.</p>
+
+<div class="footer">
+<p>Built on scar tissue. North of a trillion tokens spent finding out what breaks.</p>
+</div>
+
+</body>
+</html>
