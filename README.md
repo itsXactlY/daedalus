@@ -224,7 +224,29 @@ Bootstraps [uv](https://astral.sh/uv) if missing.
 | `cli-config.yaml.example` | Annotated reference config |
 
 Skills live in `skills/` in this tree, and the default home *is* this directory,
-so they work immediately. Relocate with `DAEDALUS_HOME` and copy `skills/` across.
+so they work immediately from a source checkout.
+
+**A packaged install gets none of them.** Skills are `SKILL.md` files outside any
+Python package, so the wheel carries zero of the 100 — a `pip`/`uvx` install comes
+up reporting *No skills installed* while this repo holds all of them. Fix it with:
+
+```bash
+daedalus skills sync              # pull skills/ from this repo into DAEDALUS_HOME
+daedalus skills sync --dry-run    # show what would change
+daedalus skills sync --prune      # also drop skills the repo no longer has
+```
+
+`daedalus update` does not cover this. It resolves `PROJECT_ROOT`, which on a
+packaged install is `site-packages` and not a git checkout, so its git path is
+unavailable and its zip fallback would unpack the whole repository over
+`site-packages` — putting skills nowhere the agent looks. `sync` extracts
+`skills/**` only, straight into `DAEDALUS_HOME/skills`, and leaves anything else
+in that directory alone unless `--prune` is asked for, because hub-installed and
+hand-written skills share it.
+
+Note that `pip install --upgrade` from this repo is a no-op while the version
+string is unchanged; use `--force-reinstall --no-deps` to move a packaged install
+onto current `main`.
 
 ## Experimental
 
