@@ -157,3 +157,34 @@ cron/*/
 build/
 dist/
 *.egg-info/
+
+# ─── Secret hygiene, widened 2026-08-29 ──────────────────────────────────
+# The existing rules covered config.yaml and config.yaml.* but not variants
+# with an infix. config_ox.yaml was sitting untracked-and-unignored carrying a
+# live OpenRouter key (sk-or-v1-…), which `git add -A` would have staged. Match
+# any config variant instead of enumerating the ones that happen to exist today.
+config*.yaml
+config*.yml
+!config*.example.yaml
+!config*.example.yml
+
+# Anything whose name announces a credential, in any directory.
+*.pem
+*.p12
+*.pfx
+*.keystore
+*credential*.json
+*credentials*.json
+*secrets*.yaml
+*secrets*.yml
+*secrets*.json
+*_token
+*.token
+id_rsa
+id_ed25519
+
+# Env files anywhere, not just the repo root, minus the checked-in examples.
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
