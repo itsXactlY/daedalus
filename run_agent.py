@@ -443,6 +443,62 @@ class AIAgent:
         self._base_url = value
         self._base_url_lower = value.lower() if value else ""
 
+
+    @staticmethod
+    def _spill_root() -> str:
+        import tempfile
+
+        base = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
+        return os.path.join(base, f"daedalus-ctx-{os.getuid()}")
+
+    @classmethod
+    def purge_stale_spills(cls, max_age_seconds: int = 86400) -> int:
+        """Drop spill directories from sessions that are long gone.
+
+        tmpfs is RAM: an abandoned session must not hold pages forever.
+        """
+        import shutil
+
+        root = cls._spill_root()
+        if not os.path.isdir(root):
+            return 0
+        removed = 0
+        cutoff = time.time() - max_age_seconds
+        for entry in os.listdir(root):
+            path = os.path.join(root, entry)
+            try:
+                if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+                    removed += 1
+            except Exception:
+                continue
+        return removed
+
+    @classmethod
+    def _archive_context_chunk(cls, session: str, seq: int, tool_name: str,
+                               content: str):
+        """Spill an aged tool result to tmpfs, return the path.
+
+        /dev/shm is RAM-backed, so this costs no disk I/O and vanishes with the
+        machine. Tool output is working data, not knowledge -- it stays
+        readable for the rest of the session without riding along in every
+        request and without polluting long-term memory.
+        """
+        import tempfile
+
+        safe_session = "".join(c for c in str(session) if c.isalnum() or c in "-_") or "session"
+        safe_tool = "".join(c for c in str(tool_name) if c.isalnum() or c in "-_") or "tool"
+        directory = os.path.join(cls._spill_root(), safe_session)
+        try:
+            os.makedirs(directory, exist_ok=True)
+            path = os.path.join(directory, f"{seq:04d}-{safe_tool}.txt")
+            with open(path, "w", encoding="utf-8", errors="replace") as fh:
+                fh.write(content)
+            return path
+        except Exception as exc:
+            logger.debug("Context spill failed: %s", exc)
+            return None
+
     def __init__(
         self,
         base_url: str = None,
@@ -1042,6 +1098,7 @@ class AIAgent:
         compression_summary_model = _compression_cfg.get("summary_model") or None
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
+        compression_max_tokens = int(_compression_cfg.get("max_tokens", 0) or 0)
 
         _model_cfg = _agent_cfg.get("model", {})
         if isinstance(_model_cfg, dict):
@@ -1086,7 +1143,14 @@ class AIAgent:
             api_key=getattr(self, "api_key", ""),
             config_context_length=_config_context_length,
             provider=self.provider,
+            max_tokens=compression_max_tokens,
+            archiver=self._archive_context_chunk,
         )
+        self.context_compressor.session_label = getattr(self, "session_id", "") or "session"
+        try:
+            self.purge_stale_spills()
+        except Exception as _spill_exc:
+            logger.debug("spill purge skipped: %s", _spill_exc)
         self.compression_enabled = compression_enabled
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
@@ -7414,6 +7478,13 @@ class AIAgent:
                             logger.warning(
                                 "history_pointer_all failed (non-fatal): %s", _hp_exc
                             )
+                    _spill = ""
+                    try:
+                        _spill = self.context_compressor.offload_notice()
+                    except Exception:
+                        _spill = ""
+                    if _spill:
+                        _injections.append(f"[context spill] {_spill}")
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
                     if getattr(self, "_skill_route_block", ""):
@@ -8875,6 +8946,16 @@ class AIAgent:
                         if _compaction_progress >= 0.85 and not self._context_pressure_warned:
                             self._context_pressure_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
+
+                    if self.compression_enabled:
+                        messages, _stale = _compressor.prune_stale_tool_results(
+                            messages, _real_tokens,
+                        )
+                        if _stale and not self.quiet_mode:
+                            logger.info(
+                                "Pruned %d stale tool result(s) below the compression "
+                                "threshold (%d tokens)", _stale, _real_tokens,
+                            )
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):
                         messages, active_system_prompt = self._compress_context(

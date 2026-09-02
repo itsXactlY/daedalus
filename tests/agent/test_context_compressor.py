@@ -586,3 +586,269 @@ class TestSummaryTargetRatio:
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.protect_last_n == 20
+
+
+class TestHardwareCeiling:
+    def _c(self, **kw):
+        from agent.context_compressor import ContextCompressor
+
+        kw.setdefault("model", "test-model")
+        kw.setdefault("quiet_mode", True)
+        kw.setdefault("config_context_length", 256_800)
+        kw.setdefault("threshold_percent", 0.95)
+        return ContextCompressor(**kw)
+
+    def test_without_a_ceiling_the_percentage_decides(self):
+        assert self._c().threshold_tokens == int(256_800 * 0.95)
+
+    def test_a_ceiling_below_the_window_wins(self):
+        assert self._c(max_tokens=100_000).threshold_tokens == 100_000
+
+    def test_a_ceiling_above_the_window_does_not_raise_the_trigger(self):
+        assert self._c(max_tokens=999_999).threshold_tokens == int(256_800 * 0.95)
+
+    def test_zero_means_no_ceiling(self):
+        assert self._c(max_tokens=0).threshold_tokens == int(256_800 * 0.95)
+
+
+class TestPruneStaleToolResults:
+    def _msgs(self, n, size=9000):
+        out = []
+        for i in range(n):
+            out.append({"role": "assistant",
+                        "tool_calls": [{"id": f"t{i}",
+                                        "function": {"name": "read_file", "arguments": "{}"}}]})
+            out.append({"role": "tool", "tool_call_id": f"t{i}", "content": "X" * size})
+        return out
+
+    def _c(self):
+        from agent.context_compressor import ContextCompressor
+
+        return ContextCompressor(model="test-model", quiet_mode=True,
+                                 threshold_percent=0.95, protect_last_n=3,
+                                 config_context_length=256_800, max_tokens=100_000)
+
+    def test_quiet_below_half_the_threshold(self):
+        c = self._c()
+        msgs = self._msgs(40)
+        out, n = c.prune_stale_tool_results(msgs, 40_000)
+        assert n == 0
+        assert out is msgs
+
+    def test_prunes_once_the_context_grows(self):
+        c = self._c()
+        out, n = c.prune_stale_tool_results(self._msgs(40), 60_000)
+        assert n > 0
+
+    def test_the_tail_is_left_intact(self):
+        c = self._c()
+        msgs = self._msgs(40)
+        out, _ = c.prune_stale_tool_results(msgs, 90_000)
+        for original, pruned in zip(msgs[-12:], out[-12:]):
+            assert original["content" if "content" in original else "role"] == \
+                pruned["content" if "content" in pruned else "role"]
+
+    def test_small_results_are_kept(self):
+        c = self._c()
+        out, n = c.prune_stale_tool_results(self._msgs(40, size=50), 90_000)
+        assert n == 0
+
+    def test_pruning_is_idempotent(self):
+        c = self._c()
+        once, n1 = c.prune_stale_tool_results(self._msgs(40), 90_000)
+        twice, n2 = c.prune_stale_tool_results(once, 90_000)
+        assert n1 > 0 and n2 == 0
+
+    def test_structure_survives(self):
+        c = self._c()
+        msgs = self._msgs(40)
+        out, _ = c.prune_stale_tool_results(msgs, 90_000)
+        assert len(out) == len(msgs)
+        for original, pruned in zip(msgs, out):
+            assert original["role"] == pruned["role"]
+            if original["role"] == "tool":
+                assert original["tool_call_id"] == pruned["tool_call_id"]
+
+
+class TestSpillToTmpfs:
+    def _agent_archiver(self):
+        from run_agent import AIAgent
+
+        return AIAgent._archive_context_chunk
+
+    def _c(self, archiver):
+        from agent.context_compressor import ContextCompressor
+
+        c = ContextCompressor(model="test-model", quiet_mode=True,
+                              threshold_percent=0.95, protect_last_n=3,
+                              config_context_length=256_800, max_tokens=100_000,
+                              archiver=archiver)
+        c.session_label = "pytest-spill"
+        return c
+
+    def _msgs(self, n, size=9000):
+        out = []
+        for i in range(n):
+            out.append({"role": "assistant",
+                        "tool_calls": [{"id": f"t{i}",
+                                        "function": {"name": "read_file", "arguments": "{}"}}]})
+            out.append({"role": "tool", "tool_call_id": f"t{i}", "content": "X" * size})
+        return out
+
+    def test_content_survives_on_disk_and_the_handle_points_at_it(self):
+        import os
+
+        c = self._c(self._agent_archiver())
+        out, n = c.prune_stale_tool_results(self._msgs(30), 90_000)
+        assert n > 0
+        assert c.offloaded
+        path = c.offloaded[0]["path"]
+        assert os.path.isfile(path)
+        assert open(path).read() == "X" * 9000
+        handles = [m["content"] for m in out
+                   if m.get("role") == "tool" and m["content"].startswith("[offloaded")]
+        assert handles and path in handles[0]
+
+    def test_nothing_is_dropped_when_a_spill_target_exists(self):
+        c = self._c(self._agent_archiver())
+        out, n = c.prune_stale_tool_results(self._msgs(30), 90_000)
+        dropped = [m for m in out if m.get("role") == "tool"
+                   and m["content"].startswith("[Old tool output")]
+        assert dropped == []
+
+    def test_a_failing_archiver_falls_back_to_the_placeholder(self):
+        c = self._c(lambda *a: None)
+        out, n = c.prune_stale_tool_results(self._msgs(30), 90_000)
+        assert n > 0
+        assert not c.offloaded
+        assert any(m.get("content", "").startswith("[Old tool output") for m in out)
+
+    def test_the_notice_names_the_paths(self):
+        c = self._c(self._agent_archiver())
+        c.prune_stale_tool_results(self._msgs(30), 90_000)
+        notice = c.offload_notice()
+        assert "read_file" in notice and "/" in notice
+        assert "read_file(path)" in notice
+
+    def test_no_notice_without_spills(self):
+        c = self._c(self._agent_archiver())
+        assert c.offload_notice() == ""
+
+    def test_purge_removes_stale_directories(self):
+        from run_agent import AIAgent
+
+        c = self._c(self._agent_archiver())
+        c.prune_stale_tool_results(self._msgs(30), 90_000)
+        assert AIAgent.purge_stale_spills(max_age_seconds=0) >= 1
+
+
+class TestSpillCallArguments:
+    def _c(self):
+        from agent.context_compressor import ContextCompressor
+        from run_agent import AIAgent
+
+        c = ContextCompressor(model="test-model", quiet_mode=True,
+                              threshold_percent=0.95, protect_last_n=3,
+                              config_context_length=256_800, max_tokens=100_000,
+                              archiver=AIAgent._archive_context_chunk)
+        c.session_label = "pytest-args"
+        return c
+
+    def _msgs(self, n, arg_size=9000):
+        import json as _json
+
+        out = []
+        for i in range(n):
+            payload = _json.dumps({"file_path": f"/tmp/f{i}.txt", "content": "Y" * arg_size})
+            out.append({"role": "assistant",
+                        "tool_calls": [{"id": f"t{i}",
+                                        "function": {"name": "write_file",
+                                                     "arguments": payload}}]})
+            out.append({"role": "tool", "tool_call_id": f"t{i}", "content": "ok"})
+        return out
+
+    def _first_spilled(self, messages):
+        import json as _json
+
+        for msg in messages:
+            for call in (msg.get("tool_calls") or []):
+                args = _json.loads(call["function"]["arguments"])
+                if any(isinstance(v, dict) and "_spilled_to" in v for v in args.values()):
+                    return args
+        return None
+
+    def test_the_bulky_value_moves_and_stays_readable(self):
+        import os
+
+        c = self._c()
+        out, n = c.prune_stale_tool_results(self._msgs(30), 90_000)
+        assert n > 0
+        args = self._first_spilled(out)
+        assert args is not None
+        path = args["content"]["_spilled_to"]
+        assert os.path.isfile(path)
+        assert open(path).read() == "Y" * 9000
+
+    def test_the_identifying_value_stays_inline(self):
+        c = self._c()
+        out, _ = c.prune_stale_tool_results(self._msgs(30), 90_000)
+        args = self._first_spilled(out)
+        assert args is not None
+        assert args["file_path"].startswith("/tmp/f")
+        assert isinstance(args["file_path"], str)
+
+    def test_a_spilled_result_names_what_it_was_about(self):
+        import json as _json
+
+        c = self._c()
+        msgs = []
+        for i in range(30):
+            msgs.append({"role": "assistant", "tool_calls": [
+                {"id": f"r{i}", "function": {"name": "read_file",
+                                             "arguments": _json.dumps({"file_path": f"/src/mod{i}.py"})}}]})
+            msgs.append({"role": "tool", "tool_call_id": f"r{i}", "content": "Z" * 9000})
+        out, _ = c.prune_stale_tool_results(msgs, 90_000)
+        handles = [m["content"] for m in out
+                   if m.get("role") == "tool" and m["content"].startswith("[offloaded")]
+        assert handles
+        assert "/src/mod0.py" in handles[0]
+
+    def test_every_argument_stays_valid_json(self):
+        import json as _json
+
+        c = self._c()
+        out, _ = c.prune_stale_tool_results(self._msgs(30), 90_000)
+        for msg in out:
+            for call in (msg.get("tool_calls") or []):
+                _json.loads(call["function"]["arguments"])
+
+    def test_small_arguments_are_untouched(self):
+        c = self._c()
+        out, n = c.prune_stale_tool_results(self._msgs(30, arg_size=10), 90_000)
+        assert n == 0
+
+    def test_the_live_tail_keeps_its_arguments(self):
+        msgs = self._msgs(30)
+        c = self._c()
+        out, _ = c.prune_stale_tool_results(msgs, 90_000)
+        for original, kept in zip(msgs[-c.live_window_messages:],
+                                  out[-c.live_window_messages:]):
+            assert original == kept
+
+    def test_spilling_is_idempotent(self):
+        c = self._c()
+        once, n1 = c.prune_stale_tool_results(self._msgs(30), 90_000)
+        twice, n2 = c.prune_stale_tool_results(once, 90_000)
+        assert n1 > 0 and n2 == 0
+
+    def test_without_an_archiver_arguments_are_left_alone(self):
+        from agent.context_compressor import ContextCompressor
+
+        c = ContextCompressor(model="test-model", quiet_mode=True,
+                              threshold_percent=0.95, protect_last_n=3,
+                              config_context_length=256_800, max_tokens=100_000)
+        msgs = self._msgs(30)
+        out, _ = c.prune_stale_tool_results(msgs, 90_000)
+        for msg in out:
+            for call in (msg.get("tool_calls") or []):
+                assert "_spilled_to" not in call["function"]["arguments"]

@@ -156,6 +156,27 @@ class WriteResult:
         return {k: v for k, v in self.__dict__.items() if v is not None}
 
 
+_DIFF_ECHO_MAX_CHARS = 1200
+
+
+def _summarize_diff(diff: str) -> str:
+    """Line counts instead of the diff the caller just wrote.
+
+    A successful patch echoing its own input back doubles its context cost.
+    Failures keep the full diff -- that is where it carries information.
+    """
+    added = removed = hunks = 0
+    for line in diff.splitlines():
+        if line.startswith("@@"):
+            hunks += 1
+        elif line.startswith("+") and not line.startswith("+++"):
+            added += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            removed += 1
+    return (f"{hunks} hunk(s), +{added}/-{removed} lines applied "
+            f"({len(diff)} chars elided; re-read the file to see the result)")
+
+
 @dataclass
 class PatchResult:
     """Result from patching a file."""
@@ -170,7 +191,10 @@ class PatchResult:
     def to_dict(self) -> dict:
         result = {"success": self.success}
         if self.diff:
-            result["diff"] = self.diff
+            if self.success and len(self.diff) > _DIFF_ECHO_MAX_CHARS:
+                result["diff_summary"] = _summarize_diff(self.diff)
+            else:
+                result["diff"] = self.diff
         if self.files_modified:
             result["files_modified"] = self.files_modified
         if self.files_created:

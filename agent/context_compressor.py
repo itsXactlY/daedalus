@@ -13,9 +13,10 @@ Improvements over v1:
   - Richer tool call/result detail in summarizer input
 """
 
+import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.auxiliary_client import call_llm
 from agent.model_metadata import (
@@ -41,6 +42,13 @@ _SUMMARY_RATIO = 0.20
 _SUMMARY_TOKENS_CEILING = 12_000
 
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+_PRUNE_START_RATIO = 0.5
+_LIVE_WINDOW_MESSAGES = 12
+_PRUNE_MIN_CHARS = 2000
+_OFFLOAD_PREFIX = "[offloaded: "
+_SPILLED_ARG_KEY = "_spilled_to"
+_SPILL_VALUE_MIN_CHARS = 800
+_SUBJECT_KEYS = ("file_path", "path", "command", "query", "url", "name")
 
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
@@ -70,12 +78,16 @@ class ContextCompressor:
         api_key: str = "",
         config_context_length: int | None = None,
         provider: str = "",
+        max_tokens: int | None = None,
+        archiver: Any = None,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
         self.threshold_percent = threshold_percent
+        self.max_tokens = max_tokens if max_tokens and max_tokens > 0 else None
+        self.archiver = archiver
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
@@ -86,8 +98,12 @@ class ContextCompressor:
             config_context_length=config_context_length,
             provider=provider,
         )
-        self.threshold_tokens = int(self.context_length * threshold_percent)
+        self.threshold_tokens = self._effective_threshold(self.context_length)
         self.compression_count = 0
+        self.session_label = "session"
+        self._offload_seq = 0
+        self.offloaded: List[Dict[str, Any]] = []
+        self.live_window_messages = _LIVE_WINDOW_MESSAGES
 
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
         self.tail_token_budget = target_tokens
@@ -152,7 +168,7 @@ class ContextCompressor:
             return False
         old = self.context_length
         self.context_length = detected
-        self.threshold_tokens = int(detected * self.threshold_percent)
+        self.threshold_tokens = self._effective_threshold(detected)
         self.max_summary_tokens = min(
             int(detected * 0.05), _SUMMARY_TOKENS_CEILING,
         )
@@ -161,6 +177,19 @@ class ContextCompressor:
             self.base_url, f"{old:,}", f"{detected:,}",
         )
         return True
+
+    def _effective_threshold(self, context_length: int) -> int:
+        """Compression trigger, capped by max_tokens when one is configured.
+
+        A declared window the hardware cannot hold in KV cache makes the
+        percentage alone useless: the box swaps long before 95% of a 256K
+        window is reached. max_tokens is that hardware ceiling.
+        """
+        by_percent = int(context_length * self.threshold_percent)
+        if self.max_tokens:
+            return max(1, min(by_percent, self.max_tokens))
+        return by_percent
+
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response.
@@ -237,6 +266,216 @@ class ContextCompressor:
                 pruned += 1
 
         return result, pruned
+
+
+    def prune_stale_tool_results(
+        self, messages: List[Dict[str, Any]], current_tokens: int,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Move bulky tool results out of the live window as soon as they age.
+
+        The harness does not carry its own transcript: only the newest
+        ``live_window_messages`` stay in the payload. Anything older that is
+        bulky goes to tmpfs immediately -- waiting for a compression threshold
+        means hauling every file ever read until the window is nearly full,
+        which is the KV-cache problem this exists to avoid. Without an archiver
+        there is nowhere to put it, so the old pressure gate still applies.
+        """
+        if not messages:
+            return messages, 0
+        if not self.archiver and current_tokens < self.threshold_tokens * _PRUNE_START_RATIO:
+            return messages, 0
+        tail = self.live_window_messages
+        if len(messages) <= tail:
+            return messages, 0
+
+        names = self._tool_call_names(messages)
+        subjects = self._tool_call_subjects(messages)
+        result = [m.copy() for m in messages]
+        pruned = 0
+        archived = 0
+        for i in range(len(result) - tail):
+            msg = result[i]
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if not content or self._is_offloaded(content):
+                continue
+            if len(content) < _PRUNE_MIN_CHARS:
+                continue
+            handle = None
+            if self.archiver:
+                handle = self._offload(names.get(msg.get("tool_call_id")), content,
+                                       subjects.get(msg.get("tool_call_id"), ""))
+                if handle:
+                    archived += 1
+            result[i] = {**msg, "content": handle or _PRUNED_TOOL_PLACEHOLDER}
+            pruned += 1
+
+        if self.archiver:
+            for i in range(len(result) - tail):
+                calls = result[i].get("tool_calls")
+                if not calls:
+                    continue
+                new_calls, changed = self._spill_call_arguments(calls)
+                if changed:
+                    result[i] = {**result[i], "tool_calls": new_calls}
+                    pruned += changed
+
+        return (result, pruned) if pruned else (messages, 0)
+
+    def _spill_call_arguments(self, calls: List[Any]) -> Tuple[List[Any], int]:
+        """Move the bulky values out of a tool call, keep the identifying ones.
+
+        Once results are spilled the model's own arguments dominate -- a
+        write_file call carries the whole file. Spilling the blob wholesale
+        would take file_path with it, leaving the model unable to tell one
+        call from the next. So only oversized values move; small scalars stay
+        inline and the result is still valid JSON, which consumers json.loads.
+        """
+        out: List[Any] = []
+        changed = 0
+        for call in calls:
+            if not isinstance(call, dict):
+                out.append(call)
+                continue
+            fn = call.get("function") or {}
+            raw = fn.get("arguments")
+            if not isinstance(raw, str) or len(raw) < _PRUNE_MIN_CHARS:
+                out.append(call)
+                continue
+            if _SPILLED_ARG_KEY in raw:
+                out.append(call)
+                continue
+            name = fn.get("name") or "tool"
+            replacement = self._spill_large_values(name, raw)
+            if replacement is None:
+                out.append(call)
+                continue
+            out.append({**call, "function": {**fn, "arguments": replacement}})
+            changed += 1
+        return out, changed
+
+    def _spill_large_values(self, tool_name: str, raw: str) -> Optional[str]:
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+
+        if not isinstance(parsed, dict):
+            path = self._write_spill(f"{tool_name}-args", raw)
+            if not path:
+                return None
+            self.offloaded.append({"path": str(path), "chars": len(raw),
+                                   "tool": f"{tool_name} (arguments)"})
+            return json.dumps({_SPILLED_ARG_KEY: str(path), "bytes": len(raw),
+                               "note": "arguments spilled from context; "
+                                       "read_file(path) to see them"})
+
+        slim: Dict[str, Any] = {}
+        moved = False
+        for key, value in parsed.items():
+            if isinstance(value, str) and len(value) >= _SPILL_VALUE_MIN_CHARS:
+                path = self._write_spill(f"{tool_name}-{key}", value)
+                if not path:
+                    slim[key] = value
+                    continue
+                self.offloaded.append({"path": str(path), "chars": len(value),
+                                       "tool": f"{tool_name}.{key}"})
+                slim[key] = {_SPILLED_ARG_KEY: str(path), "bytes": len(value),
+                             "note": "read_file(path) to see this value"}
+                moved = True
+            else:
+                slim[key] = value
+        if not moved:
+            return None
+        return json.dumps(slim)
+
+    def _write_spill(self, tool_name: str, content: str) -> Optional[str]:
+        try:
+            path = self.archiver(self.session_label, self._offload_seq,
+                                 tool_name, content)
+        except Exception as exc:
+            logger.debug("Spill failed for %s: %s", tool_name, exc)
+            return None
+        if path:
+            self._offload_seq += 1
+        return path
+
+    @staticmethod
+    def _tool_call_names(messages: List[Dict[str, Any]]) -> Dict[str, str]:
+        names: Dict[str, str] = {}
+        for msg in messages:
+            for call in (msg.get("tool_calls") or []):
+                if not isinstance(call, dict):
+                    continue
+                fn = call.get("function") or {}
+                if call.get("id"):
+                    names[call["id"]] = fn.get("name") or "tool"
+        return names
+
+    @staticmethod
+    def _is_offloaded(content: str) -> bool:
+        return (content == _PRUNED_TOOL_PLACEHOLDER
+                or content.startswith(_OFFLOAD_PREFIX))
+
+    @classmethod
+    def _tool_call_subjects(cls, messages: List[Dict[str, Any]]) -> Dict[str, str]:
+        """What each call was about, so a spilled result stays identifiable."""
+        subjects: Dict[str, str] = {}
+        for msg in messages:
+            for call in (msg.get("tool_calls") or []):
+                if not isinstance(call, dict) or not call.get("id"):
+                    continue
+                fn = call.get("function") or {}
+                subjects[call["id"]] = cls._describe_arguments(fn.get("arguments"))
+        return subjects
+
+    @staticmethod
+    def _describe_arguments(raw: Any) -> str:
+        if not isinstance(raw, str) or not raw.strip():
+            return ""
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return ""
+        if not isinstance(parsed, dict):
+            return ""
+        for key in _SUBJECT_KEYS:
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                flat = " ".join(value.split())
+                return flat if len(flat) <= 120 else flat[:117] + "..."
+        return ""
+
+    def _offload(self, tool_name: str, content: str, subject: str = "") -> Optional[str]:
+        """Spill a tool result to tmpfs and keep a path the model can read.
+
+        Deleting it is amnesia, carrying it is the KV cache problem. RAM-backed
+        tmpfs is neither: the bytes leave the window, stay one read_file away,
+        and never touch disk or long-term memory -- tool churn does not belong
+        in a semantic graph.
+        """
+        tool_name = tool_name or "tool"
+        path = self._write_spill(tool_name, content)
+        if not path:
+            return None
+        self.offloaded.append({"path": str(path), "tool": tool_name,
+                               "chars": len(content)})
+        about = f" for {subject}" if subject else ""
+        return (f"{_OFFLOAD_PREFIX}{tool_name}{about} — result ({len(content)} chars) "
+                f"spilled to {path}. Retrieve it verbatim with read_file(\"{path}\").]")
+
+    def offload_notice(self, limit: int = 6) -> str:
+        """One line naming what left the window, so the model can pull it back."""
+        if not self.offloaded:
+            return ""
+        recent = self.offloaded[-limit:]
+        items = ", ".join(f"{o['tool']}→{o['path']}" for o in recent)
+        more = len(self.offloaded) - len(recent)
+        tail = f" (+{more} older in the same directory)" if more else ""
+        return (f"{len(self.offloaded)} bulky tool result(s) were spilled out of context "
+                f"to tmpfs this session: {items}{tail}. "
+                "Read one back with read_file(path) instead of re-running the tool.")
 
 
     def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
