@@ -139,7 +139,8 @@ MEMORY_GUIDANCE = (
     "that prevents the user from having to correct or remind you again. "
     "User preferences and recurring corrections matter more than procedural task details.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
-    "state to memory; use session_search to recall those from past transcripts. "
+    "state to memory; every turn is already soaked into the memory graph, so recall "
+    "those instead of re-saving them. "
     "If you've discovered a new way to do something, solved a problem that could be "
     "necessary later, save it as a skill with the skill tool."
 )

@@ -1029,6 +1029,8 @@ class AIAgent:
         self._user_profile_enabled = False
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
+        self._memory_flush_max_chars = 16000
+        self._memory_flush_max_tokens = 1024
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
@@ -1038,6 +1040,8 @@ class AIAgent:
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
+                self._memory_flush_max_chars = int(mem_config.get("flush_max_chars", 16000) or 0)
+                self._memory_flush_max_tokens = int(mem_config.get("flush_max_tokens", 1024) or 1024)
                 _soak_cfg = mem_config.get("soak", {}) if isinstance(mem_config.get("soak"), dict) else {}
                 _soak_configured = bool(_soak_cfg)
                 self._soak_window_turns = int(_soak_cfg.get("window_turns", 0) or 0) if _soak_configured else -1
@@ -6021,6 +6025,51 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
+    def _trim_for_flush(self, api_messages: list) -> list:
+        """Keep the recent conversation, drop the bulk, stay inside the budget.
+
+        The flush extracts durable facts from what was just said. Shipping the
+        whole transcript to do that wasted the big model's time and does not
+        fit a small one at all -- a 40,872-token payload into an 8,192-token
+        slot (2026-09-03). Tool results carry file contents that are never the
+        subject of a memory, so they are elided first; then the oldest
+        messages are dropped until the payload fits.
+        """
+        budget = self._memory_flush_max_chars
+        if budget <= 0 or not api_messages:
+            return api_messages
+
+        def size(entries) -> int:
+            return sum(len(str(m.get("content") or "")) +
+                       sum(len(str((c.get("function") or {}).get("arguments") or ""))
+                           for c in (m.get("tool_calls") or ()))
+                       for m in entries)
+
+        trimmed = [m.copy() for m in api_messages]
+        if size(trimmed) <= budget:
+            return trimmed
+
+        for msg in trimmed[:-2]:
+            if msg.get("role") == "tool" and len(str(msg.get("content") or "")) > 400:
+                msg["content"] = "[tool output omitted for the memory flush]"
+        if size(trimmed) <= budget:
+            return trimmed
+
+        keep = []
+        running = 0
+        for msg in reversed(trimmed):
+            entry = size([msg])
+            if keep and running + entry > budget:
+                break
+            keep.append(msg)
+            running += entry
+        keep.reverse()
+        while keep and keep[0].get("role") == "tool":
+            keep.pop(0)
+        logger.debug("memory flush trimmed %d -> %d messages (%d chars)",
+                     len(api_messages), len(keep), size(keep))
+        return keep or api_messages[-2:]
+
     def flush_memories(self, messages: list = None, min_turns: int = None):
         """Give the model one turn to persist memories before context is lost.
 
@@ -6074,6 +6123,7 @@ class AIAgent:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
 
+            api_messages = self._trim_for_flush(api_messages)
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
             api_messages = self._normalise_system_messages(api_messages)
@@ -6096,7 +6146,7 @@ class AIAgent:
                     messages=api_messages,
                     tools=[memory_tool_def],
                     temperature=0.3,
-                    max_tokens=5120,
+                    max_tokens=self._memory_flush_max_tokens,
                     timeout=30.0,
                     max_retries=0,
                 )
@@ -6115,7 +6165,7 @@ class AIAgent:
                 from agent.anthropic_adapter import build_anthropic_kwargs as _build_ant_kwargs
                 ant_kwargs = _build_ant_kwargs(
                     model=self.model, messages=api_messages,
-                    tools=[memory_tool_def], max_tokens=5120,
+                    tools=[memory_tool_def], max_tokens=self._memory_flush_max_tokens,
                     reasoning_config=None,
                     preserve_dots=self._anthropic_preserve_dots(),
                 )
@@ -7433,8 +7483,13 @@ class AIAgent:
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(
                     _query, session_id=self.session_id or ""
                 ) or ""
-            except Exception:
-                pass
+                if self.verbose_logging:
+                    logger.info(
+                        "memory prefetch: %d chars for %r",
+                        len(_ext_prefetch_cache), (_query or "")[:60],
+                    )
+            except Exception as _prefetch_exc:
+                logger.warning("memory prefetch failed (non-fatal): %s", _prefetch_exc)
 
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             try:

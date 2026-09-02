@@ -44,6 +44,8 @@ _SUMMARY_TOKENS_CEILING = 12_000
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 _PRUNE_START_RATIO = 0.5
 _LIVE_WINDOW_MESSAGES = 12
+_LIVE_WINDOW_FLOOR = 4
+_LIVE_WINDOW_BUDGET_RATIO = 0.5
 _PRUNE_MIN_CHARS = 2000
 _OFFLOAD_PREFIX = "[offloaded: "
 _SPILLED_ARG_KEY = "_spilled_to"
@@ -284,7 +286,7 @@ class ContextCompressor:
             return messages, 0
         if not self.archiver and current_tokens < self.threshold_tokens * _PRUNE_START_RATIO:
             return messages, 0
-        tail = self.live_window_messages
+        tail = self._adaptive_tail(messages)
         if len(messages) <= tail:
             return messages, 0
 
@@ -400,6 +402,43 @@ class ContextCompressor:
         if path:
             self._offload_seq += 1
         return path
+
+    def _adaptive_tail(self, messages: List[Dict[str, Any]]) -> int:
+        """How many of the newest messages stay untouched.
+
+        A fixed message count was the wrong unit: after a compaction the list
+        is ~10 messages long, so a 12-message tail protected everything while
+        those same ten messages carried 40k tokens of freshly re-read files.
+        The spill could never engage and compression fired instead, forever
+        (observed 2026-09-03). The tail therefore shrinks toward
+        _LIVE_WINDOW_FLOOR until what it protects fits the byte budget.
+        """
+        tail = min(self.live_window_messages, len(messages))
+        budget = self.live_window_chars
+        if budget <= 0:
+            return tail
+        while tail > _LIVE_WINDOW_FLOOR and self._payload_chars(messages[-tail:]) > budget:
+            tail -= 1
+        return tail
+
+    @property
+    def live_window_chars(self) -> int:
+        if self.threshold_tokens <= 0:
+            return 0
+        return int(self.threshold_tokens * 4 * _LIVE_WINDOW_BUDGET_RATIO)
+
+    @staticmethod
+    def _payload_chars(messages: List[Dict[str, Any]]) -> int:
+        total = 0
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            total += len(str(msg.get("content") or ""))
+            for call in (msg.get("tool_calls") or ()):
+                if isinstance(call, dict):
+                    fn = call.get("function") or {}
+                    total += len(str(fn.get("arguments") or ""))
+        return total
 
     @staticmethod
     def _tool_call_names(messages: List[Dict[str, Any]]) -> Dict[str, str]:

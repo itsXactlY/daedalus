@@ -942,3 +942,66 @@ class TestVerboseSpillReporting:
 
         _Agent._report_context_spill(_Agent(), _Broken(), 0, 1, 100, 50)
         _Agent._report_context_injections(_Agent(), [])
+
+
+class TestAdaptiveTailBreaksTheCompressionLoop:
+    def _c(self, threshold=40000):
+        from agent.context_compressor import ContextCompressor
+        from run_agent import AIAgent
+
+        c = ContextCompressor(model="test-model", quiet_mode=True,
+                              threshold_percent=0.95, protect_last_n=3,
+                              config_context_length=73728, max_tokens=threshold,
+                              archiver=AIAgent._archive_context_chunk)
+        c.session_label = "pytest-loop"
+        return c
+
+    def _post_compaction(self, pairs=5, chars=32000):
+        import json as _json
+
+        msgs = [{"role": "user", "content": "continue"}]
+        for i in range(pairs):
+            msgs.append({"role": "assistant", "tool_calls": [
+                {"id": f"t{i}", "function": {"name": "read_file",
+                                             "arguments": _json.dumps({"file_path": f"/src/b{i}.py"})}}]})
+            msgs.append({"role": "tool", "tool_call_id": f"t{i}", "content": "X" * chars})
+        return msgs
+
+    def test_a_short_but_heavy_list_still_spills(self):
+        c = self._c()
+        msgs = self._post_compaction()
+        assert len(msgs) < 12, "the regression needs fewer messages than the old fixed tail"
+        out, pruned = c.prune_stale_tool_results(msgs, 40000)
+        assert pruned > 0
+        assert c._payload_chars(out) < c._payload_chars(msgs) / 2
+
+    def test_the_tail_shrinks_only_as_far_as_the_floor(self):
+        from agent.context_compressor import _LIVE_WINDOW_FLOOR
+
+        c = self._c()
+        assert c._adaptive_tail(self._post_compaction(pairs=8, chars=60000)) == _LIVE_WINDOW_FLOOR
+
+    def test_a_light_list_keeps_the_full_tail(self):
+        c = self._c()
+        msgs = self._post_compaction(pairs=8, chars=50)
+        assert c._adaptive_tail(msgs) == min(c.live_window_messages, len(msgs))
+
+    def test_the_newest_messages_are_never_spilled(self):
+        from agent.context_compressor import _LIVE_WINDOW_FLOOR
+
+        c = self._c()
+        msgs = self._post_compaction()
+        out, _ = c.prune_stale_tool_results(msgs, 40000)
+        for original, kept in zip(msgs[-_LIVE_WINDOW_FLOOR:], out[-_LIVE_WINDOW_FLOOR:]):
+            assert original == kept
+
+    def test_the_budget_follows_the_compression_threshold(self):
+        assert self._c(threshold=40000).live_window_chars == 80000
+        assert self._c(threshold=20000).live_window_chars == 40000
+
+    def test_repeated_passes_converge_instead_of_looping(self):
+        c = self._c()
+        msgs = self._post_compaction()
+        first, n1 = c.prune_stale_tool_results(msgs, 40000)
+        second, n2 = c.prune_stale_tool_results(first, 40000)
+        assert n1 > 0 and n2 == 0

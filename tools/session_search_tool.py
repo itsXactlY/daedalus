@@ -397,13 +397,36 @@ def session_search(
         return tool_error(f"Search failed: {str(e)}", success=False)
 
 
+_GRAPH_MEMORY_PROVIDERS = frozenset({"mazemaker", "neural", "neural-memory"})
+
+
 def check_session_search_requirements() -> bool:
-    """Requires SQLite state database and an auxiliary text model."""
+    """Off whenever a memory graph already indexes the transcripts.
+
+    This tool summarizes whole past sessions through the LLM, one call per
+    session with retries. The mazemaker provider soaks every turn into
+    ``auto:turn:<session>:*`` and finds them by embedding, with no generation
+    at all -- running both means paying a model to rediscover what a vector
+    search already has. Set ``tools.session_search.force_enable`` to keep the
+    FTS5 path when no graph is configured but you still want verbatim search.
+    """
     try:
         from daedalus_state import DEFAULT_DB_PATH
-        return DEFAULT_DB_PATH.parent.exists()
     except ImportError:
         return False
+    if not DEFAULT_DB_PATH.parent.exists():
+        return False
+
+    try:
+        from daedalus_cli.config import load_config
+
+        config = load_config() or {}
+        if (config.get("tools", {}).get("session_search", {}) or {}).get("force_enable"):
+            return True
+        provider = str((config.get("memory", {}) or {}).get("provider", "")).strip().lower()
+    except Exception:
+        return True
+    return provider not in _GRAPH_MEMORY_PROVIDERS
 
 
 SESSION_SEARCH_SCHEMA = {
