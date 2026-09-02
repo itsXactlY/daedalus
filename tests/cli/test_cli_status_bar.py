@@ -361,3 +361,89 @@ class TestStatusBarWidthSource:
         mock_get_app.assert_not_called()
         mock_shutil.assert_not_called()
         assert len(text) > 0
+
+
+class _Compressor:
+    def __init__(self, last=0, comps=0):
+        self.last_prompt_tokens = last
+        self.compression_count = comps
+        self.context_length = 128000
+
+
+class _Agent:
+    def __init__(self, **kw):
+        self.session_prompt_tokens = kw.get("p", 0)
+        self.session_completion_tokens = kw.get("c", 0)
+        self.session_total_tokens = kw.get("t", 0)
+        self.session_input_tokens = kw.get("i", 0)
+        self.session_output_tokens = kw.get("o", 0)
+        self.session_cache_read_tokens = 0
+        self.session_cache_write_tokens = 0
+        self.session_api_calls = kw.get("calls", 0)
+        self.session_estimated_cost_usd = kw.get("cost", 0.0)
+        self.session_cost_status = kw.get("status", "unknown")
+        self.session_cost_source = kw.get("source", "none")
+        self.context_compressor = _Compressor(kw.get("last", 0), kw.get("comps", 0))
+
+
+def test_a_route_switch_does_not_zero_the_session_spend():
+    from cli import DaedalusCLI as S
+
+    old = _Agent(p=19858, c=479, t=20337, i=19858, o=479, calls=3,
+                 cost=0.021, status="estimated", source="catalog",
+                 last=20337, comps=1)
+    snap = S._snapshot_session_accounting(old)
+
+    fresh = _Agent()
+    assert fresh.session_total_tokens == 0
+    S._restore_session_accounting(fresh, snap)
+
+    assert fresh.session_prompt_tokens == 19858
+    assert fresh.session_completion_tokens == 479
+    assert fresh.session_total_tokens == 20337
+    assert fresh.session_api_calls == 3
+    assert fresh.session_estimated_cost_usd == 0.021
+    assert fresh.session_cost_status == "estimated"
+    assert fresh.session_cost_source == "catalog"
+
+
+def test_the_carried_spend_adds_to_what_the_new_agent_earns():
+    from cli import DaedalusCLI as S
+
+    snap = S._snapshot_session_accounting(_Agent(p=1000, t=1200, calls=2))
+    later = _Agent(p=500, t=600, calls=1)
+    S._restore_session_accounting(later, snap)
+
+    assert later.session_prompt_tokens == 1500
+    assert later.session_total_tokens == 1800
+    assert later.session_api_calls == 3
+
+
+def test_context_size_survives_but_context_length_is_the_new_model_s():
+    from cli import DaedalusCLI as S
+
+    snap = S._snapshot_session_accounting(_Agent(last=20337, comps=2))
+    fresh = _Agent()
+    fresh.context_compressor.context_length = 1_000_000
+    S._restore_session_accounting(fresh, snap)
+
+    assert fresh.context_compressor.last_prompt_tokens == 20337
+    assert fresh.context_compressor.compression_count == 2
+    assert fresh.context_compressor.context_length == 1_000_000
+
+
+def test_a_fresh_measurement_wins_over_the_carried_one():
+    from cli import DaedalusCLI as S
+
+    snap = S._snapshot_session_accounting(_Agent(last=20337))
+    already_measured = _Agent(last=42)
+    S._restore_session_accounting(already_measured, snap)
+    assert already_measured.context_compressor.last_prompt_tokens == 42
+
+
+def test_no_agent_and_no_snapshot_are_both_harmless():
+    from cli import DaedalusCLI as S
+
+    assert S._snapshot_session_accounting(None) is None
+    S._restore_session_accounting(None, None)
+    S._restore_session_accounting(_Agent(), None)

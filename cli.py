@@ -2130,6 +2130,67 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    _SESSION_ACCOUNTING_FIELDS = (
+        "session_prompt_tokens",
+        "session_completion_tokens",
+        "session_total_tokens",
+        "session_input_tokens",
+        "session_output_tokens",
+        "session_cache_read_tokens",
+        "session_cache_write_tokens",
+        "session_api_calls",
+        "session_estimated_cost_usd",
+    )
+
+    @classmethod
+    def _snapshot_session_accounting(cls, agent) -> Optional[Dict[str, Any]]:
+        """Capture what a session has spent so a model switch does not zero it.
+
+        chat() drops the agent whenever the turn route changes, and a fresh
+        AIAgent starts every counter at zero. The spend belongs to the session,
+        not to whichever agent object served the last turn, so it is carried
+        across the rebuild. last_prompt_tokens travels too: the conversation did
+        not get smaller because the model changed. The context LENGTH is
+        deliberately not carried -- that belongs to the new model, and the new
+        compressor must resolve it itself.
+        """
+        if agent is None:
+            return None
+        snap: Dict[str, Any] = {
+            f: getattr(agent, f, 0) or 0 for f in cls._SESSION_ACCOUNTING_FIELDS
+        }
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is not None:
+            snap["last_prompt_tokens"] = getattr(compressor, "last_prompt_tokens", 0) or 0
+            snap["compression_count"] = getattr(compressor, "compression_count", 0) or 0
+        snap["cost_status"] = getattr(agent, "session_cost_status", "unknown")
+        snap["cost_source"] = getattr(agent, "session_cost_source", "none")
+        return snap
+
+    @classmethod
+    def _restore_session_accounting(cls, agent, snap: Optional[Dict[str, Any]]) -> None:
+        if agent is None or not snap:
+            return
+        for f in cls._SESSION_ACCOUNTING_FIELDS:
+            try:
+                setattr(agent, f, (getattr(agent, f, 0) or 0) + (snap.get(f) or 0))
+            except Exception:
+                pass
+        compressor = getattr(agent, "context_compressor", None)
+        if compressor is not None:
+            try:
+                if not getattr(compressor, "last_prompt_tokens", 0):
+                    compressor.last_prompt_tokens = snap.get("last_prompt_tokens", 0) or 0
+                compressor.compression_count = (
+                    getattr(compressor, "compression_count", 0) or 0
+                ) + (snap.get("compression_count") or 0)
+            except Exception:
+                pass
+        if snap.get("cost_status") and snap["cost_status"] != "unknown":
+            agent.session_cost_status = snap["cost_status"]
+        if snap.get("cost_source") and snap["cost_source"] != "none":
+            agent.session_cost_source = snap["cost_source"]
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         model_name = self.model or "unknown"
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
@@ -6578,7 +6639,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
+        _carried = None
         if turn_route["signature"] != self._active_agent_route_signature:
+            _carried = self._snapshot_session_accounting(self.agent)
             self.agent = None
 
         if self.agent is None:
@@ -6589,6 +6652,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             route_label=turn_route["label"],
         ):
             return None
+        if _carried:
+            self._restore_session_accounting(self.agent, _carried)
         
         if images:
             message = self._preprocess_images_with_vision(

@@ -201,3 +201,63 @@ def test_touch_activity_between_tool_results_and_next_api_call(monkeypatch):
         f"expected a 'tool results posted' activity touch between tool completion "
         f"and the next API call, got: {touches}"
     )
+
+
+class _NoUsageResponse:
+    class _Msg:
+        content = "x" * 400
+        tool_calls = None
+
+    class _Choice:
+        message = _NoUsageResponse._Msg() if False else None
+
+    def __init__(self):
+        msg = type("M", (), {"content": "x" * 400, "tool_calls": None})()
+        self.choices = [type("C", (), {"message": msg})()]
+        self.usage = None
+
+
+def test_a_response_without_usage_still_advances_the_counters(monkeypatch):
+    import run_agent as RA
+
+    agent = RA.AIAgent.__new__(RA.AIAgent)
+    agent.log_prefix = ""
+    agent.quiet_mode = True
+    agent._vprint = lambda *a, **k: None
+    agent.session_prompt_tokens = 1000
+    agent.session_completion_tokens = 200
+    agent.session_total_tokens = 1200
+    agent.session_input_tokens = 1000
+    agent.session_output_tokens = 200
+    agent.session_api_calls = 3
+    agent.session_cost_status = "unknown"
+    agent.session_cost_source = "none"
+
+    est = agent._estimate_completion_tokens(_NoUsageResponse())
+    assert est == 100
+
+    before = agent.session_total_tokens
+    agent.session_prompt_tokens += 500
+    agent.session_total_tokens += 500 + est
+    assert agent.session_total_tokens > before
+
+
+def test_completion_estimate_counts_tool_call_payloads():
+    import run_agent as RA
+
+    agent = RA.AIAgent.__new__(RA.AIAgent)
+    fn = type("F", (), {"name": "terminal", "arguments": '{"command": "ls -la"}'})()
+    call = type("T", (), {"function": fn})()
+    msg = type("M", (), {"content": "", "tool_calls": [call]})()
+    resp = type("R", (), {"choices": [type("C", (), {"message": msg})()], "usage": None})()
+
+    assert agent._estimate_completion_tokens(resp) > 1
+
+
+def test_completion_estimate_never_returns_zero():
+    import run_agent as RA
+
+    agent = RA.AIAgent.__new__(RA.AIAgent)
+    empty = type("R", (), {"choices": [], "usage": None})()
+    assert agent._estimate_completion_tokens(empty) == 1
+    assert agent._estimate_completion_tokens(object()) == 1

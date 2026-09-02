@@ -1174,6 +1174,24 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
+    def _estimate_completion_tokens(self, response) -> int:
+        try:
+            choices = getattr(response, "choices", None) or []
+            text = ""
+            for choice in choices:
+                message = getattr(choice, "message", None)
+                if message is None:
+                    continue
+                text += str(getattr(message, "content", "") or "")
+                for call in (getattr(message, "tool_calls", None) or []):
+                    fn = getattr(call, "function", None)
+                    if fn is not None:
+                        text += str(getattr(fn, "name", "") or "")
+                        text += str(getattr(fn, "arguments", "") or "")
+            return max(1, len(text) // 4) if text else 1
+        except Exception:
+            return 1
+
     def reset_session_state(self):
         """Reset all session-scoped token counters to 0 for a fresh session.
         
@@ -7770,7 +7788,30 @@ class AIAgent:
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
                             if not self.quiet_mode:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
-                    
+                    else:
+                        _est_prompt = estimate_messages_tokens_rough(api_messages)
+                        _est_completion = self._estimate_completion_tokens(response)
+                        self.context_compressor.update_from_response({
+                            "prompt_tokens": _est_prompt,
+                            "completion_tokens": _est_completion,
+                            "total_tokens": _est_prompt + _est_completion,
+                        })
+                        self.session_prompt_tokens += _est_prompt
+                        self.session_completion_tokens += _est_completion
+                        self.session_total_tokens += _est_prompt + _est_completion
+                        self.session_input_tokens += _est_prompt
+                        self.session_output_tokens += _est_completion
+                        self.session_api_calls += 1
+                        self.session_cost_status = "estimated"
+                        if self.session_cost_source in ("none", ""):
+                            self.session_cost_source = "estimate"
+                        self._vprint(
+                            f"{self.log_prefix}⚠️ response carried no usage — counting an "
+                            f"estimate (+{_est_prompt:,} prompt, +{_est_completion:,} completion) "
+                            f"so the session total does not silently stall",
+                            force=False,
+                        )
+
                     has_retried_429 = False
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break
