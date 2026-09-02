@@ -5965,6 +5965,7 @@ class AIAgent:
                     temperature=0.3,
                     max_tokens=5120,
                     timeout=30.0,
+                    max_retries=0,
                 )
             except RuntimeError:
                 _aux_available = False

@@ -145,3 +145,71 @@ class TestResolveProviderClientNamedCustom:
         from agent.auxiliary_client import resolve_provider_client
         client, model = resolve_provider_client("coffee", "test")
         assert client is None
+
+
+class TestMainModelResolution:
+    def test_the_active_provider_default_model_is_used_when_model_default_is_unset(
+        self, monkeypatch
+    ):
+        from agent import auxiliary_client as AC
+
+        monkeypatch.setattr(
+            "daedalus_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "custom", "base_url": "http://x/v1"},
+                "providers": {"custom": {"default_model": "Qwen3.8-27B-IQ4-XS"}},
+            },
+        )
+        assert AC._read_main_model() == "Qwen3.8-27B-IQ4-XS"
+
+    def test_model_default_still_wins_when_it_is_set(self, monkeypatch):
+        from agent import auxiliary_client as AC
+
+        monkeypatch.setattr(
+            "daedalus_cli.config.load_config",
+            lambda: {
+                "model": {"default": "explicit/model", "provider": "custom"},
+                "providers": {"custom": {"default_model": "other"}},
+            },
+        )
+        assert AC._read_main_model() == "explicit/model"
+
+    def test_a_plain_model_key_on_the_provider_is_accepted_too(self, monkeypatch):
+        from agent import auxiliary_client as AC
+
+        monkeypatch.setattr(
+            "daedalus_cli.config.load_config",
+            lambda: {
+                "model": {"provider": "p"},
+                "providers": {"p": {"model": "from-model-key"}},
+            },
+        )
+        assert AC._read_main_model() == "from-model-key"
+
+    def test_nothing_resolvable_returns_empty_rather_than_a_guess(self, monkeypatch):
+        from agent import auxiliary_client as AC
+
+        monkeypatch.setattr(
+            "daedalus_cli.config.load_config",
+            lambda: {"model": {"provider": "p"}, "providers": {}},
+        )
+        assert AC._read_main_model() == ""
+
+
+class TestAuxiliaryRetryBudget:
+    def test_both_entry_points_accept_max_retries(self):
+        import inspect
+        from agent.auxiliary_client import call_llm, async_call_llm
+
+        for fn in (call_llm, async_call_llm):
+            assert "max_retries" in inspect.signature(fn).parameters
+
+    def test_the_memory_flush_asks_for_no_retries(self):
+        import inspect
+        import run_agent
+
+        src = inspect.getsource(run_agent.AIAgent.flush_memories)
+        assert "max_retries=0" in src, (
+            "flush_memories is best effort; retrying against a busy single-slot "
+            "endpoint multiplies the wait instead of helping"
+        )

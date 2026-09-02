@@ -782,6 +782,15 @@ def _read_main_model() -> str:
             default = model_cfg.get("default", "")
             if isinstance(default, str) and default.strip():
                 return default.strip()
+            active = str(model_cfg.get("provider") or "").strip()
+            providers = cfg.get("providers")
+            if active and isinstance(providers, dict):
+                entry = providers.get(active)
+                if isinstance(entry, dict):
+                    for key in ("default_model", "model"):
+                        value = entry.get(key)
+                        if isinstance(value, str) and value.strip():
+                            return value.strip()
     except Exception:
         pass
     return ""
@@ -845,7 +854,14 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     custom_base, custom_key = _resolve_custom_runtime()
     if not custom_base or not custom_key:
         return None, None
-    model = _read_main_model() or "gpt-4o-mini"
+    model = _read_main_model()
+    if not model:
+        logger.warning(
+            "Auxiliary client: custom endpoint %s has no resolvable model name "
+            "(model.default and providers.<active>.default_model are both "
+            "unset) — sending 'gpt-4o-mini', which is a placeholder and not "
+            "what the endpoint will actually run", custom_base)
+        model = "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
@@ -1820,6 +1836,7 @@ def call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    max_retries: int = None,
 ) -> Any:
     """Centralized synchronous LLM call.
 
@@ -1897,6 +1914,25 @@ def call_llm(
                 f"Run: daedalus setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
+    if max_retries is not None:
+        try:
+            client = client.with_options(max_retries=max_retries)
+        except Exception:
+            logger.debug("client has no with_options(max_retries)", exc_info=True)
+
+    try:
+        _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
+        _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
+        if _main_base and _aux_base and _main_base == _aux_base:
+            logger.info(
+                "Auxiliary %s runs on the same endpoint as the main model (%s). "
+                "A single-slot server answers it only after the turn in flight, "
+                "so this call waits out its %.0fs budget instead of running "
+                "beside it — point auxiliary.%s at a second endpoint to avoid it.",
+                task or "call", _aux_base, effective_timeout, task or "task")
+    except Exception:
+        pass
 
     _base_info = str(getattr(client, "base_url", resolved_base_url) or "")
     if task:
@@ -2004,6 +2040,7 @@ async def async_call_llm(
     tools: list = None,
     timeout: float = None,
     extra_body: dict = None,
+    max_retries: int = None,
 ) -> Any:
     """Centralized asynchronous LLM call.
 
@@ -2064,6 +2101,25 @@ async def async_call_llm(
                 f"Run: daedalus setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
+    if max_retries is not None:
+        try:
+            client = client.with_options(max_retries=max_retries)
+        except Exception:
+            logger.debug("client has no with_options(max_retries)", exc_info=True)
+
+    try:
+        _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
+        _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
+        if _main_base and _aux_base and _main_base == _aux_base:
+            logger.info(
+                "Auxiliary %s runs on the same endpoint as the main model (%s). "
+                "A single-slot server answers it only after the turn in flight, "
+                "so this call waits out its %.0fs budget instead of running "
+                "beside it — point auxiliary.%s at a second endpoint to avoid it.",
+                task or "call", _aux_base, effective_timeout, task or "task")
+    except Exception:
+        pass
 
     kwargs = _build_call_kwargs(
         resolved_provider, final_model, messages,
