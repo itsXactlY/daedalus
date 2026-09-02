@@ -458,3 +458,73 @@ class TestGetBundledDir:
         monkeypatch.setenv("DAEDALUS_BUNDLED_SKILLS", "")
         result = _get_bundled_dir()
         assert result.name == "skills"
+
+
+class TestRuntimeSync:
+    def _tree(self, tmp_path, monkeypatch):
+        src = tmp_path / "agent"
+        home = tmp_path / "home"
+        (src / "plugins" / "memory").mkdir(parents=True)
+        (src / "plugins" / "memory" / "prov.py").write_text("v2\n")
+        (src / "SOUL.md").write_text("identity v2\n")
+        home.mkdir()
+        from daedalus_constants import get_daedalus_home  # noqa: F401
+        import tools.runtime_sync as RS
+        monkeypatch.setattr(RS, "_home", lambda: home)
+        monkeypatch.setattr(RS, "_source", lambda: src)
+        return RS, src, home
+
+    def test_a_missing_runtime_file_is_placed(self, tmp_path, monkeypatch):
+        RS, src, home = self._tree(tmp_path, monkeypatch)
+        r = RS.sync_runtime(quiet=True)
+        assert sorted(r["copied"]) == ["SOUL.md", "plugins/memory/prov.py"]
+        assert (home / "plugins" / "memory" / "prov.py").read_text() == "v2\n"
+
+    def test_a_stale_runtime_file_is_updated_once_it_is_tracked(self, tmp_path, monkeypatch):
+        RS, src, home = self._tree(tmp_path, monkeypatch)
+        RS.sync_runtime(quiet=True)
+        (src / "plugins" / "memory" / "prov.py").write_text("v3\n")
+        r = RS.sync_runtime(quiet=True)
+        assert r["updated"] == ["plugins/memory/prov.py"]
+        assert (home / "plugins" / "memory" / "prov.py").read_text() == "v3\n"
+
+    def test_a_local_edit_is_kept_and_reported(self, tmp_path, monkeypatch):
+        RS, src, home = self._tree(tmp_path, monkeypatch)
+        RS.sync_runtime(quiet=True)
+        (home / "plugins" / "memory" / "prov.py").write_text("operator edit\n")
+        (src / "plugins" / "memory" / "prov.py").write_text("v3\n")
+        r = RS.sync_runtime(quiet=True)
+        assert r["user_modified"] == ["plugins/memory/prov.py"]
+        assert (home / "plugins" / "memory" / "prov.py").read_text() == "operator edit\n"
+
+    def test_an_untracked_destination_is_kept_unless_forced(self, tmp_path, monkeypatch):
+        RS, src, home = self._tree(tmp_path, monkeypatch)
+        (home / "plugins" / "memory").mkdir(parents=True)
+        (home / "plugins" / "memory" / "prov.py").write_text("pre-split\n")
+        r = RS.sync_runtime(quiet=True)
+        assert "plugins/memory/prov.py" in r["user_modified"]
+        assert (home / "plugins" / "memory" / "prov.py").read_text() == "pre-split\n"
+
+        r = RS.sync_runtime(quiet=True, force=True)
+        assert r["updated"] == ["plugins/memory/prov.py"]
+        assert (home / "plugins" / "memory" / "prov.py").read_text() == "v2\n"
+
+    def test_a_dry_run_writes_nothing(self, tmp_path, monkeypatch):
+        RS, src, home = self._tree(tmp_path, monkeypatch)
+        r = RS.sync_runtime(quiet=True, apply=False)
+        assert r["copied"]
+        assert not (home / "SOUL.md").exists()
+
+    def test_runtime_only_files_are_never_removed(self, tmp_path, monkeypatch):
+        RS, src, home = self._tree(tmp_path, monkeypatch)
+        (home / "scripts").mkdir()
+        (home / "scripts" / "bench_results.json").write_text("{}")
+        RS.sync_runtime(quiet=True)
+        assert (home / "scripts" / "bench_results.json").exists()
+
+    def test_source_equal_to_home_is_a_no_op(self, tmp_path, monkeypatch):
+        RS, src, home = self._tree(tmp_path, monkeypatch)
+        monkeypatch.setattr(RS, "_home", lambda: src)
+        r = RS.sync_runtime(quiet=True)
+        assert r["skipped"] == -1
+        assert not r["copied"]

@@ -81,3 +81,26 @@ class TestWriteAllowed:
     def test_daedalus_config_not_env(self):
         path = os.path.join(str(Path.home()), ".daedalus", "config.yaml")
         assert _is_write_denied(path) is False
+
+
+class TestWriteDenyCoversBothHomes:
+    def test_the_real_home_env_stays_denied_under_a_redirected_home(self, monkeypatch):
+        import importlib
+        import os
+        from pathlib import Path
+
+        monkeypatch.setenv("DAEDALUS_HOME", "/tmp/some-other-daedalus-home")
+        import tools.file_operations as FO
+        importlib.reload(FO)
+        try:
+            real_env = os.path.join(str(Path.home()), ".daedalus", ".env")
+            assert FO._is_write_denied(real_env) is True
+            assert FO._is_write_denied("/tmp/some-other-daedalus-home/.env") is True
+        finally:
+            monkeypatch.undo()
+            importlib.reload(FO)
+
+    def test_an_unrelated_env_file_is_still_writable(self):
+        from tools.file_operations import _is_write_denied
+
+        assert _is_write_denied("/tmp/project/.env") is False

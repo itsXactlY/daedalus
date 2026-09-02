@@ -555,6 +555,20 @@ def cmd_chat(args):
     except Exception:
         pass
 
+    try:
+        from tools.runtime_sync import sync_runtime
+        _rs = sync_runtime(quiet=True)
+        if _rs["copied"] or _rs["updated"]:
+            logger.info(
+                "runtime sync: %d placed, %d updated from %s",
+                len(_rs["copied"]), len(_rs["updated"]), _rs["source"])
+        if _rs["user_modified"]:
+            logger.info(
+                "runtime sync: kept %d locally modified file(s): %s",
+                len(_rs["user_modified"]), ", ".join(_rs["user_modified"][:5]))
+    except Exception:
+        pass
+
     if getattr(args, "yolo", False):
         os.environ["DAEDALUS_YOLO_MODE"] = "1"
 
@@ -2710,6 +2724,16 @@ def _update_via_zip(args):
             print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
         if result.get("user_modified"):
             print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+
+        from tools.runtime_sync import sync_runtime
+        print("→ Syncing bundled runtime files...")
+        rr = sync_runtime(quiet=True)
+        if rr["copied"]:
+            print(f"  + {len(rr['copied'])} placed")
+        if rr["updated"]:
+            print(f"  ↑ {len(rr['updated'])} updated")
+        if rr["user_modified"]:
+            print(f"  ~ {len(rr['user_modified'])} locally modified (kept)")
         if result.get("cleaned"):
             print(f"  − {len(result['cleaned'])} removed from manifest")
         if not result["copied"] and not result.get("updated"):

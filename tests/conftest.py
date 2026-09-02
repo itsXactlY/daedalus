@@ -15,6 +15,52 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def pytest_configure(config):
+    """Point DAEDALUS_HOME at a throwaway home before any module is imported.
+
+    The per-test fixture runs too late for import-time side effects: cli.py
+    calls setup_logging() while it is being imported during collection, and
+    that handler is already writing to the operator's real agent.log by the
+    time the first fixture executes.
+    """
+    import os
+    import tempfile
+
+    session_home = tempfile.mkdtemp(prefix="daedalus-test-home-")
+    os.environ["DAEDALUS_HOME"] = session_home
+    for sub in ("sessions", "cron", "memories", "skills", "logs"):
+        os.makedirs(os.path.join(session_home, sub), exist_ok=True)
+    _detach_foreign_file_handlers(session_home)
+    config._daedalus_session_home = session_home
+
+
+def _detach_foreign_file_handlers(fake_home):
+    """Drop root log handlers that write outside the test's DAEDALUS_HOME.
+
+    cli.py calls setup_logging() at import time with no home argument, so the
+    first test that imports it attaches a RotatingFileHandler to the operator's
+    real ~/.daedalus/logs/agent.log — and every later test keeps writing there.
+    A regression run left 906 lines of test-model and test.example.com in a live
+    agent.log this way. Redirecting DAEDALUS_HOME is not enough because the
+    handler already holds an open path.
+    """
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger()
+    keep = str(fake_home)
+    for handler in list(root.handlers):
+        target = getattr(handler, "baseFilename", None)
+        if not target:
+            continue
+        if not str(target).startswith(keep):
+            root.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
+
+
 @pytest.fixture(autouse=True)
 def _isolate_daedalus_home(tmp_path, monkeypatch):
     """Redirect DAEDALUS_HOME to a temp dir so tests never write to ~/.daedalus/."""
@@ -25,6 +71,7 @@ def _isolate_daedalus_home(tmp_path, monkeypatch):
     (fake_home / "memories").mkdir()
     (fake_home / "skills").mkdir()
     monkeypatch.setenv("DAEDALUS_HOME", str(fake_home))
+    _detach_foreign_file_handlers(fake_home)
     try:
         import daedalus_cli.plugins as _plugins_mod
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)

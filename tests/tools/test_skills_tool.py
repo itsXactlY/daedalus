@@ -260,7 +260,7 @@ class TestSkillsList:
     def test_empty_creates_directory(self, tmp_path):
         skills_dir = tmp_path / "skills"
         with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
-            raw = skills_list()
+            raw = skills_list(limit=0)
         result = json.loads(raw)
         assert result["success"] is True
         assert result["skills"] == []
@@ -270,7 +270,7 @@ class TestSkillsList:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "alpha")
             _make_skill(tmp_path, "beta")
-            raw = skills_list()
+            raw = skills_list(limit=0)
         result = json.loads(raw)
         assert result["count"] == 2
 
@@ -1042,12 +1042,12 @@ class TestSkillsListSessionVisibility:
         monkeypatch.setattr(model_tools, "_last_resolved_tool_names",
                             ["read_file", "terminal"])
 
-        listed = ST.skills_list()
+        listed = ST.skills_list(limit=0)
         assert self._names(listed) == ["notes"]
         assert json.loads(listed)["hidden_for_this_session"] == 1
         assert "include_unavailable" in json.loads(listed)["hint"]
 
-        assert self._names(ST.skills_list(include_unavailable=True)) == ["notes", "openhue"]
+        assert self._names(ST.skills_list(include_unavailable=True, limit=0)) == ["notes", "openhue"]
 
     def test_the_same_skill_appears_once_its_toolset_is_present(
         self, monkeypatch, tmp_path
@@ -1060,7 +1060,7 @@ class TestSkillsListSessionVisibility:
         monkeypatch.setattr(model_tools, "_last_resolved_tool_names",
                             ["read_file", "terminal", "browser_navigate"])
 
-        listed = ST.skills_list()
+        listed = ST.skills_list(limit=0)
         assert self._names(listed) == ["notes", "openhue"]
         assert json.loads(listed)["hidden_for_this_session"] == 0
 
@@ -1072,7 +1072,7 @@ class TestSkillsListSessionVisibility:
         monkeypatch.setattr(ST, "SKILLS_DIR", tmp_path)
         monkeypatch.setattr(model_tools, "_last_resolved_tool_names", [])
 
-        assert self._names(ST.skills_list()) == ["notes", "openhue"]
+        assert self._names(ST.skills_list(limit=0)) == ["notes", "openhue"]
 
     def test_frontmatter_never_leaks_into_the_listing(self, monkeypatch, tmp_path):
         import model_tools
@@ -1082,5 +1082,42 @@ class TestSkillsListSessionVisibility:
         monkeypatch.setattr(ST, "SKILLS_DIR", tmp_path)
         monkeypatch.setattr(model_tools, "_last_resolved_tool_names", [])
 
-        for skill in json.loads(ST.skills_list())["skills"]:
+        for skill in json.loads(ST.skills_list(limit=0))["skills"]:
             assert set(skill) <= {"name", "description", "category"}
+
+
+class TestSkillsListStaysCheap:
+    def test_a_bare_call_returns_the_index_not_the_catalogue(self):
+        from tools.skills_tool import skills_list
+
+        payload = json.loads(skills_list())
+        assert payload["success"] is True
+        assert payload["skills"] == []
+        assert payload["total"] >= 0
+        assert isinstance(payload["categories"], list)
+
+    def test_the_whole_catalogue_is_still_reachable(self):
+        from tools.skills_tool import skills_list
+
+        index = json.loads(skills_list())
+        full = json.loads(skills_list(limit=0))
+        assert len(full["skills"]) == index["total"]
+
+    def test_a_query_ranks_and_caps(self):
+        from tools.skills_tool import skills_list
+
+        full = json.loads(skills_list(limit=0))
+        if not full["skills"]:
+            return
+        target = full["skills"][0]["name"]
+        hit = json.loads(skills_list(query=target, limit=3))
+        assert hit["skills"], "a skill queried by its own name must rank"
+        assert hit["skills"][0]["name"] == target
+        assert len(hit["skills"]) <= 3
+
+    def test_names_only_drops_descriptions(self):
+        from tools.skills_tool import skills_list
+
+        payload = json.loads(skills_list(limit=0, names_only=True))
+        for skill in payload["skills"]:
+            assert "description" not in skill

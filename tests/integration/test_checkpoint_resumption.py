@@ -28,14 +28,25 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Dict, Any
+import tempfile
 import traceback
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+def _artifact_root() -> Path:
+    """Write run artifacts under the test home, never into the source tree."""
+    base = os.environ.get("DAEDALUS_HOME")
+    if not base:
+        base = tempfile.mkdtemp(prefix="daedalus-checkpoint-")
+    root = Path(base) / "checkpoint_artifacts"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def create_test_dataset(num_prompts: int = 20) -> Path:
     """Create a small test dataset for checkpoint testing."""
-    test_data_dir = Path("tests/test_data")
+    test_data_dir = _artifact_root() / "test_data"
     test_data_dir.mkdir(parents=True, exist_ok=True)
     
     dataset_file = test_data_dir / "checkpoint_test_dataset.jsonl"
@@ -125,7 +136,7 @@ def test_current_implementation():
     
     dataset_file = create_test_dataset(num_prompts=12)
     run_name = "checkpoint_test_current"
-    output_dir = Path("data") / run_name
+    output_dir = _artifact_root() / "data" / run_name
     
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -212,7 +223,7 @@ def test_interruption_and_resume():
     
     dataset_file = create_test_dataset(num_prompts=15)
     run_name = "checkpoint_test_resume"
-    output_dir = Path("data") / run_name
+    output_dir = _artifact_root() / "data" / run_name
     
     if output_dir.exists():
         shutil.rmtree(output_dir)
@@ -223,7 +234,7 @@ def test_interruption_and_resume():
     
     print(f"\n▶️  Starting first run (will process 5 prompts, then simulate interruption)...")
     
-    temp_dataset = Path("tests/test_data/checkpoint_test_resume_partial.jsonl")
+    temp_dataset = _artifact_root() / "test_data" / "checkpoint_test_resume_partial.jsonl"
     try:
         with open(dataset_file, 'r') as f:
             lines = f.readlines()[:5]

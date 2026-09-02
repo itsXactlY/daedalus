@@ -39,6 +39,17 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 
 _HOME = str(Path.home())
 
+def _default_home_env_paths() -> list:
+    """Deny the platform-default home's .env too, not just the active home's."""
+    out = []
+    try:
+        from daedalus_constants import _get_platform_default_daedalus_home
+        out.append(str(_get_platform_default_daedalus_home() / ".env"))
+    except Exception:
+        out.append(os.path.join(_HOME, ".daedalus", ".env"))
+    return out
+
+
 WRITE_DENIED_PATHS = {
     os.path.realpath(p) for p in [
         os.path.join(_HOME, ".ssh", "authorized_keys"),
@@ -46,6 +57,7 @@ WRITE_DENIED_PATHS = {
         os.path.join(_HOME, ".ssh", "id_ed25519"),
         os.path.join(_HOME, ".ssh", "config"),
         str(get_daedalus_home() / ".env"),
+        *_default_home_env_paths(),
         os.path.join(_HOME, ".bashrc"),
         os.path.join(_HOME, ".zshrc"),
         os.path.join(_HOME, ".profile"),

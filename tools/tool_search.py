@@ -295,6 +295,37 @@ def search_catalog(catalog: List[CatalogEntry], query: str, limit: int = 5) -> L
     return [e for _, _, _, e in scored[:limit]]
 
 
+def rank_documents(documents: List[Tuple[str, str]], query: str,
+                   limit: int = 20) -> List[Tuple[str, float]]:
+    """Rank (name, text) pairs by the same BM25 + name-affinity used for tools."""
+    if not documents or limit <= 0:
+        return []
+    query_tokens = _tokenize(query)
+    if not query_tokens:
+        return []
+
+    token_docs = [_tokenize(f"{n.replace('-', ' ').replace('_', ' ')} {t}")
+                  for n, t in documents]
+    doc_lengths = [len(d) for d in token_docs]
+    avg_dl = sum(doc_lengths) / max(len(doc_lengths), 1)
+    doc_freq: Dict[str, int] = {}
+    for d in token_docs:
+        for t in set(d):
+            doc_freq[t] = doc_freq.get(t, 0) + 1
+    n_docs = len(token_docs)
+
+    scored: List[Tuple[float, float, str]] = []
+    for (name, _text), tokens in zip(documents, token_docs):
+        affinity = _name_affinity(query, query_tokens, name)
+        relevance = _bm25_score(query_tokens, tokens, doc_lengths, avg_dl,
+                                doc_freq, n_docs)
+        if affinity or relevance > 0:
+            scored.append((affinity, relevance, name))
+
+    scored.sort(key=lambda x: (-x[0], -x[1], x[2]))
+    return [(name, affinity + relevance) for affinity, relevance, name in scored[:limit]]
+
+
 def _source_label(source_name: str) -> str:
     label = source_name or "other"
     if label.startswith("mcp-"):

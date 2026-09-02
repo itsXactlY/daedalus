@@ -732,19 +732,22 @@ def _visible_in_this_session(skill: Dict[str, Any], tools, toolsets) -> bool:
 
 
 def skills_list(category: str = None, task_id: str = None,
-                include_unavailable: bool = False) -> str:
+                include_unavailable: bool = False, query: str = None,
+                limit: int = 20, names_only: bool = False) -> str:
     """
-    List all available skills (progressive disclosure tier 1 - minimal metadata).
-
-    Returns only name + description to minimize token usage. Use skill_view() to
-    load full content, tags, related files, etc.
+    Find skills without pulling the whole catalogue into context.
 
     Args:
-        category: Optional category filter (e.g., "mlops")
+        query: Rank skills by relevance and return only the best matches.
+        category: Restrict to one category.
+        limit: Maximum entries returned (0 disables the cap).
+        names_only: Return names without descriptions.
         task_id: Optional task identifier used to probe the active backend
 
     Returns:
-        JSON string with minimal skill info: name, description, category
+        JSON string. Without query or category only the category index is
+        returned, so a bare call stays cheap; the full catalogue is still
+        reachable through query, category, or limit=0.
     """
     try:
         if not SKILLS_DIR.exists():
@@ -754,6 +757,10 @@ def skills_list(category: str = None, task_id: str = None,
                     "success": True,
                     "skills": [],
                     "categories": [],
+                    "count": 0,
+                    "total": 0,
+                    "truncated": 0,
+                    "hidden_for_this_session": 0,
                     "message": "No skills found. Skills directory created at ~/.daedalus/skills/",
                 },
                 ensure_ascii=False,
@@ -767,6 +774,10 @@ def skills_list(category: str = None, task_id: str = None,
                     "success": True,
                     "skills": [],
                     "categories": [],
+                    "count": 0,
+                    "total": 0,
+                    "truncated": 0,
+                    "hidden_for_this_session": 0,
                     "message": "No skills found in skills/ directory.",
                 },
                 ensure_ascii=False,
@@ -784,27 +795,78 @@ def skills_list(category: str = None, task_id: str = None,
 
         all_skills.sort(key=lambda s: (s.get("category") or "", s["name"]))
 
-        categories = sorted(
-            set(s.get("category") for s in all_skills if s.get("category"))
+        counts = {}
+        for skill in all_skills:
+            key = skill.get("category") or "uncategorized"
+            counts[key] = counts.get(key, 0) + 1
+        categories = sorted(counts)
+        total = len(all_skills)
+
+        hidden_hint = (
+            f" {hidden} more need tools this session does not have; pass "
+            "include_unavailable=true to include them." if hidden else ""
         )
 
+        if not query and not category and limit != 0:
+            return json.dumps(
+                {
+                    "success": True,
+                    "total": total,
+                    "count": 0,
+                    "truncated": total,
+                    "categories": [{"name": c, "count": counts[c]} for c in categories],
+                    "hidden_for_this_session": hidden,
+                    "skills": [],
+                    "hint": (
+                        f"{total} skills. Call skills_list(query=\"...\") to rank by "
+                        "relevance, skills_list(category=\"...\") for one category, or "
+                        "skills_list(limit=0) for the whole catalogue. "
+                        "skill_view(name) loads a skill." + hidden_hint
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        selected = all_skills
+        ranked = False
+        if query:
+            from tools.tool_search import rank_documents
+
+            docs = [(s["name"], f"{s.get('category') or ''} {s.get('description') or ''}")
+                    for s in all_skills]
+            order = rank_documents(docs, query, limit=limit if limit > 0 else len(docs))
+            by_name = {s["name"]: s for s in all_skills}
+            selected = [by_name[n] for n, _ in order if n in by_name]
+            ranked = True
+
+        truncated = 0
+        if limit and limit > 0 and len(selected) > limit:
+            truncated = len(selected) - limit
+            selected = selected[:limit]
+
+        drop = {"frontmatter"} | ({"description", "category"} if names_only else set())
         listed = [
-            {k: v for k, v in skill.items() if k != "frontmatter"}
-            for skill in all_skills
+            {k: v for k, v in skill.items() if k not in drop}
+            for skill in selected
         ]
+
+        hint = "skill_view(name) loads a skill."
+        if ranked and not listed:
+            hint = ("No skill matched. Try other words, or skills_list(limit=0) "
+                    "for the whole catalogue.")
+        elif truncated:
+            hint = (f"{truncated} more match; raise limit or narrow the query. " + hint)
 
         return json.dumps(
             {
                 "success": True,
                 "skills": listed,
                 "categories": categories,
-                "count": len(all_skills),
+                "count": len(listed),
+                "total": total,
+                "truncated": truncated,
                 "hidden_for_this_session": hidden,
-                "hint": (
-                    "Use skill_view(name) to see full content, tags, and linked files."
-                    + (f" {hidden} more skill(s) need tools this session does not have; "
-                       "pass include_unavailable=true to list them anyway." if hidden else "")
-                ),
+                "hint": hint + hidden_hint,
             },
             ensure_ascii=False,
         )
@@ -1273,7 +1335,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 SKILLS_TOOL_DESCRIPTION = """Access skill documents providing specialized instructions, guidelines, and executable knowledge.
 
 Progressive disclosure workflow:
-1. skills_list() - Returns metadata (name, description, tags, linked_file_count) for all skills
+1. skills_list(query="...") - Ranks skills by relevance and returns the best matches
 2. skill_view(name) - Loads full SKILL.md content + shows available linked_files
 3. skill_view(name, file_path) - Loads specific linked file (e.g., 'references/api.md', 'scripts/train.py')
 
@@ -1327,13 +1389,25 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List every installed skill (name + description) — the complete set is not in your context, so search here before concluding a skill does not exist. Use skill_view(name) to load full content.",
+    "description": "Find installed skills. The catalogue is not in your context, so search here before concluding a skill does not exist. Pass query to rank by relevance; a bare call returns only the category index. Use skill_view(name) to load full content.",
     "parameters": {
         "type": "object",
         "properties": {
+            "query": {
+                "type": "string",
+                "description": "What you need the skill for. Returns the best matches instead of the whole catalogue.",
+            },
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum entries to return. Default 20; pass 0 for the whole catalogue.",
+            },
+            "names_only": {
+                "type": "boolean",
+                "description": "Return names without descriptions. Default false.",
             },
             "include_unavailable": {
                 "type": "boolean",

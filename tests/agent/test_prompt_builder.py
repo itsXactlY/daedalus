@@ -1133,6 +1133,12 @@ class TestSkillsBlockInjectsNothingFromZero:
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
         self._seed(tmp_path, ["python-debug"])
         result = build_skills_system_prompt()
-        assert "skills_list()" in result
+        assert "skills_list(query=" in result
         assert "skill_view(name)" in result
-        assert "never conclude one does not exist" in result
+        assert "never conclude one does not" in result.lower()
+
+    def test_the_block_does_not_steer_at_an_unbounded_listing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
+        self._seed(tmp_path, ["python-debug"])
+        result = build_skills_system_prompt()
+        assert "skills_list()" not in result

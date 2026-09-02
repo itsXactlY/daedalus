@@ -812,6 +812,14 @@ def _read_main_provider() -> str:
                 return _normalize_aux_provider(provider)
     except Exception:
         pass
+    try:
+        from daedalus_cli.auth import get_active_provider
+
+        provider = get_active_provider()
+        if isinstance(provider, str) and provider.strip():
+            return _normalize_aux_provider(provider)
+    except Exception:
+        pass
     return ""
 
 
