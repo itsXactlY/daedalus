@@ -17,6 +17,7 @@ import plugins.memory.mazemaker as mzm
 def fresh_pod_health(monkeypatch):
     """Each test gets its own detector — the real one is a module singleton."""
     monkeypatch.setattr(mzm, "_POD_HEALTH", mzm._PodHealth())
+    monkeypatch.setattr(mzm, "_BREAKER", mzm._Breaker())
     return mzm._POD_HEALTH
 
 
@@ -177,3 +178,85 @@ def test_prefetch_is_normal_when_healthy(monkeypatch, fresh_pod_health):
     monkeypatch.setattr(mzm, "_mission_control_flags", lambda: (False, False, 1200))
     block = mzm.MazemakerMemoryProvider().prefetch("a real query", session_id="s1")
     assert block == "recalled context"
+
+
+class TestBreakerGoesColdInsteadOfRetryingForever:
+    def _reset(self, M):
+        M._BREAKER.reset()
+        M._POD_HEALTH.__init__()
+
+    def test_a_hanging_pod_costs_the_timeout_only_until_it_is_declared_cold(self, monkeypatch):
+        import time
+        import urllib.request
+        import plugins.memory.mazemaker as M
+
+        self._reset(M)
+
+        def _hang(*a, **k):
+            raise TimeoutError("timed out")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _hang)
+
+        attempted = 0
+        cold = 0
+        for _ in range(10):
+            try:
+                M._tool("mazemaker_stats", {}, timeout=0.01)
+                attempted += 1
+            except M.PodOffline:
+                cold += 1
+            except TimeoutError:
+                attempted += 1
+
+        assert attempted == M._WEDGE_FAIL_THRESHOLD
+        assert cold == 10 - M._WEDGE_FAIL_THRESHOLD
+        self._reset(M)
+
+    def test_a_cold_pod_touches_no_socket(self, monkeypatch):
+        import urllib.request
+        import plugins.memory.mazemaker as M
+
+        self._reset(M)
+        M._BREAKER.trip()
+
+        def _boom(*a, **k):
+            raise AssertionError("a cold breaker must not open a socket")
+
+        monkeypatch.setattr(urllib.request, "urlopen", _boom)
+        with pytest.raises(M.PodOffline):
+            M._tool("mazemaker_stats", {}, timeout=1.0)
+        self._reset(M)
+
+    def test_the_probe_interval_backs_off_instead_of_hammering(self):
+        import plugins.memory.mazemaker as M
+
+        self._reset(M)
+        M._BREAKER.trip()
+        waits = []
+        for _ in range(5):
+            waits.append(M._BREAKER.snapshot()["next_probe_s"])
+            M._BREAKER._open_since = 0.0
+            M._BREAKER.is_open()
+        assert waits == sorted(waits)
+        assert waits[0] < waits[-1]
+        assert waits[-1] == M._OFFLINE_BACKOFF_S[-1]
+        self._reset(M)
+
+    def test_one_good_call_closes_the_breaker(self, monkeypatch):
+        import json
+        import urllib.request
+        import plugins.memory.mazemaker as M
+
+        self._reset(M)
+        M._BREAKER.trip()
+        M._BREAKER._open_since = 0.0
+
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return json.dumps({"result": {"memories": 5}}).encode()
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: _Resp())
+        assert M._tool("mazemaker_stats", {}) == {"memories": 5}
+        assert M._BREAKER.snapshot() == {"open": False}
+        self._reset(M)

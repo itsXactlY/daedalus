@@ -104,7 +104,7 @@ _BRAIN_POSITIVE_TTL_S = 60.0
 _BRAIN_PROBE_TIMEOUT_S = 4.0
 # Consecutive failed pod calls before the data path is declared wedged.
 _WEDGE_FAIL_THRESHOLD = 3
-_BRAIN_BOOT_ATTEMPTS = 2
+_BRAIN_BOOT_ATTEMPTS = 1
 _BRAIN_BOOT_BACKOFF_S = 0.5
 MISSION_TTL_S = 72 * 3600
 _THINK_RE = re.compile(
@@ -432,12 +432,68 @@ class _PodHealth:
 _POD_HEALTH = _PodHealth()
 
 
+_OFFLINE_BACKOFF_S = (120.0, 300.0, 600.0, 900.0)
+
+
+class _Breaker:
+    def __init__(self) -> None:
+        self._open_since: Optional[float] = None
+        self._level = 0
+        self._suppressed = 0
+
+    def trip(self) -> None:
+        if self._open_since is None:
+            self._open_since = time.monotonic()
+            logger.warning(
+                "mazemaker pod unreachable — going cold. No further calls will "
+                "be attempted for %.0fs; recall, soak and prefetch are no-ops "
+                "until it answers.", _OFFLINE_BACKOFF_S[0])
+
+    def reset(self) -> None:
+        if self._open_since is not None:
+            logger.info("mazemaker pod answering again after %d suppressed call(s)",
+                        self._suppressed)
+        self._open_since = None
+        self._level = 0
+        self._suppressed = 0
+
+    def is_open(self) -> bool:
+        if self._open_since is None:
+            return False
+        wait = _OFFLINE_BACKOFF_S[min(self._level, len(_OFFLINE_BACKOFF_S) - 1)]
+        if time.monotonic() - self._open_since >= wait:
+            self._open_since = time.monotonic()
+            self._level += 1
+            return False
+        self._suppressed += 1
+        return True
+
+    def snapshot(self) -> Dict[str, Any]:
+        if self._open_since is None:
+            return {"open": False}
+        return {
+            "open": True,
+            "for_s": round(time.monotonic() - self._open_since, 1),
+            "suppressed": self._suppressed,
+            "next_probe_s": _OFFLINE_BACKOFF_S[min(self._level, len(_OFFLINE_BACKOFF_S) - 1)],
+        }
+
+
+_BREAKER = _Breaker()
+
+
+class PodOffline(RuntimeError):
+    pass
+
+
 def _tool(name: str, arguments: dict, timeout: float = 8.0) -> Any:
     """Call a wonderland tool and return its ``result``. Raises on failure.
 
     Also the single instrumentation point for :class:`_PodHealth` — see there
     for why call outcomes, and not ``/health``, are what we trust.
     """
+    if _BREAKER.is_open():
+        raise PodOffline(f"mazemaker pod is cold — {name} not attempted")
     body = json.dumps({"name": name, "arguments": arguments}).encode()
     req = urllib.request.Request(
         TOOL_CALL_URL,
@@ -458,8 +514,11 @@ def _tool(name: str, arguments: dict, timeout: float = 8.0) -> Any:
         raise
     except Exception as exc:
         _POD_HEALTH.record_fail(name, exc)
+        if _POD_HEALTH.is_wedged():
+            _BREAKER.trip()
         raise
     _POD_HEALTH.record_ok(name)
+    _BREAKER.reset()
     result = data.get("result") if isinstance(data, dict) else None
     return result
 
