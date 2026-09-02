@@ -4980,7 +4980,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_reasoning_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress()
-        elif canonical == "usage":
+        elif canonical in ("usage", "tokens", "cost", "context"):
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
@@ -5653,82 +5653,174 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception as e:
             print(f"  ❌ Compression failed: {e}")
 
+    @staticmethod
+    def _context_growth_per_call(agent):
+        """Real context growth per call, read out of the ledger.
+
+        A session average (total / calls) answers a different question: it
+        includes the output tokens and it flattens the moment a compression
+        halved the prompt. What the headroom estimate needs is how much the
+        NEXT call's prompt is likely to be larger than this one's, which is the
+        median positive delta between consecutive recorded prompt sizes.
+        Negative deltas are counted separately -- they are compressions, and
+        they are worth naming rather than averaging away.
+        """
+        ledger = getattr(agent, "call_ledger", None) or []
+        inputs = [e.get("input", 0) or 0 for e in ledger]
+        if len(inputs) < 2:
+            total = getattr(agent, "session_total_tokens", 0) or 0
+            calls = getattr(agent, "session_api_calls", 0) or 0
+            return (total // calls if calls else 0), "sessionmittel", 0
+        deltas = [b - a for a, b in zip(inputs, inputs[1:])]
+        rises = sorted(d for d in deltas if d > 0)
+        drops = sum(1 for d in deltas if d < 0)
+        if not rises:
+            return 0, "kein wachstum", drops
+        median = rises[len(rises) // 2]
+        return median, f"median aus {len(rises)} calls", drops
+
     def _show_usage(self):
-        """Show cumulative token usage for the current session."""
+        """Show where this session's context and spend actually went."""
         if not self.agent:
             print("(._.) No active agent -- send a message first.")
             return
-
         agent = self.agent
-        input_tokens = getattr(agent, "session_input_tokens", 0) or 0
-        output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
-        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
-        prompt = agent.session_prompt_tokens
-        completion = agent.session_completion_tokens
-        total = agent.session_total_tokens
-        calls = agent.session_api_calls
-
+        calls = getattr(agent, "session_api_calls", 0) or 0
         if calls == 0:
             print("(._.) No API calls made yet in this session.")
             return
 
-        compressor = agent.context_compressor
-        last_prompt = compressor.last_prompt_tokens
-        ctx_len = compressor.context_length
-        pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
-        compressions = compressor.compression_count
+        W = 64
+        rule = "  " + "─" * W
 
-        msg_count = len(self.conversation_history)
-        cost_result = estimate_usage_cost(
-            agent.model,
-            CanonicalUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_write_tokens=cache_write_tokens,
-            ),
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-        )
-        elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
+        def row(label, value, note=""):
+            print(f"  {label:<22}{value:>12}   {note}".rstrip())
 
-        print("  📊 Session Token Usage")
-        print(f"  {'─' * 40}")
-        print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
-        print(f"  Output tokens:             {output_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {prompt:>10,}")
-        print(f"  Completion tokens:         {completion:>10,}")
-        print(f"  Total tokens:              {total:>10,}")
-        print(f"  API calls:                 {calls:>10,}")
-        print(f"  Session duration:          {elapsed:>10}")
-        print(f"  Cost status:              {cost_result.status:>10}")
-        print(f"  Cost source:              {cost_result.source:>10}")
-        if cost_result.amount_usd is not None:
-            prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
-        elif cost_result.status == "included":
-            print(f"  Total cost:              {'included':>10}")
+        inp = getattr(agent, "session_input_tokens", 0) or 0
+        out = getattr(agent, "session_output_tokens", 0) or 0
+        cr = getattr(agent, "session_cache_read_tokens", 0) or 0
+        cw = getattr(agent, "session_cache_write_tokens", 0) or 0
+        total = getattr(agent, "session_total_tokens", 0) or 0
+        comp = getattr(agent, "context_compressor", None)
+        window = int(getattr(comp, "context_length", 0) or 0)
+        used = int(getattr(comp, "last_prompt_tokens", 0) or 0)
+        threshold = int(getattr(comp, "threshold_tokens", 0) or 0)
+        compressions = int(getattr(comp, "compression_count", 0) or 0)
+        elapsed = format_duration_compact(
+            (datetime.now() - self.session_start).total_seconds())
+
+        print()
+        print(f"  ⚕ {agent.model}  ·  {getattr(agent, 'provider', '?')}  ·  {elapsed}")
+        print()
+        print("  KONTEXT")
+        print(rule)
+        if window:
+            pct = min(100, round(used / window * 100))
+            row("fenster", f"{window:,}")
+            row("belegt", f"{used:,}", f"{pct}%  {self._build_context_bar(pct)}")
+            free = max(0, window - used)
+            headroom = max(0, (threshold or window) - used)
+            growth, gsource, drops = self._context_growth_per_call(agent)
+            if growth:
+                turns = headroom // growth
+                row("frei", f"{free:,}",
+                    f"~{turns} calls bis kompression · +{growth:,}/call ({gsource})")
+            else:
+                row("frei", f"{free:,}", "wachstum noch nicht messbar")
+            if drops:
+                row("", "", f"{drops}× ist der kontext geschrumpft (kompression)")
+            if threshold:
+                row("kompression ab", f"{threshold:,}",
+                    f"{round(threshold / window * 100)}%  bisher {compressions}×")
         else:
-            print(f"  Total cost:              {'n/a':>10}")
-        print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
-        print(f"  Messages:         {msg_count}")
-        print(f"  Compressions:     {compressions}")
-        if cost_result.status == "unknown":
-            print(f"  Note:             Pricing unknown for {agent.model}")
+            row("fenster", "unbekannt", "provider meldet keine kontextlänge")
+            row("belegt", f"{used:,}")
 
-        if self.verbose:
-            logging.getLogger().setLevel(logging.DEBUG)
-            for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):
-                logging.getLogger(noisy).setLevel(logging.WARNING)
+        try:
+            comp_break = agent.context_composition(self.conversation_history or [])
+        except Exception:
+            comp_break = None
+        if comp_break and comp_break.get("total"):
+            print()
+            denom = comp_break["total"] or 1
+            for name, key, note in (
+                ("system-prompt", "system_prompt", ""),
+                ("tool-schemas", "tools",
+                 f"{comp_break['tool_count']} sichtbar"),
+                ("historie", "history",
+                 f"{comp_break['message_count']} nachrichten"),
+            ):
+                v = comp_break.get(key, 0)
+                row(name, f"{v:,}", f"{v / denom * 100:>4.1f}% davon  {note}".rstrip())
+                if key == "system_prompt":
+                    for pname, pv in sorted(comp_break.get("parts", {}).items(),
+                                            key=lambda x: -x[1]):
+                        print(f"      · {pname:<18}{pv:>10,}")
+            print(rule)
+            row("aufgeschlüsselt", f"{comp_break['total']:,}")
+            if used and comp_break["total"]:
+                drift = comp_break["total"] - used
+                pct = drift / used * 100
+                direction = "über" if drift > 0 else "unter"
+                row("gemessen (provider)", f"{used:,}",
+                    f"schätzung liegt {abs(pct):.0f}% {direction} der messung "
+                    f"({drift:+,})")
+                if abs(drift) > used * 0.25:
+                    row("", "", "grosse abweichung: tool-resultate im verlauf oder"
+                                " ein tokenizer, der anders zählt als chars/4")
+
+        print()
+        print("  VERBRAUCH")
+        print(rule)
+        hit = f"cached {cr:,} · {cr / inp * 100:.1f}% treffer" if inp and cr else "kein cache"
+        row("eingang", f"{inp:,}", hit)
+        row("ausgang", f"{out:,}", f"cache-writes {cw:,}" if cw else "")
+        row("gesamt", f"{total:,}",
+            f"{calls} calls · ⌀ {total // max(1, calls):,}/call")
+        cost = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+        status = getattr(agent, "session_cost_status", "unknown")
+        source = getattr(agent, "session_cost_source", "none")
+        if not cost:
+            recomputed = estimate_usage_cost(
+                agent.model,
+                CanonicalUsage(input_tokens=inp, output_tokens=out,
+                               cache_read_tokens=cr, cache_write_tokens=cw),
+                provider=getattr(agent, "provider", None),
+                base_url=getattr(agent, "base_url", None),
+            )
+            if recomputed.amount_usd is not None:
+                cost = float(recomputed.amount_usd)
+                status = recomputed.status
+                source = recomputed.source
+        if status == "unknown" and not cost:
+            row("kosten", "n/a", f"{status} · {source}")
+            print(f"  {'':<22}{'':>12}   Pricing unknown for {agent.model}")
         else:
-            logging.getLogger().setLevel(logging.INFO)
-            for quiet_logger in ('tools', 'run_agent', 'trajectory_compressor', 'cron', 'daedalus_cli'):
-                logging.getLogger(quiet_logger).setLevel(logging.ERROR)
+            row("kosten", f"${cost:.4f}", f"{status} · {source}")
+
+        per_model = getattr(agent, "model_ledger", None) or {}
+        if len(per_model) > 1 or (per_model and calls > 1):
+            print()
+            print("  NACH MODELL")
+            print(rule)
+            for name, r in sorted(per_model.items(),
+                                  key=lambda x: -x[1]["input"] - x[1]["output"]):
+                short = name.split("/")[-1][:24]
+                print(f"  {short:<24} ↑{r['input']:>8,} ↓{r['output']:>6,} "
+                      f"⚡{r['cache_read']:>8,} {r['calls']:>3}×  ${r['cost_usd']:.4f}")
+
+        ledger = getattr(agent, "call_ledger", None) or []
+        if ledger:
+            print()
+            print("  LETZTE CALLS")
+            print(rule)
+            for e in ledger[-8:]:
+                short = e["model"].split("/")[-1][:18]
+                print(f"  #{e['call']:<4} t{e['turn']:<3} ↑{e['input']:>7,} "
+                      f"↓{e['output']:>5,} ⚡{e['cache_read']:>7,} "
+                      f"{e['duration_s']:>5.1f}s  ${e['cost_usd']:.4f}  {short}")
+        print()
+
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""

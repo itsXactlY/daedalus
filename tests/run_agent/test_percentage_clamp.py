@@ -139,8 +139,9 @@ class TestSourceLinesAreClamped:
 
     def test_cli_clamped(self):
         src = self._read_file("cli.py")
-        assert "min(100, (last_prompt" in src, (
-            "cli.py /stats pct is not clamped with min(100, ...)"
+        assert "min(100, round(used / window * 100))" in src, (
+            "cli.py /usage context pct is not clamped with min(100, ...) — a "
+            "prompt larger than the window must read 100%, never 137%"
         )
 
     def test_memory_tool_clamped(self):

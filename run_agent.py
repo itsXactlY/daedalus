@@ -1103,6 +1103,8 @@ class AIAgent:
         self.session_cache_write_tokens = 0
         self.session_reasoning_tokens = 0
         self.session_estimated_cost_usd = 0.0
+        self.call_ledger: List[Dict[str, Any]] = []
+        self.model_ledger: Dict[str, Dict[str, Any]] = {}
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
 
@@ -1174,6 +1176,133 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
+    _LEDGER_MAX_CALLS = 200
+
+    def _record_call_ledger(self, *, model, provider, input_tokens, output_tokens,
+                            cache_read=0, cache_write=0, reasoning=0,
+                            cost_usd=0.0, duration_s=0.0) -> None:
+        """Record one API call so /tokens can show where the spend went.
+
+        The session totals answer "how much"; they cannot answer "on which
+        model", "which turn was expensive" or "did the cache earn its keep".
+        Those are the questions asked when a bill or a context window surprises
+        someone, so the per-call rows are kept alongside the totals.
+        """
+        try:
+            entry = {
+                "call": int(getattr(self, "session_api_calls", 0) or 0),
+                "turn": int(getattr(self, "_user_turn_count", 0) or 0),
+                "model": str(model or "unknown"),
+                "provider": str(provider or "unknown"),
+                "input": int(input_tokens or 0),
+                "output": int(output_tokens or 0),
+                "cache_read": int(cache_read or 0),
+                "cache_write": int(cache_write or 0),
+                "reasoning": int(reasoning or 0),
+                "cost_usd": float(cost_usd or 0.0),
+                "duration_s": float(duration_s or 0.0),
+                "at": time.time(),
+            }
+            ledger = getattr(self, "call_ledger", None)
+            if ledger is None:
+                ledger = self.call_ledger = []
+            ledger.append(entry)
+            if len(ledger) > self._LEDGER_MAX_CALLS:
+                del ledger[: len(ledger) - self._LEDGER_MAX_CALLS]
+
+            per_model = getattr(self, "model_ledger", None)
+            if per_model is None:
+                per_model = self.model_ledger = {}
+            row = per_model.setdefault(entry["model"], {
+                "calls": 0, "input": 0, "output": 0, "cache_read": 0,
+                "cache_write": 0, "reasoning": 0, "cost_usd": 0.0,
+                "duration_s": 0.0, "provider": entry["provider"],
+            })
+            row["calls"] += 1
+            for k in ("input", "output", "cache_read", "cache_write", "reasoning"):
+                row[k] += entry[k]
+            row["cost_usd"] += entry["cost_usd"]
+            row["duration_s"] += entry["duration_s"]
+        except Exception:
+            logger.debug("call ledger write failed", exc_info=True)
+
+    def context_composition(self, messages=None) -> Dict[str, Any]:
+        """Break the live context down into where its tokens actually sit.
+
+        A percentage against the window says the room is filling; it does not
+        say what is filling it. This separates the three parts an operator can
+        actually act on -- the system prompt, the tool schemas, and the
+        conversation -- because the lever is a different one for each.
+        """
+        from agent.model_metadata import (
+            estimate_tokens_rough, estimate_messages_tokens_rough,
+        )
+        out: Dict[str, Any] = {
+            "system_prompt": 0, "tools": 0, "history": 0, "total": 0,
+            "window": 0, "tool_count": 0, "message_count": 0, "parts": {},
+        }
+        try:
+            sys_prompt = getattr(self, "_cached_system_prompt", "") or ""
+            out["system_prompt"] = estimate_tokens_rough(sys_prompt) if sys_prompt else 0
+
+            tools = getattr(self, "tools", None) or []
+            out["tool_count"] = len(tools)
+            if tools:
+                out["tools"] = estimate_tokens_rough(json.dumps(tools, ensure_ascii=False))
+
+            msgs = messages if messages is not None else []
+            out["message_count"] = len(msgs)
+            out["history"] = estimate_messages_tokens_rough(msgs) if msgs else 0
+
+            compressor = getattr(self, "context_compressor", None)
+            out["window"] = int(getattr(compressor, "context_length", 0) or 0)
+            out["measured"] = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+            out["total"] = out["system_prompt"] + out["tools"] + out["history"]
+
+            if sys_prompt:
+                out["parts"] = self._system_prompt_parts(sys_prompt)
+        except Exception:
+            logger.debug("context composition failed", exc_info=True)
+        return out
+
+    @staticmethod
+    def _system_prompt_parts(prompt: str) -> Dict[str, int]:
+        """Attribute the system prompt to its named blocks, best effort.
+
+        The blocks are assembled from separate sources and carry recognisable
+        headings; anything unmatched lands in 'other' rather than being
+        silently dropped, so the parts always sum to the whole.
+        """
+        from agent.model_metadata import estimate_tokens_rough
+        markers = [
+            ("skills", "## Skills (mandatory)"),
+            ("memory", "You have persistent memory"),
+            ("mazemaker", "MAZEMAKER MEMORY PROTOCOL"),
+            ("session_search", "session_search"),
+            ("tool_use", "TOOL USE"),
+        ]
+        parts: Dict[str, int] = {}
+        claimed = 0
+        for name, needle in markers:
+            idx = prompt.find(needle)
+            if idx < 0:
+                continue
+            nxt = len(prompt)
+            for _, other in markers:
+                if other == needle:
+                    continue
+                j = prompt.find(other, idx + len(needle))
+                if j >= 0:
+                    nxt = min(nxt, j)
+            size = estimate_tokens_rough(prompt[idx:nxt])
+            parts[name] = size
+            claimed += size
+        whole = estimate_tokens_rough(prompt)
+        rest = whole - claimed
+        if rest > 0:
+            parts["identity + rest"] = rest
+        return parts
+
     def _estimate_completion_tokens(self, response) -> int:
         try:
             choices = getattr(response, "choices", None) or []
@@ -1222,7 +1351,9 @@ class AIAgent:
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
-        
+        self.call_ledger = []
+        self.model_ledger = {}
+
         self._user_turn_count = 0
 
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -7750,6 +7881,18 @@ class AIAgent:
                             self.session_estimated_cost_usd += float(cost_result.amount_usd)
                         self.session_cost_status = cost_result.status
                         self.session_cost_source = cost_result.source
+
+                        self._record_call_ledger(
+                            model=self.model,
+                            provider=self.provider or "unknown",
+                            input_tokens=billed_usage.input_tokens,
+                            output_tokens=canonical_usage.output_tokens,
+                            cache_read=canonical_usage.cache_read_tokens or 0,
+                            cache_write=canonical_usage.cache_write_tokens or 0,
+                            reasoning=canonical_usage.reasoning_tokens or 0,
+                            cost_usd=float(cost_result.amount_usd or 0.0),
+                            duration_s=api_duration,
+                        )
 
                         if self._session_db and self.session_id:
                             try:

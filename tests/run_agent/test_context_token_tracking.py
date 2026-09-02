@@ -261,3 +261,92 @@ def test_completion_estimate_never_returns_zero():
     empty = type("R", (), {"choices": [], "usage": None})()
     assert agent._estimate_completion_tokens(empty) == 1
     assert agent._estimate_completion_tokens(object()) == 1
+
+
+class TestCallLedger:
+    def _agent(self):
+        import run_agent as RA
+        a = RA.AIAgent.__new__(RA.AIAgent)
+        a.session_api_calls = 0
+        a._user_turn_count = 0
+        a.call_ledger = []
+        a.model_ledger = {}
+        return a
+
+    def test_a_call_lands_in_both_ledgers(self):
+        a = self._agent()
+        a.session_api_calls = 1
+        a._record_call_ledger(model="m/x", provider="p", input_tokens=100,
+                              output_tokens=20, cache_read=80, cost_usd=0.5,
+                              duration_s=1.5)
+        assert len(a.call_ledger) == 1
+        e = a.call_ledger[0]
+        assert (e["input"], e["output"], e["cache_read"]) == (100, 20, 80)
+        assert a.model_ledger["m/x"]["calls"] == 1
+        assert a.model_ledger["m/x"]["input"] == 100
+
+    def test_per_model_rows_accumulate_and_stay_separate(self):
+        a = self._agent()
+        for model, tok in (("m/a", 100), ("m/b", 50), ("m/a", 25)):
+            a._record_call_ledger(model=model, provider="p", input_tokens=tok,
+                                  output_tokens=1)
+        assert a.model_ledger["m/a"]["input"] == 125
+        assert a.model_ledger["m/a"]["calls"] == 2
+        assert a.model_ledger["m/b"]["input"] == 50
+        assert len(a.call_ledger) == 3
+
+    def test_the_ledger_is_capped_and_keeps_the_newest(self):
+        import run_agent as RA
+        a = self._agent()
+        for i in range(RA.AIAgent._LEDGER_MAX_CALLS + 25):
+            a.session_api_calls = i
+            a._record_call_ledger(model="m", provider="p", input_tokens=i,
+                                  output_tokens=0)
+        assert len(a.call_ledger) == RA.AIAgent._LEDGER_MAX_CALLS
+        assert a.call_ledger[-1]["input"] == RA.AIAgent._LEDGER_MAX_CALLS + 24
+        assert a.model_ledger["m"]["calls"] == RA.AIAgent._LEDGER_MAX_CALLS + 25
+
+    def test_a_broken_entry_never_breaks_the_api_call(self):
+        a = self._agent()
+        a.call_ledger = None
+        a.model_ledger = None
+        a._record_call_ledger(model=None, provider=None, input_tokens="x",
+                              output_tokens=None)
+
+
+class TestContextComposition:
+    def _agent(self, prompt, tools, window=128000, used=0):
+        import run_agent as RA
+        a = RA.AIAgent.__new__(RA.AIAgent)
+        a._cached_system_prompt = prompt
+        a.tools = tools
+        a.context_compressor = type("C", (), {
+            "context_length": window, "last_prompt_tokens": used})()
+        return a
+
+    def test_the_three_parts_sum_to_the_reported_total(self):
+        a = self._agent("You are daedalus." + "x" * 400,
+                        [{"type": "function", "function": {"name": "t",
+                          "description": "d" * 200, "parameters": {}}}])
+        msgs = [{"role": "user", "content": "q" * 800}]
+        c = a.context_composition(msgs)
+        assert c["total"] == c["system_prompt"] + c["tools"] + c["history"]
+        assert c["tool_count"] == 1
+        assert c["message_count"] == 1
+
+    def test_prompt_parts_sum_to_the_whole_prompt(self):
+        import run_agent as RA
+        from agent.model_metadata import estimate_tokens_rough
+
+        prompt = ("You are daedalus, the Architects Anomaly.\n"
+                  "## Skills (mandatory)\n" + "s" * 600 + "\n"
+                  "You have persistent memory across sessions.\n" + "m" * 300)
+        parts = RA.AIAgent._system_prompt_parts(prompt)
+        assert sum(parts.values()) == estimate_tokens_rough(prompt)
+        assert "skills" in parts and "memory" in parts
+
+    def test_an_empty_agent_reports_zeroes_rather_than_raising(self):
+        a = self._agent("", [])
+        c = a.context_composition([])
+        assert c["total"] == 0
+        assert c["parts"] == {}

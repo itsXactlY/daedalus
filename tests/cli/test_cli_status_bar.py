@@ -223,14 +223,13 @@ class TestCLIUsageReport:
         cli_obj._show_usage()
         output = capsys.readouterr().out
 
-        assert "Model:" in output
-        assert "Cost status:" in output
-        assert "Cost source:" in output
-        assert "Total cost:" in output
+        assert cli_obj.agent.model in output
+        assert "estimated" in output or "unknown" in output
+        assert "kosten" in output
         assert "$" in output
         assert "0.064" in output
-        assert "Session duration:" in output
-        assert "Compressions:" in output
+        assert "KONTEXT" in output
+        assert "kompression" in output
 
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(
@@ -247,7 +246,6 @@ class TestCLIUsageReport:
         cli_obj._show_usage()
         output = capsys.readouterr().out
 
-        assert "Total cost:" in output
         assert "n/a" in output
         assert "Pricing unknown for local/my-custom-model" in output
 
@@ -266,7 +264,6 @@ class TestCLIUsageReport:
         cli_obj._show_usage()
         output = capsys.readouterr().out
 
-        assert "Total cost:" in output
         assert "n/a" in output
         assert "Pricing unknown for glm-5" in output
 
@@ -447,3 +444,41 @@ def test_no_agent_and_no_snapshot_are_both_harmless():
     assert S._snapshot_session_accounting(None) is None
     S._restore_session_accounting(None, None)
     S._restore_session_accounting(_Agent(), None)
+
+
+class TestContextGrowth:
+    def _agent(self, inputs, total=0, calls=0):
+        return type("A", (), {
+            "call_ledger": [{"input": v} for v in inputs],
+            "session_total_tokens": total,
+            "session_api_calls": calls,
+        })()
+
+    def test_growth_is_the_median_rise_not_the_session_average(self):
+        from cli import DaedalusCLI as S
+        g, src, drops = S._context_growth_per_call(
+            self._agent([4200, 7100, 11800, 5200, 12400]))
+        assert g == 4700
+        assert "median" in src
+        assert drops == 1
+
+    def test_a_single_call_falls_back_to_the_session_average(self):
+        from cli import DaedalusCLI as S
+        g, src, drops = S._context_growth_per_call(
+            self._agent([4200], total=9000, calls=3))
+        assert g == 3000
+        assert src == "sessionmittel"
+        assert drops == 0
+
+    def test_a_shrinking_context_reports_no_growth_but_counts_the_drop(self):
+        from cli import DaedalusCLI as S
+        g, src, drops = S._context_growth_per_call(self._agent([9000, 4000, 2000]))
+        assert g == 0
+        assert src == "kein wachstum"
+        assert drops == 2
+
+    def test_an_empty_ledger_never_raises(self):
+        from cli import DaedalusCLI as S
+        g, src, drops = S._context_growth_per_call(self._agent([]))
+        assert g == 0 and drops == 0
+        assert S._context_growth_per_call(object()) == (0, "sessionmittel", 0)
