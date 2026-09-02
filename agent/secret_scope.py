@@ -29,11 +29,6 @@ from pathlib import Path
 from typing import Dict, Mapping, Optional
 
 
-# ── multiplex-active flag ────────────────────────────────────────────────
-# Process-global: set once at gateway startup when gateway.multiplex_profiles
-# is true. Governs whether get_secret() fails closed on an unscoped read.
-# A plain module global (not a contextvar): it describes the deployment mode,
-# not a per-task value.
 _MULTIPLEX_ACTIVE: bool = False
 
 
@@ -52,7 +47,6 @@ def is_multiplex_active() -> bool:
     return _MULTIPLEX_ACTIVE
 
 
-# ── the secret scope contextvar ──────────────────────────────────────────
 _SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar(
     "_SECRET_SCOPE", default=None
 )
@@ -87,38 +81,21 @@ def current_secret_scope() -> Optional[Mapping[str, str]]:
     return _SECRET_SCOPE.get()
 
 
-# ── genuinely-global env vars (NOT per-profile secrets) ──────────────────
-# These are process/deployment-level settings, not profile credentials. They
-# legitimately live in os.environ and must keep reading from it even in
-# multiplex mode — routing them through the fail-closed path would wrongly
-# crash. Anything matching is read from os.environ regardless of scope.
-#
-# Membership test is by exact name OR prefix (see _is_global_env). Keep this
-# list tight: when in doubt a value is a profile secret, not a global.
 _GLOBAL_ENV_EXACT = frozenset({
-    # Daedalus runtime / deployment
     "DAEDALUS_HOME", "DAEDALUS_PROFILE", "DAEDALUS_GATEWAY_LOCK_DIR",
     "DAEDALUS_MAX_ITERATIONS", "DAEDALUS_MAX_TOKENS", "DAEDALUS_API_TIMEOUT",
     "DAEDALUS_REDACT_SECRETS", "DAEDALUS_NOUS_TIMEOUT_SECONDS",
     "_DAEDALUS_GATEWAY",
-    # OS / interpreter
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "PWD", "SHELL", "TMPDIR",
     "VIRTUAL_ENV", "PYTHONPATH", "SSL_CERT_FILE",
-    # Kanban paths (per-board, not per-profile-secret)
     "DAEDALUS_KANBAN_DB", "DAEDALUS_KANBAN_WORKSPACES_ROOT", "DAEDALUS_KANBAN_BOARD",
-    # API-server LISTENER settings — deployment config (Docker compose
-    # ``environment:`` block, systemd ``Environment=``), not profile secrets.
-    # The scoped runner reload (#64674) must keep seeing them or container
-    # deployments silently lose the api_server platform (#69379). NOTE:
-    # API_SERVER_KEY is deliberately NOT here — it IS a credential and stays
-    # profile-scoped.
     "API_SERVER_ENABLED", "API_SERVER_HOST", "API_SERVER_PORT",
     "API_SERVER_CORS_ORIGINS",
 })
 _GLOBAL_ENV_PREFIXES = (
     "DAEDALUS_KANBAN_",
-    "DAEDALUS_TELEGRAM_",   # tuning knobs (batch delays, fallback toggles) — NOT the token
-    "TERMINAL_",          # terminal/sandbox backend settings
+    "DAEDALUS_TELEGRAM_",
+    "TERMINAL_",
 )
 
 
@@ -163,12 +140,6 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
             return val
         if _MULTIPLEX_ACTIVE:
             return default
-        # Multiplex off: the scope is an overlay over the process environment,
-        # not an isolation boundary — there is no other profile to leak from.
-        # Without this fallthrough, credentials injected only into the process
-        # environment vanish inside any set_secret_scope(...) block (the cron
-        # scheduler installs one around every job), so cron jobs send a
-        # placeholder API key and 401 while interactive turns keep working.
         val = os.environ.get(name)
         return val if val is not None else default
 
@@ -211,7 +182,7 @@ def _strip_inline_comment(value: str) -> str:
         while i < len(value):
             ch = value[i]
             if quote == '"' and ch == "\\":
-                i += 2  # skip the escaped character
+                i += 2
                 continue
             if ch == quote:
                 remainder = value[i + 1:].lstrip()
@@ -219,7 +190,7 @@ def _strip_inline_comment(value: str) -> str:
                     return value[: i + 1]
                 return value
             i += 1
-        return value  # unterminated quote: leave as-is
+        return value
     return re.split(r"\s+#", value, maxsplit=1)[0].strip()
 
 
@@ -244,12 +215,6 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
     except (FileNotFoundError, OSError, UnicodeDecodeError):
         return secrets
 
-    # Parse values with the canonical Daedalus parser: save_env_value
-    # escapes " and \ inside double quotes, and every other reader
-    # (load_env, python-dotenv) reverses those escapes. Stripping only
-    # the outer quotes here would corrupt credentials containing "
-    # or \ — they work interactively but fail in scoped (cron /
-    # multiplex) resolution.
     from daedalus_cli.config import _parse_env_value
 
     for raw in text.splitlines():

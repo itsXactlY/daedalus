@@ -49,8 +49,6 @@ class TestClarifyPrimitive:
         entry = cm.register("id2", "sk2", "Free form?", None)
         assert entry.awaiting_text is True
 
-        # get_pending_for_session returns the entry so the gateway
-        # text-intercept can find it.
         pending = cm.get_pending_for_session("sk2")
         assert pending is not None
         assert pending.clarify_id == "id2"
@@ -88,7 +86,6 @@ class TestClarifyPrimitive:
             cancelled = cm.clear_session("sk7")
             assert cancelled == 1
             result = fut.result(timeout=10.0)
-            # clear_session sets response="" then the wait returns it
             assert result == ""
 
 
@@ -108,7 +105,6 @@ class TestClarifyPrimitive:
             cm.register_notify("sk9", lambda entry: None)
             cm.unregister_notify("sk9")
 
-            # unregister_notify calls clear_session; thread unwinds
             result = fut.result(timeout=10.0)
             assert result == ""
 
@@ -116,8 +112,8 @@ class TestClarifyPrimitive:
         """Entries from different sessions don't leak across get_pending lookups."""
         from tools import clarify_gateway as cm
 
-        cm.register("idA", "alpha", "Q?", None)  # auto-await text
-        cm.register("idB", "beta", "Q?", None)   # auto-await text
+        cm.register("idA", "alpha", "Q?", None)
+        cm.register("idB", "beta", "Q?", None)
 
         a = cm.get_pending_for_session("alpha")
         b = cm.get_pending_for_session("beta")
@@ -129,8 +125,6 @@ class TestClarifyPrimitive:
         from tools import clarify_gateway as cm
 
         timeout = cm.get_clarify_timeout()
-        # Default 3600s OR whatever is in the user's loaded config.
-        # Floor check: must be a positive int, not crashed.
         assert isinstance(timeout, int)
         assert timeout > 0
 
@@ -146,18 +140,13 @@ class TestGatewayTextIntercept:
         first that is awaiting_text (the older one if both)."""
         from tools import clarify_gateway as cm
 
-        # Older multi-choice (not awaiting text)
         cm.register("first", "sk", "Q1?", ["A"])
-        # Newer open-ended (awaiting text)
         cm.register("second", "sk", "Q2?", None)
 
         pending = cm.get_pending_for_session("sk")
-        # The newer one is awaiting text; the older isn't.
         assert pending is not None
         assert pending.clarify_id == "second"
 
-        # Now flip the first to text mode too.  Both are awaiting text,
-        # FIFO returns the older one.
         cm.mark_awaiting_text("first")
         pending2 = cm.get_pending_for_session("sk")
         assert pending2 is not None
@@ -168,19 +157,15 @@ class TestGatewayTextIntercept:
         from tools import clarify_gateway as cm
 
         entry = cm.register("id-tf", "sk-tf", "Pick one", ["A", "B", "C"])
-        # Initially, multi-choice does NOT await text (button path)
         assert entry.awaiting_text is False
 
-        # After the base send_clarify text fallback calls mark_awaiting_text:
         flipped = cm.mark_awaiting_text("id-tf")
         assert flipped is True
 
-        # Now get_pending_for_session should find it
         pending = cm.get_pending_for_session("sk-tf")
         assert pending is not None
         assert pending.clarify_id == "id-tf"
         
-        # Clean up
         cm.clear_session("sk-tf")
 
 
@@ -263,12 +248,9 @@ class TestUnlimitedWait:
 
         t = threading.Thread(target=waiter)
         t.start()
-        # An unlimited wait cannot finish while nothing resolves it: still
-        # running after a comfortable margin (old code auto-skipped at once).
         t.join(timeout=1.5)
         assert t.is_alive()
 
-        # Once resolved, the unlimited wait returns the real answer.
         cm.resolve_gateway_clarify("u1", "B")
         t.join(timeout=5.0)
         assert not t.is_alive()
@@ -290,7 +272,6 @@ class TestMultiSelectTextFallback:
     def _register_multi(self, cid="m1", choices=("A", "B", "C")):
         from tools import clarify_gateway as cm
         entry = cm.register(cid, "sk", "Pick some", list(choices), multi_select=True)
-        # Text fallback path always flips awaiting_text on.
         cm.mark_awaiting_text(cid)
         return entry
 

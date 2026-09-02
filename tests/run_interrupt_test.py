@@ -19,7 +19,6 @@ from tools.interrupt import set_interrupt, is_interrupted
 def main() -> int:
     set_interrupt(False)
 
-    # Create parent agent (minimal)
     parent = AIAgent.__new__(AIAgent)
     parent._interrupt_requested = False
     parent._interrupt_message = None

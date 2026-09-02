@@ -26,7 +26,6 @@ def _write_wav(path: str, samples, sample_rate: int = 24000) -> None:
         samples = np.array(samples, dtype=np.float32)
     samples = samples.flatten()
 
-    # Clamp and convert to int16
     samples = np.clip(samples, -1.0, 1.0)
     pcm = (samples * 32767).astype(np.int16)
 
@@ -59,7 +58,6 @@ def main():
     parser.add_argument("--device", default="cpu", help="Device (cpu/cuda/mps)")
     args = parser.parse_args()
 
-    # Validate inputs
     ref_audio = Path(args.ref_audio).expanduser()
     ref_text_path = Path(args.ref_text).expanduser()
     if not ref_audio.exists():
@@ -71,7 +69,6 @@ def main():
 
     ref_text = ref_text_path.read_text(encoding="utf-8").strip()
 
-    # Import and run NeuTTS
     try:
         from neutts import NeuTTS
     except ImportError:
@@ -87,7 +84,6 @@ def main():
     ref_codes = tts.encode_reference(str(ref_audio))
     wav = tts.infer(args.text, ref_codes, ref_text)
 
-    # Write output
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 

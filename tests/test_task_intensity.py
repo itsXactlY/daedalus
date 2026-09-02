@@ -35,7 +35,6 @@ def _msg(role, content):
     return {"role": role, "content": content}
 
 
-# ── Level ladder ────────────────────────────────────────────────────────
 
 class TestLevelMapping:
     def test_gauge_levels_ascending(self):
@@ -64,7 +63,6 @@ class TestLevelMapping:
         assert clamp_level("low", floor="bogus") == "low"
 
 
-# ── Scoring signals ─────────────────────────────────────────────────────
 
 class TestScoring:
     def test_short_chat_scores_zero(self):
@@ -123,7 +121,7 @@ class TestScoring:
             _msg("assistant", "call"),
             _msg("tool", "alles sauber durchgelaufen"),
         ]
-        assert score_task("Schau dir das Ergebnis an bitte", messages=messages) >= 1  # tool density only
+        assert score_task("Schau dir das Ergebnis an bitte", messages=messages) >= 1
 
     def test_single_task_imperative_never_low(self):
         """One clear imperative (e.g. an audit) must clear 'low'."""
@@ -202,7 +200,6 @@ class TestScoring:
         assert estimate_level(text) in {"high", "xhigh", "max", "ultra"}
 
 
-# ── Live hook ───────────────────────────────────────────────────────────
 
 class TestAdjustAgent:
     def test_auto_off_does_nothing(self):
@@ -254,10 +251,8 @@ class TestAdjustAgent:
         grows through tool rounds gets more reasoning on the next call."""
         agent = _FakeAgent(auto=True, config={"enabled": True, "effort": "low"})
         messages = [_msg("user", "implementiere das komplette System")]
-        # First pass: instruction alone.
         first = adjust_agent_reasoning(agent, messages)
         assert first in {"medium", "high", "xhigh", "max", "ultra"}
-        # Tool round with errors arrives.
         messages.append(_msg("assistant", "call"))
         messages.append(_msg("tool", "Error: failed to connect"))
         messages.append(_msg("assistant", "call"))

@@ -13,7 +13,6 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-# Skip entire module if voice deps are missing
 pytest.importorskip("nacl.secret", reason="PyNaCl required for voice integration tests")
 discord = pytest.importorskip("discord", reason="discord.py required for voice integration tests")
 
@@ -40,9 +39,6 @@ from unittest.mock import MagicMock
 from plugins.platforms.discord.adapter import VoiceReceiver
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_secret_key():
     """Generate a random 32-byte key."""
@@ -56,19 +52,15 @@ def _build_encrypted_rtp_packet(secret_key, opus_payload, ssrc=100, seq=1, times
     Format: RTP header (12 bytes) + encrypted(opus) + 4-byte nonce
     Encryption: aead_xchacha20_poly1305 with RTP header as AAD.
     """
-    # RTP header: version=2, payload_type=0x78, no extension, no CSRC
     header = struct.pack(">BBHII", 0x80, 0x78, seq, timestamp, ssrc)
 
-    # Encrypt with NaCl AEAD
     box = nacl.secret.Aead(secret_key)
-    nonce_counter = struct.pack(">I", seq)  # 4-byte counter as nonce seed
-    # Full 24-byte nonce: counter in first 4 bytes, rest zeros
+    nonce_counter = struct.pack(">I", seq)
     full_nonce = nonce_counter + b'\x00' * 20
 
     enc_msg = box.encrypt(opus_payload, header, full_nonce)
-    ciphertext = enc_msg.ciphertext  # without nonce prefix
+    ciphertext = enc_msg.ciphertext
 
-    # Discord format: header + ciphertext + 4-byte nonce
     return header + ciphertext + nonce_counter
 
 
@@ -92,10 +84,9 @@ def _build_padded_rtp_packet(
         raise ValueError("declared_pad_len must fit in one byte")
 
     has_extension = ext_words > 0
-    first_byte = 0xA0 | (0x10 if has_extension else 0)  # V=2, P=1, [X=?], CC=0
+    first_byte = 0xA0 | (0x10 if has_extension else 0)
     fixed_header = struct.pack(">BBHII", first_byte, 0x78, seq, timestamp, ssrc)
     if has_extension:
-        # 4-byte extension preamble: 2 bytes "defined by profile" + 2 bytes length-in-words
         ext_preamble = struct.pack(">HH", 0xBEDE, ext_words)
         header = fixed_header + ext_preamble
         ext_data = b"\xab" * (ext_words * 4)
@@ -134,9 +125,6 @@ def _make_voice_receiver(secret_key, dave_session=None, bot_ssrc=9999,
     return receiver
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 class TestRealNaClDecrypt:
@@ -211,15 +199,13 @@ class TestRealNaClWithDAVE:
     def test_dave_unknown_ssrc_passthrough(self):
         """DAVE enabled but SSRC unknown → skip DAVE, buffer audio."""
         key = _make_secret_key()
-        dave = MagicMock()  # DAVE session present but SSRC not mapped
+        dave = MagicMock()
         receiver = _make_voice_receiver(key, dave_session=dave)
 
         packet = _build_encrypted_rtp_packet(key, b'\xf8\xff\xfe', ssrc=100)
         receiver._on_packet(packet)
 
-        # DAVE decrypt not called (SSRC unknown)
         dave.decrypt.assert_not_called()
-        # Audio still buffered via passthrough
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
 
@@ -236,7 +222,6 @@ class TestRealNaClWithDAVE:
         packet = _build_encrypted_rtp_packet(key, b'\xf8\xff\xfe', ssrc=100)
         receiver._on_packet(packet)
 
-        # DAVE was called but failed → passthrough
         dave.decrypt.assert_called_once()
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
@@ -264,7 +249,6 @@ class TestRTPPaddingStrip:
         opus_silence = b"\xf8\xff\xfe"
         receiver = _make_voice_receiver(key)
 
-        # 5 bytes of padding (4 zeros + count byte = 5)
         packet = _build_padded_rtp_packet(key, opus_silence, pad_len=5, ssrc=100)
         receiver._on_packet(packet)
 
@@ -292,7 +276,7 @@ class TestRTPPaddingStrip:
         """Padding stripped before DAVE → passthrough buffers cleanly."""
         key = _make_secret_key()
         opus_silence = b"\xf8\xff\xfe"
-        dave = MagicMock()  # SSRC unmapped → DAVE skipped, passthrough used
+        dave = MagicMock()
         receiver = _make_voice_receiver(key, dave_session=dave)
 
         packet = _build_padded_rtp_packet(key, opus_silence, pad_len=4, ssrc=100)
@@ -333,7 +317,6 @@ class TestRTPPaddingStrip:
         key = _make_secret_key()
         receiver = _make_voice_receiver(key)
 
-        # Empty opus payload, 6 bytes of padding (count byte declares 6)
         packet = _build_padded_rtp_packet(key, b"", pad_len=6, ssrc=100)
         receiver._on_packet(packet)
 
@@ -344,7 +327,6 @@ class TestRTPPaddingStrip:
         key = _make_secret_key()
         opus_silence = b"\xf8\xff\xfe"
 
-        # Same opus payload sent two ways: plain, and with both ext+padding
         recv_plain = _make_voice_receiver(key)
         recv_plain._on_packet(
             _build_encrypted_rtp_packet(key, opus_silence, ssrc=100)
@@ -357,8 +339,6 @@ class TestRTPPaddingStrip:
             )
         )
 
-        # Both must yield identical decoded PCM — ext data and padding both
-        # stripped before opus decode.
         assert bytes(recv_plain._buffers[100]) == bytes(recv_ext_pad._buffers[100])
 
 
@@ -371,16 +351,12 @@ class TestFullVoiceFlow:
         receiver = _make_voice_receiver(key)
         receiver.map_ssrc(100, 42)
 
-        # Send enough packets to exceed MIN_SPEECH_DURATION (0.5s)
-        # At 48kHz stereo 16-bit, each Opus silence frame decodes to ~3840 bytes
-        # Need 96000 bytes = ~25 frames
         for seq in range(1, 30):
             packet = _build_encrypted_rtp_packet(
                 key, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
             )
             receiver._on_packet(packet)
 
-        # Simulate silence by setting last_packet_time in the past
         receiver._last_packet_time[100] = time.monotonic() - 3.0
 
         completed = receiver.check_silence()
@@ -399,7 +375,6 @@ class TestFullVoiceFlow:
         receiver = _make_voice_receiver(
             key, allowed_user_ids={"42"}, members=members
         )
-        # No map_ssrc call — simulating missing SPEAKING event
 
         for seq in range(1, 30):
             packet = _build_encrypted_rtp_packet(
@@ -411,20 +386,18 @@ class TestFullVoiceFlow:
 
         completed = receiver.check_silence()
         assert len(completed) == 1
-        assert completed[0][0] == 42  # auto-mapped to sole allowed user
+        assert completed[0][0] == 42
 
     def test_pause_blocks_during_playback(self):
         """Pause receiver → packets ignored → resume → packets accepted."""
         key = _make_secret_key()
         receiver = _make_voice_receiver(key)
 
-        # Pause (echo prevention during TTS playback)
         receiver.pause()
         packet = _build_encrypted_rtp_packet(key, b'\xf8\xff\xfe', ssrc=100)
         receiver._on_packet(packet)
         assert len(receiver._buffers.get(100, b"")) == 0
 
-        # Resume
         receiver.resume()
         receiver._on_packet(packet)
         assert 100 in receiver._buffers
@@ -435,16 +408,13 @@ class TestFullVoiceFlow:
         key = _make_secret_key()
         receiver = _make_voice_receiver(key)
 
-        # Too short
         receiver._on_packet(b"\x00" * 5)
         assert len(receiver._buffers) == 0
 
-        # Wrong RTP version
         bad_header = struct.pack(">BBHII", 0x00, 0x78, 1, 960, 100)
         receiver._on_packet(bad_header + b"\x00" * 20)
         assert len(receiver._buffers) == 0
 
-        # Wrong payload type
         bad_pt = struct.pack(">BBHII", 0x80, 0x00, 1, 960, 100)
         receiver._on_packet(bad_pt + b"\x00" * 20)
         assert len(receiver._buffers) == 0
@@ -478,7 +448,6 @@ class TestSPEAKINGHook:
         key = _make_secret_key()
         receiver = _make_voice_receiver(key)
         conn = receiver._vc._connection
-        # hook should be set (wrapped)
         assert conn.hook is not None
 
     def test_map_ssrc_via_speaking(self):
@@ -548,10 +517,9 @@ class TestAuthFiltering:
             SimpleNamespace(id=42, name="Alice"),
         ]
         receiver = _make_voice_receiver(
-            key, allowed_user_ids={"99"},  # Alice not allowed
+            key, allowed_user_ids={"99"},
             members=members,
         )
-        # No map_ssrc — SSRC unknown, auto-map should reject
 
         for seq in range(1, 30):
             packet = _build_encrypted_rtp_packet(
@@ -582,7 +550,6 @@ class TestAuthFiltering:
 
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
-        # Auto-mapped to sole non-bot member
         assert len(completed) == 1
         assert completed[0][0] == 42
 
@@ -605,7 +572,6 @@ class TestRejoinFlow:
         assert len(receiver1._buffers[100]) > 0
         receiver1.stop()
 
-        # New receiver (simulates rejoin)
         receiver2 = _make_voice_receiver(key)
         assert len(receiver2._buffers) == 0
         assert len(receiver2._ssrc_to_user) == 0
@@ -615,11 +581,11 @@ class TestRejoinFlow:
         """After rejoin, user may get new SSRC — still works."""
         key = _make_secret_key()
         receiver1 = _make_voice_receiver(key)
-        receiver1.map_ssrc(100, 42)  # old SSRC
+        receiver1.map_ssrc(100, 42)
         receiver1.stop()
 
         receiver2 = _make_voice_receiver(key)
-        receiver2.map_ssrc(200, 42)  # new SSRC after rejoin
+        receiver2.map_ssrc(200, 42)
 
         for seq in range(1, 30):
             packet = _build_encrypted_rtp_packet(
@@ -640,18 +606,15 @@ class TestRejoinFlow:
             SimpleNamespace(id=42, name="Alice"),
         ]
 
-        # First session
         receiver1 = _make_voice_receiver(
             key, allowed_user_ids={"42"}, members=members,
         )
         receiver1.stop()
 
-        # Rejoin — new key (Discord may assign new secret_key)
         new_key = _make_secret_key()
         receiver2 = _make_voice_receiver(
             new_key, allowed_user_ids={"42"}, members=members,
         )
-        # No map_ssrc — simulating missing SPEAKING event
 
         for seq in range(1, 30):
             packet = _build_encrypted_rtp_packet(
@@ -679,14 +642,12 @@ class TestMultiGuildIsolation:
         receiver1.map_ssrc(100, 42)
         receiver2.map_ssrc(200, 99)
 
-        # Send to receiver1
         for seq in range(1, 10):
             packet = _build_encrypted_rtp_packet(
                 key1, b'\xf8\xff\xfe', ssrc=100, seq=seq, timestamp=960 * seq
             )
             receiver1._on_packet(packet)
 
-        # receiver2 should be empty
         assert len(receiver2._buffers) == 0
         assert 100 in receiver1._buffers
 
@@ -709,7 +670,6 @@ class TestMultiGuildIsolation:
 
         receiver1.stop()
 
-        # receiver2 still has data
         assert receiver2._running is True
         assert len(receiver2._buffers[200]) > 0
 
@@ -738,7 +698,6 @@ class TestEchoPreventionFlow:
         receiver = _make_voice_receiver(key)
         receiver.map_ssrc(100, 42)
 
-        # Pause → send packets → resume → send more packets
         receiver.pause()
         for seq in range(1, 5):
             packet = _build_encrypted_rtp_packet(

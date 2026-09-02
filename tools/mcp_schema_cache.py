@@ -57,9 +57,6 @@ def _load_all() -> Dict[str, Any]:
 def _save_all(data: Dict[str, Any]) -> None:
     from utils import atomic_json_write
 
-    # Cache dir + 0o600: sibling precedent in tools/registry.py
-    # _save_discovery_cache; the cache file is trusted input on the lazy
-    # registration path, so keep it user-only.
     atomic_json_write(_cache_path(), data, mode=0o600)
 
 
@@ -93,9 +90,6 @@ def write_cache_entry(
     }
     with _cache_lock:
         data = _load_all()
-        # Write-through fires on every registration (reconnects,
-        # list_changed refreshes); skip the load-all+rewrite churn when the
-        # entry is byte-identical to what is already on disk.
         if data.get(server_name) == entry:
             return
         data[server_name] = entry

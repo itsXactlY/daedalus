@@ -53,7 +53,6 @@ class TestFirecrawlClientConfig:
         ):
             os.environ.pop(key, None)
 
-    # ── Configuration matrix ─────────────────────────────────────────
 
     def test_cloud_mode_key_only(self):
         """API key without URL → cloud Firecrawl."""
@@ -200,7 +199,6 @@ class TestFirecrawlClientConfig:
         """Availability checks should not be pinned to module import state."""
         import tools.web_tools
 
-        # Simulate the pre-fix import-time cache slot for regression coverage.
         tools.web_tools.__dict__["_aux_async_client"] = None
 
         with patch(
@@ -237,7 +235,6 @@ class TestFirecrawlClientConfig:
         assert result == "summary text"
         mock_async_call.assert_awaited_once()
 
-    # ── Singleton caching ────────────────────────────────────────────
 
     def test_singleton_returns_same_instance(self):
         """Second call returns cached client without re-constructing."""
@@ -247,7 +244,7 @@ class TestFirecrawlClientConfig:
                 client1 = _get_firecrawl_client()
                 client2 = _get_firecrawl_client()
                 assert client1 is client2
-                mock_fc.assert_called_once()  # constructed only once
+                mock_fc.assert_called_once()
 
     def test_constructor_failure_allows_retry(self):
         """If Firecrawl() raises, next call should retry (not return None)."""
@@ -260,12 +257,10 @@ class TestFirecrawlClientConfig:
                 with pytest.raises(RuntimeError):
                     _get_firecrawl_client()
 
-                # Client stayed None, so retry should work
                 assert tools.web_tools._firecrawl_client is None
                 result = _get_firecrawl_client()
                 assert result is not None
 
-    # ── Edge cases ───────────────────────────────────────────────────
 
     def test_empty_string_key_treated_as_absent(self):
         """FIRECRAWL_API_KEY='' should not be passed as api_key."""
@@ -276,7 +271,6 @@ class TestFirecrawlClientConfig:
             with patch("tools.web_tools.Firecrawl") as mock_fc:
                 from tools.web_tools import _get_firecrawl_client
                 _get_firecrawl_client()
-                # Empty string is falsy, so only api_url should be passed
                 mock_fc.assert_called_once_with(api_url="http://localhost:3002")
 
     def test_empty_string_key_no_url_raises(self):
@@ -320,7 +314,6 @@ class TestBackendSelection:
         for key in self._ENV_KEYS:
             os.environ.pop(key, None)
 
-    # ── Config-based selection (web.backend in config.yaml) ───────────
 
     def test_config_parallel(self):
         """web.backend=parallel in config → 'parallel' regardless of keys."""
@@ -367,7 +360,6 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
-    # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
         """Only PARALLEL_API_KEY set → 'parallel'."""
@@ -409,7 +401,6 @@ class TestBackendSelection:
         from tools.web_tools import _get_backend
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "PARALLEL_API_KEY": "par-test"}):
-            # Parallel + no Firecrawl → parallel
             assert _get_backend() == "parallel"
 
     def test_fallback_both_keys_defaults_to_firecrawl(self):

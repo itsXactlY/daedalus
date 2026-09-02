@@ -39,7 +39,6 @@ def _build_parser():
 
     subparsers = parser.add_subparsers(dest="command")
     chat = subparsers.add_parser("chat")
-    # These MUST use argparse.SUPPRESS to avoid overwriting parent values
     chat.add_argument("--yolo", action="store_true",
                       default=argparse.SUPPRESS)
     chat.add_argument("--worktree", "-w", action="store_true",
@@ -130,7 +129,6 @@ class TestNoSubcommandDefaults:
     def test_defaults_chat_no_flags(self):
         parser = _build_parser()
         args = parser.parse_args(["chat"])
-        # With SUPPRESS, these fall through to parent defaults
         assert getattr(args, "yolo", False) is False
         assert getattr(args, "worktree", False) is False
         assert getattr(args, "skills", None) is None

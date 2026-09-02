@@ -64,11 +64,9 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         child._active_children = []
         child._active_children_lock = threading.Lock()
 
-        # Global is set
         set_interrupt(True)
         assert is_interrupted() is True
 
-        # child.clear_interrupt() clears both
         child.clear_interrupt()
         assert child._interrupt_requested is False
         assert is_interrupted() is False
@@ -87,16 +85,14 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         child.log_prefix = ""
         child._client_kwargs = {"api_key": "test", "base_url": "http://localhost:1234"}
 
-        # Mock a slow API call
         mock_client = MagicMock()
         def slow_api_call(**kwargs):
-            time.sleep(5)  # Would take 5s normally
+            time.sleep(5)
             return MagicMock()
         mock_client.chat.completions.create = slow_api_call
         mock_client.close = MagicMock()
         child.client = mock_client
 
-        # Set interrupt after 0.2s from another thread
         def set_interrupt_later():
             time.sleep(0.2)
             child.interrupt("stop!")
@@ -109,7 +105,6 @@ class TestInterruptPropagationToChild(unittest.TestCase):
             self.fail("Should have raised InterruptedError")
         except InterruptedError:
             elapsed = time.monotonic() - start
-            # Should detect within ~0.5s (0.2s delay + 0.3s poll interval)
             assert elapsed < 1.0, f"Took {elapsed:.2f}s to detect interrupt (expected < 1.0s)"
         finally:
             t.join(timeout=2)
@@ -133,10 +128,8 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         child._active_children_lock = threading.Lock()
         child.quiet_mode = True
 
-        # Register child (simulating what _run_single_child does)
         parent._active_children.append(child)
 
-        # Simulate child running (checking flag in a loop)
         child_detected = threading.Event()
         def simulate_child_loop():
             while not child._interrupt_requested:
@@ -146,11 +139,9 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         child_thread = threading.Thread(target=simulate_child_loop, daemon=True)
         child_thread.start()
 
-        # Small delay, then interrupt from "main thread"
         time.sleep(0.1)
         parent.interrupt("user typed something new")
 
-        # Child should detect within 200ms
         detected = child_detected.wait(timeout=1.0)
         assert detected, "Child never detected the interrupt!"
         child_thread.join(timeout=1)

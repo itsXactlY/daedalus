@@ -24,7 +24,6 @@ from daedalus_cli.plugins import (
 )
 
 
-# ── PluginContext.register_cli_command ─────────────────────────────────────
 
 
 class TestRegisterCliCommand:
@@ -71,12 +70,10 @@ class TestGetPluginCliCommands:
         with patch("daedalus_cli.plugins.get_plugin_manager", return_value=mgr):
             cmds = get_plugin_cli_commands()
         assert cmds == {"foo": {"name": "foo", "help": "bar"}}
-        # Top-level is a copy — adding to result doesn't affect manager
         cmds["new"] = {"name": "new"}
         assert "new" not in mgr._cli_commands
 
 
-# ── Memory plugin CLI discovery ───────────────────────────────────────────
 
 
 class TestMemoryPluginCliDiscovery:
@@ -96,7 +93,6 @@ class TestMemoryPluginCliDiscovery:
             "name: testplugin\ndescription: A test plugin\n"
         )
 
-        # Also create a second plugin that should NOT be discovered
         other_dir = tmp_path / "otherplugin"
         other_dir.mkdir()
         (other_dir / "__init__.py").write_text("pass\n")
@@ -111,7 +107,6 @@ class TestMemoryPluginCliDiscovery:
         sys.modules.pop(mod_key, None)
 
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
-        # Set testplugin as the active provider
         monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: "testplugin")
         try:
             cmds = pm.discover_plugin_cli_commands()
@@ -119,7 +114,6 @@ class TestMemoryPluginCliDiscovery:
             monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", original_dir)
             sys.modules.pop(mod_key, None)
 
-        # Only testplugin should be discovered, not otherplugin
         assert len(cmds) == 1
         assert cmds[0]["name"] == "testplugin"
         assert cmds[0]["help"] == "A test plugin"

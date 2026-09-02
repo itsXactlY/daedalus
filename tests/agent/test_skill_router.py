@@ -20,8 +20,6 @@ from agent.skill_router import (
     score_skill,
 )
 
-# A tiny synthetic catalog to keep tests hermetic (no dependency on the
-# operator's real 326-skill tree).
 FAKE_CATALOG = [
     {
         "skill_name": "game-loot-economy",
@@ -65,7 +63,6 @@ def test_score_skill_name_boost():
     q = _tokens("game loot")
     entry = FAKE_CATALOG[0]
     name_score = score_skill(q, entry)
-    # A name hit (5x) should beat a description-only hit for the same token.
     desc_only = {
         "skill_name": "zzz",
         "category": "",
@@ -80,7 +77,6 @@ def test_route_skills_finds_exact_match():
     routed = route_skills(q, top_n=5, min_score=0.1)
     names = [e["skill_name"] for e in routed]
     assert "game-loot-economy" in names
-    # Top pick is deterministic and best-scoring.
     assert routed[0]["skill_name"] == "game-loot-economy"
 
 
@@ -139,9 +135,6 @@ def test_route_skills_excludes_given_names():
 
 
 def test_build_route_block_auto_excludes_already_loaded_bundle_skill():
-    # The bundle marker for podman-quadlet-ops is embedded in the same message
-    # that would otherwise route straight back to it -- the router must not
-    # re-suggest content already present in this exact API-bound message.
     msg = (
         "Skills loaded: podman-quadlet-ops\n\n"
         "Audit this podman quadlet stack for OOM issues."

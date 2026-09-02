@@ -57,8 +57,6 @@ def has_xai_credentials() -> bool:
         access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
         if str(access_token or "").strip():
             return True
-        # Pool-only grants (multi-account ``auth add``) never write the
-        # providers singleton; still count as present credentials.
         credential_pool = store.get("credential_pool") if isinstance(store, dict) else None
         entries = (
             credential_pool.get("xai-oauth")
@@ -284,9 +282,6 @@ def resolve_xai_http_credentials(
             else pool.select()
         )
         if force_refresh and entry is None:
-            # A rejected refresh may quarantine the issuing entry. Continue
-            # with the next healthy account instead of falling back to the raw
-            # singleton resolver and resurrecting the stale pool row.
             entry = pool.select()
         access_token = str(
             getattr(entry, "runtime_api_key", None)

@@ -48,9 +48,6 @@ def _make_runner(daedalus_home=None):
     return runner
 
 
-# ---------------------------------------------------------------------------
-# _gateway_prompt (file-based IPC in main.py)
-# ---------------------------------------------------------------------------
 
 
 class TestGatewayPrompt:
@@ -62,7 +59,6 @@ class TestGatewayPrompt:
         daedalus_home = tmp_path / ".daedalus"
         daedalus_home.mkdir()
 
-        # Simulate the response arriving after a short delay
         def write_response():
             time.sleep(0.3)
             (daedalus_home / ".update_response").write_text("y")
@@ -76,7 +72,6 @@ class TestGatewayPrompt:
 
         thread.join()
         assert result == "y"
-        # Both files should be cleaned up
         assert not (daedalus_home / ".update_prompt.json").exists()
         assert not (daedalus_home / ".update_response").exists()
 
@@ -128,18 +123,13 @@ class TestGatewayPrompt:
         daedalus_home.mkdir()
         (daedalus_home / ".update_response").write_text("")
 
-        # Write prompt file so the function starts polling
         with patch.dict(os.environ, {"DAEDALUS_HOME": str(daedalus_home)}):
             from daedalus_cli.main import _gateway_prompt
-            # Pre-create the response
             result = _gateway_prompt("test?", "default_val", timeout=2.0)
 
         assert result == "default_val"
 
 
-# ---------------------------------------------------------------------------
-# _restore_stashed_changes with input_fn
-# ---------------------------------------------------------------------------
 
 
 class TestRestoreStashWithInputFn:
@@ -167,7 +157,7 @@ class TestRestoreStashWithInputFn:
 
         assert len(captured_args) == 1
         assert "Restore" in captured_args[0][0]
-        assert result is False  # user declined
+        assert result is False
 
     def test_input_fn_yes_proceeds_with_restore(self, tmp_path):
         """When input_fn returns 'y', stash apply is attempted."""
@@ -190,13 +180,9 @@ class TestRestoreStashWithInputFn:
                 input_fn=lambda p, d="": "y",
             )
 
-        # Should have called git stash apply + git diff --name-only
         assert call_count[0] >= 2
 
 
-# ---------------------------------------------------------------------------
-# Update command spawns --gateway flag
-# ---------------------------------------------------------------------------
 
 
 class TestUpdateCommandGatewayFlag:
@@ -224,7 +210,6 @@ class TestUpdateCommandGatewayFlag:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Check the bash command string contains --gateway and PYTHONUNBUFFERED
         call_args = mock_popen.call_args[0][0]
         cmd_string = call_args[-1] if isinstance(call_args, list) else str(call_args)
         assert "--gateway" in cmd_string
@@ -232,9 +217,6 @@ class TestUpdateCommandGatewayFlag:
         assert "stream progress" in result
 
 
-# ---------------------------------------------------------------------------
-# _watch_update_progress — output streaming
-# ---------------------------------------------------------------------------
 
 
 class TestWatchUpdateProgress:
@@ -250,13 +232,11 @@ class TestWatchUpdateProgress:
         pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
                    "session_key": "agent:main:telegram:dm:111"}
         (daedalus_home / ".update_pending.json").write_text(json.dumps(pending))
-        # Write output
         (daedalus_home / ".update_output.txt").write_text("→ Fetching updates...\n")
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        # Write exit code after a brief delay
         async def write_exit_code():
             await asyncio.sleep(0.3)
             (daedalus_home / ".update_output.txt").write_text(
@@ -273,7 +253,6 @@ class TestWatchUpdateProgress:
             )
             await task
 
-        # Should have sent at least the output and a success message
         assert mock_adapter.send.call_count >= 1
         all_sent = " ".join(str(c) for c in mock_adapter.send.call_args_list)
         assert "update finished" in all_sent.lower()
@@ -293,12 +272,10 @@ class TestWatchUpdateProgress:
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
-        # Write a prompt, then respond and finish
         async def simulate_prompt_cycle():
             await asyncio.sleep(0.3)
             prompt = {"prompt": "Restore local changes? [Y/n]", "default": "y", "id": "test1"}
             (daedalus_home / ".update_prompt.json").write_text(json.dumps(prompt))
-            # Simulate user responding
             await asyncio.sleep(0.5)
             (daedalus_home / ".update_response").write_text("y")
             (daedalus_home / ".update_prompt.json").unlink(missing_ok=True)
@@ -314,12 +291,9 @@ class TestWatchUpdateProgress:
             )
             await task
 
-        # Check that the prompt was forwarded
         all_sent = [str(c) for c in mock_adapter.send.call_args_list]
         prompt_found = any("Restore local changes" in s for s in all_sent)
         assert prompt_found, f"Prompt not forwarded. Sent: {all_sent}"
-        # Check session was marked as having pending prompt
-        # (may be cleared by the time we check since update finished)
 
     @pytest.mark.asyncio
     async def test_cleans_up_on_completion(self, tmp_path):
@@ -384,13 +358,11 @@ class TestWatchUpdateProgress:
         daedalus_home = tmp_path / "daedalus"
         daedalus_home.mkdir()
 
-        # Platform doesn't match any adapter
         pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
         (daedalus_home / ".update_pending.json").write_text(json.dumps(pending))
         (daedalus_home / ".update_output.txt").write_text("done\n")
         (daedalus_home / ".update_exit_code").write_text("0")
 
-        # Only telegram adapter available
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
@@ -401,12 +373,8 @@ class TestWatchUpdateProgress:
                 timeout=5.0,
             )
 
-        # Should not crash; legacy notification handles this case
 
 
-# ---------------------------------------------------------------------------
-# Message interception for update prompts
-# ---------------------------------------------------------------------------
 
 
 class TestUpdatePromptInterception:
@@ -420,11 +388,9 @@ class TestUpdatePromptInterception:
         daedalus_home.mkdir()
 
         event = _make_event(text="y", chat_id="67890")
-        # The session key uses the full format from build_session_key
         session_key = "agent:main:telegram:dm:67890"
         runner._update_prompt_pending[session_key] = True
 
-        # Mock authorization and _session_key_for_source
         runner._is_user_authorized = MagicMock(return_value=True)
         runner._session_key_for_source = MagicMock(return_value=session_key)
 
@@ -436,7 +402,6 @@ class TestUpdatePromptInterception:
         response_path = daedalus_home / ".update_response"
         assert response_path.exists()
         assert response_path.read_text() == "y"
-        # Should clear the pending flag
         assert session_key not in runner._update_prompt_pending
 
     @pytest.mark.asyncio
@@ -448,18 +413,12 @@ class TestUpdatePromptInterception:
 
         event = _make_event(text="hello", chat_id="67890")
 
-        # No pending prompt
         runner._is_user_authorized = MagicMock(return_value=True)
 
-        # The message should flow through to normal processing;
-        # we just verify it doesn't get intercepted
         session_key = "agent:main:telegram:dm:67890"
         assert session_key not in runner._update_prompt_pending
 
 
-# ---------------------------------------------------------------------------
-# cmd_update --gateway flag
-# ---------------------------------------------------------------------------
 
 
 class TestCmdUpdateGatewayMode:
@@ -469,7 +428,6 @@ class TestCmdUpdateGatewayMode:
         """With --gateway, stash restore uses _gateway_prompt instead of input()."""
         from daedalus_cli.main import _restore_stashed_changes
 
-        # Use input_fn to verify the gateway path is taken
         calls = []
 
         def fake_input(prompt, default=""):
@@ -489,8 +447,6 @@ class TestCmdUpdateGatewayMode:
 
     def test_gateway_flag_parsed(self):
         """The --gateway flag is accepted by the update subparser."""
-        # Verify the argparse parser accepts --gateway by checking cmd_update
-        # receives gateway=True when the flag is set
         from types import SimpleNamespace
         args = SimpleNamespace(gateway=True)
         assert args.gateway is True

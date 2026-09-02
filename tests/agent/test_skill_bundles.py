@@ -43,10 +43,8 @@ def bundles_env(tmp_path, monkeypatch):
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     monkeypatch.setenv("DAEDALUS_BUNDLES_DIR", str(bundles_dir))
-    # Patch SKILLS_DIR so skill loading hits our temp tree.
     import tools.skills_tool as skills_tool_module
     monkeypatch.setattr(skills_tool_module, "SKILLS_DIR", skills_dir)
-    # Reset module-level cache between tests.
     import agent.skill_bundles as mod
     mod._bundles_cache = {}
     mod._bundles_cache_mtime = None
@@ -79,9 +77,6 @@ class TestSaveAndReload:
         assert info is not None
         assert info["skills"] == ["s1", "s2"]
 
-        # reload_bundles diffs the in-memory cache against a fresh scan.
-        # save_bundle already refreshed the cache, so write a second bundle
-        # directly (bypassing the helper) to exercise the "added" path.
         _make_bundle_yaml(bundles_dir, "raw", ["s3"])
         diff = reload_bundles()
         added_names = {e["name"] for e in diff["added"]}
@@ -129,8 +124,6 @@ class TestBundleWinsOverSkill:
         from daedalus_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
 
-        # A same-named skill, provided directly so we don't perturb the
-        # process-global skill-command cache.
         skill_provider = lambda: {"/demo": {"name": "demo", "description": "a skill"}}
         completer = SlashCommandCompleter(
             skill_commands_provider=skill_provider,
@@ -138,11 +131,9 @@ class TestBundleWinsOverSkill:
         )
 
         completions = list(completer.get_completions(Document("/demo"), None))
-        # display is a FormattedText; match on the underlying command text.
         demo = [c for c in completions if "/demo" in str(c.display)]
         assert len(demo) == 1
         meta = str(demo[0].display_meta or "")
-        # Bundle marker, not the skill's lightning-bolt marker.
         assert "▣" in meta or "skills" in meta
         assert not meta.startswith("⚡")
 
@@ -156,7 +147,6 @@ class TestBundleWinsOverSkill:
         )
         _make_bundle_yaml(bundles_dir, "demo", ["demo"])
 
-        # Repopulate the skill cache against the temp skills dir.
         from agent import skill_commands
         skill_commands.scan_skill_commands()
         assert "/demo" in skill_commands.get_skill_commands()

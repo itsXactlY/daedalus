@@ -28,8 +28,6 @@ from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
-# Session-scoped list of credential files to mount.
-# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
 _registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
 
 
@@ -43,7 +41,6 @@ def _get_registered() -> Dict[str, str]:
         return val
 
 
-# Cache for config-based file list (loaded once per process).
 _config_files: List[Dict[str, str]] | None = None
 
 
@@ -68,7 +65,6 @@ def register_credential_file(
     """
     daedalus_home = _resolve_daedalus_home()
 
-    # Reject absolute paths — they bypass the DAEDALUS_HOME sandbox entirely.
     if os.path.isabs(relative_path):
         logger.warning(
             "credential_files: rejected absolute path %r (must be relative to DAEDALUS_HOME)",
@@ -78,12 +74,10 @@ def register_credential_file(
 
     host_path = daedalus_home / relative_path
 
-    # Resolve symlinks and normalise ``..`` before the containment check so
-    # that traversal like ``../. ssh/id_rsa`` cannot escape DAEDALUS_HOME.
     try:
         resolved = host_path.resolve()
         daedalus_home_resolved = daedalus_home.resolve()
-        resolved.relative_to(daedalus_home_resolved)  # raises ValueError if outside
+        resolved.relative_to(daedalus_home_resolved)
     except ValueError:
         logger.warning(
             "credential_files: rejected path traversal %r "
@@ -182,13 +176,10 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
     """
     mounts: Dict[str, str] = {}
 
-    # Skill-registered files
     for container_path, host_path in _get_registered().items():
-        # Re-check existence (file may have been deleted since registration)
         if Path(host_path).is_file():
             mounts[container_path] = host_path
 
-    # Config-based files
     for entry in _load_config_files():
         cp = entry["container_path"]
         if cp not in mounts and Path(entry["host_path"]).is_file():
@@ -229,7 +220,6 @@ def get_skills_directory_mount(
             "container_path": f"{container_base.rstrip('/')}/skills",
         })
 
-    # Mount external skill dirs
     try:
         from agent.skill_utils import get_external_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
@@ -264,7 +254,6 @@ def _safe_skills_path(skills_dir: Path) -> str:
     import shutil
     import tempfile
 
-    # Reuse the same temp dir across calls to avoid accumulation.
     if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
         shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
 
@@ -316,7 +305,6 @@ def iter_skills_files(
                 "container_path": f"{container_root}/{rel}",
             })
 
-    # Include external skill dirs
     try:
         from agent.skill_utils import get_external_skills_dirs
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
@@ -337,12 +325,7 @@ def iter_skills_files(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Cache directory mounts (documents, images, audio, screenshots)
-# ---------------------------------------------------------------------------
 
-# The four cache subdirectories that should be mirrored into remote backends.
-# Each tuple is (new_subpath, old_name) matching daedalus_constants.get_daedalus_dir().
 _CACHE_DIRS: list[tuple[str, str]] = [
     ("cache/documents", "document_cache"),
     ("cache/images", "image_cache"),
@@ -366,7 +349,6 @@ def get_cache_directory_mounts(
     for new_subpath, old_name in _CACHE_DIRS:
         host_dir = get_daedalus_dir(new_subpath, old_name)
         if host_dir.is_dir():
-            # Always map to the *new* container layout regardless of host layout.
             container_path = f"{container_base.rstrip('/')}/{new_subpath}"
             mounts.append({
                 "host_path": str(host_dir),

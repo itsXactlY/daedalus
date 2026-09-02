@@ -44,11 +44,6 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
-# Anthropic (and Bedrock/Vertex/Azure fronting it) reject tool input schemas
-# whose property keys don't match this pattern. Cloudflare's flat API MCP
-# ships 61 such keys (query-filter params like ``issue_class~neq`` and
-# ``meta.<field>[<operator>]``) — one bad key anywhere in the tools array
-# 400s the entire request.
 _PROP_KEY_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 _PROP_KEY_BAD_CHARS = re.compile(r"[^a-zA-Z0-9_.-]")
 
@@ -143,13 +138,11 @@ def _sanitize_single_tool(tool: dict) -> dict:
         return out
 
     params = fn.get("parameters")
-    # Missing / non-dict parameters → substitute the minimal valid shape.
     if not isinstance(params, dict):
         fn["parameters"] = {"type": "object", "properties": {}}
         return out
 
     fn["parameters"] = _sanitize_node(params, path=fn.get("name", "<tool>"))
-    # After recursion, guarantee the top-level is an object with properties.
     top = fn["parameters"]
     if not isinstance(top, dict):
         fn["parameters"] = {"type": "object", "properties": {}}
@@ -158,15 +151,7 @@ def _sanitize_single_tool(tool: dict) -> dict:
             top["type"] = "object"
         if "properties" not in top or not isinstance(top.get("properties"), dict):
             top["properties"] = {}
-    # Final pass: collapse nullable anyOf/oneOf unions that the recursive
-    # sanitizer above leaves intact (it only handles the array-form
-    # ``type: [X, "null"]``). Keep the ``nullable: true`` hint so runtime
-    # argument coercion (``model_tools._schema_allows_null``) can still
-    # map a model-emitted ``"null"`` string to Python ``None``.
     fn["parameters"] = strip_nullable_unions(fn["parameters"], keep_nullable_hint=True)
-    # Strip top-level combinators that strict backends (OpenAI's Codex
-    # endpoint at chatgpt.com/backend-api/codex) reject outright. Nested
-    # combinators inside properties are preserved.
     fn["parameters"] = _strip_top_level_combinators(
         fn["parameters"], path=fn.get("name", "<tool>")
     )
@@ -174,7 +159,6 @@ def _sanitize_single_tool(tool: dict) -> dict:
     return out
 
 
-# Sibling keywords strict JSON Schema validators reject alongside ``$ref``.
 _REF_FORBIDDEN_SIBLINGS = frozenset({"default"})
 
 
@@ -285,16 +269,12 @@ def strip_nullable_unions(
             item for item in variants
             if not (isinstance(item, dict) and item.get("type") == "null")
         ]
-        # Only collapse when we actually dropped a null branch AND exactly
-        # one non-null branch survives (otherwise the union is meaningful
-        # and we leave it alone).
         if len(non_null) == 1 and len(non_null) != len(variants):
             replacement = dict(non_null[0]) if isinstance(non_null[0], dict) else {}
             if keep_nullable_hint:
                 replacement.setdefault("nullable", True)
             for meta_key in ("title", "description", "default", "examples"):
                 if meta_key in stripped and meta_key not in replacement:
-                    # ``default`` is illegal alongside ``$ref`` on strict backends.
                     if meta_key == "default" and "$ref" in replacement:
                         continue
                     replacement[meta_key] = stripped[meta_key]
@@ -315,7 +295,6 @@ def _sanitize_node(node: Any, path: str) -> Any:
     - Recurses into ``properties``, ``items``, ``additionalProperties``,
       ``anyOf``, ``oneOf``, ``allOf``, and ``$defs`` / ``definitions``.
     """
-    # Malformed: the schema position holds a bare string like "object".
     if isinstance(node, str):
         if node in {"object", "string", "number", "integer", "boolean", "array", "null"}:
             logger.debug(
@@ -327,9 +306,6 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 "type": "object",
                 "properties": {},
             }
-        # Any other stray string is not a schema — drop it by replacing with
-        # a permissive object schema rather than propagate something the
-        # backend will reject.
         logger.debug(
             "schema_sanitizer[%s]: replacing non-schema string %r "
             "with empty object schema", path, node,
@@ -342,31 +318,12 @@ def _sanitize_node(node: Any, path: str) -> Any:
     if not isinstance(node, dict):
         return node
 
-    # Compute property-key renames up front so the ``required`` branch below
-    # can remap regardless of dict iteration order (``required`` may precede
-    # ``properties`` in the source dict).
     prop_renames: dict[str, str] = {}
     if isinstance(node.get("properties"), dict):
         prop_renames = _rename_property_keys(node["properties"], f"{path}.properties")
 
     out: dict = {}
     for key, value in node.items():
-        # JSON Schema ``type`` arrays (e.g. ``["number", "string"]``, common
-        # in MCP tool schemas) are rejected by several tool-call backends:
-        #   * llama.cpp's grammar generator only accepts a singular string type.
-        #   * Gemini (including OpenAI-compatible transports such as GitHub
-        #     Copilot proxying to Gemini) rejects the array form outright —
-        #     plain @ai-sdk/google rewrites it, but the OpenAI-compatible path
-        #     forwards it verbatim and the backend 400s.
-        #
-        # Normalize per the SDK's behavior:
-        #   * single non-null type → ``type: X`` (+ ``nullable: true`` if the
-        #     array also contained "null"). No data lost.
-        #   * multiple non-null types → ``anyOf`` of single-type schemas, so
-        #     EVERY branch survives instead of silently dropping all but the
-        #     first. ``null`` is lifted into ``nullable: true``.
-        #   * all-null / empty → ``type: "null"`` (or object fallback).
-        # Ported from anomalyco/opencode#31877.
         if key == "type" and isinstance(value, list):
             has_null = "null" in value
             non_null = [t for t in value if isinstance(t, str) and t != "null"]
@@ -376,13 +333,10 @@ def _sanitize_node(node: Any, path: str) -> Any:
                     out.setdefault("nullable", True)
                 continue
             if len(non_null) >= 2:
-                # Preserve all branches as a union instead of dropping them.
                 out["anyOf"] = [{"type": t} for t in non_null]
                 if has_null:
                     out.setdefault("nullable", True)
                 continue
-            # No usable non-null type: all-null array → type: "null";
-            # otherwise an empty/garbage array → object fallback.
             out["type"] = "null" if has_null else "object"
             continue
 
@@ -395,9 +349,6 @@ def _sanitize_node(node: Any, path: str) -> Any:
             out[key] = new_props
         elif key in {"items", "additionalProperties"}:
             if isinstance(value, bool):
-                # Keep bool ``additionalProperties`` as-is — it's a valid form
-                # and widely accepted. ``items: true/false`` is non-standard
-                # but we preserve rather than drop.
                 out[key] = value
             else:
                 out[key] = _sanitize_node(value, f"{path}.{key}")
@@ -407,16 +358,6 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 for i, item in enumerate(value)
             ]
         elif key in {"required", "enum", "examples", "dependentRequired"}:
-            # Schema "sibling" keywords whose values are NOT schemas:
-            #  - ``required``: list of property-name strings
-            #  - ``enum``: list of literal values (any JSON type)
-            #  - ``examples``: list of example values (any JSON type)
-            #  - ``dependentRequired``: mapping of property names to lists of
-            #    required property-name strings (JSON Schema 2020-12)
-            # Recursing into these with _sanitize_node() would mis-interpret
-            # literal strings like "path" as bare-string schemas and replace
-            # them with {"type": "object"} dicts. Pass through unchanged
-            # (remapping ``required`` entries through the property renames).
             if key == "required" and prop_renames and isinstance(value, list):
                 out[key] = [prop_renames.get(r, r) if isinstance(r, str) else r
                             for r in value]
@@ -425,14 +366,9 @@ def _sanitize_node(node: Any, path: str) -> Any:
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 
-    # Object nodes without properties: inject empty properties dict.
-    # llama.cpp's grammar generator can't constrain a free-form object.
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
 
-    # Prune ``required`` entries that don't exist in properties (defense
-    # against malformed MCP schemas; also caught upstream for MCP tools, but
-    # built-in tools or plugin tools may not have been through that path).
     if out.get("type") == "object" and isinstance(out.get("required"), list):
         props = out.get("properties") or {}
         valid = [r for r in out["required"] if isinstance(r, str) and r in props]
@@ -444,9 +380,6 @@ def _sanitize_node(node: Any, path: str) -> Any:
     return out
 
 
-# =============================================================================
-# Reactive strip — only invoked when llama.cpp rejects a schema
-# =============================================================================
 
 _STRIP_ON_RECOVERY_KEYS = frozenset({"pattern", "format"})
 
@@ -485,10 +418,6 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
     def _walk(node: Any) -> None:
         nonlocal stripped
         if isinstance(node, dict):
-            # Only strip as a sibling of ``type`` — i.e. when this node is
-            # itself a schema.  This avoids stripping literal property keys
-            # named "pattern" (search_files.pattern, etc.) because those live
-            # inside a ``properties`` dict, not as siblings of ``type``.
             is_schema_node = "type" in node or "anyOf" in node or "oneOf" in node or "allOf" in node
             for key in list(node.keys()):
                 if is_schema_node and key in _STRIP_ON_RECOVERY_KEYS:
@@ -504,7 +433,6 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
         if not isinstance(tool, dict):
             continue
         
-        # OpenAI-format: {"function": {"parameters": {...}}}
         fn = tool.get("function")
         if isinstance(fn, dict):
             params = fn.get("parameters")
@@ -512,8 +440,6 @@ def strip_pattern_and_format(tools: list[dict]) -> tuple[list[dict], int]:
                 _walk(params)
                 continue
         
-        # Responses-format: {"name": "...", "parameters": {...}}
-        # (used by codex_responses API mode — xAI, OpenAI Codex, etc.)
         params = tool.get("parameters")
         if isinstance(params, dict):
             _walk(params)

@@ -116,10 +116,6 @@ def get_active_provider() -> Optional[VideoGenProvider]:
             logger.debug("video_gen provider %s.is_available() raised %s", p.name, exc)
             return False
 
-    # Fallback: single *available* provider — filter by is_available() so a
-    # box with credentials for only one backend auto-selects it even when
-    # other providers (fal/xai) register unconditionally without keys.
-    # Mirrors agent/image_gen_registry.get_active_provider().
     available = [p for p in snapshot.values() if _is_available_safe(p)]
     if len(available) == 1:
         return available[0]

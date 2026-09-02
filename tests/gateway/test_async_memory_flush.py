@@ -122,22 +122,17 @@ class TestGetOrCreateSessionNoCallback:
             chat_id="123",
             chat_type="dm",
         )
-        # Create initial session
         entry1 = idle_store.get_or_create_session(source)
         old_sid = entry1.session_id
 
-        # Simulate the watcher having flushed it
         entry1.memory_flushed = True
 
-        # Simulate the session going idle
         entry1.updated_at = datetime.now() - timedelta(minutes=120)
         idle_store._save()
 
-        # Next call should auto-reset
         entry2 = idle_store.get_or_create_session(source)
         assert entry2.session_id != old_sid
         assert entry2.was_auto_reset is True
-        # New session starts with memory_flushed=False
         assert entry2.memory_flushed is False
 
     def test_no_sync_callback_invoked(self, idle_store):
@@ -151,10 +146,8 @@ class TestGetOrCreateSessionNoCallback:
         entry1.updated_at = datetime.now() - timedelta(minutes=120)
         idle_store._save()
 
-        # Verify no _on_auto_reset attribute
         assert not hasattr(idle_store, '_on_auto_reset')
 
-        # This should NOT block (no sync LLM call)
         entry2 = idle_store.get_or_create_session(source)
         assert entry2.was_auto_reset is True
 
@@ -188,7 +181,6 @@ class TestMemoryFlushedFlag:
         idle_store._entries[key] = entry
         idle_store._save()
 
-        # Simulate restart: clear in-memory state, reload from disk
         idle_store._entries.clear()
         idle_store._loaded = False
         idle_store._ensure_loaded()
@@ -243,7 +235,6 @@ class TestMemoryFlushedFlag:
             "updated_at": datetime.now().isoformat(),
             "platform": "telegram",
             "chat_type": "dm",
-            # no memory_flushed key
         }
         entry = SessionEntry.from_dict(data)
         assert entry.memory_flushed is False

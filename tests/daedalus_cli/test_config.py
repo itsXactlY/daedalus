@@ -175,14 +175,12 @@ class TestRemoveEnvValue:
         with patch.dict(os.environ, {"DAEDALUS_HOME": str(tmp_path)}):
             result = remove_env_value("MISSING_KEY")
             assert result is False
-            # File should be untouched
             assert env_path.read_text() == "OTHER_KEY=value\n"
 
     def test_handles_missing_env_file(self, tmp_path):
         with patch.dict(os.environ, {"DAEDALUS_HOME": str(tmp_path), "GHOST_KEY": "ghost"}):
             result = remove_env_value("GHOST_KEY")
             assert result is False
-            # os.environ should still be cleared
             assert "GHOST_KEY" not in os.environ
 
     def test_clears_os_environ_even_when_not_in_file(self, tmp_path):
@@ -199,7 +197,6 @@ class TestSaveConfigAtomicity:
     def test_no_partial_write_on_crash(self, tmp_path):
         """If save_config crashes mid-write, the previous file stays intact."""
         with patch.dict(os.environ, {"DAEDALUS_HOME": str(tmp_path)}):
-            # Write an initial config
             config = load_config()
             config["model"] = "original-model"
             save_config(config)
@@ -207,8 +204,6 @@ class TestSaveConfigAtomicity:
             config_path = tmp_path / "config.yaml"
             assert config_path.exists()
 
-            # Simulate a crash during yaml.dump by making atomic_yaml_write's
-            # yaml.dump raise after the temp file is created but before replace.
             with patch("utils.yaml.dump", side_effect=OSError("disk full")):
                 try:
                     config["model"] = "should-not-persist"
@@ -216,7 +211,6 @@ class TestSaveConfigAtomicity:
                 except OSError:
                     pass
 
-            # Original file must still be intact
             reloaded = load_config()
             assert reloaded["model"] == "original-model"
 
@@ -232,7 +226,6 @@ class TestSaveConfigAtomicity:
                 except OSError:
                     pass
 
-            # No .tmp files should remain
             tmp_files = list(tmp_path.glob(".*config*.tmp"))
             assert tmp_files == []
 
@@ -244,7 +237,6 @@ class TestSaveConfigAtomicity:
             config["agent"]["max_turns"] = 77
             save_config(config)
 
-            # Read raw YAML to verify it's valid and correct
             config_path = tmp_path / "config.yaml"
             with open(config_path) as f:
                 raw = yaml.safe_load(f)
@@ -306,7 +298,6 @@ class TestSanitizeEnvLines:
         """Unknown key names on one line are NOT split (avoids false positives)."""
         lines = ["CUSTOM_VAR=value123OTHER_THING=value456\n"]
         result = _sanitize_env_lines(lines)
-        # Unknown keys stay on one line — no false split
         assert len(result) == 1
 
     def test_value_ending_with_digits_still_splits(self):
@@ -330,7 +321,6 @@ class TestSanitizeEnvLines:
             content = env_file.read_text()
             lines = content.strip().split("\n")
 
-            # Corrupted line should be split, new key added
             assert "ANTHROPIC_API_KEY=sk-ant" in lines
             assert "OPENAI_BASE_URL=https://api.openai.com/v1" in lines
             assert "MESSAGING_CWD=/tmp" in lines
@@ -346,7 +336,6 @@ class TestSanitizeEnvLines:
             fixes = sanitize_env_file()
             assert fixes > 0
 
-            # Verify file is now clean
             content = env_file.read_text()
             assert "OPENROUTER_API_KEY=val\n" in content
             assert "FIRECRAWL_API_KEY=val2\n" in content

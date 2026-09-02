@@ -28,9 +28,6 @@ def _read_config(tmp_path):
     return config_path.read_text() if config_path.exists() else ""
 
 
-# ---------------------------------------------------------------------------
-# Explicit allowlist keys → .env
-# ---------------------------------------------------------------------------
 
 class TestExplicitAllowlist:
     """Keys in the hardcoded allowlist should always go to .env."""
@@ -56,13 +53,9 @@ class TestExplicitAllowlist:
         set_config_value(key, "test-value-123")
         env_content = _read_env(_isolated_daedalus_home)
         assert f"{key}=test-value-123" in env_content
-        # Must NOT appear in config.yaml
         assert key not in _read_config(_isolated_daedalus_home)
 
 
-# ---------------------------------------------------------------------------
-# Catch-all patterns → .env
-# ---------------------------------------------------------------------------
 
 class TestCatchAllPatterns:
     """Any key ending in _API_KEY or _TOKEN should route to .env."""
@@ -92,9 +85,6 @@ class TestCatchAllPatterns:
         assert "TERMINAL_SSH_PORT=2222" in env_content
 
 
-# ---------------------------------------------------------------------------
-# Non-secret keys → config.yaml
-# ---------------------------------------------------------------------------
 
 class TestConfigYamlRouting:
     """Regular config keys should go to config.yaml, NOT .env."""
@@ -118,9 +108,6 @@ class TestConfigYamlRouting:
         assert "python:3.12" in config
 
 
-# ---------------------------------------------------------------------------
-# Empty / falsy values — regression tests for #4277
-# ---------------------------------------------------------------------------
 
 class TestFalsyValues:
     """config set should accept empty strings and falsy values like '0'."""

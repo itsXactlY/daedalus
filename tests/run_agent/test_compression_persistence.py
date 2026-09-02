@@ -24,9 +24,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Part 1: Agent-side — _flush_messages_to_session_db after compression
-# ---------------------------------------------------------------------------
 
 class TestFlushAfterCompression:
     """Verify that compressed messages are flushed to the new session's SQLite
@@ -62,24 +59,20 @@ class TestFlushAfterCompression:
 
             agent = self._make_agent(db)
 
-            # Simulate the original long history (200 messages)
             original_history = [
                 {"role": "user" if i % 2 == 0 else "assistant",
                  "content": f"message {i}"}
                 for i in range(200)
             ]
 
-            # First, flush original messages to the original session
             agent._flush_messages_to_session_db(original_history, [])
             original_rows = db.get_messages("original-session")
             assert len(original_rows) == 200
 
-            # Now simulate compression: new session, reset idx, shorter messages
             agent.session_id = "compressed-session"
             db.create_session(session_id="compressed-session", source="test")
             agent._last_flushed_db_idx = 0
 
-            # The compressed messages (summary + tail + new turn)
             compressed_messages = [
                 {"role": "user", "content": "[CONTEXT COMPACTION] Summary of work..."},
                 {"role": "user", "content": "What should we do next?"},
@@ -88,9 +81,6 @@ class TestFlushAfterCompression:
                 {"role": "assistant", "content": "new answer"},
             ]
 
-            # THE BUG: passing the original history as conversation_history
-            # causes flush_from = max(200, 0) = 200, skipping everything.
-            # After the fix, conversation_history should be None.
             agent._flush_messages_to_session_db(compressed_messages, None)
 
             new_rows = db.get_messages("compressed-session")
@@ -109,7 +99,6 @@ class TestFlushAfterCompression:
 
             agent = self._make_agent(db)
 
-            # Simulate compression reset
             agent.session_id = "new-session"
             db.create_session(session_id="new-session", source="test")
             agent._last_flushed_db_idx = 0
@@ -119,22 +108,16 @@ class TestFlushAfterCompression:
                 {"role": "assistant", "content": "continuing..."},
             ]
 
-            # Bug: passing a conversation_history longer than compressed messages
             stale_history = [{"role": "user", "content": f"msg{i}"} for i in range(100)]
             agent._flush_messages_to_session_db(compressed, stale_history)
 
             rows = db.get_messages("new-session")
-            # With the stale history, flush_from = max(100, 0) = 100
-            # But compressed only has 2 entries → messages[100:] = empty
             assert len(rows) == 0, (
                 "Expected 0 messages with stale conversation_history "
                 "(this test verifies the bug condition exists)"
             )
 
 
-# ---------------------------------------------------------------------------
-# Part 2: Gateway-side — history_offset after session split
-# ---------------------------------------------------------------------------
 
 class TestGatewayHistoryOffsetAfterSplit:
     """Verify that when the agent creates a new session during compression,
@@ -143,15 +126,11 @@ class TestGatewayHistoryOffsetAfterSplit:
 
     def test_history_offset_zero_on_session_split(self):
         """When agent.session_id differs from the original, history_offset must be 0."""
-        # This tests the logic in gateway/run.py run_sync():
-        # _session_was_split = agent.session_id != session_id
-        # _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
         original_session_id = "session-abc"
-        agent_session_id = "session-compressed-xyz"  # Different = compression happened
+        agent_session_id = "session-compressed-xyz"
         agent_history_len = 200
 
-        # Simulate the gateway's offset calculation (post-fix)
         _session_was_split = (agent_session_id != original_session_id)
         _effective_history_offset = 0 if _session_was_split else agent_history_len
 
@@ -161,7 +140,7 @@ class TestGatewayHistoryOffsetAfterSplit:
     def test_history_offset_preserved_without_split(self):
         """When no compression happened, history_offset is the original length."""
         session_id = "session-abc"
-        agent_session_id = "session-abc"  # Same = no compression
+        agent_session_id = "session-abc"
         agent_history_len = 200
 
         _session_was_split = (agent_session_id != session_id)
@@ -172,7 +151,6 @@ class TestGatewayHistoryOffsetAfterSplit:
 
     def test_new_messages_extraction_after_split(self):
         """After compression with offset=0, new_messages should be ALL agent messages."""
-        # Simulates the gateway's new_messages calculation
         agent_messages = [
             {"role": "user", "content": "[CONTEXT COMPACTION] Summary..."},
             {"role": "user", "content": "recent question"},
@@ -180,7 +158,7 @@ class TestGatewayHistoryOffsetAfterSplit:
             {"role": "user", "content": "new question"},
             {"role": "assistant", "content": "new answer"},
         ]
-        history_offset = 0  # After fix: 0 on session split
+        history_offset = 0
 
         new_messages = agent_messages[history_offset:] if len(agent_messages) > history_offset else []
         assert len(new_messages) == 5, (
@@ -193,7 +171,6 @@ class TestGatewayHistoryOffsetAfterSplit:
             {"role": "user", "content": "summary"},
             {"role": "assistant", "content": "answer"},
         ]
-        # Bug: offset is the pre-compression history length
         history_offset = 200
 
         new_messages = agent_messages[history_offset:] if len(agent_messages) > history_offset else []

@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -26,14 +25,11 @@ def _isolate_daedalus_home(tmp_path, monkeypatch):
     (fake_home / "memories").mkdir()
     (fake_home / "skills").mkdir()
     monkeypatch.setenv("DAEDALUS_HOME", str(fake_home))
-    # Reset plugin singleton so tests don't leak plugins from ~/.daedalus/plugins/
     try:
         import daedalus_cli.plugins as _plugins_mod
         monkeypatch.setattr(_plugins_mod, "_plugin_manager", None)
     except Exception:
         pass
-    # Tests should not inherit the agent's current gateway/messaging surface.
-    # Individual tests that need gateway behavior set these explicitly.
     monkeypatch.delenv("DAEDALUS_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("DAEDALUS_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("DAEDALUS_SESSION_CHAT_NAME", raising=False)
@@ -64,10 +60,6 @@ def mock_config():
     }
 
 
-# ── Global test timeout ─────────────────────────────────────────────────────
-# Kill any individual test that takes longer than 30 seconds.
-# Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
-# entire test suite.
 
 def _timeout_handler(signum, frame):
     raise TimeoutError("Test exceeded 30 second timeout")
@@ -119,10 +111,6 @@ def _enforce_test_timeout():
     signal.signal(signal.SIGALRM, old)
 
 
-# ---------------------------------------------------------------------------
-# Host-OS gating: @pytest.mark.linux_only / macos_only / windows_only skip a
-# test on every host but the one named, rather than faking sys.platform.
-# ---------------------------------------------------------------------------
 
 _OS_MARKS = {
     "linux_only": (

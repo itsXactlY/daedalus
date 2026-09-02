@@ -26,42 +26,26 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
-# Shared tool list for CLI and all messaging platform toolsets.
-# Edit this once to update all platforms simultaneously.
 _DAEDALUS_CORE_TOOLS = [
-    # Web
     "web_search", "web_extract",
-    # Terminal + process management
     "terminal", "process",
-    # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision
     "vision_analyze",
-    # Skills
     "skills_list", "skill_view", "skill_manage",
-    # Planning & memory
     "todo", "memory",
-    # Session history search
     "session_search",
-    # Clarifying questions
     "clarify",
-    # Code execution + delegation
     "execute_code", "delegate_task",
-    # Cronjob management
     "cronjob",
-    # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
 ]
 
 
-# Core toolset definitions
-# These can include individual tools or reference other toolsets
 TOOLSETS = {
-    # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",
         "tools": ["web_search", "web_extract"],
-        "includes": []  # No other toolsets included
+        "includes": []
     },
     
     "search": {
@@ -184,8 +168,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    # "honcho" toolset removed — Honcho is now a memory provider plugin.
-    # Tools are injected via MemoryManager, not the toolset system.
 
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
@@ -206,12 +188,11 @@ TOOLSETS = {
     },
 
 
-    # Scenario-specific toolsets
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal", "process"],
-        "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
+        "includes": ["web", "file"]
     },
     
     "safe": {
@@ -220,12 +201,6 @@ TOOLSETS = {
         "includes": ["web", "vision", "image_gen"]
     },
     
-    # ==========================================================================
-    # Full Daedalus toolsets (CLI + messaging platforms)
-    #
-    # All platforms share the same core tools (including send_message,
-    # which is gated on gateway running via its check_fn).
-    # ==========================================================================
 
     "daedalus-acp": {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
@@ -245,23 +220,14 @@ TOOLSETS = {
     "daedalus-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [
-            # Web
             "web_search", "web_extract",
-            # Terminal + process management
             "terminal", "process",
-            # File manipulation
             "read_file", "write_file", "patch", "search_files",
-            # Vision
             "vision_analyze",
-            # Skills
             "skills_list", "skill_view", "skill_manage",
-            # Planning & memory
             "todo", "memory",
-            # Session history search
             "session_search",
-            # Code execution + delegation
             "execute_code", "delegate_task",
-            # Cronjob management
             "cronjob",
 
         ],
@@ -378,7 +344,6 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
         Dict: Toolset definition with description, tools, and includes
         None: If toolset not found
     """
-    # Return toolset definition
     return TOOLSETS.get(name)
 
 
@@ -399,28 +364,20 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     if visited is None:
         visited = set()
     
-    # Special aliases that represent all tools across every toolset
-    # This ensures future toolsets are automatically included without changes.
     if name in {"all", "*"}:
         all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
-            # Use a fresh visited set per branch to avoid cross-branch contamination
             resolved = resolve_toolset(toolset_name, visited.copy())
             all_tools.update(resolved)
         return list(all_tools)
 
-    # Check for cycles / already-resolved (diamond deps).
-    # Silently return [] — either this is a diamond (not a bug, tools already
-    # collected via another path) or a genuine cycle (safe to skip).
     if name in visited:
         return []
 
     visited.add(name)
 
-    # Get toolset definition
     toolset = TOOLSETS.get(name)
     if not toolset:
-        # Fall back to tool registry for plugin-provided toolsets
         if name in _get_plugin_toolset_names():
             try:
                 from tools.registry import registry
@@ -429,12 +386,8 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
                 pass
         return []
 
-    # Collect direct tools
     tools = set(toolset.get("tools", []))
 
-    # Recursively resolve included toolsets, sharing the visited set across
-    # sibling includes so diamond dependencies are only resolved once and
-    # cycle warnings don't fire multiple times for the same cycle.
     for included_name in toolset.get("includes", []):
         included_tools = resolve_toolset(included_name, visited)
         tools.update(included_tools)
@@ -488,7 +441,6 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
         Dict: All toolset definitions
     """
     result = TOOLSETS.copy()
-    # Add plugin-provided toolsets (synthetic entries)
     for ts_name in _get_plugin_toolset_names():
         if ts_name not in result:
             try:
@@ -529,12 +481,10 @@ def validate_toolset(name: str) -> bool:
     Returns:
         bool: True if valid, False otherwise
     """
-    # Accept special alias names for convenience
     if name in {"all", "*"}:
         return True
     if name in TOOLSETS:
         return True
-    # Check tool registry for plugin-provided toolsets
     return name in _get_plugin_toolset_names()
 
 

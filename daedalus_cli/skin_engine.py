@@ -105,9 +105,6 @@ from daedalus_constants import get_daedalus_home
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Skin data structure
-# =============================================================================
 
 @dataclass
 class SkinConfig:
@@ -118,9 +115,9 @@ class SkinConfig:
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
-    tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
-    banner_logo: str = ""    # Rich-markup ASCII art logo (replaces DAEDALUS_AGENT_LOGO)
-    banner_hero: str = ""    # Rich-markup hero art (replaces DAEDALUS_CADUCEUS)
+    tool_emojis: Dict[str, str] = field(default_factory=dict)
+    banner_logo: str = ""
+    banner_hero: str = ""
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -144,9 +141,6 @@ class SkinConfig:
         return self.branding.get(key, fallback)
 
 
-# =============================================================================
-# Built-in skin definitions
-# =============================================================================
 
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
@@ -170,7 +164,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "session_border": "#8B8682",
         },
         "spinner": {
-            # Empty = use hardcoded defaults in display.py
         },
         "branding": {
             "agent_name": "Daedalus Agent",
@@ -504,9 +497,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 }
 
 
-# =============================================================================
-# Skin loading and management
-# =============================================================================
 
 _active_skin: Optional[SkinConfig] = None
 _active_skin_name: str = "default"
@@ -532,7 +522,6 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
 
 def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     """Build a SkinConfig from a raw dict (built-in or loaded from YAML)."""
-    # Start with default values as base for missing keys
     default = _BUILTIN_SKINS["default"]
     colors = dict(default.get("colors", {}))
     colors.update(data.get("colors", {}))
@@ -573,7 +562,6 @@ def list_skins() -> List[Dict[str, str]]:
             data = _load_skin_from_yaml(f)
             if data:
                 skin_name = data.get("name", f.stem)
-                # Skip if it shadows a built-in
                 if any(s["name"] == skin_name for s in result):
                     continue
                 result.append({
@@ -587,7 +575,6 @@ def list_skins() -> List[Dict[str, str]]:
 
 def load_skin(name: str) -> SkinConfig:
     """Load a skin by name. Checks user skins first, then built-in."""
-    # Check user skins directory
     skins_path = _skins_dir()
     user_file = skins_path / f"{name}.yaml"
     if user_file.is_file():
@@ -595,11 +582,9 @@ def load_skin(name: str) -> SkinConfig:
         if data:
             return _build_skin_config(data)
 
-    # Check built-in skins
     if name in _BUILTIN_SKINS:
         return _build_skin_config(_BUILTIN_SKINS[name])
 
-    # Fallback to default
     logger.warning("Skin '%s' not found, using default", name)
     return _build_skin_config(_BUILTIN_SKINS["default"])
 
@@ -638,9 +623,6 @@ def init_skin_from_config(config: dict) -> None:
         set_active_skin("default")
 
 
-# =============================================================================
-# Convenience helpers for CLI modules
-# =============================================================================
 
 
 def get_active_prompt_symbol(fallback: str = "❯ ") -> str:

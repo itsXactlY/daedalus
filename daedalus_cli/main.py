@@ -52,31 +52,15 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
-# Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# ---------------------------------------------------------------------------
-# Profile override — MUST happen before any daedalus module import.
-#
-# Many modules cache DAEDALUS_HOME at import time (module-level constants).
-# We intercept --profile/-p from sys.argv here and set the env var so that
-# every subsequent ``os.getenv("DAEDALUS_HOME", ...)`` resolves correctly.
-# The flag is stripped from sys.argv so argparse never sees it.
-# Falls back to ~/.daedalus/active_profile for sticky default.
-# ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set DAEDALUS_HOME before module imports."""
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
 
-    # 1. Check for explicit -p / --profile flag.
-    #    Validate the value before treating it as a profile name: pytest (and
-    #    other tools) use `-p <plugin>` for plugins, and `-p no:cacheprovider`
-    #    was being consumed as a profile name here, aborting `daedalus_cli.main`
-    #    imports during test collection with a bogus "Invalid profile name".
-    #    A valid profile is [a-z0-9][a-z0-9_-]{0,63} — no ':'.
     _PROFILE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
     for i, arg in enumerate(argv):
         if arg in ("--profile", "-p") and i + 1 < len(argv):
@@ -92,7 +76,6 @@ def _apply_profile_override() -> None:
                 consume = 1
                 break
 
-    # 2. If no flag, check ~/.daedalus/active_profile
     if profile_name is None:
         try:
             active_path = Path.home() / ".daedalus" / "active_profile"
@@ -100,11 +83,10 @@ def _apply_profile_override() -> None:
                 name = active_path.read_text().strip()
                 if name and name != "default":
                     profile_name = name
-                    consume = 0  # don't strip anything from argv
+                    consume = 0
         except (UnicodeDecodeError, OSError):
-            pass  # corrupted file, skip
+            pass
 
-    # 3. If we found a profile, resolve and set DAEDALUS_HOME
     if profile_name is not None:
         try:
             from daedalus_cli.profiles import resolve_profile_env
@@ -113,15 +95,13 @@ def _apply_profile_override() -> None:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
         except Exception as exc:
-            # A bug in profiles.py must NEVER prevent daedalus from starting
             print(f"Warning: profile override failed ({exc}), using default", file=sys.stderr)
             return
         os.environ["DAEDALUS_HOME"] = daedalus_home
-        # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
                 if arg in ("--profile", "-p"):
-                    start = i + 1  # +1 because argv is sys.argv[1:]
+                    start = i + 1
                     sys.argv = sys.argv[:start] + sys.argv[start + consume:]
                     break
                 elif arg.startswith("--profile="):
@@ -131,19 +111,15 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
-# Load .env from ~/.daedalus/.env first, then project root as dev fallback.
-# User-managed env files should override stale shell exports on restart.
 from daedalus_cli.config import get_daedalus_home
 from daedalus_cli.env_loader import load_daedalus_dotenv
 load_daedalus_dotenv(project_env=PROJECT_ROOT / '.env')
 
-# Initialize centralized file logging early — all `daedalus` subcommands
-# (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
 try:
     from daedalus_logging import setup_logging as _setup_logging
     _setup_logging(mode="cli")
 except Exception:
-    pass  # best-effort — don't crash the CLI if logging setup fails
+    pass
 
 import logging
 import time as _time
@@ -178,10 +154,6 @@ def _has_any_provider_configured() -> bool:
     from daedalus_cli.config import get_env_path, get_daedalus_home, load_config
     from daedalus_cli.auth import get_auth_status
 
-    # Determine whether Daedalus itself has been explicitly configured (model
-    # in config that isn't the hardcoded default). Used below to gate external
-    # tool credentials (Claude Code, Codex CLI) that shouldn't silently skip
-    # the setup wizard on a fresh install.
     from daedalus_cli.config import DEFAULT_CONFIG
     _DEFAULT_MODEL = DEFAULT_CONFIG.get("model", "")
     cfg = load_config()
@@ -194,12 +166,8 @@ def _has_any_provider_configured() -> bool:
         _model_name = ""
     _has_daedalus_config = _model_name and _model_name != _DEFAULT_MODEL
 
-    # Check env vars (may be set by .env or shell).
-    # OPENAI_BASE_URL alone counts — local models (vLLM, llama.cpp, etc.)
-    # often don't require an API key.
     from daedalus_cli.auth import PROVIDER_REGISTRY
 
-    # Collect all provider env vars
     provider_env_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
@@ -207,7 +175,6 @@ def _has_any_provider_configured() -> bool:
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 
-    # Check .env file for keys
     env_file = get_env_path()
     if env_file.exists():
         try:
@@ -222,7 +189,6 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
-    # Check provider-specific auth fallbacks (for example, Copilot via gh auth).
     try:
         for provider_id, pconfig in PROVIDER_REGISTRY.items():
             if pconfig.auth_type != "api_key":
@@ -233,7 +199,6 @@ def _has_any_provider_configured() -> bool:
     except Exception:
         pass
 
-    # Check for Nous Portal OAuth credentials
     auth_file = get_daedalus_home() / "auth.json"
     if auth_file.exists():
         try:
@@ -248,10 +213,6 @@ def _has_any_provider_configured() -> bool:
             pass
 
 
-    # Check config.yaml — if model is a dict with an explicit provider set,
-    # the user has gone through setup (fresh installs have model as a plain
-    # string).  Also covers custom endpoints that store api_key/base_url in
-    # config rather than .env.
     if isinstance(model_cfg, dict):
         cfg_provider = (model_cfg.get("provider") or "").strip()
         cfg_base_url = (model_cfg.get("base_url") or "").strip()
@@ -259,9 +220,6 @@ def _has_any_provider_configured() -> bool:
         if cfg_provider or cfg_base_url or cfg_api_key:
             return True
 
-    # Check for Claude Code OAuth credentials (~/.claude/.credentials.json)
-    # Only count these if Daedalus has been explicitly configured — Claude Code
-    # being installed doesn't mean the user wants Daedalus to use their tokens.
     if _has_daedalus_config:
         try:
             from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
@@ -285,7 +243,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         print("No sessions found.")
         return None
 
-    # Try curses-based picker first
     try:
         import curses
 
@@ -299,9 +256,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             last_active = _relative_time(s.get("last_active"))
             sid = s["id"][:18]
 
-            # Adaptive column widths based on terminal width
-            # Layout: [arrow 3] [title/preview flexible] [active 12] [src 6] [id 18]
-            fixed_cols = 3 + 12 + 6 + 18 + 6  # arrow + active + src + id + padding
+            fixed_cols = 3 + 12 + 6 + 18 + 6
             name_width = max(20, max_x - fixed_cols)
 
             if title:
@@ -328,10 +283,10 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             if curses.has_colors():
                 curses.start_color()
                 curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)   # selected
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)  # header
-                curses.init_pair(3, curses.COLOR_CYAN, -1)    # search
-                curses.init_pair(4, 8, -1)                    # dim
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+                curses.init_pair(3, curses.COLOR_CYAN, -1)
+                curses.init_pair(4, 8, -1)
 
             cursor = 0
             scroll_offset = 0
@@ -342,7 +297,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
                 if max_y < 5 or max_x < 40:
-                    # Terminal too small
                     try:
                         stdscr.addstr(0, 0, "Terminal too small")
                     except curses.error:
@@ -351,7 +305,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     stdscr.getch()
                     return
 
-                # Header line
                 if search_text:
                     header = f"  Browse sessions — filter: {search_text}█"
                     header_attr = curses.A_BOLD
@@ -367,7 +320,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 except curses.error:
                     pass
 
-                # Column header line
                 fixed_cols = 3 + 12 + 6 + 18 + 6
                 name_width = max(20, max_x - fixed_cols)
                 col_header = f"   {'Title / Preview':<{name_width}}  {'Active':<10}  {'Src':<5} {'ID'}"
@@ -377,12 +329,10 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 except curses.error:
                     pass
 
-                # Compute visible area
-                visible_rows = max_y - 4  # header + col header + blank + footer
+                visible_rows = max_y - 4
                 if visible_rows < 1:
                     visible_rows = 1
 
-                # Clamp cursor and scroll
                 if not filtered:
                     try:
                         msg = "  No sessions match the filter."
@@ -419,7 +369,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                         except curses.error:
                             pass
 
-                # Footer
                 footer_y = max_y - 1
                 if filtered:
                     footer = f"  {cursor + 1}/{len(filtered)} sessions"
@@ -446,15 +395,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     if filtered:
                         result_holder[0] = filtered[cursor]["id"]
                     return
-                elif key == 27:  # Esc
+                elif key == 27:
                     if search_text:
-                        # First Esc clears the search
                         search_text = ""
                         filtered = list(sessions)
                         cursor = 0
                         scroll_offset = 0
                     else:
-                        # Second Esc exits
                         return
                 elif key in (curses.KEY_BACKSPACE, 127, 8):
                     if search_text:
@@ -468,7 +415,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                 elif key == ord('q') and not search_text:
                     return
                 elif 32 <= key <= 126:
-                    # Printable character → add to search filter
                     search_text += chr(key)
                     filtered = [s for s in sessions if _match(s, search_text)]
                     cursor = 0
@@ -480,7 +426,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     except Exception:
         pass
 
-    # Fallback: numbered list (Windows without curses, etc.)
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
     for i, s in enumerate(sessions):
         title = (s.get("title") or "").strip()
@@ -533,13 +478,11 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
         from daedalus_state import SessionDB
         db = SessionDB()
 
-        # Try as exact session ID first
         session = db.get_session(name_or_id)
         if session:
             db.close()
             return session["id"]
 
-        # Try as title (with auto-latest for lineage)
         session_id = db.resolve_session_by_title(name_or_id)
         db.close()
         return session_id
@@ -550,11 +493,9 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    # Resolve --continue into --resume with the latest CLI session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
         if isinstance(continue_val, str):
-            # -c "session name" — resolve by title or ID
             resolved = _resolve_session_by_name_or_id(continue_val)
             if resolved:
                 args.resume = resolved
@@ -563,7 +504,6 @@ def cmd_chat(args):
                 print("Use 'daedalus sessions list' to see available sessions.")
                 sys.exit(1)
         else:
-            # -c with no argument — continue the most recent session
             last_id = _resolve_last_cli_session()
             if last_id:
                 args.resume = last_id
@@ -571,16 +511,12 @@ def cmd_chat(args):
                 print("No previous CLI session found to continue.")
                 sys.exit(1)
 
-    # Resolve --resume by title if it's not a direct session ID
     resume_val = getattr(args, "resume", None)
     if resume_val:
         resolved = _resolve_session_by_name_or_id(resume_val)
         if resolved:
             args.resume = resolved
-        # If resolution fails, keep the original value — _init_agent will
-        # report "Session not found" with the original input
 
-    # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
         print("It looks like Daedalus isn't configured yet -- no API keys or providers found.")
@@ -607,32 +543,24 @@ def cmd_chat(args):
         print("You can run 'daedalus setup' at any time to configure.")
         sys.exit(1)
 
-    # Start update check in background (runs while other init happens)
     try:
         from daedalus_cli.banner import prefetch_update_check
         prefetch_update_check()
     except Exception:
         pass
 
-    # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
     try:
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
     except Exception:
         pass
 
-    # --yolo: bypass all dangerous command approvals
     if getattr(args, "yolo", False):
         os.environ["DAEDALUS_YOLO_MODE"] = "1"
 
-    # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["DAEDALUS_SESSION_SOURCE"] = args.source
 
-    # Bare interactive prompt (no --query). The FULL UI is the default —
-    # eager tool discovery + config-driven banner (display.compact). Fast
-    # startup (deferred tool discovery + compact banner) is opt-in via
-    # DAEDALUS_FAST_STARTUP=1.
     interactive_prompt = not getattr(args, "query", None)
     _fast_startup = interactive_prompt and os.environ.get("DAEDALUS_FAST_STARTUP") == "1"
     if _fast_startup:
@@ -641,10 +569,8 @@ def cmd_chat(args):
         if getattr(args, "accept_hooks", False):
             os.environ["DAEDALUS_ACCEPT_HOOKS"] = "1"
 
-    # Import and run the CLI
     from cli import main as cli_main
 
-    # Build kwargs from args
     kwargs = {
         "model": args.model,
         "provider": getattr(args, "provider", None),
@@ -659,9 +585,7 @@ def cmd_chat(args):
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
     }
-    # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    # Fast-startup prompts force compact (tool list isn't discovered yet).
     if _fast_startup:
         kwargs["compact"] = True
     
@@ -689,7 +613,6 @@ def cmd_whatsapp(args):
     print("⚕ WhatsApp Setup")
     print("=" * 50)
 
-    # ── Step 1: Choose mode ──────────────────────────────────────────────
     current_mode = get_env_value("WHATSAPP_MODE") or ""
     if not current_mode:
         print()
@@ -735,7 +658,6 @@ def cmd_whatsapp(args):
         mode_label = "separate bot number" if wa_mode == "bot" else "personal number (self-chat)"
         print(f"\n✓ Mode: {mode_label}")
 
-    # ── Step 2: Enable WhatsApp ──────────────────────────────────────────
     print()
     current = get_env_value("WHATSAPP_ENABLED")
     if current and current.lower() == "true":
@@ -744,7 +666,6 @@ def cmd_whatsapp(args):
         save_env_value("WHATSAPP_ENABLED", "true")
         print("✓ WhatsApp enabled")
 
-    # ── Step 3: Allowed users ────────────────────────────────────────────
     current_users = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
     if current_users:
         print(f"✓ Allowed users: {current_users}")
@@ -773,7 +694,6 @@ def cmd_whatsapp(args):
         else:
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
-    # ── Step 4: Install bridge dependencies ──────────────────────────────
     project_root = Path(__file__).resolve().parents[1]
     bridge_dir = project_root / "scripts" / "whatsapp-bridge"
     bridge_script = bridge_dir / "bridge.js"
@@ -798,7 +718,6 @@ def cmd_whatsapp(args):
     else:
         print("✓ Bridge dependencies already installed")
 
-    # ── Step 5: Check for existing session ───────────────────────────────
     session_dir = get_daedalus_home() / "whatsapp" / "session"
     session_dir.mkdir(parents=True, exist_ok=True)
 
@@ -818,7 +737,6 @@ def cmd_whatsapp(args):
             print("  Start the gateway with: daedalus gateway")
             return
 
-    # ── Step 6: QR code pairing ──────────────────────────────────────────
     print()
     print("─" * 50)
     if wa_mode == "bot":
@@ -839,7 +757,6 @@ def cmd_whatsapp(args):
     except KeyboardInterrupt:
         pass
 
-    # ── Step 7: Post-pairing ─────────────────────────────────────────────
     print()
     if (session_dir / "creds.json").exists():
         print("✓ WhatsApp paired successfully!")
@@ -897,8 +814,6 @@ def select_provider_and_model(args=None):
         current_model = current_model.get("default", "")
     current_model = current_model or "(not set)"
 
-    # Read effective provider the same way the CLI does at startup:
-    # config.yaml model.provider > env var > auto-detect
     import os
     config_provider = None
     model_cfg = config.get("model")
@@ -918,9 +833,8 @@ def select_provider_and_model(args=None):
         try:
             active = resolve_provider("auto")
         except AuthError:
-            active = None  # no provider yet; default to first in list
+            active = None
 
-    # Detect custom endpoint
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         active = "custom"
 
@@ -952,7 +866,6 @@ def select_provider_and_model(args=None):
     print(f"  Active provider:  {active_label}")
     print()
 
-    # Step 1: Provider selection — top providers shown first, rest behind "More..."
     top_providers = [
         ("nous", "Nous Portal (Nous Research subscription)"),
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
@@ -977,9 +890,8 @@ def select_provider_and_model(args=None):
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ]
 
-    # Add user-defined custom providers from config.yaml
     custom_providers_cfg = config.get("custom_providers") or []
-    _custom_provider_map = {}  # key → {name, base_url, api_key}
+    _custom_provider_map = {}
     if isinstance(custom_providers_cfg, list):
         for entry in custom_providers_cfg:
             if not isinstance(entry, dict):
@@ -1003,14 +915,12 @@ def select_provider_and_model(args=None):
     top_keys = {k for k, _ in top_providers}
     extended_keys = {k for k, _ in extended_providers}
 
-    # If the active provider is in the extended list, promote it into top
     if active and active in extended_keys:
         promoted = [(k, l) for k, l in extended_providers if k == active]
         extended_providers = [(k, l) for k, l in extended_providers if k != active]
         top_providers = promoted + top_providers
         top_keys.add(active)
 
-    # Build the primary menu
     ordered = []
     default_idx = 0
     for key, label in top_providers:
@@ -1032,7 +942,6 @@ def select_provider_and_model(args=None):
 
     selected_provider = ordered[provider_idx][0]
 
-    # "More providers..." — show the extended list
     if selected_provider == "more":
         ext_ordered = list(extended_providers)
         ext_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
@@ -1048,7 +957,6 @@ def select_provider_and_model(args=None):
             return
         selected_provider = ext_ordered[ext_idx][0]
 
-    # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
         _model_flow_openrouter(config, current_model)
     elif selected_provider == "nous":
@@ -1091,7 +999,6 @@ def _prompt_provider_choice(choices, *, default=0):
     except Exception:
         pass
 
-    # Fallback: numbered list
     print("Select provider:")
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
@@ -1139,14 +1046,12 @@ def _model_flow_openrouter(config, current_model=""):
     from daedalus_cli.models import model_ids, get_pricing_for_provider
     openrouter_models = model_ids()
 
-    # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("openrouter")
 
     selected = _prompt_model_selection(openrouter_models, current_model=current_model, pricing=pricing)
     if selected:
         _save_model_choice(selected)
 
-        # Update config provider and deactivate any OAuth provider
         from daedalus_cli.config import load_config, save_config
         cfg = load_config()
         model = cfg.get("model")
@@ -1203,12 +1108,8 @@ def _model_flow_nous(config, current_model="", args=None):
         except Exception as exc:
             print(f"Login failed: {exc}")
             return
-        # login_nous already handles model selection + config update
         return
 
-    # Already logged in — use curated model list (same as OpenRouter defaults).
-    # The live /models endpoint returns hundreds of models; the curated list
-    # shows only agentic models users recognize from OpenRouter.
     from daedalus_cli.models import (
         _PROVIDER_MODELS, get_pricing_for_provider, filter_nous_free_models,
         check_nous_free_tier, partition_nous_models_by_tier,
@@ -1218,7 +1119,6 @@ def _model_flow_nous(config, current_model="", args=None):
         print("No curated models available for Nous Portal.")
         return
 
-    # Verify credentials are still valid (catches expired sessions early)
     try:
         creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=5 * 60)
     except Exception as exc:
@@ -1240,15 +1140,10 @@ def _model_flow_nous(config, current_model="", args=None):
         print(f"Could not verify credentials: {msg}")
         return
 
-    # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("nous")
 
-    # Check if user is on free tier
     free_tier = check_nous_free_tier()
 
-    # For both tiers: apply the allowlist filter first (removes non-allowlisted
-    # free models and allowlist models that aren't actually free).
-    # Then for free users: partition remaining models into selectable/unavailable.
     model_ids = filter_nous_free_models(model_ids, pricing)
     unavailable_models: list[str] = []
     if free_tier:
@@ -1258,7 +1153,6 @@ def _model_flow_nous(config, current_model="", args=None):
         print("No models available for Nous Portal after filtering.")
         return
 
-    # Resolve portal URL for upgrade links (may differ on staging)
     _nous_portal_url = ""
     try:
         _nous_state = get_provider_auth_state("nous")
@@ -1283,7 +1177,6 @@ def _model_flow_nous(config, current_model="", args=None):
     )
     if selected:
         _save_model_choice(selected)
-        # Reactivate Nous as the provider and update config
         inference_url = creds.get("base_url", "")
         _update_config_for_provider("nous", inference_url)
         current_model_cfg = config.get("model")
@@ -1300,7 +1193,6 @@ def _model_flow_nous(config, current_model="", args=None):
         else:
             model_cfg.pop("base_url", None)
         config["model"] = model_cfg
-        # Clear any custom endpoint that might conflict
         if get_env_value("OPENAI_BASE_URL"):
             save_env_value("OPENAI_BASE_URL", "")
             save_env_value("OPENAI_API_KEY", "")
@@ -1345,8 +1237,6 @@ def _model_flow_openai_codex(config, current_model=""):
             return
 
     _codex_token = None
-    # Prefer credential pool (where `daedalus auth` stores device_code tokens),
-    # fall back to legacy provider state.
     try:
         _codex_status = get_codex_auth_status()
         if _codex_status.get("logged_in"):
@@ -1402,7 +1292,6 @@ def _model_flow_qwen_oauth(_config, current_model=""):
             print(f"Error: {status.get('error')}")
         return
 
-    # Try live model discovery, fall back to curated list.
     models = None
     try:
         creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
@@ -1454,7 +1343,6 @@ def _model_flow_custom(config):
         print("No URL provided. Cancelled.")
         return
 
-    # Validate URL format
     effective_url = base_url or current_url
     if not effective_url.startswith(("http://", "https://")):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
@@ -1486,7 +1374,6 @@ def _model_flow_custom(config):
         if probe.get("suggested_base_url"):
             print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
 
-    # Select model — use probe results when available, fall back to manual input
     model_name = ""
     detected_models = probe.get("models") or []
     try:
@@ -1527,7 +1414,6 @@ def _model_flow_custom(config):
     if model_name:
         _save_model_choice(model_name)
 
-        # Update config and deactivate any OAuth provider
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -1537,22 +1423,16 @@ def _model_flow_custom(config):
         model["base_url"] = effective_url
         if effective_key:
             model["api_key"] = effective_key
-        model.pop("api_mode", None)  # let runtime auto-detect from URL
+        model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
-        # Sync the caller's config dict so the setup wizard's final
-        # save_config(config) preserves our model settings.  Without
-        # this, the wizard overwrites model.provider/base_url with
-        # the stale values from its own config dict (#4172).
         config["model"] = dict(model)
 
         print(f"Default model set to: {model_name} (via {effective_url})")
     else:
         if base_url or api_key:
             deactivate_provider()
-        # Even without a model name, persist the custom endpoint on the
-        # caller's config dict so the setup wizard doesn't lose it.
         _caller_model = config.get("model")
         if not isinstance(_caller_model, dict):
             _caller_model = {"default": _caller_model} if _caller_model else {}
@@ -1564,7 +1444,6 @@ def _model_flow_custom(config):
         config["model"] = _caller_model
         print("Endpoint saved. Use `/model` in chat or `daedalus model` to set a model.")
 
-    # Auto-save to custom_providers so it appears in the menu next time
     _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length)
 
 
@@ -1582,7 +1461,6 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None):
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/"):
             changed = False
@@ -1599,16 +1477,12 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None):
             if changed:
                 cfg["custom_providers"] = providers
                 save_config(cfg)
-            return  # already saved, updated if needed
+            return
 
-    # Auto-generate a name from the URL
     import re
     clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-    # Remove /v1 suffix for cleaner names
     clean = re.sub(r"/v1/?$", "", clean)
-    # Use hostname:port as the name
     name = clean.split("/")[0]
-    # Capitalize for readability
     if "localhost" in name or "127.0.0.1" in name:
         name = f"Local ({name})"
     elif "runpod" in name.lower():
@@ -1700,7 +1574,6 @@ def _model_flow_named_custom(config, provider_info):
     api_key = provider_info.get("api_key", "")
     saved_model = provider_info.get("model", "")
 
-    # If a model is saved, just activate immediately — no probing needed
     if saved_model:
         _save_model_choice(saved_model)
 
@@ -1720,7 +1593,6 @@ def _model_flow_named_custom(config, provider_info):
         print(f"   Provider: {name} ({base_url})")
         return
 
-    # No saved model — probe endpoint and let user pick
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
     print()
@@ -1774,7 +1646,6 @@ def _model_flow_named_custom(config, provider_info):
             print("No model specified. Cancelled.")
             return
 
-    # Activate and save the model to the custom_providers entry
     _save_model_choice(model_name)
 
     cfg = load_config()
@@ -1789,14 +1660,12 @@ def _model_flow_named_custom(config, provider_info):
     save_config(cfg)
     deactivate_provider()
 
-    # Save model name to the custom_providers entry for next time
     _save_custom_provider(base_url, api_key, model_name)
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")
 
 
-# Curated model lists for direct API-key providers — single source in models.py
 from daedalus_cli.models import _PROVIDER_MODELS
 
 
@@ -1962,7 +1831,6 @@ def _model_flow_copilot(config, current_model=""):
             if not new_key:
                 print("  Cancelled.")
                 return
-            # Validate token type
             try:
                 from daedalus_cli.copilot_auth import validate_copilot_token
                 valid, msg = validate_copilot_token(new_key)
@@ -2185,7 +2053,6 @@ def _model_flow_kimi(config, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Step 1: Check / prompt for API key
     existing_key = ""
     for ev in pconfig.api_key_env_vars:
         existing_key = get_env_value(ev) or os.getenv(ev, "")
@@ -2212,7 +2079,6 @@ def _model_flow_kimi(config, current_model=""):
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
         print()
 
-    # Step 2: Auto-detect endpoint from key prefix
     is_coding_plan = existing_key.startswith("sk-kimi-")
     if is_coding_plan:
         effective_base = KIMI_CODE_BASE_URL
@@ -2220,14 +2086,11 @@ def _model_flow_kimi(config, current_model=""):
     else:
         effective_base = pconfig.inference_base_url
         print(f"  Using Moonshot endpoint → {effective_base}")
-    # Clear any manual base URL override so auto-detection works at runtime
     if base_url_env and get_env_value(base_url_env):
         save_env_value(base_url_env, "")
     print()
 
-    # Step 3: Model selection — show appropriate models for the endpoint
     if is_coding_plan:
-        # Coding Plan models (kimi-for-coding first)
         model_list = [
             "kimi-for-coding",
             "kimi-k2.5",
@@ -2235,7 +2098,6 @@ def _model_flow_kimi(config, current_model=""):
             "kimi-k2-thinking-turbo",
         ]
     else:
-        # Legacy Moonshot models (excludes Coding Plan-only models)
         model_list = _PROVIDER_MODELS.get("moonshot", [])
 
     if model_list:
@@ -2249,7 +2111,6 @@ def _model_flow_kimi(config, current_model=""):
     if selected:
         _save_model_choice(selected)
 
-        # Update config with provider and base URL
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -2257,7 +2118,7 @@ def _model_flow_kimi(config, current_model=""):
             cfg["model"] = model
         model["provider"] = provider_id
         model["base_url"] = effective_base
-        model.pop("api_mode", None)  # let runtime auto-detect from URL
+        model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -2280,7 +2141,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    # Check / prompt for API key
     existing_key = ""
     for ev in pconfig.api_key_env_vars:
         existing_key = get_env_value(ev) or os.getenv(ev, "")
@@ -2306,7 +2166,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
         print()
 
-    # Optional base URL override
     current_base = ""
     if base_url_env:
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
@@ -2321,13 +2180,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         save_env_value(base_url_env, override)
         effective_base = override
 
-    # Model selection — resolution order:
-    #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
-    #   2. Curated static fallback list (offline insurance)
-    #   3. Live /models endpoint probe (small providers without models.dev data)
     curated = _PROVIDER_MODELS.get(provider_id, [])
 
-    # Try models.dev first — returns tool-capable models, filtered for noise
     mdev_models: list = []
     try:
         from agent.models_dev import list_agentic_models
@@ -2339,7 +2193,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model_list = mdev_models
         print(f"  Found {len(model_list)} model(s) from models.dev registry")
     elif curated and len(curated) >= 8:
-        # Curated list is substantial — use it directly, skip live probe
         model_list = curated
         print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
     else:
@@ -2352,7 +2205,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             model_list = curated
             if model_list:
                 print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
-        # else: no defaults either, will fall through to raw input
 
     if provider_id in {"opencode-zen", "opencode-go"}:
         model_list = [normalize_opencode_model_id(provider_id, mid) for mid in model_list]
@@ -2373,7 +2225,6 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
         _save_model_choice(selected)
 
-        # Update config with provider, base URL, and provider-specific API mode
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -2434,7 +2285,6 @@ def _run_anthropic_oauth_flow(save_env_value):
             print("  ✓ OAuth credentials saved.")
             return True
 
-        # Subprocess completed but no token auto-detected — ask user to paste
         print()
         print("  If the setup-token was displayed above, paste it here:")
         print()
@@ -2453,7 +2303,6 @@ def _run_anthropic_oauth_flow(save_env_value):
         return False
 
     except FileNotFoundError:
-        # Claude CLI not installed — guide user through manual setup
         print()
         print("  The 'claude' CLI is required for OAuth login.")
         print()
@@ -2493,7 +2342,6 @@ def _model_flow_anthropic(config, current_model=""):
     )
     from daedalus_cli.models import _PROVIDER_MODELS
 
-    # Check ALL credential sources
     existing_key = (
         get_env_value("ANTHROPIC_TOKEN")
         or os.getenv("ANTHROPIC_TOKEN", "")
@@ -2514,7 +2362,6 @@ def _model_flow_anthropic(config, current_model=""):
     needs_auth = not has_creds
 
     if has_creds:
-        # Show what we found
         if existing_key:
             print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
         elif cc_available:
@@ -2533,10 +2380,8 @@ def _model_flow_anthropic(config, current_model=""):
             needs_auth = True
         elif choice == "3":
             return
-        # choice == "1" or default: use existing, proceed to model selection
 
     if needs_auth:
-        # Show auth method choice
         print()
         print("  Choose authentication method:")
         print()
@@ -2575,7 +2420,6 @@ def _model_flow_anthropic(config, current_model=""):
             return
     print()
 
-    # Model selection
     model_list = _PROVIDER_MODELS.get("anthropic", [])
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
@@ -2588,10 +2432,6 @@ def _model_flow_anthropic(config, current_model=""):
     if selected:
         _save_model_choice(selected)
 
-        # Update config with provider — clear base_url since
-        # resolve_runtime_provider() always hardcodes Anthropic's URL.
-        # Leaving a stale base_url in config can contaminate other
-        # providers if the user switches without running 'daedalus model'.
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -2649,7 +2489,6 @@ def cmd_security(args):
     if sub in ("audit", None):
         from daedalus_cli.security_audit import cmd_security_audit
 
-        # Default subcommand is `audit` when no subcmd is given.
         code = cmd_security_audit(args)
         sys.exit(int(code or 0))
     print(f"unknown security subcommand: {sub}", file=sys.stderr)
@@ -2673,17 +2512,14 @@ def cmd_version(args):
     print(f"Daedalus Agent v{__version__} ({__release_date__})")
     print(f"Project: {PROJECT_ROOT}")
     
-    # Show Python version
     print(f"Python: {sys.version.split()[0]}")
     
-    # Check for key dependencies
     try:
         import openai
         print(f"OpenAI SDK: {openai.__version__}")
     except ImportError:
         print("OpenAI SDK: Not installed")
 
-    # Show update status (synchronous — acceptable since user asked for version info)
     try:
         from daedalus_cli.banner import check_for_updates
         from daedalus_cli.config import recommended_update_command
@@ -2719,7 +2555,6 @@ def _clear_bytecode_cache(root: Path) -> int:
     """
     removed = 0
     for dirpath, dirnames, _ in os.walk(root):
-        # Skip venv / node_modules / .git entirely
         dirnames[:] = [
             d for d in dirnames
             if d not in ("venv", ".venv", "node_modules", ".git", ".worktrees")
@@ -2731,7 +2566,7 @@ def _clear_bytecode_cache(root: Path) -> int:
                 removed += 1
             except OSError:
                 pass
-            dirnames.clear()  # nothing left to recurse into
+            dirnames.clear()
     return removed
 
 
@@ -2753,7 +2588,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     prompt_path = home / ".update_prompt.json"
     response_path = home / ".update_response"
 
-    # Clean any stale response file
     response_path.unlink(missing_ok=True)
 
     payload = {
@@ -2765,7 +2599,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     tmp.write_text(_json.dumps(payload))
     tmp.replace(prompt_path)
 
-    # Poll for response
     import time as _time
     deadline = _time.monotonic() + timeout
     while _time.monotonic() < deadline:
@@ -2779,7 +2612,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
                 pass
         _time.sleep(0.5)
 
-    # Timeout — clean up and use default
     prompt_path.unlink(missing_ok=True)
     response_path.unlink(missing_ok=True)
     print(f"  (no response after {int(timeout)}s, using default: {default!r})")
@@ -2808,7 +2640,6 @@ def _update_via_zip(args):
         
         print("→ Extracting...")
         with zipfile.ZipFile(zip_path, 'r') as zf:
-            # Validate paths to prevent zip-slip (path traversal)
             tmp_dir_real = os.path.realpath(tmp_dir)
             for member in zf.infolist():
                 member_path = os.path.realpath(os.path.join(tmp_dir, member.filename))
@@ -2816,17 +2647,14 @@ def _update_via_zip(args):
                     raise ValueError(f"Zip-slip detected: {member.filename} escapes extraction directory")
             zf.extractall(tmp_dir)
         
-        # GitHub ZIPs extract to daedalus-<branch>/
         extracted = os.path.join(tmp_dir, f"daedalus-{branch}")
         if not os.path.isdir(extracted):
-            # Try to find it
             for d in os.listdir(tmp_dir):
                 candidate = os.path.join(tmp_dir, d)
                 if os.path.isdir(candidate) and d != "__MACOSX":
                     extracted = candidate
                     break
         
-        # Copy updated files over existing installation, preserving venv/node_modules/.git
         preserve = {'venv', 'node_modules', '.git', '.env'}
         update_count = 0
         for item in os.listdir(extracted):
@@ -2844,21 +2672,16 @@ def _update_via_zip(args):
         
         print(f"✓ Updated {update_count} items from ZIP")
         
-        # Cleanup
         shutil.rmtree(tmp_dir, ignore_errors=True)
         
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
 
-    # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)
     if removed:
         print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
     
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-    # breaks on this machine, keep base deps and reinstall the remaining extras
-    # individually so update does not silently strip working capabilities.
     print("→ Updating Python dependencies...")
     import subprocess
     uv_bin = shutil.which("uv")
@@ -2866,10 +2689,6 @@ def _update_via_zip(args):
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
-        # Use sys.executable to explicitly call the venv's pip module,
-        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-        # Some environments lose pip inside the venv; bootstrap it back with
-        # ensurepip before trying the editable install.
         pip_cmd = [sys.executable, "-m", "pip"]
         try:
             subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
@@ -2881,7 +2700,6 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
     
-    # Sync skills
     try:
         from tools.skills_sync import sync_skills
         print("→ Syncing bundled skills...")
@@ -2914,10 +2732,6 @@ def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[st
     if not status.stdout.strip():
         return None
 
-    # If the index has unmerged entries (e.g. from an interrupted merge/rebase),
-    # git stash will fail with "needs merge / could not write index".  Clear the
-    # conflict state with `git reset` so the stash can proceed.  Working-tree
-    # changes are preserved; only the index conflict markers are dropped.
     unmerged = subprocess.run(
         git_cmd + ["ls-files", "--unmerged"],
         cwd=cwd,
@@ -3005,7 +2819,6 @@ def _restore_stashed_changes(
         text=True,
     )
 
-    # Check for unmerged (conflicted) files — can happen even when returncode is 0
     unmerged = subprocess.run(
         git_cmd + ["diff", "--name-only", "--diff-filter=U"],
         cwd=cwd,
@@ -3021,7 +2834,6 @@ def _restore_stashed_changes(
         if restore.stderr.strip():
             print(restore.stderr.strip())
 
-        # Show which files conflicted
         conflicted_files = unmerged.stdout.strip()
         if conflicted_files:
             print("\nConflicted files:")
@@ -3031,7 +2843,6 @@ def _restore_stashed_changes(
         print("\nYour stashed changes are preserved — nothing is lost.")
         print(f"  Stash ref: {stash_ref}")
 
-        # Ask before resetting (if interactive)
         do_reset = True
         if prompt_user:
             print("\nReset working tree to clean state so Daedalus can run?")
@@ -3053,9 +2864,6 @@ def _restore_stashed_changes(
             print("Resolve conflicts manually, then run: git stash drop")
 
         print(f"Restore your changes with: git stash apply {stash_ref}")
-        # In non-interactive mode (gateway /update), don't abort — the code
-        # update itself succeeded, only the stash restore had conflicts.
-        # Aborting would report the entire update as failed.
         if prompt_user:
             sys.exit(1)
         return False
@@ -3085,9 +2893,6 @@ def _restore_stashed_changes(
     print("  Review `git diff` / `git status` if Daedalus behaves unexpectedly.")
     return True
 
-# =========================================================================
-# Fork detection and upstream management for `daedalus update`
-# =========================================================================
 
 OFFICIAL_REPO_URLS = {
     "https://github.com/NousResearch/daedalus.git",
@@ -3119,7 +2924,6 @@ def _is_fork(origin_url: Optional[str]) -> bool:
     """Check if the origin remote points to a fork (not the official repo)."""
     if not origin_url:
         return False
-    # Normalize URL for comparison (strip trailing .git if present)
     normalized = origin_url.rstrip("/")
     if normalized.endswith(".git"):
         normalized = normalized[:-4]
@@ -3220,11 +3024,9 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
     has_upstream = _has_upstream_remote(git_cmd, cwd)
 
     if not has_upstream:
-        # Check if user previously declined
         if _should_skip_upstream_prompt():
             return
 
-        # Ask user if they want to add upstream
         print()
         print("ℹ Your fork is not tracking the official Daedalus repository.")
         print("  This means you may miss updates from NousResearch/daedalus.")
@@ -3248,7 +3050,6 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             _mark_skip_upstream_prompt()
             return
 
-    # Fetch upstream
     print()
     print("→ Fetching upstream...")
     try:
@@ -3262,7 +3063,6 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return
 
-    # Compare origin/main with upstream/main
     origin_ahead = _count_commits_between(git_cmd, cwd, "upstream/main", "origin/main")
     upstream_ahead = _count_commits_between(git_cmd, cwd, "origin/main", "upstream/main")
 
@@ -3270,7 +3070,6 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("  ✗ Could not compare branches. Skipping upstream sync.")
         return
 
-    # If origin/main has commits not on upstream, don't trample
     if origin_ahead > 0:
         print()
         print(f"ℹ Your fork has {origin_ahead} commit(s) not on upstream.")
@@ -3279,12 +3078,10 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
         print("    git pull upstream main")
         return
 
-    # If upstream is not ahead, fork is up to date
     if upstream_ahead == 0:
         print("  ✓ Fork is up to date with upstream")
         return
 
-    # origin/main is strictly behind upstream/main (can fast-forward)
     print()
     print(f"→ Fork is {upstream_ahead} commit(s) behind upstream")
     print("→ Pulling from upstream...")
@@ -3301,7 +3098,6 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
     print("  ✓ Updated from upstream")
 
-    # Try to sync fork back to origin
     print("→ Syncing fork...")
     if _sync_fork_with_upstream(git_cmd, cwd):
         print("  ✓ Fork synced with upstream")
@@ -3318,10 +3114,8 @@ def _invalidate_update_cache():
     ``daedalus update``, every profile is now current.
     """
     homes = []
-    # Default profile home
     default_home = Path.home() / ".daedalus"
     homes.append(default_home)
-    # Named profiles under ~/.daedalus/profiles/
     profiles_root = default_home / "profiles"
     if profiles_root.is_dir():
         for entry in profiles_root.iterdir():
@@ -3355,8 +3149,6 @@ def _load_installable_optional_extras() -> list[str]:
     if not isinstance(optional_deps, dict):
         return []
 
-    # Parse the [all] group to find which extras it references.
-    # Entries look like "daedalus[matrix]" or "package-name[extra]".
     all_refs = optional_deps.get("all", [])
     referenced: list[str] = []
     for ref in all_refs:
@@ -3548,7 +3340,6 @@ def _install_hangup_protection(gateway_mode: bool = False):
         try:
             _signal.signal(_signal.SIGHUP, _signal.SIG_IGN)
         except (ValueError, OSError):
-            # Called from a non-main thread — not fatal.
             pass
 
     try:
@@ -3608,19 +3399,13 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
-    # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
     
-    # Protect against mid-update terminal disconnects (SIGHUP) and tolerate
-    # writes to a closed stdout. No-op in gateway mode. See
-    # _install_hangup_protection for rationale.
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     try:
         print("⚕ Updating Daedalus Agent...")
         print()
 
-        # Try git-based update first, fall back to ZIP download on Windows
-        # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)
         use_zip_update = False
         git_dir = PROJECT_ROOT / '.git'
 
@@ -3632,20 +3417,16 @@ def cmd_update(args):
                 print("  curl -fsSL https://raw.githubusercontent.com/NousResearch/daedalus/main/scripts/install.sh | bash")
                 sys.exit(1)
 
-        # On Windows, git can fail with "unable to write loose object file: Invalid argument"
-        # due to filesystem atomicity issues. Set the recommended workaround.
         if sys.platform == "win32" and git_dir.exists():
             subprocess.run(
                 ["git", "-c", "windows.appendAtomically=false", "config", "windows.appendAtomically", "false"],
                 cwd=PROJECT_ROOT, check=False, capture_output=True
             )
 
-        # Build git command once — reused for fork detection and the update itself.
         git_cmd = ["git"]
         if sys.platform == "win32":
             git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-        # Detect if we're updating from a fork (before any branch logic)
         origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
         is_fork = _is_fork(origin_url)
 
@@ -3655,11 +3436,9 @@ def cmd_update(args):
             print()
 
         if use_zip_update:
-            # ZIP-based update for Windows when git is broken
             _update_via_zip(args)
             return
 
-        # Fetch and pull
         try:
 
             print("→ Fetching updates...")
@@ -3682,7 +3461,6 @@ def cmd_update(args):
                         print(f"  {stderr.splitlines()[0]}")
                 sys.exit(1)
 
-            # Get current branch (returns literal "HEAD" when detached)
             result = subprocess.run(
                 git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
                 cwd=PROJECT_ROOT,
@@ -3692,14 +3470,11 @@ def cmd_update(args):
             )
             current_branch = result.stdout.strip()
 
-            # Always update against main
             branch = "main"
 
-            # If user is on a non-main branch or detached HEAD, switch to main
             if current_branch != "main":
                 label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
                 print(f"  ⚠ Currently on {label} — switching to main for update...")
-                # Stash before checkout so uncommitted work isn't lost
                 auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
                 subprocess.run(
                     git_cmd + ["checkout", "main"],
@@ -3715,7 +3490,6 @@ def cmd_update(args):
                 gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
             )
 
-            # Check if there are updates
             result = subprocess.run(
                 git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
                 cwd=PROJECT_ROOT,
@@ -3727,7 +3501,6 @@ def cmd_update(args):
 
             if commit_count == 0:
                 _invalidate_update_cache()
-                # Restore stash and switch back to original branch if we moved
                 if auto_stash_ref is not None:
                     _restore_stashed_changes(
                         git_cmd, PROJECT_ROOT, auto_stash_ref,
@@ -3754,9 +3527,6 @@ def cmd_update(args):
                     text=True,
                 )
                 if pull_result.returncode != 0:
-                    # ff-only failed — local and remote have diverged (e.g. upstream
-                    # force-pushed or rebase).  Since local changes are already
-                    # stashed, reset to match the remote exactly.
                     print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
                     reset_result = subprocess.run(
                         git_cmd + ["reset", "--hard", f"origin/{branch}"],
@@ -3774,8 +3544,6 @@ def cmd_update(args):
                 update_succeeded = True
             finally:
                 if auto_stash_ref is not None:
-                    # Don't attempt stash restore if the code update itself failed —
-                    # working tree is in an unknown state.
                     if not update_succeeded:
                         print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
                         print(f"  Restore manually with: git stash apply")
@@ -3790,30 +3558,19 @@ def cmd_update(args):
 
             _invalidate_update_cache()
 
-            # Clear stale .pyc bytecode cache — prevents ImportError on gateway
-            # restart when updated source references names that didn't exist in
-            # the old bytecode (e.g. get_daedalus_home added to daedalus_constants).
             removed = _clear_bytecode_cache(PROJECT_ROOT)
             if removed:
                 print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
 
-            # Fork upstream sync logic (only for main branch on forks)
             if is_fork and branch == "main":
                 _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-            # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-            # breaks on this machine, keep base deps and reinstall the remaining extras
-            # individually so update does not silently strip working capabilities.
             print("→ Updating Python dependencies...")
             uv_bin = shutil.which("uv")
             if uv_bin:
                 uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
                 _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
             else:
-                # Use sys.executable to explicitly call the venv's pip module,
-                # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-                # Some environments lose pip inside the venv; bootstrap it back with
-                # ensurepip before trying the editable install.
                 pip_cmd = [sys.executable, "-m", "pip"]
                 try:
                     subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
@@ -3825,7 +3582,6 @@ def cmd_update(args):
                     )
                 _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-            # Check for Node.js deps
             if (PROJECT_ROOT / "package.json").exists():
                 import shutil
                 if shutil.which("npm"):
@@ -3835,23 +3591,15 @@ def cmd_update(args):
             print()
             print("✓ Code updated!")
 
-            # Fork-safety: switch back to the branch the update moved away from
-            # (checked out `main` above). Without this a feature-branch install
-            # silently keeps running upstream main, dropping fork rework commits.
             _restore_original_branch(git_cmd, PROJECT_ROOT, current_branch, branch)
 
-            # After git pull, source files on disk are newer than cached Python
-            # modules in this process.  Reload daedalus_constants so that any lazy
-            # import executed below (skills sync, gateway restart) sees new
-            # attributes like display_daedalus_home() added since the last release.
             try:
                 import importlib
                 import daedalus_constants as _hc
                 importlib.reload(_hc)
             except Exception:
-                pass  # non-fatal — worst case a lazy import fails gracefully
+                pass
 
-            # Sync bundled skills (copies new, updates changed, respects user deletions)
             try:
                 from tools.skills_sync import sync_skills
                 print()
@@ -3870,7 +3618,6 @@ def cmd_update(args):
             except Exception as e:
                 logger.debug("Skills sync during update failed: %s", e)
 
-            # Sync bundled skills to all other profiles
             try:
                 from daedalus_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
                 active = get_active_profile_name()
@@ -3896,9 +3643,8 @@ def cmd_update(args):
                         except Exception as pe:
                             print(f"  {p.name}: error ({pe})")
             except Exception:
-                pass  # profiles module not available or no profiles
+                pass
 
-            # Check for config migrations
             print()
             print("→ Checking configuration for new options...")
 
@@ -3937,8 +3683,6 @@ def cmd_update(args):
 
                 if response in ('', 'y', 'yes'):
                     print()
-                    # In gateway mode, run auto-migrations only (no input() prompts
-                    # for API keys which would hang the detached process).
                     results = migrate_config(interactive=not gateway_mode, quiet=False)
 
                     if results["env_added"] or results["config_added"]:
@@ -3955,9 +3699,6 @@ def cmd_update(args):
             print()
             print("✓ Update complete!")
 
-            # Auto-restart ALL gateways after update.
-            # The code update (git pull) is shared across all profiles, so every
-            # running gateway needs restarting to pick up the new code.
             try:
                 from daedalus_cli.gateway import (
                     is_macos, is_linux, _ensure_user_systemd_env,
@@ -3969,8 +3710,6 @@ def cmd_update(args):
                 restarted_services = []
                 killed_pids = set()
 
-                # --- Systemd services (Linux) ---
-                # Discover all daedalus-gateway* units (default + profiles)
                 if is_linux():
                     try:
                         _ensure_user_systemd_env()
@@ -3987,11 +3726,10 @@ def cmd_update(args):
                                 parts = line.split()
                                 if not parts:
                                     continue
-                                unit = parts[0]  # e.g. daedalus-gateway.service or daedalus-gateway-coder.service
+                                unit = parts[0]
                                 if not unit.endswith(".service"):
                                     continue
                                 svc_name = unit.removesuffix(".service")
-                                # Check if active
                                 check = subprocess.run(
                                     scope_cmd + ["is-active", svc_name],
                                     capture_output=True, text=True, timeout=5,
@@ -4008,7 +3746,6 @@ def cmd_update(args):
                         except (FileNotFoundError, subprocess.TimeoutExpired):
                             pass
 
-                # --- Launchd services (macOS) ---
                 if is_macos():
                     try:
                         from daedalus_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
@@ -4028,10 +3765,6 @@ def cmd_update(args):
                     except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                         pass
 
-                # --- Manual (non-service) gateways ---
-                # Kill any remaining gateway processes not managed by a service.
-                # Exclude PIDs that belong to just-restarted services so we don't
-                # immediately kill the process that systemd/launchd just spawned.
                 service_pids = _get_service_pids()
                 manual_pids = find_gateway_pids(exclude_pids=service_pids)
                 for pid in manual_pids:
@@ -4048,12 +3781,10 @@ def cmd_update(args):
                     if killed_pids:
                         print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
                         print("    Restart manually: daedalus gateway run")
-                        # Also restart for each profile if needed
                         if len(killed_pids) > 1:
                             print("    (or: daedalus -p <profile> gateway run  for each profile)")
 
                 if not restarted_services and not killed_pids:
-                    # No gateways were running — nothing to do
                     pass
 
             except Exception as e:
@@ -4102,7 +3833,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         if token in _SESSION_FLAGS:
             result.append(token)
             i += 1
-            # Collect subsequent non-flag, non-subcommand tokens as one name
             parts: list = []
             while i < len(argv) and not argv[i].startswith("-") and argv[i] not in _SUBCOMMANDS:
                 parts.append(argv[i])
@@ -4128,7 +3858,6 @@ def cmd_profile(args):
     action = getattr(args, "profile_action", None)
 
     if action is None:
-        # Bare `daedalus profile` — show current profile status
         profile_name = get_active_profile_name()
         dhh = display_daedalus_home()
         print(f"\nActive profile: {profile_name}")
@@ -4155,7 +3884,6 @@ def cmd_profile(args):
             print("No profiles found.")
             return
 
-        # Header
         print(f"\n {'Profile':<16} {'Model':<28} {'Gateway':<12} {'Alias'}")
         print(f" {'─' * 15}    {'─' * 27}    {'─' * 11}    {'─' * 12}")
 
@@ -4207,7 +3935,6 @@ def cmd_profile(args):
                 else:
                     print(f"Cloned config, .env, SOUL.md from {source_label}.")
 
-            # Seed bundled skills (skip if --clone-all already copied them)
             if not clone_all:
                 result = seed_profile_skills(profile_dir)
                 if result:
@@ -4216,7 +3943,6 @@ def cmd_profile(args):
                 else:
                     print("⚠ Skills could not be seeded. Run `{} update` to retry.".format(name))
 
-            # Create wrapper alias
             if not no_alias:
                 collision = check_alias_collision(name)
                 if collision:
@@ -4232,7 +3958,6 @@ def cmd_profile(args):
                             print(f'  Add to your shell config (~/.bashrc or ~/.zshrc):')
                             print(f'    export PATH="$HOME/.local/bin:$PATH"')
 
-            # Next steps
             print(f"\nNext steps:")
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
@@ -4304,7 +4029,6 @@ def cmd_profile(args):
                 sys.exit(1)
             wrapper_path = create_wrapper_script(alias_name)
             if wrapper_path:
-                # If custom name, write the profile name into the wrapper
                 if custom_name:
                     wrapper_path.write_text(f'#!/bin/sh\nexec daedalus -p {name} "$@"\n')
                 print(f"✓ Alias created: {wrapper_path}")
@@ -4339,7 +4063,6 @@ def cmd_profile(args):
             name = profile_dir.name
             print(f"✓ Imported profile '{name}' at {profile_dir}")
 
-            # Offer to create alias
             collision = check_alias_collision(name)
             if not collision:
                 wrapper_path = create_wrapper_script(name)
@@ -4469,9 +4192,6 @@ For more help on a command:
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
-    # =========================================================================
-    # chat command
-    # =========================================================================
     chat_parser = subparsers.add_parser(
         "chat",
         help="Interactive chat with the agent",
@@ -4564,9 +4284,6 @@ For more help on a command:
     )
     chat_parser.set_defaults(func=cmd_chat)
 
-    # =========================================================================
-    # model command
-    # =========================================================================
     model_parser = subparsers.add_parser(
         "model",
         help="Select default model and provider",
@@ -4612,9 +4329,6 @@ For more help on a command:
     )
     model_parser.set_defaults(func=cmd_model)
 
-    # =========================================================================
-    # gateway command
-    # =========================================================================
     gateway_parser = subparsers.add_parser(
         "gateway",
         help="Messaging gateway management",
@@ -4622,7 +4336,6 @@ For more help on a command:
     )
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
-    # gateway run (default)
     gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
                              help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
@@ -4631,42 +4344,32 @@ For more help on a command:
     gateway_run.add_argument("--replace", action="store_true",
                              help="Replace any existing gateway instance (useful for systemd)")
     
-    # gateway start
     gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
     gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
-    # gateway stop
     gateway_stop = gateway_subparsers.add_parser("stop", help="Stop gateway service")
     gateway_stop.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     gateway_stop.add_argument("--all", action="store_true", help="Stop ALL gateway processes across all profiles")
     
-    # gateway restart
     gateway_restart = gateway_subparsers.add_parser("restart", help="Restart gateway service")
     gateway_restart.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
-    # gateway status
     gateway_status = gateway_subparsers.add_parser("status", help="Show gateway status")
     gateway_status.add_argument("--deep", action="store_true", help="Deep status check")
     gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
-    # gateway install
     gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
     gateway_install.add_argument("--system", action="store_true", help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user", help="User account the Linux system service should run as")
     
-    # gateway uninstall
     gateway_uninstall = gateway_subparsers.add_parser("uninstall", help="Uninstall gateway service")
     gateway_uninstall.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
 
-    # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
     gateway_parser.set_defaults(func=cmd_gateway)
     
-    # =========================================================================
-    # setup command
-    # =========================================================================
     setup_parser = subparsers.add_parser(
         "setup",
         help="Interactive setup wizard",
@@ -4692,9 +4395,6 @@ For more help on a command:
     )
     setup_parser.set_defaults(func=cmd_setup)
 
-    # =========================================================================
-    # login command
-    # =========================================================================
     login_parser = subparsers.add_parser(
         "login",
         help="Authenticate with an inference provider",
@@ -4746,9 +4446,6 @@ For more help on a command:
     )
     login_parser.set_defaults(func=cmd_login)
 
-    # =========================================================================
-    # logout command
-    # =========================================================================
     logout_parser = subparsers.add_parser(
         "logout",
         help="Clear authentication for an inference provider",
@@ -4793,9 +4490,6 @@ For more help on a command:
     auth_logout.add_argument("provider", nargs="?", help="Provider id (defaults to the active provider)")
     auth_parser.set_defaults(func=cmd_auth)
 
-    # =========================================================================
-    # status command
-    # =========================================================================
     status_parser = subparsers.add_parser(
         "status",
         help="Show status of all components",
@@ -4813,9 +4507,6 @@ For more help on a command:
     )
     status_parser.set_defaults(func=cmd_status)
     
-    # =========================================================================
-    # cron command
-    # =========================================================================
     cron_parser = subparsers.add_parser(
         "cron",
         help="Cron job management",
@@ -4823,11 +4514,9 @@ For more help on a command:
     )
     cron_subparsers = cron_parser.add_subparsers(dest="cron_command")
     
-    # cron list
     cron_list = cron_subparsers.add_parser("list", help="List scheduled jobs")
     cron_list.add_argument("--all", action="store_true", help="Include disabled jobs")
 
-    # cron create/add
     cron_create = cron_subparsers.add_parser("create", aliases=["add"], help="Create a scheduled job")
     cron_create.add_argument("schedule", help="Schedule like '30m', 'every 2h', or '0 9 * * *'")
     cron_create.add_argument("prompt", nargs="?", help="Optional self-contained prompt or task instruction")
@@ -4837,7 +4526,6 @@ For more help on a command:
     cron_create.add_argument("--skill", dest="skills", action="append", help="Attach a skill. Repeat to add multiple skills.")
     cron_create.add_argument("--script", help="Path to a Python script whose stdout is injected into the prompt each run")
 
-    # cron edit
     cron_edit = cron_subparsers.add_parser("edit", help="Edit an existing scheduled job")
     cron_edit.add_argument("job_id", help="Job ID to edit")
     cron_edit.add_argument("--schedule", help="New schedule")
@@ -4851,7 +4539,6 @@ For more help on a command:
     cron_edit.add_argument("--clear-skills", action="store_true", help="Remove all attached skills from the job")
     cron_edit.add_argument("--script", help="Path to a Python script whose stdout is injected into the prompt each run. Pass empty string to clear.")
 
-    # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")
     cron_pause.add_argument("job_id", help="Job ID to pause")
 
@@ -4864,17 +4551,12 @@ For more help on a command:
     cron_remove = cron_subparsers.add_parser("remove", aliases=["rm", "delete"], help="Remove a scheduled job")
     cron_remove.add_argument("job_id", help="Job ID to remove")
 
-    # cron status
     cron_subparsers.add_parser("status", help="Check if cron scheduler is running")
 
-    # cron tick (mostly for debugging)
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
 
     cron_parser.set_defaults(func=cmd_cron)
 
-    # =========================================================================
-    # webhook command
-    # =========================================================================
     webhook_parser = subparsers.add_parser(
         "webhook",
         help="Manage dynamic webhook subscriptions",
@@ -4903,9 +4585,6 @@ For more help on a command:
 
     webhook_parser.set_defaults(func=cmd_webhook)
 
-    # =========================================================================
-    # doctor command
-    # =========================================================================
     doctor_parser = subparsers.add_parser(
         "doctor",
         help="Check configuration and dependencies",
@@ -4924,9 +4603,6 @@ For more help on a command:
     )
     doctor_parser.set_defaults(func=cmd_doctor)
 
-    # =========================================================================
-    # checkpoints command — inspect/prune/clear the filesystem checkpoint store
-    # =========================================================================
     checkpoints_parser = subparsers.add_parser(
         "checkpoints",
         help="Inspect and manage the checkpoint store (~/.daedalus/checkpoints/)",
@@ -4936,9 +4612,6 @@ For more help on a command:
     from daedalus_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)
 
-    # =========================================================================
-    # security command — on-demand supply-chain audit (OSV.dev)
-    # =========================================================================
     security_parser = subparsers.add_parser(
         "security",
         help="Supply-chain audit (OSV.dev) for venv, plugins, and MCP servers",
@@ -4987,9 +4660,6 @@ For more help on a command:
     security_audit_parser.set_defaults(func=cmd_security)
     security_parser.set_defaults(func=cmd_security)
 
-    # =========================================================================
-    # curator command — background skill maintenance
-    # =========================================================================
     curator_parser = subparsers.add_parser(
         "curator",
         help="Background skill maintenance (curator) — status, run, pause, pin",
@@ -5008,9 +4678,6 @@ For more help on a command:
     except Exception as _exc:
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
 
-    # =========================================================================
-    # config command
-    # =========================================================================
     config_parser = subparsers.add_parser(
         "config",
         help="View and edit configuration",
@@ -5018,34 +4685,24 @@ For more help on a command:
     )
     config_subparsers = config_parser.add_subparsers(dest="config_command")
     
-    # config show (default)
     config_subparsers.add_parser("show", help="Show current configuration")
     
-    # config edit
     config_subparsers.add_parser("edit", help="Open config file in editor")
     
-    # config set
     config_set = config_subparsers.add_parser("set", help="Set a configuration value")
     config_set.add_argument("key", nargs="?", help="Configuration key (e.g., model, terminal.backend)")
     config_set.add_argument("value", nargs="?", help="Value to set")
     
-    # config path
     config_subparsers.add_parser("path", help="Print config file path")
     
-    # config env-path
     config_subparsers.add_parser("env-path", help="Print .env file path")
     
-    # config check
     config_subparsers.add_parser("check", help="Check for missing/outdated config")
     
-    # config migrate
     config_subparsers.add_parser("migrate", help="Update config with new options")
     
     config_parser.set_defaults(func=cmd_config)
     
-    # =========================================================================
-    # pairing command
-    # =========================================================================
     pairing_parser = subparsers.add_parser(
         "pairing",
         help="Manage DM pairing codes for user authorization",
@@ -5071,9 +4728,6 @@ For more help on a command:
 
     pairing_parser.set_defaults(func=cmd_pairing)
 
-    # =========================================================================
-    # skills command
-    # =========================================================================
     skills_parser = subparsers.add_parser(
         "skills",
         help="Search, install, configure, and manage skills",
@@ -5138,11 +4792,9 @@ For more help on a command:
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
 
-    # config sub-action: interactive enable/disable
     skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
 
     def cmd_skills(args):
-        # Route 'config' action to skills_config module
         if getattr(args, 'skills_action', None) == 'config':
             _require_tty("skills config")
             from daedalus_cli.skills_config import skills_command as skills_config_command
@@ -5153,9 +4805,6 @@ For more help on a command:
 
     skills_parser.set_defaults(func=cmd_skills)
 
-    # =========================================================================
-    # plugins command
-    # =========================================================================
     plugins_parser = subparsers.add_parser(
         "plugins",
         help="Manage plugins — install, update, remove, list",
@@ -5203,11 +4852,6 @@ For more help on a command:
 
     plugins_parser.set_defaults(func=cmd_plugins)
 
-    # =========================================================================
-    # Plugin CLI commands — dynamically registered by memory/general plugins.
-    # Plugins provide a register_cli(subparser) function that builds their
-    # own argparse tree.  No hardcoded plugin commands in main.py.
-    # =========================================================================
     try:
         from plugins.memory import discover_plugin_cli_commands
         for cmd_info in discover_plugin_cli_commands():
@@ -5222,9 +4866,6 @@ For more help on a command:
         import logging as _log
         _log.getLogger(__name__).debug("Plugin CLI discovery failed: %s", _exc)
 
-    # =========================================================================
-    # memory command
-    # =========================================================================
     memory_parser = subparsers.add_parser(
         "memory",
         help="Configure external memory provider",
@@ -5255,9 +4896,6 @@ For more help on a command:
 
     memory_parser.set_defaults(func=cmd_memory)
 
-    # =========================================================================
-    # tools command
-    # =========================================================================
     tools_parser = subparsers.add_parser(
         "tools",
         help="Configure which tools are enabled per platform",
@@ -5275,7 +4913,6 @@ For more help on a command:
     )
     tools_sub = tools_parser.add_subparsers(dest="tools_action")
 
-    # daedalus tools list [--platform cli]
     tools_list_p = tools_sub.add_parser(
         "list",
         help="Show all tools and their enabled/disabled status",
@@ -5285,7 +4922,6 @@ For more help on a command:
         help="Platform to show (default: cli)",
     )
 
-    # daedalus tools disable <name...> [--platform cli]
     tools_disable_p = tools_sub.add_parser(
         "disable",
         help="Disable toolsets or MCP tools",
@@ -5299,7 +4935,6 @@ For more help on a command:
         help="Platform to apply to (default: cli)",
     )
 
-    # daedalus tools enable <name...> [--platform cli]
     tools_enable_p = tools_sub.add_parser(
         "enable",
         help="Enable toolsets or MCP tools",
@@ -5324,9 +4959,6 @@ For more help on a command:
             tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
-    # =========================================================================
-    # mcp command — manage MCP server connections
-    # =========================================================================
     mcp_parser = subparsers.add_parser(
         "mcp",
         help="Manage MCP servers and run Daedalus as an MCP server",
@@ -5379,9 +5011,6 @@ For more help on a command:
 
     mcp_parser.set_defaults(func=cmd_mcp)
 
-    # =========================================================================
-    # sessions command
-    # =========================================================================
     sessions_parser = subparsers.add_parser(
         "sessions",
         help="Manage session history (list, rename, export, prune, delete)",
@@ -5438,7 +5067,6 @@ For more help on a command:
 
         action = args.sessions_action
 
-        # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)
         _exclude = None if _source else ["tool"]
 
@@ -5548,19 +5176,17 @@ For more help on a command:
                 print("Cancelled.")
                 return
 
-            # Launch daedalus --resume <id> by replacing the current process
             print(f"Resuming session: {selected_id}")
             import shutil
             daedalus_bin = shutil.which("daedalus")
             if daedalus_bin:
                 os.execvp(daedalus_bin, ["daedalus", "--resume", selected_id])
             else:
-                # Fallback: re-invoke via python -m
                 os.execvp(
                     sys.executable,
                     [sys.executable, "-m", "daedalus_cli.main", "--resume", selected_id],
                 )
-            return  # won't reach here after execvp
+            return
 
         elif action == "stats":
             total = db.session_count()
@@ -5583,9 +5209,6 @@ For more help on a command:
 
     sessions_parser.set_defaults(func=cmd_sessions)
 
-    # =========================================================================
-    # insights command
-    # =========================================================================
     insights_parser = subparsers.add_parser(
         "insights",
         help="Show usage insights and analytics",
@@ -5609,9 +5232,6 @@ For more help on a command:
 
     insights_parser.set_defaults(func=cmd_insights)
 
-    # =========================================================================
-    # claw command (OpenClaw migration)
-    # =========================================================================
     claw_parser = subparsers.add_parser(
         "claw",
         help="OpenClaw migration tools",
@@ -5619,7 +5239,6 @@ For more help on a command:
     )
     claw_subparsers = claw_parser.add_subparsers(dest="claw_action")
 
-    # claw migrate
     claw_migrate = claw_subparsers.add_parser(
         "migrate",
         help="Migrate from OpenClaw to Daedalus",
@@ -5666,7 +5285,6 @@ For more help on a command:
         help="Skip confirmation prompts"
     )
 
-    # claw cleanup
     claw_cleanup = claw_subparsers.add_parser(
         "cleanup",
         aliases=["clean"],
@@ -5694,18 +5312,12 @@ For more help on a command:
 
     claw_parser.set_defaults(func=cmd_claw)
 
-    # =========================================================================
-    # version command
-    # =========================================================================
     version_parser = subparsers.add_parser(
         "version",
         help="Show version information"
     )
     version_parser.set_defaults(func=cmd_version)
     
-    # =========================================================================
-    # update command
-    # =========================================================================
     update_parser = subparsers.add_parser(
         "update",
         help="Update Daedalus Agent to the latest version",
@@ -5717,9 +5329,6 @@ For more help on a command:
     )
     update_parser.set_defaults(func=cmd_update)
     
-    # =========================================================================
-    # uninstall command
-    # =========================================================================
     uninstall_parser = subparsers.add_parser(
         "uninstall",
         help="Uninstall Daedalus Agent",
@@ -5737,9 +5346,6 @@ For more help on a command:
     )
     uninstall_parser.set_defaults(func=cmd_uninstall)
 
-    # =========================================================================
-    # acp command
-    # =========================================================================
     acp_parser = subparsers.add_parser(
         "acp",
         help="Run Daedalus Agent as an ACP (Agent Client Protocol) server",
@@ -5758,9 +5364,6 @@ For more help on a command:
 
     acp_parser.set_defaults(func=cmd_acp)
 
-    # =========================================================================
-    # profile command
-    # =========================================================================
     profile_parser = subparsers.add_parser(
         "profile",
         help="Manage profiles — multiple isolated Daedalus instances",
@@ -5813,9 +5416,6 @@ For more help on a command:
 
     profile_parser.set_defaults(func=cmd_profile)
 
-    # =========================================================================
-    # completion command
-    # =========================================================================
     completion_parser = subparsers.add_parser(
         "completion",
         help="Print shell completion script (bash or zsh)",
@@ -5826,9 +5426,6 @@ For more help on a command:
     )
     completion_parser.set_defaults(func=cmd_completion)
 
-    # =========================================================================
-    # logs command
-    # =========================================================================
     logs_parser = subparsers.add_parser(
         "logs",
         help="View and filter Daedalus log files",
@@ -5873,21 +5470,13 @@ Examples:
     )
     logs_parser.set_defaults(func=cmd_logs)
 
-    # =========================================================================
-    # Parse and execute
-    # =========================================================================
-    # Pre-process argv so unquoted multi-word session names after -c / -r
-    # are merged into a single token before argparse sees them.
-    # e.g. ``daedalus -c Pokemon Agent Dev`` → ``daedalus -c 'Pokemon Agent Dev'``
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
     args = parser.parse_args(_processed_argv)
     
-    # Handle --version flag
     if args.version:
         cmd_version(args)
         return
     
-    # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
         args.query = None
@@ -5900,7 +5489,6 @@ Examples:
         cmd_chat(args)
         return
     
-    # Default to chat if no command specified
     if args.command is None:
         args.query = None
         args.model = None
@@ -5914,7 +5502,6 @@ Examples:
         cmd_chat(args)
         return
     
-    # Execute the command
     if hasattr(args, 'func'):
         args.func(args)
     else:

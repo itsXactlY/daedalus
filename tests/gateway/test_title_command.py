@@ -34,7 +34,6 @@ def _make_runner(session_db=None):
     runner._voice_mode = {}
     runner._session_db = session_db
 
-    # Mock session_store that returns a session entry with a known session_id
     mock_session_entry = MagicMock()
     mock_session_entry.session_id = "test_session_123"
     mock_session_entry.session_key = "telegram:12345:67890"
@@ -45,9 +44,6 @@ def _make_runner(session_db=None):
     return runner
 
 
-# ---------------------------------------------------------------------------
-# _handle_title_command
-# ---------------------------------------------------------------------------
 
 
 class TestHandleTitleCommand:
@@ -66,7 +62,6 @@ class TestHandleTitleCommand:
         assert "My Research Project" in result
         assert "✏️" in result
 
-        # Verify in DB
         assert db.get_session_title("test_session_123") == "My Research Project"
         db.close()
 
@@ -181,9 +176,6 @@ class TestHandleTitleCommand:
             db.close()
 
 
-# ---------------------------------------------------------------------------
-# /title in help and known_commands
-# ---------------------------------------------------------------------------
 
 
 class TestTitleInHelp:
@@ -194,7 +186,6 @@ class TestTitleInHelp:
         """The /help output includes /title."""
         runner = _make_runner()
         event = _make_event(text="/help")
-        # Need hooks for help command
         from gateway.hooks import HookRegistry
         runner.hooks = HookRegistry()
         result = await runner._handle_help_command(event)

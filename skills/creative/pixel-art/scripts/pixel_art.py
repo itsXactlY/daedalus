@@ -22,7 +22,6 @@ except ImportError:
 
 
 PRESETS = {
-    # ── Original presets (adaptive palette) ─────────────────────────────
     "arcade": {
         "contrast": 1.8, "color": 1.5, "sharpness": 1.2,
         "posterize_bits": 5, "block": 8, "palette": 16,
@@ -31,7 +30,6 @@ PRESETS = {
         "contrast": 1.6, "color": 1.4, "sharpness": 1.2,
         "posterize_bits": 6, "block": 4, "palette": 32,
     },
-    # ── Hardware-accurate presets (named palette) ───────────────────────
     "nes": {
         "contrast": 1.5, "color": 1.4, "sharpness": 1.2,
         "posterize_bits": 6, "block": 8, "palette": "NES",
@@ -72,7 +70,6 @@ PRESETS = {
         "contrast": 1.8, "color": 0.0, "sharpness": 1.2,
         "posterize_bits": 5, "block": 6, "palette": "MONO_AMBER",
     },
-    # ── Artistic palette presets ────────────────────────────────────────
     "neon": {
         "contrast": 1.8, "color": 1.6, "sharpness": 1.2,
         "posterize_bits": 5, "block": 6, "palette": "NEON_CYBER",
@@ -119,14 +116,11 @@ def pixel_art(input_path, output_path, preset="arcade", **overrides):
         Image.NEAREST,
     )
 
-    # Quantize AFTER downscale so Floyd-Steinberg aligns with final pixel grid.
     pal = cfg["palette"]
     if isinstance(pal, str):
-        # Named hardware/artistic palette
         pal_img = build_palette_image(pal)
         quantized = small.quantize(palette=pal_img, dither=Image.FLOYDSTEINBERG)
     else:
-        # Adaptive N-color palette (original behavior)
         quantized = small.quantize(colors=int(pal), dither=Image.FLOYDSTEINBERG)
 
     result = quantized.resize((w, h), Image.NEAREST)

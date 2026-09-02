@@ -14,9 +14,6 @@ from tools.session_search_tool import (
 )
 
 
-# =========================================================================
-# Tool schema guidance
-# =========================================================================
 
 class TestHiddenSessionSources:
     """Verify the _HIDDEN_SESSION_SOURCES constant used for third-party isolation."""
@@ -36,13 +33,10 @@ class TestSessionSearchSchema:
         assert "recent turns of the current session" not in description
 
 
-# =========================================================================
-# _format_timestamp
-# =========================================================================
 
 class TestFormatTimestamp:
     def test_unix_float(self):
-        ts = 1700000000.0  # Nov 14, 2023
+        ts = 1700000000.0
         result = _format_timestamp(ts)
         assert "2023" in result or "November" in result
 
@@ -64,9 +58,6 @@ class TestFormatTimestamp:
         assert "unknown" not in result.lower()
 
 
-# =========================================================================
-# _format_conversation
-# =========================================================================
 
 class TestFormatConversation:
     def test_basic_messages(self):
@@ -112,9 +103,6 @@ class TestFormatConversation:
         assert result == ""
 
 
-# =========================================================================
-# _truncate_around_matches
-# =========================================================================
 
 class TestTruncateAroundMatches:
     def test_short_text_unchanged(self):
@@ -123,11 +111,10 @@ class TestTruncateAroundMatches:
         assert result == text
 
     def test_long_text_truncated(self):
-        # Create text longer than MAX_SESSION_CHARS with query term in middle
         padding = "x" * (MAX_SESSION_CHARS + 5000)
         text = padding + " KEYWORD_HERE " + padding
         result = _truncate_around_matches(text, "KEYWORD_HERE")
-        assert len(result) <= MAX_SESSION_CHARS + 100  # +100 for prefix/suffix markers
+        assert len(result) <= MAX_SESSION_CHARS + 100
         assert "KEYWORD_HERE" in result
 
     def test_truncation_adds_markers(self):
@@ -138,7 +125,6 @@ class TestTruncateAroundMatches:
     def test_no_match_takes_from_start(self):
         text = "x" * (MAX_SESSION_CHARS + 5000)
         result = _truncate_around_matches(text, "nonexistent")
-        # Should take from the beginning
         assert result.startswith("x")
 
     def test_match_at_beginning(self):
@@ -147,9 +133,6 @@ class TestTruncateAroundMatches:
         assert "KEYWORD" in result
 
 
-# =========================================================================
-# session_search (dispatcher)
-# =========================================================================
 
 class TestSessionSearch:
     def test_no_db_returns_error(self):
@@ -178,7 +161,6 @@ class TestSessionSearch:
         mock_db = MagicMock()
         current_sid = "20260304_120000_abc123"
 
-        # Simulate FTS5 returning matches only from the current session
         mock_db.search_messages.return_value = [
             {"session_id": current_sid, "content": "test match", "source": "cli",
              "session_started": 1709500000, "model": "test"},
@@ -213,7 +195,6 @@ class TestSessionSearch:
             {"role": "assistant", "content": "hi there"},
         ]
 
-        # Mock async_call_llm to raise RuntimeError → summarizer returns None
         from unittest.mock import AsyncMock, patch as _patch
         with _patch("tools.session_search_tool.async_call_llm",
                      new_callable=AsyncMock,
@@ -223,7 +204,6 @@ class TestSessionSearch:
             ))
 
         assert result["success"] is True
-        # Current session should be skipped, only other_sid should appear
         assert result["sessions_searched"] == 1
         assert current_sid not in [r.get("session_id") for r in result.get("results", [])]
 

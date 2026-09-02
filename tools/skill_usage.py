@@ -38,7 +38,6 @@ from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
 
 logger = logging.getLogger(__name__)
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking.
 msvcrt = None
 try:
     import fcntl
@@ -55,14 +54,6 @@ STATE_STALE = "stale"
 STATE_ARCHIVED = "archived"
 _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
-# Load-bearing bundled built-ins the curator must NEVER archive or consolidate,
-# regardless of ``curator.prune_builtins``, pin state, or LLM judgment. These
-# back advertised UX paths (e.g. ``plan`` powers the ``/plan`` slash-command
-# flow and is referenced in tips/docs/fresh-profile seeding); silently archiving
-# one turns its slash command into "Unknown command" with no signal to the user.
-# Protection is by skill ``name`` (frontmatter ``name:``), matching the keys used
-# throughout this module. Keep this list tiny and intentional — it is not a
-# substitute for ``curator.prune_builtins: false``, which exempts ALL built-ins.
 PROTECTED_BUILTIN_SKILLS: Set[str] = {
     "plan",
 }
@@ -174,9 +165,6 @@ def activity_count(record: Dict[str, Any]) -> int:
     return total
 
 
-# ---------------------------------------------------------------------------
-# Provenance — which skills are agent-created (and thus eligible for curation)
-# ---------------------------------------------------------------------------
 
 def _read_bundled_manifest_names() -> Set[str]:
     """Return the set of skill names that were seeded from the bundled repo.
@@ -210,14 +198,6 @@ def _read_hub_installed_names() -> Set[str]:
     if not lock_path.exists():
         return set()
     try:
-        # Tolerate non-UTF-8 bytes in the lock file. Hub descriptions can carry
-        # Windows-1252 typographic chars (em-dash 0x97, smart quotes, bullets)
-        # written as single high bytes; a strict utf-8 read raises
-        # UnicodeDecodeError, which is a ValueError sibling (not OSError/
-        # JSONDecodeError) so it escapes the handler below and 500s the whole
-        # /api/skills endpoint. errors="replace" degrades the offending byte to
-        # U+FFFD, keeping the (structurally valid) JSON — and every other
-        # skill — readable. See #68053.
         data = json.loads(lock_path.read_text(encoding="utf-8", errors="replace"))
         if isinstance(data, dict):
             installed = data.get("installed") or {}
@@ -355,13 +335,9 @@ def list_agent_created_skill_names() -> List[str]:
     usage = load_usage()
 
     names: List[str] = []
-    # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
     for skill_md in base.rglob("SKILL.md"):
-        # Skip Daedalus metadata, VCS, virtualenv/dependency, and cache dirs
         if is_excluded_skill_path(skill_md):
             continue
-        # External skill dirs can be mounted below the local skills tree.
-        # Discovery may see them, but autonomous lifecycle curation must not.
         if is_external_skill_path(skill_md):
             continue
         try:
@@ -369,21 +345,15 @@ def list_agent_created_skill_names() -> List[str]:
         except ValueError:
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
-        # Hub-installed skills are always off-limits.
         if name in hub:
             continue
-        # Protected built-ins are never curation candidates — exempt from the
-        # automatic transition walk AND the LLM consolidation pass.
         if is_protected_builtin(name):
             continue
         if name in bundled:
-            # Built-ins are only candidates when pruning is enabled. They never
-            # carry a curator-managed record, so the record gate is skipped.
             if not prune_builtins:
                 continue
             names.append(name)
             continue
-        # Agent-authored (or local-manual) skills must opt in via their record.
         if not _is_curator_managed_record(usage.get(name)):
             continue
         names.append(name)
@@ -556,8 +526,6 @@ def list_unmanaged_skill_names() -> List[str]:
         except ValueError:
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
-        # Anything with an external owner or a bundled/protected identity is
-        # outside the adoption question entirely.
         if name in hub or name in bundled or is_protected_builtin(name):
             continue
         if _is_curator_managed_record(usage.get(name)):
@@ -613,10 +581,6 @@ def adopt_skill(skill_name: str) -> Tuple[bool, str]:
     if is_hub_installed(skill_name):
         return False, f"'{skill_name}' is hub-installed; its upstream owns it"
     if is_bundled(skill_name):
-        # Bundled skills already fall under the curator via
-        # ``curator.prune_builtins``; stamping created_by=agent on one would
-        # claim Daedalus' own shipped skill was agent-authored and change nothing
-        # about its eligibility.
         return False, (
             f"'{skill_name}' is a bundled built-in — it is governed by "
             "curator.prune_builtins, not by adoption"
@@ -637,9 +601,6 @@ def adopt_skill(skill_name: str) -> Tuple[bool, str]:
     return True, f"adopted '{skill_name}' into curator management"
 
 
-# ---------------------------------------------------------------------------
-# Sidecar I/O
-# ---------------------------------------------------------------------------
 
 def _empty_record() -> Dict[str, Any]:
     return {
@@ -671,7 +632,6 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
         return {}
     if not isinstance(data, dict):
         return {}
-    # Defensive: coerce any non-dict values to a fresh empty record
     clean: Dict[str, Dict[str, Any]] = {}
     for k, v in data.items():
         if isinstance(v, dict):
@@ -711,7 +671,6 @@ def get_record(skill_name: str) -> Dict[str, Any]:
     rec = data.get(skill_name)
     if not isinstance(rec, dict):
         return _empty_record()
-    # Backfill any missing keys so callers don't need to handle old files
     base = _empty_record()
     for k, v in base.items():
         rec.setdefault(k, v)
@@ -845,9 +804,6 @@ def _emit_skill_lifecycle(
         )
 
 
-# ---------------------------------------------------------------------------
-# Public counter-bump helpers — telemetry for ALL skills (observability only)
-# ---------------------------------------------------------------------------
 
 def bump_view(skill_name: str) -> None:
     """Bump view_count and last_viewed_at. Called from skill_view().
@@ -947,8 +903,6 @@ def record_created(
 ) -> None:
     """Persist explicit creation provenance and emit a successful create fact."""
     def _apply(rec: Dict[str, Any]) -> Dict[str, Any]:
-        # A successful create is a new logical skill even if stale sidecar
-        # state survived an earlier deletion or manual filesystem change.
         rec.clear()
         rec.update(_empty_record())
         if agent_created:
@@ -1064,9 +1018,6 @@ def forget(skill_name: str) -> None:
         logger.debug("skill_usage.forget(%s) failed: %s", skill_name, e, exc_info=True)
 
 
-# ---------------------------------------------------------------------------
-# Archive / restore
-# ---------------------------------------------------------------------------
 
 def archive_skill(skill_name: str) -> Tuple[bool, str]:
     """Move a curator-eligible skill directory to ~/.daedalus/skills/.archive/.
@@ -1105,8 +1056,6 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     except OSError as e:
         return False, f"failed to create archive dir: {e}"
 
-    # Flatten any category nesting into a single ".archive/<skill>/" so restores
-    # are simple. If a collision exists, append a timestamp.
     dest = archive_root / skill_dir.name
     if dest.exists():
         dest = archive_root / f"{skill_dir.name}-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
@@ -1114,14 +1063,12 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     try:
         skill_dir.rename(dest)
     except OSError:
-        # Cross-device — fall back to shutil.move
         import shutil
         try:
             shutil.move(str(skill_dir), str(dest))
         except Exception as e2:
             return False, f"failed to archive: {e2}"
 
-    # Pruning a built-in only sticks if the re-seeder is told to leave it alone.
     if is_bundled(skill_name):
         add_suppressed_name(skill_name)
 
@@ -1140,14 +1087,11 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     way to lift a prune). Restoring clears any suppression entry so future
     updates may re-seed the built-in again.
     """
-    # Hub skills always have an external upstream owner — never shadow them.
     if is_hub_installed(skill_name):
         return False, (
             f"skill '{skill_name}' is now hub-installed; "
             "restore would shadow the upstream version"
         )
-    # A bundled built-in is upstream-owned UNLESS prune_builtins is on. With the
-    # flag off, restoring over it would shadow the bundled version.
     if is_bundled(skill_name) and not _prune_builtins_enabled():
         return False, (
             f"skill '{skill_name}' is now bundled; "
@@ -1157,18 +1101,8 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     if not archive_root.exists():
         return False, "no archive directory"
 
-    # Try exact name match first, then the timestamped-duplicate fallback.
-    # Recursive walk handles nested archive layouts (e.g. .archive/<category>/<skill>/)
-    # left behind by older archive paths or external imports.
     candidates = [p for p in archive_root.rglob("*") if p.is_dir() and p.name == skill_name]
     if not candidates:
-        # A name collision makes archive_skill() disambiguate by appending its
-        # UTC timestamp ("<skill>-YYYYMMDDHHMMSS", a 14-digit suffix), so only
-        # that exact shape is another copy of THIS skill. A bare
-        # startswith(f"{skill_name}-") also swallows unrelated sibling skills —
-        # restoring "git" would otherwise pull an archived "git-helpers" out of
-        # the archive and rename it to "git", destroying the sibling's only
-        # copy. Require the suffix to be the timestamp archive_skill writes.
         prefix = f"{skill_name}-"
         candidates = sorted(
             [
@@ -1197,7 +1131,6 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
         except Exception as e:
             return False, f"failed to restore: {e}"
 
-    # Restoring a pruned built-in lifts its suppression so updates can manage it.
     remove_suppressed_name(skill_name)
 
     set_state(skill_name, STATE_ACTIVE)
@@ -1240,9 +1173,6 @@ def _find_external_skill_dir(skill_name: str) -> Optional[Path]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Reporting — for the curator CLI / slash command
-# ---------------------------------------------------------------------------
 
 def curated_report() -> List[Dict[str, Any]]:
     """Return a list of {name, provenance, state, pinned, last_activity_at, ...}

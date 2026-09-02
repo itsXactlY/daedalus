@@ -29,9 +29,6 @@ from tools.delegation_live_log import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Writer unit tests
-# ---------------------------------------------------------------------------
 
 
 def test_writer_precreates_file_with_header():
@@ -43,7 +40,6 @@ def test_writer_precreates_file_with_header():
     assert "goal: do the thing" in text
     assert "kickoff" in text
     assert "some ctx" in text
-    # Lives under the daedalus cache/delegation/live root, named task-<n>.log
     assert w.path.name == "task-0.log"
     assert w.path.parent.name == "deleg_test1"
     assert w.path.parent.parent == live_transcript_root()
@@ -54,21 +50,16 @@ def test_stream_deltas_buffer_and_flush_as_one_line():
     w.add_stream_delta("Hello ")
     w.add_stream_delta("world, ")
     w.add_stream_delta("streaming.")
-    # Not yet flushed
     assert "Hello world" not in w.path.read_text(encoding="utf-8")
     w.flush_stream()
     text = w.path.read_text(encoding="utf-8")
     assert "Hello world, streaming." in text
-    # tool_start also flushes pending stream text first
     w.add_stream_delta("more text")
     w.tool_start("read_file", "foo.py")
     text = w.path.read_text(encoding="utf-8")
     assert text.index("more text") < text.index("-> read_file")
 
 
-# ---------------------------------------------------------------------------
-# observe() demux — the tool_progress_callback seam
-# ---------------------------------------------------------------------------
 
 
 def test_observe_maps_child_callback_events_to_lines():
@@ -121,7 +112,6 @@ def test_wrap_progress_callback_tees_and_preserves_inner():
     assert seen == [("tool.started", "terminal"), ("_thinking", "pondering")]
     text = w.path.read_text(encoding="utf-8")
     assert "-> terminal(echo hi)" in text and "pondering" in text
-    # _flush contract preserved
     cb._flush()
     assert inner_flushed == [True]
 
@@ -131,18 +121,12 @@ def test_wrap_progress_callback_writer_failure_does_not_block_inner():
     w.observe = MagicMock(side_effect=RuntimeError("disk on fire"))
     seen = []
     cb = wrap_progress_callback(lambda *a, **k: seen.append(a), w)
-    cb("tool.started", "terminal", "x", None)  # must not raise
+    cb("tool.started", "terminal", "x", None)
     assert len(seen) == 1
 
 
-# ---------------------------------------------------------------------------
-# Dispatch-time creation + manifest + retention
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# delegate_task return-shape integration
-# ---------------------------------------------------------------------------
 
 
 def _make_parent():
@@ -174,15 +158,6 @@ if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
 
 
-# ---------------------------------------------------------------------------
-# Credential redaction
-# ---------------------------------------------------------------------------
-#
-# These transcripts land under ``cache/delegation``, which delegate_tool mounts
-# READ-ONLY into remote terminal backends — so a line written here is readable
-# from inside the sandbox. The rendered events are exactly the secret-bearing
-# surfaces (tool args, tool results, streamed assistant text), and every other
-# sink for that data already routes through the canonical redactor.
 
 _BEARER = "sk-ant-api03-" + "R" * 24
 _ENV_KEY = "sk-proj-" + "L" * 24

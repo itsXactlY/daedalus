@@ -14,9 +14,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_adapter():
     """Build a minimal APIServerAdapter with mocked internals."""
@@ -35,9 +32,6 @@ def _make_request():
     return req
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestSSEAgentCancelOnDisconnect:
     """gateway/platforms/api_server.py — _write_sse_chat_completion()"""
@@ -48,9 +42,8 @@ class TestSSEAgentCancelOnDisconnect:
         adapter = _make_adapter()
 
         stream_q = queue.Queue()
-        stream_q.put("hello ")  # Some data already queued
+        stream_q.put("hello ")
 
-        # Agent task that runs forever (simulates a long LLM call)
         agent_done = asyncio.Event()
 
         async def fake_agent():
@@ -62,7 +55,6 @@ class TestSSEAgentCancelOnDisconnect:
 
             agent_task = asyncio.ensure_future(fake_agent())
 
-            # Mock response that raises ConnectionResetError on second write
             mock_response = AsyncMock(spec=web.StreamResponse)
             call_count = 0
 
@@ -77,7 +69,6 @@ class TestSSEAgentCancelOnDisconnect:
 
             with patch.object(type(adapter), '_write_sse_chat_completion',
                               adapter._write_sse_chat_completion):
-                # Patch StreamResponse creation
                 with patch("gateway.platforms.api_server.web.StreamResponse",
                            return_value=mock_response):
                     await adapter._write_sse_chat_completion(
@@ -85,9 +76,7 @@ class TestSSEAgentCancelOnDisconnect:
                         stream_q, agent_task,
                     )
 
-            # The critical assertion: agent_task must be cancelled
             assert agent_task.cancelled() or agent_task.done()
-            # Clean up
             agent_done.set()
 
         asyncio.run(run())
@@ -98,7 +87,7 @@ class TestSSEAgentCancelOnDisconnect:
 
         stream_q = queue.Queue()
         stream_q.put("hello")
-        stream_q.put(None)  # End-of-stream sentinel
+        stream_q.put(None)
 
         async def fake_agent():
             return {"final_response": "done"}, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
@@ -107,7 +96,7 @@ class TestSSEAgentCancelOnDisconnect:
             from aiohttp import web
 
             agent_task = asyncio.ensure_future(fake_agent())
-            await asyncio.sleep(0)  # Let agent complete
+            await asyncio.sleep(0)
 
             mock_response = AsyncMock(spec=web.StreamResponse)
             mock_response.write = AsyncMock()
@@ -120,7 +109,6 @@ class TestSSEAgentCancelOnDisconnect:
                     stream_q, agent_task,
                 )
 
-            # Agent should have completed normally, not been cancelled
             assert agent_task.done()
             assert not agent_task.cancelled()
 
@@ -133,7 +121,7 @@ class TestSSEAgentCancelOnDisconnect:
         stream_q = queue.Queue()
 
         async def fake_agent():
-            await asyncio.sleep(999)  # Never completes
+            await asyncio.sleep(999)
             return {}, {}
 
         async def run():
@@ -170,7 +158,7 @@ class TestSSEAgentCancelOnDisconnect:
             from aiohttp import web
 
             agent_task = asyncio.ensure_future(fake_agent())
-            await asyncio.sleep(0)  # Let agent complete
+            await asyncio.sleep(0)
 
             mock_response = AsyncMock(spec=web.StreamResponse)
             call_count = 0
@@ -191,7 +179,6 @@ class TestSSEAgentCancelOnDisconnect:
                     stream_q, agent_task,
                 )
 
-            # Task was already done — should not be cancelled
             assert agent_task.done()
             assert not agent_task.cancelled()
 
@@ -211,7 +198,6 @@ class TestSSEAgentCancelOnDisconnect:
             await agent_done.wait()
             return {"final_response": "done"}, {}
 
-        # Mock agent with an interrupt method
         mock_agent = MagicMock()
         mock_agent.interrupt = MagicMock()
 
@@ -240,9 +226,7 @@ class TestSSEAgentCancelOnDisconnect:
                     stream_q, agent_task, agent_ref,
                 )
 
-            # agent.interrupt() must have been called
             mock_agent.interrupt.assert_called_once_with("SSE client disconnected")
-            # Clean up
             agent_done.set()
 
         asyncio.run(run())
@@ -269,7 +253,6 @@ class TestSSEAgentCancelOnDisconnect:
 
             with patch("gateway.platforms.api_server.web.StreamResponse",
                        return_value=mock_response):
-                # No agent_ref passed — should still handle disconnect cleanly
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-noref", "gpt-4", 1234567890,
                     stream_q, agent_task,

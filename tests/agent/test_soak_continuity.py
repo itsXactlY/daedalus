@@ -48,7 +48,7 @@ def _mock_goal_hit():
 def _mock_tool(name, arguments, timeout=8.0):
     """Dispatch per tool name: stats → ready, auto:turn browse → turns, decision/ops browse → goals."""
     if name == "mazemaker_stats":
-        return {"memories": 100, "connections": 0}  # brain ready
+        return {"memories": 100, "connections": 0}
     if name == "mazemaker_browse":
         if arguments.get("label_prefix", "") == "auto:turn:":
             return _mock_browse_response()
@@ -63,13 +63,13 @@ class TestContinuity:
             p = mz.MazemakerMemoryProvider()
             p.initialize("20260809_000000_new")
             cc = p.continuity_context()
-        assert "Previous session" in cc              # tail section header
-        assert "website showcase" in cc              # genuine turn present
-        assert "shader approach" in cc               # genuine second turn present
-        assert "GOAL" in cc                          # goals section present
-        assert "Review the conversation above" not in cc  # bg-review filtered
-        assert "20260809_000000_new" not in cc       # own session excluded
-        assert "[Prior-session context only" in cc   # guidance footer present
+        assert "Previous session" in cc
+        assert "website showcase" in cc
+        assert "shader approach" in cc
+        assert "GOAL" in cc
+        assert "Review the conversation above" not in cc
+        assert "20260809_000000_new" not in cc
+        assert "[Prior-session context only" in cc
 
     def test_no_history_returns_empty(self):
         """No prior turns → no continuity block."""
@@ -101,5 +101,4 @@ class TestContinuity:
             first = p.continuity_context()
             second = p.continuity_context()
         assert first == second
-        # init probe(stats) + tail browse + decision browse [+ ops browse]
         assert len(calls) <= 5

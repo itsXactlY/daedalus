@@ -18,12 +18,10 @@ def config_home(tmp_path, monkeypatch):
     home = tmp_path / "daedalus"
     home.mkdir()
     config_yaml = home / "config.yaml"
-    # Start with model as a plain string — the format that triggered the bug
     config_yaml.write_text("model: some-old-model\n")
     env_file = home / ".env"
     env_file.write_text("")
     monkeypatch.setenv("DAEDALUS_HOME", str(home))
-    # Clear env vars that could interfere
     monkeypatch.delenv("DAEDALUS_MODEL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("DAEDALUS_INFERENCE_PROVIDER", raising=False)
@@ -65,7 +63,7 @@ class TestSaveModelChoiceAlwaysDict:
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "new-model"
-        assert model["provider"] == "openrouter"  # preserved
+        assert model["provider"] == "openrouter"
 
 
 class TestProviderPersistsAfterModelSave:
@@ -78,14 +76,11 @@ class TestProviderPersistsAfterModelSave:
         if not pconfig:
             pytest.skip("kimi-coding not in PROVIDER_REGISTRY")
 
-        # Simulate: user has a Kimi API key, model was a string
         monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
 
         from daedalus_cli.main import _model_flow_api_key_provider
         from daedalus_cli.config import load_config
 
-        # Mock the model selection prompt to return "kimi-k2.5"
-        # Also mock input() for the base URL prompt and builtins.input
         with patch("daedalus_cli.auth._prompt_model_selection", return_value="kimi-k2.5"), \
              patch("daedalus_cli.auth.deactivate_provider"), \
              patch("builtins.input", return_value=""):

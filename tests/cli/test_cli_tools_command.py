@@ -14,7 +14,6 @@ def _make_cli(enabled_toolsets=None):
     return cli_obj
 
 
-# ── /tools (no subcommand) ──────────────────────────────────────────────────
 
 
 class TestToolsSlashNoSubcommand:
@@ -32,7 +31,6 @@ class TestToolsSlashNoSubcommand:
         mock_show.assert_called_once()
 
 
-# ── /tools list ─────────────────────────────────────────────────────────────
 
 
 class TestToolsSlashList:
@@ -55,7 +53,6 @@ class TestToolsSlashList:
         assert cli_obj.enabled_toolsets == {"web", "memory"}
 
 
-# ── /tools disable (session reset) ──────────────────────────────────────────
 
 
 class TestToolsSlashDisableWithReset:
@@ -105,7 +102,6 @@ class TestToolsSlashDisableWithReset:
         assert "Usage" in out
 
 
-# ── /tools enable (session reset) ───────────────────────────────────────────
 
 
 class TestToolsSlashEnableWithReset:

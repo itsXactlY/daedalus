@@ -45,7 +45,6 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
                 return dt.strftime("%B %d, %Y at %I:%M %p")
             return ts
     except (ValueError, OSError, OverflowError) as e:
-        # Log specific errors for debugging while gracefully handling edge cases
         logging.debug("Failed to format timestamp %s: %s", ts, e, exc_info=True)
     except Exception as e:
         logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
@@ -61,12 +60,10 @@ def _format_conversation(messages: List[Dict[str, Any]]) -> str:
         tool_name = msg.get("tool_name")
 
         if role == "TOOL" and tool_name:
-            # Truncate long tool outputs
             if len(content) > 500:
                 content = content[:250] + "\n...[truncated]...\n" + content[-250:]
             parts.append(f"[TOOL:{tool_name}]: {content}")
         elif role == "ASSISTANT":
-            # Include tool call names if present
             tool_calls = msg.get("tool_calls")
             if tool_calls and isinstance(tool_calls, list):
                 tc_names = []
@@ -96,7 +93,6 @@ def _truncate_around_matches(
     if len(full_text) <= max_chars:
         return full_text
 
-    # Find the first occurrence of any query term
     query_terms = query.lower().split()
     text_lower = full_text.lower()
     first_match = len(full_text)
@@ -106,10 +102,8 @@ def _truncate_around_matches(
             first_match = pos
 
     if first_match == len(full_text):
-        # No match found, take from the start
         first_match = 0
 
-    # Center the window around the first match
     half = max_chars // 2
     start = max(0, first_match - half)
     end = min(len(full_text), start + max_chars)
@@ -164,7 +158,6 @@ async def _summarize_session(
             content = extract_content_or_reasoning(response)
             if content:
                 return content
-            # Reasoning-only / empty — let the retry loop handle it
             logging.warning("Session search LLM returned empty content (attempt %d/%d)", attempt + 1, max_retries)
             if attempt < max_retries - 1:
                 await asyncio.sleep(1 * (attempt + 1))
@@ -186,18 +179,14 @@ async def _summarize_session(
                 return None
 
 
-# Sources that are excluded from session browsing/searching by default.
-# Third-party integrations (Paperclip agents, etc.) tag their sessions with
-# DAEDALUS_SESSION_SOURCE=tool so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
+        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))
 
-        # Resolve current session lineage to exclude it
         current_root = None
         if current_session_id:
             try:
@@ -217,7 +206,6 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             sid = s.get("id", "")
             if current_root and (sid == current_root or sid == current_session_id):
                 continue
-            # Skip child/delegation sessions (they have parent_session_id)
             if s.get("parent_session_id"):
                 continue
             results.append({
@@ -260,27 +248,23 @@ def session_search(
     if db is None:
         return tool_error("Session database not available.", success=False)
 
-    limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
+    limit = min(limit, 5)
 
-    # Recent sessions mode: when query is empty, return metadata for recent sessions.
-    # No LLM calls — just DB queries for titles, previews, timestamps.
     if not query or not query.strip():
         return _list_recent_sessions(db, limit, current_session_id)
 
     query = query.strip()
 
     try:
-        # Parse role filter
         role_list = None
         if role_filter and role_filter.strip():
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
-        # FTS5 search -- get matches ranked by relevance
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # Get more matches to find unique sessions
+            limit=50,
             offset=0,
         )
 
@@ -293,8 +277,6 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Resolve child sessions to their parent — delegation stores detailed
-        # content in child sessions, but the user's conversation is the parent.
         def _resolve_to_parent(session_id: str) -> str:
             """Walk delegation chain to find the root parent session ID."""
             visited = set()
@@ -324,15 +306,10 @@ def session_search(
             _resolve_to_parent(current_session_id) if current_session_id else None
         )
 
-        # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage — the agent already has that
-            # context, even if older turns live in parent fragments.
             if current_lineage_root and resolved_sid == current_lineage_root:
                 continue
             if current_session_id and raw_sid == current_session_id:
@@ -344,7 +321,6 @@ def session_search(
             if len(seen_sessions) >= limit:
                 break
 
-        # Prepare all sessions for parallel summarization
         tasks = []
         for session_id, match_info in seen_sessions.items():
             try:
@@ -363,7 +339,6 @@ def session_search(
                     exc_info=True,
                 )
 
-        # Summarize all sessions in parallel
         async def _summarize_all() -> List[Union[str, Exception]]:
             """Summarize all sessions in parallel."""
             coros = [
@@ -373,12 +348,6 @@ def session_search(
             return await asyncio.gather(*coros, return_exceptions=True)
 
         try:
-            # Use _run_async() which properly manages event loops across
-            # CLI, gateway, and worker-thread contexts.  The previous
-            # pattern (asyncio.run() in a ThreadPoolExecutor) created a
-            # disposable event loop that conflicted with cached
-            # AsyncOpenAI/httpx clients bound to a different loop,
-            # causing deadlocks in gateway mode (#2681).
             from model_tools import _run_async
             results = _run_async(_summarize_all())
         except concurrent.futures.TimeoutError:
@@ -410,8 +379,6 @@ def session_search(
             if result:
                 entry["summary"] = result
             else:
-                # Fallback: raw preview so matched sessions aren't silently
-                # dropped when the summarizer is unavailable (fixes #3409).
                 preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
                 entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
 
@@ -470,7 +437,6 @@ SESSION_SEARCH_SCHEMA = {
 }
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

@@ -26,9 +26,6 @@ from cron.jobs import (
 )
 
 
-# =========================================================================
-# parse_duration
-# =========================================================================
 
 class TestParseDuration:
     def test_minutes(self):
@@ -65,16 +62,12 @@ class TestParseDuration:
             parse_duration("m30")
 
 
-# =========================================================================
-# parse_schedule
-# =========================================================================
 
 class TestParseSchedule:
     def test_duration_becomes_once(self):
         result = parse_schedule("30m")
         assert result["kind"] == "once"
         assert "run_at" in result
-        # run_at should be a valid ISO timestamp string ~30 minutes from now
         run_at_str = result["run_at"]
         assert isinstance(run_at_str, str)
         run_at = datetime.fromisoformat(run_at_str)
@@ -113,9 +106,6 @@ class TestParseSchedule:
             parse_schedule("99 99 99 99 99")
 
 
-# =========================================================================
-# compute_next_run
-# =========================================================================
 
 class TestComputeNextRun:
     def test_once_future_returns_time(self):
@@ -150,7 +140,6 @@ class TestComputeNextRun:
         schedule = {"kind": "interval", "minutes": 60}
         result = compute_next_run(schedule)
         next_dt = datetime.fromisoformat(result)
-        # Should be ~60 minutes from now
         assert next_dt > datetime.now().astimezone() + timedelta(minutes=59)
 
     def test_interval_subsequent_run(self):
@@ -158,12 +147,11 @@ class TestComputeNextRun:
         last = datetime.now().astimezone().isoformat()
         result = compute_next_run(schedule, last_run_at=last)
         next_dt = datetime.fromisoformat(result)
-        # Should be ~30 minutes from last run
         assert next_dt > datetime.now().astimezone() + timedelta(minutes=29)
 
     def test_cron_returns_future(self):
         pytest.importorskip("croniter")
-        schedule = {"kind": "cron", "expr": "* * * * *"}  # every minute
+        schedule = {"kind": "cron", "expr": "* * * * *"}
         result = compute_next_run(schedule)
         assert isinstance(result, str), f"Expected ISO timestamp string, got {type(result)}"
         assert len(result) > 0
@@ -175,9 +163,6 @@ class TestComputeNextRun:
         assert compute_next_run({"kind": "unknown"}) is None
 
 
-# =========================================================================
-# Job CRUD (with tmp file storage)
-# =========================================================================
 
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
@@ -242,11 +227,9 @@ class TestUpdateJob:
         assert updated is not None
         assert isinstance(updated, dict)
         assert updated["name"] == "New Name"
-        # Verify other fields are preserved
         assert updated["prompt"] == "Check server status"
         assert updated["id"] == job["id"]
         assert updated["schedule"] == job["schedule"]
-        # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["name"] == "New Name"
 
@@ -262,7 +245,6 @@ class TestUpdateJob:
         assert updated["schedule"]["minutes"] == 120
         assert updated["schedule_display"] == "every 120m"
         assert updated["next_run_at"] != old_next_run
-        # Verify persisted to disk
         fetched = get_job(job["id"])
         assert fetched["schedule"]["minutes"] == 120
         assert fetched["schedule_display"] == "every 120m"
@@ -311,22 +293,16 @@ class TestMarkJobRun:
     def test_repeat_limit_removes_job(self, tmp_cron_dir):
         job = create_job(prompt="Once", schedule="30m", repeat=1)
         mark_job_run(job["id"], success=True)
-        # Job should be removed after hitting repeat limit
         assert get_job(job["id"]) is None
 
     def test_repeat_negative_one_is_infinite(self, tmp_cron_dir):
-        # LLMs often pass repeat=-1 to mean "infinite/forever".
-        # The job must NOT be deleted after runs when repeat <= 0.
         job = create_job(prompt="Forever", schedule="every 1h", repeat=-1)
-        # -1 should be normalised to None (infinite) at create time
         assert job["repeat"]["times"] is None
-        # Running it multiple times should never delete it
         for _ in range(3):
             mark_job_run(job["id"], success=True)
             assert get_job(job["id"]) is not None, "job was deleted after run despite infinite repeat"
 
     def test_repeat_zero_is_infinite(self, tmp_cron_dir):
-        # repeat=0 should also be treated as None (infinite), not "run zero times".
         job = create_job(prompt="ZeroRepeat", schedule="every 1h", repeat=0)
         assert job["repeat"]["times"] is None
         mark_job_run(job["id"], success=True)
@@ -354,7 +330,6 @@ class TestMarkJobRun:
         mark_job_run(job["id"], success=True, delivery_error="network timeout")
         updated = get_job(job["id"])
         assert updated["last_delivery_error"] == "network timeout"
-        # Next run delivers successfully
         mark_job_run(job["id"], success=True, delivery_error=None)
         updated = get_job(job["id"])
         assert updated["last_delivery_error"] is None
@@ -376,7 +351,6 @@ class TestAdvanceNextRun:
     def test_advances_interval_job(self, tmp_cron_dir):
         """Interval jobs should have next_run_at bumped to the next future occurrence."""
         job = create_job(prompt="Recurring check", schedule="every 1h")
-        # Force next_run_at to 5 minutes ago (i.e. the job is due)
         jobs = load_jobs()
         old_next = (datetime.now() - timedelta(minutes=5)).isoformat()
         jobs[0]["next_run_at"] = old_next
@@ -394,7 +368,6 @@ class TestAdvanceNextRun:
         """Cron-expression jobs should have next_run_at bumped to the next occurrence."""
         pytest.importorskip("croniter")
         job = create_job(prompt="Daily wakeup", schedule="15 6 * * *")
-        # Force next_run_at to 30 minutes ago
         jobs = load_jobs()
         old_next = (datetime.now() - timedelta(minutes=30)).isoformat()
         jobs[0]["next_run_at"] = old_next
@@ -426,9 +399,7 @@ class TestAdvanceNextRun:
     def test_already_future_stays_future(self, tmp_cron_dir):
         """If next_run_at is already in the future, advance keeps it in the future (no harm)."""
         job = create_job(prompt="Future job", schedule="every 1h")
-        # next_run_at is already set to ~1h from now by create_job
         advance_next_run(job["id"])
-        # Regardless of return value, the job should still be in the future
         updated = get_job(job["id"])
         from cron.jobs import _ensure_aware, _daedalus_now
         new_next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
@@ -437,19 +408,15 @@ class TestAdvanceNextRun:
     def test_crash_safety_scenario(self, tmp_cron_dir):
         """Simulate the crash-loop scenario: after advance, the job should NOT be due."""
         job = create_job(prompt="Crash test", schedule="every 1h")
-        # Force next_run_at to 5 minutes ago (job is due)
         jobs = load_jobs()
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=5)).isoformat()
         save_jobs(jobs)
 
-        # Job should be due before advance
         due_before = get_due_jobs()
         assert len(due_before) == 1
 
-        # Advance (simulating what tick() does before run_job)
         advance_next_run(job["id"])
 
-        # Now the job should NOT be due (simulates restart after crash)
         due_after = get_due_jobs()
         assert len(due_after) == 0, "Job should not be due after advance_next_run"
 
@@ -461,7 +428,6 @@ class TestGetDueJobs:
         For an hourly job, grace = 30 min (half the period, clamped to [120s, 2h]).
         """
         job = create_job(prompt="Due now", schedule="every 1h")
-        # Force next_run_at to 10 minutes ago (within the 30-min grace for hourly)
         jobs = load_jobs()
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=10)).isoformat()
         save_jobs(jobs)
@@ -476,14 +442,12 @@ class TestGetDueJobs:
         For an hourly job, grace = 30 min. Setting 35 min late exceeds the window.
         """
         job = create_job(prompt="Stale", schedule="every 1h")
-        # Force next_run_at to 35 minutes ago (beyond the 30-min grace for hourly)
         jobs = load_jobs()
         jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
         save_jobs(jobs)
 
         due = get_due_jobs()
         assert len(due) == 0
-        # next_run_at should be fast-forwarded to the future
         updated = get_job(job["id"])
         from cron.jobs import _ensure_aware, _daedalus_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))

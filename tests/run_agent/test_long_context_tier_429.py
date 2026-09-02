@@ -13,9 +13,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-# ---------------------------------------------------------------------------
-# Detection logic
-# ---------------------------------------------------------------------------
 
 
 class TestLongContextTierDetection:
@@ -94,9 +91,6 @@ class TestLongContextTierDetection:
         )
 
 
-# ---------------------------------------------------------------------------
-# Context reduction
-# ---------------------------------------------------------------------------
 
 
 class TestContextReduction:
@@ -126,7 +120,6 @@ class TestContextReduction:
         assert comp.context_length == 200_000
         assert comp.threshold_tokens == 100_000
         assert comp._context_probed is True
-        # Must NOT persist — subscription tier, not model capability
         assert comp._context_probe_persistable is False
 
     def test_no_reduction_when_already_200k(self):
@@ -137,7 +130,7 @@ class TestContextReduction:
         if comp.context_length > reduced_ctx:
             comp.context_length = reduced_ctx
 
-        assert comp.context_length == original  # unchanged
+        assert comp.context_length == original
 
     def test_no_reduction_when_below_200k(self):
         comp = self._make_compressor(128_000)
@@ -147,12 +140,9 @@ class TestContextReduction:
         if comp.context_length > reduced_ctx:
             comp.context_length = reduced_ctx
 
-        assert comp.context_length == original  # unchanged
+        assert comp.context_length == original
 
 
-# ---------------------------------------------------------------------------
-# Integration: agent error handler path
-# ---------------------------------------------------------------------------
 
 
 class TestAgentErrorPath:

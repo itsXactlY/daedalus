@@ -102,7 +102,6 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                 return home
         except Exception:
             pass
-        # Fallback: guess from username
         if self.user == "root":
             return "/root"
         return f"/home/{self.user}"
@@ -122,7 +121,6 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
             rsync_base.extend(["-e", ssh_opts])
             dest_prefix = f"{self.user}@{self.host}"
 
-            # Sync individual credential files (remap /root/.daedalus to detected home)
             for mount_entry in get_credential_file_mounts():
                 remote_path = mount_entry["container_path"].replace("/root/.daedalus", container_base, 1)
                 parent_dir = str(Path(remote_path).parent)
@@ -136,7 +134,6 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                 else:
                     logger.debug("SSH: rsync credential failed: %s", result.stderr.strip())
 
-            # Sync skill directories (local + external, remap to detected home)
             for skills_mount in get_skills_directory_mount(container_base=container_base):
                 remote_path = skills_mount["container_path"]
                 mkdir_cmd = self._build_ssh_command()
@@ -157,12 +154,10 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
                 stdin_data: str | None = None) -> dict:
-        # Incremental sync before each command so mid-session credential
-        # refreshes and skill updates are picked up.
         self._sync_skills_and_credentials()
         return super().execute(command, cwd, timeout=timeout, stdin_data=stdin_data)
 
-    _poll_interval_start: float = 0.15  # SSH: higher initial interval (150ms) for network latency
+    _poll_interval_start: float = 0.15
 
     @property
     def _temp_prefix(self) -> str:
@@ -229,7 +224,6 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                          stdin_data: str | None = None) -> dict:
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
-        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
         if work_dir == "~":
             wrapped = f'cd ~ && {exec_command}'
         elif work_dir.startswith("~/"):

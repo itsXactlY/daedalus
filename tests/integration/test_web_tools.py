@@ -26,7 +26,6 @@ import argparse
 from datetime import datetime
 from typing import List
 
-# Import the web tools to test (updated path after moving tools/)
 from tools.web_tools import (
     web_search_tool,
     web_extract_tool,
@@ -123,7 +122,6 @@ class WebToolsTester:
         """Test environment setup and API keys"""
         print_section("Environment Check")
         
-        # Check web backend API key (Parallel or Firecrawl)
         if not check_web_api_key():
             self.log_result("Web Backend API Key", "failed", "PARALLEL_API_KEY or FIRECRAWL_API_KEY not set")
             return False
@@ -131,14 +129,12 @@ class WebToolsTester:
             backend = _get_backend()
             self.log_result("Web Backend API Key", "passed", f"Using {backend} backend")
         
-        # Check auxiliary LLM provider (optional)
         if not check_auxiliary_model():
             self.log_result("Auxiliary LLM", "skipped", "No auxiliary LLM provider available (LLM tests will be skipped)")
             self.test_llm = False
         else:
             self.log_result("Auxiliary LLM", "passed", "Found")
         
-        # Check debug mode
         debug_info = get_debug_session_info()
         if debug_info["enabled"]:
             print_info(f"Debug mode enabled - Session: {debug_info['session_id']}")
@@ -153,7 +149,7 @@ class WebToolsTester:
         test_queries = [
             ("Python web scraping tutorial", 5),
             ("Firecrawl API documentation", 3),
-            ("inflammatory arthritis symptoms treatment", 8)  # Test medical query from your example
+            ("inflammatory arthritis symptoms treatment", 8)
         ]
         
         extracted_urls = []
@@ -165,10 +161,8 @@ class WebToolsTester:
                 if self.verbose:
                     print(f"  Calling web_search_tool(query='{query}', limit={limit})")
                 
-                # Perform search
                 result = web_search_tool(query, limit)
                 
-                # Parse result
                 try:
                     data = json.loads(result)
                 except json.JSONDecodeError as e:
@@ -181,7 +175,6 @@ class WebToolsTester:
                     self.log_result(f"Search: {query[:30]}...", "failed", f"API error: {data['error']}")
                     continue
                 
-                # Check structure
                 if "success" not in data or "data" not in data:
                     self.log_result(f"Search: {query[:30]}...", "failed", "Missing success or data fields")
                     if self.verbose:
@@ -196,7 +189,6 @@ class WebToolsTester:
                         print(f"    data.web content: {data.get('data', {}).get('web')}")
                     continue
                 
-                # Validate each result
                 valid_results = 0
                 missing_fields = []
                 
@@ -206,7 +198,6 @@ class WebToolsTester:
                     
                     if has_all_fields:
                         valid_results += 1
-                        # Collect URLs for extraction test
                         if len(extracted_urls) < 3:
                             extracted_urls.append(result["url"])
                         
@@ -219,7 +210,6 @@ class WebToolsTester:
                         if self.verbose:
                             print(f"    Result {i+1}: ✗ Missing fields: {missing}")
                 
-                # Log results
                 if valid_results == len(web_results):
                     self.log_result(
                         f"Search: {query[:30]}...", 
@@ -250,7 +240,6 @@ class WebToolsTester:
         """Test web content extraction"""
         print_section("Test 2: Web Extract (without LLM)")
         
-        # Use provided URLs or defaults
         if not urls:
             urls = [
                 "https://docs.firecrawl.dev/introduction",
@@ -260,10 +249,9 @@ class WebToolsTester:
         else:
             print(f"  Using {len(urls)} URLs from search results")
         
-        # Test extraction
         if urls:
             try:
-                test_urls = urls[:2]  # Test with max 2 URLs
+                test_urls = urls[:2]
                 print(f"\n  Extracting content from {len(test_urls)} URL(s)...")
                 for url in test_urls:
                     print(f"    - {url}")
@@ -277,7 +265,6 @@ class WebToolsTester:
                     use_llm_processing=False
                 )
                 
-                # Parse result
                 try:
                     data = json.loads(result)
                 except json.JSONDecodeError as e:
@@ -298,7 +285,6 @@ class WebToolsTester:
                         print(f"    Response keys: {list(data.keys())}")
                     return
                 
-                # Validate each result
                 valid_results = 0
                 failed_results = 0
                 total_content_length = 0
@@ -327,7 +313,6 @@ class WebToolsTester:
                         if self.verbose:
                             print(f"    Page {i+1}: ⚠ {title[:50]}... - Empty content")
                 
-                # Log results
                 if valid_results > 0:
                     self.log_result(
                         "Extract (no LLM)", 
@@ -359,7 +344,6 @@ class WebToolsTester:
             self.log_result("Extract (with LLM)", "skipped", "LLM testing disabled")
             return
         
-        # Use a URL likely to have substantial content
         test_url = urls[0] if urls else "https://docs.firecrawl.dev/features/scrape"
         
         try:
@@ -369,7 +353,7 @@ class WebToolsTester:
                 [test_url],
                 format="markdown",
                 use_llm_processing=True,
-                min_length=1000  # Lower threshold for testing
+                min_length=1000
             )
             
             data = json.loads(result)
@@ -390,7 +374,6 @@ class WebToolsTester:
             if content:
                 content_len = len(content)
                 
-                # Check if content was actually processed (should be shorter than typical raw content)
                 if content_len > 0:
                     self.log_result(
                         "Extract (with LLM)", 
@@ -416,8 +399,8 @@ class WebToolsTester:
         print_section("Test 4: Web Crawl")
         
         test_sites = [
-            ("https://docs.firecrawl.dev", None, 2),  # Test docs site
-            ("https://firecrawl.dev", None, 3),  # Test main site
+            ("https://docs.firecrawl.dev", None, 2),
+            ("https://firecrawl.dev", None, 3),
         ]
         
         for url, instructions, expected_min_pages in test_sites:
@@ -429,17 +412,15 @@ class WebToolsTester:
                     print(f"  No instructions (general crawl)")
                 print(f"  Expected minimum pages: {expected_min_pages}")
                 
-                # Show what's being called
                 if self.verbose:
                     print(f"  Calling web_crawl_tool(url='{url}', instructions={instructions}, use_llm_processing=False)")
                 
                 result = await web_crawl_tool(
                     url,
                     instructions=instructions,
-                    use_llm_processing=False  # Disable LLM for faster testing
+                    use_llm_processing=False
                 )
                 
-                # Check if result is valid JSON
                 try:
                     data = json.loads(result)
                 except json.JSONDecodeError as e:
@@ -448,12 +429,10 @@ class WebToolsTester:
                         print(f"    Raw response (first 500 chars): {result[:500]}...")
                     continue
                 
-                # Check for errors
                 if "error" in data:
                     self.log_result(f"Crawl: {url}", "failed", f"API error: {data['error']}")
                     continue
                 
-                # Get results
                 results = data.get("results", [])
                 
                 if not results:
@@ -462,7 +441,6 @@ class WebToolsTester:
                         print(f"    Full response: {json.dumps(data, indent=2)[:1000]}...")
                     continue
                 
-                # Analyze pages
                 valid_pages = 0
                 empty_pages = 0
                 total_content = 0
@@ -484,7 +462,6 @@ class WebToolsTester:
                         empty_pages += 1
                         page_details.append(f"Page {i+1}: {title[:40]}... (EMPTY)")
                 
-                # Show detailed results if verbose
                 if self.verbose:
                     print(f"\n  Crawl Results:")
                     print(f"    Total pages returned: {len(results)}")
@@ -492,12 +469,11 @@ class WebToolsTester:
                     print(f"    Empty pages: {empty_pages}")
                     print(f"    Total content size: {total_content} characters")
                     print(f"\n  Page Details:")
-                    for detail in page_details[:10]:  # Show first 10 pages
+                    for detail in page_details[:10]:
                         print(f"    - {detail}")
                     if len(page_details) > 10:
                         print(f"    ... and {len(page_details) - 10} more pages")
                 
-                # Determine pass/fail
                 if valid_pages >= expected_min_pages:
                     self.log_result(
                         f"Crawl: {url}", 
@@ -525,25 +501,19 @@ class WebToolsTester:
         print_header("WEB TOOLS TEST SUITE")
         print(f"Started at: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # Test environment
         if not self.test_environment():
             print_error("\nCannot proceed without required API keys!")
             return False
         
-        # Test search and collect URLs
         urls = self.test_web_search()
         
-        # Test extraction
         await self.test_web_extract(urls if urls else None)
         
-        # Test extraction with LLM
         if self.test_llm:
             await self.test_web_extract_with_llm(urls if urls else None)
         
-        # Test crawling
         await self.test_web_crawl()
         
-        # Print summary
         self.end_time = datetime.now()
         duration = (self.end_time - self.start_time).total_seconds()
         
@@ -553,13 +523,11 @@ class WebToolsTester:
         print(f"{Colors.FAIL}Failed: {len(self.test_results['failed'])}{Colors.ENDC}")
         print(f"{Colors.WARNING}Skipped: {len(self.test_results['skipped'])}{Colors.ENDC}")
         
-        # List failed tests
         if self.test_results["failed"]:
             print(f"\n{Colors.FAIL}{Colors.BOLD}Failed Tests:{Colors.ENDC}")
             for test in self.test_results["failed"]:
                 print(f"  - {test['test']}: {test['details']}")
         
-        # Save results to file
         self.save_results()
         
         return len(self.test_results["failed"]) == 0
@@ -606,21 +574,17 @@ async def main():
     
     args = parser.parse_args()
     
-    # Set debug mode if requested
     if args.debug:
         os.environ["WEB_TOOLS_DEBUG"] = "true"
         print_info("Debug mode enabled for web tools")
     
-    # Create tester
     tester = WebToolsTester(
         verbose=args.verbose,
         test_llm=not args.no_llm
     )
     
-    # Run tests
     success = await tester.run_all_tests()
     
-    # Exit with appropriate code
     sys.exit(0 if success else 1)
 
 

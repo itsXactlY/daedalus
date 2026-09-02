@@ -28,10 +28,6 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Context file scanning — detect prompt injection in AGENTS.md, .cursorrules,
-# SOUL.md before they get injected into the system prompt.
-# ---------------------------------------------------------------------------
 
 _CONTEXT_THREAT_PATTERNS = [
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
@@ -56,12 +52,10 @@ def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content."""
     findings = []
 
-    # Check invisible unicode
     for char in _CONTEXT_INVISIBLE_CHARS:
         if char in content:
             findings.append(f"invisible unicode U+{ord(char):04X}")
 
-    # Check threat patterns
     for pattern, pid in _CONTEXT_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             findings.append(pid)
@@ -104,7 +98,6 @@ def _find_daedalus_md(cwd: Path) -> Optional[Path]:
             candidate = directory / name
             if candidate.is_file():
                 return candidate
-        # Stop walking at the git root (or filesystem root).
         if stop_at and directory == stop_at:
             break
     return None
@@ -121,15 +114,11 @@ def _strip_yaml_frontmatter(content: str) -> str:
     if content.startswith("---"):
         end = content.find("\n---", 3)
         if end != -1:
-            # Skip past the closing --- and any trailing newline
             body = content[end + 4:].lstrip("\n")
             return body if body else content
     return content
 
 
-# =========================================================================
-# Constants
-# =========================================================================
 
 DEFAULT_AGENT_IDENTITY = (
     "You are Daedalus Agent, an intelligent AI assistant created by Nous Research. "
@@ -193,7 +182,6 @@ def build_mazemaker_guidance(window_turns: int = -1) -> str:
     )
 
 
-# Backward-compatible constant for any external consumer (no window info).
 MAZEMAKER_GUIDANCE = build_mazemaker_guidance(-1)
 
 SKILLS_GUIDANCE = (
@@ -220,14 +208,8 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
-# Model name substrings that trigger tool-use enforcement guidance.
-# Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "minimax")
 
-# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
-# where GPT models abandon work on partial results, skip prerequisite lookups,
-# hallucinate instead of using tools, and declare "done" without verification.
-# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"
@@ -288,8 +270,6 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "</missing_context>"
 )
 
-# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
-# Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
 GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "# Google model operational directives\n"
     "Follow these operational rules strictly:\n"
@@ -310,11 +290,6 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "Don't stop with a plan — execute it.\n"
 )
 
-# Model name substrings that should use the 'developer' role instead of
-# 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
-# give stronger instruction-following weight to the 'developer' role.
-# The swap happens at the API boundary in _build_api_kwargs() so internal
-# message representation stays consistent ("system" everywhere).
 DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 PLATFORM_HINTS = {
@@ -352,9 +327,6 @@ CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 
 
-# =========================================================================
-# Skills prompt cache
-# =========================================================================
 
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
@@ -457,9 +429,6 @@ def _build_snapshot_entry(
     }
 
 
-# =========================================================================
-# Skills index
-# =========================================================================
 
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
@@ -498,12 +467,11 @@ def _skill_should_show(
 ) -> bool:
     """Return False if the skill's conditional activation rules exclude it."""
     if available_tools is None and available_toolsets is None:
-        return True  # No filtering info — show everything (backward compat)
+        return True
 
     at = available_tools or set()
     ats = available_toolsets or set()
 
-    # fallback_for: hide when the primary tool/toolset IS available
     for ts in conditions.get("fallback_for_toolsets", []):
         if ts in ats:
             return False
@@ -511,7 +479,6 @@ def _skill_should_show(
         if t in at:
             return False
 
-    # requires: hide when a required tool/toolset is NOT available
     for ts in conditions.get("requires_toolsets", []):
         if ts not in ats:
             return False
@@ -542,14 +509,11 @@ def build_skills_system_prompt(
     """
     daedalus_home = get_daedalus_home()
     skills_dir = daedalus_home / "skills"
-    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+    external_dirs = get_all_skills_dirs()[1:]
 
     if not skills_dir.exists() and not external_dirs:
         return ""
 
-    # ── Layer 1: in-process LRU cache ─────────────────────────────────
-    # Include the resolved platform so per-platform disabled-skill lists
-    # produce distinct cache entries (gateway serves multiple platforms).
     _platform_hint = (
         os.environ.get("DAEDALUS_PLATFORM")
         or os.environ.get("DAEDALUS_SESSION_PLATFORM")
@@ -570,14 +534,12 @@ def build_skills_system_prompt(
 
     disabled = get_disabled_skill_names()
 
-    # ── Layer 2: disk snapshot ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
-        # Fast path: use pre-parsed metadata from disk
         for entry in snapshot.get("skills", []):
             if not isinstance(entry, dict):
                 continue
@@ -603,7 +565,6 @@ def build_skills_system_prompt(
             for k, v in (snapshot.get("category_descriptions") or {}).items()
         }
     else:
-        # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
         for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
@@ -624,7 +585,6 @@ def build_skills_system_prompt(
                 (skill_name, entry["description"])
             )
 
-        # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
             try:
                 content = desc_file.read_text(encoding="utf-8")
@@ -645,10 +605,6 @@ def build_skills_system_prompt(
             category_descriptions,
         )
 
-    # ── External skill directories ─────────────────────────────────────
-    # Scan external dirs directly (no snapshot caching — they're read-only
-    # and typically small).  Local skills already in skills_by_category take
-    # precedence: we track seen names and skip duplicates from external dirs.
     seen_skill_names: set[str] = set()
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
@@ -681,7 +637,6 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
-        # External category descriptions
         for desc_file in iter_skill_index_files(ext_dir, "DESCRIPTION.md"):
             try:
                 content = desc_file.read_text(encoding="utf-8")
@@ -698,42 +653,30 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
-        index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            # Name-only index (lazy pointer): skill_view(name) fetches the full
-            # SKILL.md on demand. Shipping category descriptions + all 312 names
-            # costs ~3k tokens/turn for content the model rarely needs verbatim.
-            # Strip category descriptions to save ~400 tokens per turn.
-            index_lines.append(f"  {category}:")
-            seen = set()
-            for name, _desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                index_lines.append(f"    - {name}")
-
+        installed = sum(
+            len({name for name, _desc in cat_skills})
+            for cat_skills in skills_by_category.values()
+        )
         result = (
             "## Skills (mandatory)\n"
+            f"{installed} skills are installed. They are NOT listed here — this "
+            "context stays free of capabilities the current task does not need.\n"
             "Before replying, check the latest user message for an "
-            "[auto-routed skills ...] block — the harness deterministically "
-            "matched your task to candidate skills, so prefer those first. "
-            "Also scan the skill names below; if one clearly matches your "
-            "task, load it with skill_view(name) to read its full "
-            "instructions, then follow them. Use skills_list to browse "
-            "descriptions if a name is ambiguous. "
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "[auto-routed skills ...] block: the harness deterministically matched "
+            "your task against all "
+            f"{installed} and put the candidates there. Prefer those. "
+            "When none is offered, or none fits, call skills_list() to browse the "
+            "full set (optionally skills_list(category=...)) — every skill is "
+            "reachable that way, so never conclude one does not exist without "
+            "having searched. Load one with skill_view(name) and follow its "
+            "instructions; a loaded skill stays available for the rest of the "
+            "session. If a skill has issues, fix it with "
+            "skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
-            "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "If none match, proceed normally without loading a skill."
+            "pitfalls you discovered, update it before finishing."
         )
 
-    # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:
         _SKILLS_PROMPT_CACHE[cache_key] = result
         _SKILLS_PROMPT_CACHE.move_to_end(cache_key)
@@ -809,9 +752,6 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
     return "\n".join(lines)
 
 
-# =========================================================================
-# Context files (SOUL.md, AGENTS.md, .cursorrules)
-# =========================================================================
 
 def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE_MAX_CHARS) -> str:
     """Head/tail truncation with a marker in the middle."""
@@ -966,7 +906,6 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
     if not skip_project_context:
         project_context = (
             _load_daedalus_md(cwd_path)
@@ -977,7 +916,6 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
         if project_context:
             sections.append(project_context)
 
-    # SOUL.md from DAEDALUS_HOME only — skip when already loaded as identity
     if not skip_soul:
         soul_content = load_soul_md()
         if soul_content:

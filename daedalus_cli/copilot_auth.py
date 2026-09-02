@@ -29,25 +29,20 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# OAuth device code flow constants (same client ID as opencode/Copilot CLI)
 COPILOT_OAUTH_CLIENT_ID = "Ov23li8tweQw6odWQebz"
 COPILOT_DEVICE_CODE_URL = "https://github.com/login/device/code"
 COPILOT_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
 
-# Copilot API constants
 COPILOT_TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
 COPILOT_API_BASE_URL = "https://api.githubcopilot.com"
 
-# Token type prefixes
 _CLASSIC_PAT_PREFIX = "ghp_"
 _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
 
-# Env var search order (matches Copilot CLI)
 COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 
-# Polling constants
-_DEVICE_CODE_POLL_INTERVAL = 5  # seconds
-_DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
+_DEVICE_CODE_POLL_INTERVAL = 5
+_DEVICE_CODE_POLL_SAFETY_MARGIN = 3
 
 
 def is_classic_pat(token: str) -> bool:
@@ -82,7 +77,6 @@ def resolve_copilot_token() -> tuple[str, str]:
     Returns (token, source) where source describes where the token came from.
     Raises ValueError if only a classic PAT is available.
     """
-    # 1. Check env vars in priority order
     for env_var in COPILOT_ENV_VARS:
         val = os.getenv(env_var, "").strip()
         if val:
@@ -94,7 +88,6 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)
@@ -146,7 +139,6 @@ def _try_gh_cli_token() -> Optional[str]:
     return None
 
 
-# ─── OAuth Device Code Flow ────────────────────────────────────────────────
 
 def copilot_device_code_login(
     *,
@@ -167,7 +159,6 @@ def copilot_device_code_login(
     device_code_url = f"https://{domain}/login/device/code"
     access_token_url = f"https://{domain}/login/oauth/access_token"
 
-    # Step 1: Request device code
     data = urllib.parse.urlencode({
         "client_id": COPILOT_OAUTH_CLIENT_ID,
         "scope": "read:user",
@@ -200,14 +191,12 @@ def copilot_device_code_login(
         print("  ✗ GitHub did not return a device code.")
         return None
 
-    # Step 2: Show instructions
     print()
     print(f"  Open this URL in your browser: {verification_uri}")
     print(f"  Enter this code: {user_code}")
     print()
     print("  Waiting for authorization...", end="", flush=True)
 
-    # Step 3: Poll for completion
     deadline = time.time() + timeout_seconds
 
     while time.time() < deadline:
@@ -245,7 +234,6 @@ def copilot_device_code_login(
             print(".", end="", flush=True)
             continue
         elif error == "slow_down":
-            # RFC 8628: add 5 seconds to polling interval
             server_interval = result.get("interval")
             if isinstance(server_interval, (int, float)) and server_interval > 0:
                 interval = int(server_interval)
@@ -271,7 +259,6 @@ def copilot_device_code_login(
     return None
 
 
-# ─── Copilot API Headers ───────────────────────────────────────────────────
 
 def copilot_request_headers(
     *,

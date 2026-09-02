@@ -59,9 +59,6 @@ from tools.computer_use.backend import (
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Approval & safety
-# ---------------------------------------------------------------------------
 
 _approval_callback = None
 
@@ -77,12 +74,10 @@ def set_approval_callback(cb) -> None:
     _approval_callback = cb
 
 
-# Actions that read, not mutate. Always allowed.
 _SAFE_ACTIONS = frozenset({
     "capture", "wait", "list_apps", "list_windows", "cua_browser_state",
 })
 
-# Actions that mutate user-visible state. Go through approval.
 _DESTRUCTIVE_ACTIONS = frozenset({
     "click", "double_click", "right_click", "middle_click",
     "drag", "scroll", "type", "key", "set_value", "focus_app",
@@ -91,17 +86,12 @@ _DESTRUCTIVE_ACTIONS = frozenset({
     "cua_browser_set_input_files", "cua_browser_download",
 })
 
-# Hard-blocked key combinations. Mirrored from #4562 — these are destructive
-# regardless of approval level (e.g. logout kills the session Daedalus runs in).
 _BLOCKED_KEY_COMBOS = {
-    frozenset({"cmd", "shift", "backspace"}),   # empty trash
-    frozenset({"cmd", "option", "backspace"}),   # force delete
-    frozenset({"cmd", "ctrl", "q"}),             # lock screen
-    frozenset({"cmd", "shift", "q"}),            # log out
-    frozenset({"cmd", "option", "shift", "q"}),  # force log out
-    # Windows secure/session shortcuts. The Windows driver accepts Win-key
-    # combos, and Alt is canonicalized to option below, so block the
-    # destructive variants before any backend sees them.
+    frozenset({"cmd", "shift", "backspace"}),
+    frozenset({"cmd", "option", "backspace"}),
+    frozenset({"cmd", "ctrl", "q"}),
+    frozenset({"cmd", "shift", "q"}),
+    frozenset({"cmd", "option", "shift", "q"}),
     frozenset({"win", "l"}),
     frozenset({"ctrl", "option", "delete"}),
     frozenset({"ctrl", "option", "del"}),
@@ -115,23 +105,18 @@ _KEY_ALIASES = {
 
 
 def _canon_key_combo(keys: str) -> frozenset:
-    # Split on both "+" and "-": the cua-driver backend's _parse_key_combo
-    # accepts hyphen-separated combos too, so "ctrl-alt-delete" executes as
-    # the real destructive shortcut. Mirror its separators here, otherwise the
-    # _BLOCKED_KEY_COMBOS gate is trivially bypassed with hyphen notation.
     parts = [p.strip().lower() for p in re.split(r"\s*[+\-]\s*", keys) if p.strip()]
     parts = [_KEY_ALIASES.get(p, p) for p in parts]
     return frozenset(parts)
 
 
-# Dangerous text patterns for the `type` action. Same list as #4562.
 _BLOCKED_TYPE_PATTERNS = [
     re.compile(r"curl\s+[^|]*\|\s*bash", re.IGNORECASE),
     re.compile(r"curl\s+[^|]*\|\s*sh", re.IGNORECASE),
     re.compile(r"wget\s+[^|]*\|\s*bash", re.IGNORECASE),
     re.compile(r"\bsudo\s+rm\s+-[rf]", re.IGNORECASE),
     re.compile(r"\brm\s+-rf\s+/\s*$", re.IGNORECASE),
-    re.compile(r":\s*\(\)\s*\{\s*:\|:\s*&\s*\}", re.IGNORECASE),  # fork bomb
+    re.compile(r":\s*\(\)\s*\{\s*:\|:\s*&\s*\}", re.IGNORECASE),
 ]
 
 
@@ -142,27 +127,13 @@ def _is_blocked_type(text: str) -> Optional[str]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Backend selection — env-swappable for tests
-# ---------------------------------------------------------------------------
 
-# Per-Daedalus-session cached backends. Each backend owns its own cua-driver
-# session, native target, typed-browser binding, refs, and grant namespace.
 _backend_lock = threading.Lock()
-# Backward-compatible empty-session injection hook used by older tests.
-# Process-scoped aux-vision routing cache: (provider, model) → bool.
 _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str], bool] = {}
 _backend: Optional[ComputerUseBackend] = None
 _backends: Dict[str, ComputerUseBackend] = {}
 _backend_call_locks: Dict[str, threading.RLock] = {}
 _backend_permission_modes: Dict[str, str] = {}
-# Approval state, scoped per conversation/run (keyed by session_id) so a
-# gateway serving concurrent sessions can't leak one run's "always approve"
-# unlock into another. Falls back to a shared "" bucket for callers that
-# don't pass a session_id (e.g. the classic single-run CLI). Values:
-#   _session_auto_approve[sid] -> bool   ("always_approve everything")
-#   _always_allow[sid]         -> set of (action, delivery_mode) scope keys
-# See NousResearch/daedalus#67052 gap 4.
 _approval_lock = threading.Lock()
 _session_auto_approve: Dict[str, bool] = {}
 _always_allow: Dict[str, set] = {}
@@ -193,7 +164,6 @@ def _cua_permission_mode(session_id: str) -> str:
         if current_key and is_approval_bypass_active_for_session(current_key):
             return "unrestricted"
     except Exception:
-        # Approval state must fail closed if it cannot be resolved.
         pass
     return "standard"
 
@@ -205,14 +175,8 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
         stale_backend: Optional[ComputerUseBackend] = None
         stale_lock: Optional[threading.RLock] = None
         with _backend_lock:
-            # Resolve the mode while holding the cache lock. Session YOLO
-            # mutation never holds the approval lock while releasing this
-            # cache, so the lock order cannot cycle.
             permission_mode = _cua_permission_mode(sid)
             if sid == "" and _backend is not None and sid not in _backends:
-                # Preserve the long-standing empty-session injection hook used
-                # by integrations and tests while normalizing it into the
-                # session-owned cache/lifecycle path.
                 _backends[sid] = _backend
                 _backend_call_locks[sid] = threading.RLock()
                 _backend_permission_modes[sid] = permission_mode
@@ -220,8 +184,6 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
             if cached is not None:
                 if _backend_permission_modes.get(sid, "standard") == permission_mode:
                     return cached
-                # Cua's permission mode cannot change after daemon startup. A
-                # /yolo toggle replaces only this session's backend.
                 stale_backend = _backends.pop(sid)
                 stale_lock = _backend_call_locks.pop(sid, None)
                 _backend_permission_modes.pop(sid, None)
@@ -241,9 +203,6 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                     raise RuntimeError(
                         f"Unknown DAEDALUS_COMPUTER_USE_BACKEND={backend_name!r}"
                     )
-                # Starting under the cache lock preserves the existing
-                # one-backend-per-session invariant. A concurrent mode toggle
-                # releases this backend before returning to its caller.
                 backend.start()
                 _backends[sid] = backend
                 _backend_call_locks[sid] = threading.RLock()
@@ -252,9 +211,6 @@ def _get_backend(session_id: str = "") -> ComputerUseBackend:
                     _backend = backend
                 return backend
 
-        # Stop a mismatched backend outside the global cache lock. Another
-        # session can continue creating or releasing its own backend, and the
-        # loop re-reads the authoritative mode before installing a replacement.
         try:
             if stale_lock is not None:
                 with stale_lock:
@@ -284,8 +240,6 @@ def release_computer_use_session(session_id: str) -> bool:
         backend = _backends.pop(sid, None)
         call_lock = _backend_call_locks.pop(sid, None)
         _backend_permission_modes.pop(sid, None)
-        # Preserve the backward-compatible empty-session injection hook:
-        # older callers/tests may populate only `_backend`.
         if sid == "" and backend is None:
             backend = _backend
         if sid == "" and _backend is backend:
@@ -298,9 +252,6 @@ def release_computer_use_session(session_id: str) -> bool:
     if backend is None:
         return False
     try:
-        # Let an in-flight action finish before ending the driver session and
-        # dropping its target/ref state. Do not hold the global cache lock
-        # while waiting: unrelated Daedalus sessions remain independent.
         if call_lock is not None:
             with call_lock:
                 backend.stop()
@@ -330,8 +281,6 @@ def _shutdown_backend_atexit() -> None:
     exception escaping atexit prints a traceback on every exit.
     """
     global _backend
-    # Drop the global lock before stop() — teardown budgets 5s and shouldn't
-    # block an unrelated caller waiting to spawn.
     with _backend_lock:
         unique = {
             id(backend): (backend, _backend_call_locks.get(sid))
@@ -433,9 +382,6 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         return ActionResult(ok=True, action="set_value")
 
 
-# ---------------------------------------------------------------------------
-# Dispatch
-# ---------------------------------------------------------------------------
 
 def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     """Main entry point — dispatched by tools.registry.
@@ -446,11 +392,8 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
     action = (args.get("action") or "").strip().lower()
     if not action:
         return json.dumps({"error": "missing `action`"})
-    # Per-run key for approval-state and daemon-mode isolation across
-    # concurrent sessions.
     session_id = str(kwargs.get("session_id") or "")
 
-    # Safety: validate actions before approval prompt.
     if action in {"type", "cua_browser_type"}:
         text = args.get("text", "")
         pat = _is_blocked_type(text)
@@ -476,14 +419,10 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
             "code": "bring_to_front_requires_foreground",
         })
 
-    # Approval gate (destructive actions only).
     if action in _DESTRUCTIVE_ACTIONS:
         err = _request_approval(action, args, session_id)
         if err is not None:
             return err
-    # Persistent focus is a separate, visible side effect from the input
-    # itself. Keep its approval scope distinct even when the input rung has
-    # already been approved for this session.
     if args.get("bring_to_front") or (
         action == "focus_app" and args.get("raise_window")
     ):
@@ -491,7 +430,6 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         if err is not None:
             return err
 
-    # Dispatch to backend.
     try:
         backend = _get_backend(session_id=session_id)
     except Exception as e:
@@ -533,8 +471,6 @@ def _request_approval(action: str, args: Dict[str, Any],
             return None
     cb = _approval_callback
     if cb is None:
-        # No CLI approval wired — default allow. Gateway approval is handled
-        # one layer out via the normal tool-approval infra.
         return None
     summary = _summarize_action(action, args)
     try:
@@ -623,10 +559,6 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _maybe_follow_capture(backend, res, capture_after)
 
-    # cua-driver's typed browser surface is namespaced inside the existing
-    # computer_use tool so it cannot collide with native browser/MCP tools.
-    # The backend owns the opaque driver session, target, tab and ref state;
-    # none of those capabilities can be supplied across Daedalus sessions.
     if action == "cua_browser_state":
         state_args: Dict[str, Any] = {}
         for public, internal in (
@@ -689,9 +621,6 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
                 call_args["x"], call_args["y"] = coordinate
         pointer_action = args.get("browser_pointer_action")
         dialog_action = args.get("browser_dialog_action")
-        # Direct adapter callers may omit the public discriminator from args;
-        # retain this narrow compatibility path without making it usable to
-        # override the namespaced action selected by handle_computer_use.
         nested_action = args.get("action")
         if nested_action not in browser_tools:
             if driver_tool == "browser_pointer" and pointer_action is None:
@@ -710,8 +639,6 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             args=call_args,
         ))
 
-    # delivery_mode / bring_to_front thread through every input action so the
-    # model can escalate background → foreground per cua-driver's ladder.
     delivery_mode = args.get("delivery_mode")
     bring_to_front = bool(args.get("bring_to_front"))
 
@@ -788,9 +715,6 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
     return json.dumps({"error": f"unknown action {action!r}"})
 
 
-# ---------------------------------------------------------------------------
-# Response shaping
-# ---------------------------------------------------------------------------
 
 def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
     """Choose the next ladder step from semantic evidence, in precedence order.
@@ -808,7 +732,6 @@ def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
         if isinstance(res.escalation, dict):
             decision["recommended"] = res.escalation.get("recommended")
         return decision
-    # Transport success without semantic proof is not proof of effect.
     return {"decision": "verify_fresh_state"}
 
 
@@ -816,10 +739,6 @@ def _action_payload(res: ActionResult) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"ok": res.ok, "action": res.action}
     if res.message:
         payload["message"] = res.message
-    # Surface cua-driver's structured verdict additively so the model can
-    # follow the verify → escalate ladder. Only include fields the driver
-    # actually returned (None = old driver / not carried). ok is transport
-    # success; effect/escalation are the semantic verdict.
     if res.verified is not None:
         payload["verified"] = res.verified
     if res.effect is not None:
@@ -844,14 +763,7 @@ def _text_response(res: ActionResult) -> str:
     return json.dumps(_action_payload(res))
 
 
-# Default cap for the AX `elements` array returned by capture. Dense UIs
-# (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes, which
-# can exhaust session context after a single capture. The model-facing
-# `max_elements` argument lets callers raise this when they need the full tree.
 _DEFAULT_MAX_ELEMENTS = 100
-# Hard upper bound on caller-supplied `max_elements`. Without this, a tool
-# call passing a very large integer would silently disable the safeguard and
-# reintroduce the original unbounded behavior.
 _MAX_ALLOWED_MAX_ELEMENTS = 1000
 _MIN_PROVIDER_IMAGE_DIMENSION = 8
 
@@ -870,7 +782,6 @@ def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
     except Exception:
         return None
 
-    # PNG: signature + IHDR width/height.
     if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
         try:
             width, height = struct.unpack(">II", raw[16:24])
@@ -878,7 +789,6 @@ def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
         except Exception:
             return None
 
-    # JPEG: scan for SOF markers that carry dimensions.
     if raw.startswith(b"\xff\xd8") and len(raw) > 4:
         i = 2
         while i + 9 < len(raw):
@@ -947,10 +857,6 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         )
     )
 
-    # Index only what's actually surfaced in the response — otherwise the
-    # human-readable summary references element indices the model cannot
-    # find in the JSON `elements` array (e.g. max_elements=10 vs the default
-    # 40-line index window).
     element_index = _format_elements(visible_elements)
     summary_lines = [
         f"capture mode={cap.mode} {response_width}x{response_height}"
@@ -960,11 +866,6 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     ]
     if element_index:
         summary_lines.extend(element_index)
-    # Multimodal and AX paths both reference `summary`; build it once up-front
-    # so the aux-vision routing branch (which fires before either path is
-    # selected) has a valid value to hand to _route_capture_through_aux_vision.
-    # The AX path appends the "truncated to N of M" note to summary_lines
-    # below and rebuilds; the multimodal path keeps this version untouched.
     if image_too_small:
         summary_lines.append(
             f"  (screenshot omitted: {image_dimensions[0]}x{image_dimensions[1]} "
@@ -974,22 +875,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     summary = "\n".join(summary_lines)
 
     if cap.png_b64 and cap.mode != "ax" and not image_too_small:
-        # Decide whether to hand the screenshot to the auxiliary.vision
-        # pipeline (text-only result) or keep the multimodal envelope (main
-        # model handles vision natively). Issue #24015: previously the
-        # multimodal envelope was returned unconditionally, so non-vision
-        # main models tripped HTTP 404 / 400 at the provider boundary even
-        # when auxiliary.vision was explicitly configured to handle this.
         if _should_route_through_aux_vision():
             routed = _route_capture_through_aux_vision(cap, summary)
             if routed is not None:
                 return routed
-            # Aux routing was requested but failed (vision node down, aux call
-            # raised, empty analysis, etc.). Routing being requested means the
-            # main model may not be able to consume images; falling through to
-            # the multimodal envelope can break the capture with a provider
-            # error. Degrade to the AX/SOM text payload instead so element
-            # indices remain usable while vision is unavailable.
             summary_lines.append(
                 "  (vision unavailable: the auxiliary vision model could not "
                 "be reached; screenshot omitted. Element-index actions still "
@@ -1016,18 +905,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 payload["truncated_elements"] = truncated_elements
             return json.dumps(payload)
 
-        # Prefer the explicit MIME type cua-driver attaches to its image
-        # parts (Surface 7 of NousResearch/daedalus#47072 — trycua/cua#1961
-        # made `mimeType` part of every MCP image-part response). Fall back
-        # to base64-prefix sniffing for older cua-driver builds that didn't
-        # carry the field. JPEG base64 starts with /9j/; PNG with iVBOR.
         _mime = cap.image_mime_type
         if not _mime:
             _b64_prefix = cap.png_b64[:8]
             _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
-        # The multimodal response carries the screenshot, not the AX
-        # elements array, so a "response truncated to N of M elements"
-        # note would be inaccurate — skip it on this branch.
         return {
             "_multimodal": True,
             "content": [
@@ -1039,8 +920,6 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
                      "elements": total_elements, "png_bytes": cap.png_bytes_len},
         }
-    # AX-only (or image-missing fallback): text path actually carries the
-    # `elements` array, so the truncation note applies here.
     if truncated_elements:
         summary_lines.append(
             f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
@@ -1062,13 +941,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     return json.dumps(payload)
 
 
-# ---------------------------------------------------------------------------
-# auxiliary.vision routing for captured screenshots (#24015)
-# ---------------------------------------------------------------------------
 
-# Longest image side handed to the aux vision model. Full-resolution desktop
-# captures tokenize heavily and can overflow small local-model context windows;
-# ~1456px keeps SOM badges legible while cutting per-capture vision latency.
 _MAX_VISION_DIM = 1456
 
 
@@ -1184,9 +1057,6 @@ def _route_capture_through_aux_vision(
             logger.debug("computer_use: failed to decode capture base64: %s", exc)
             return None
 
-        # Pick an extension that matches the on-disk bytes so vision_analyze's
-        # MIME sniffing returns the right content-type.
-        # Surface 7: prefer the explicit MIME type cua-driver supplied.
         _mime_for_ext = cap.image_mime_type or ""
         if _mime_for_ext == "image/jpeg" or (not _mime_for_ext and cap.png_b64[:8].startswith("/9j/")):
             ext = ".jpg"
@@ -1255,15 +1125,9 @@ def _maybe_follow_capture(
 ) -> Any:
     if not do_capture:
         return _text_response(res)
-    # Skip the follow-up capture when the action itself failed: showing a
-    # normal-looking screenshot after a failure misleads the model into thinking
-    # the action succeeded. Return the error text instead.
     if not res.ok:
         return _text_response(res)
     try:
-        # Preserve the exact selected window when possible. Linux may expose a
-        # generic app name for several unrelated windows, so app-only recapture
-        # can silently switch targets after a successful action.
         target = getattr(backend, "_last_target", None) or {}
         pid = target.get("pid")
         window_id = target.get("window_id")
@@ -1275,18 +1139,13 @@ def _maybe_follow_capture(
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
-    # Combine action summary with the capture.
     resp = _capture_response(cap)
     if isinstance(resp, dict) and resp.get("_multimodal"):
-        # Keep the complete evidence/verdict contract visible when an image is
-        # attached; otherwise capture_after would accidentally discard the
-        # very signal that governs whether repeating input is allowed.
         prefix = json.dumps(_action_payload(res))
         resp["content"][0]["text"] = prefix + "\n\n" + resp["content"][0]["text"]
         resp["text_summary"] = prefix + "\n\n" + resp["text_summary"]
         resp["action_result"] = _action_payload(res)
         return resp
-    # Fallback: action + text capture merged.
     try:
         data = json.loads(resp)
     except (TypeError, json.JSONDecodeError):
@@ -1316,9 +1175,6 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Availability check (used by the tool registry check_fn)
-# ---------------------------------------------------------------------------
 
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.

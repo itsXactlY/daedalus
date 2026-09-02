@@ -27,7 +27,6 @@ from dataclasses import dataclass, field as dataclass_field
 
 _log = logging.getLogger(__name__)
 
-# Field kinds understood by the generic renderer.
 KIND_TEXT = "text"
 KIND_SELECT = "select"
 KIND_SECRET = "secret"
@@ -35,7 +34,6 @@ KIND_BOOL = "bool"
 KIND_NUMBER = "number"
 KIND_JSON = "json"
 
-# Storage backends understood by web_server (see its read/write dispatch).
 STORAGE_FLAT_JSON = "flat_json"
 STORAGE_HONCHO_HOST_BLOCK = "honcho_host_block"
 
@@ -78,9 +76,7 @@ class ProviderField:
     env_fallbacks: tuple[str, ...] = ()
     inline: bool = False
     group: str = ""
-    # Longer help text surfaced as an info tooltip next to the field label.
     info: str = ""
-    # Host-block placement: "host" (per-profile) or "root"; flat-json ignores it.
     scope: str = "host"
 
     @property
@@ -98,7 +94,6 @@ class ProviderConfigSchema:
     name: str
     label: str
     storage: str = STORAGE_FLAT_JSON
-    # Optional link to the provider's config docs, shown in the full-config modal.
     docs_url: str = ""
     fields: tuple[ProviderField, ...] = dataclass_field(default_factory=tuple)
 
@@ -135,7 +130,6 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         spec.loader.exec_module(module)
         schema = getattr(module, "CONFIG_SCHEMA", None)
     except Exception:
-        # Never cache a failed load: it would pin an empty panel until restart.
         _log.exception("failed to load config schema for memory provider %r", name)
         return None
 

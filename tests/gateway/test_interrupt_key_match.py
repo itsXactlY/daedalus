@@ -71,15 +71,12 @@ class TestInterruptKeyConsistency:
         source = _source("123456", "dm")
         session_key = build_session_key(source)
 
-        # Simulate adapter storing interrupt under session_key
         interrupt_event = asyncio.Event()
         adapter._active_sessions[session_key] = interrupt_event
         interrupt_event.set()
 
-        # Using session_key → found
         assert adapter.has_pending_interrupt(session_key) is True
 
-        # Using chat_id → NOT found (this was the bug)
         assert adapter.has_pending_interrupt(source.chat_id) is False
 
     @pytest.mark.asyncio
@@ -92,10 +89,8 @@ class TestInterruptKeyConsistency:
         event = MessageEvent(text="hello", source=source, message_id="42")
         adapter._pending_messages[session_key] = event
 
-        # Using chat_id → None (the bug)
         assert adapter.get_pending_message(source.chat_id) is None
 
-        # Using session_key → found
         result = adapter.get_pending_message(session_key)
         assert result is event
 
@@ -108,19 +103,14 @@ class TestInterruptKeyConsistency:
         source = _source("-1001234", "group")
         session_key = build_session_key(source)
 
-        # Mark session as active
         adapter._active_sessions[session_key] = asyncio.Event()
 
-        # Send a second message while session is active
         event = MessageEvent(text="interrupt!", source=source, message_id="2")
         await adapter.handle_message(event)
 
-        # Stored under session_key
         assert session_key in adapter._pending_messages
-        # NOT stored under chat_id
         assert source.chat_id not in adapter._pending_messages
 
-        # Interrupt event was set
         assert adapter._active_sessions[session_key].is_set()
 
     @pytest.mark.asyncio

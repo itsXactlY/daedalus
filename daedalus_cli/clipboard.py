@@ -21,7 +21,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Cache WSL detection (checked once per process)
 _wsl_detected: bool | None = None
 
 
@@ -54,7 +53,6 @@ def has_clipboard_image() -> bool:
     return _xclip_has_image()
 
 
-# ── macOS ────────────────────────────────────────────────────────────────
 
 def _macos_save(dest: Path) -> bool:
     """Try pngpaste first (fast, handles more formats), fall back to osascript."""
@@ -83,7 +81,7 @@ def _macos_pngpaste(dest: Path) -> bool:
         if r.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
             return True
     except FileNotFoundError:
-        pass  # pngpaste not installed
+        pass
     except Exception as e:
         logger.debug("pngpaste failed: %s", e)
     return False
@@ -94,7 +92,6 @@ def _macos_osascript(dest: Path) -> bool:
     if not _macos_has_image():
         return False
 
-    # Extract as PNG
     script = (
         'try\n'
         '  set imgData to the clipboard as «class PNGf»\n'
@@ -117,10 +114,7 @@ def _macos_osascript(dest: Path) -> bool:
     return False
 
 
-# ── Shared PowerShell scripts (native Windows + WSL2) ─────────────────────
 
-# .NET System.Windows.Forms.Clipboard — used by both native Windows (powershell)
-# and WSL2 (powershell.exe) paths.
 _PS_CHECK_IMAGE = (
     "Add-Type -AssemblyName System.Windows.Forms;"
     "[System.Windows.Forms.Clipboard]::ContainsImage()"
@@ -137,10 +131,7 @@ _PS_EXTRACT_IMAGE = (
 )
 
 
-# ── Native Windows ────────────────────────────────────────────────────────
 
-# Native Windows uses ``powershell`` (Windows PowerShell 5.1, always present)
-# or ``pwsh`` (PowerShell 7+, optional).  Discovery is cached per-process.
 
 
 def _find_powershell() -> str | None:
@@ -160,8 +151,7 @@ def _find_powershell() -> str | None:
     return None
 
 
-# Cache the resolved PowerShell executable (checked once per process)
-_ps_exe: str | None | bool = False  # False = not yet checked
+_ps_exe: str | None | bool = False
 
 
 def _get_ps_exe() -> str | None:
@@ -215,7 +205,6 @@ def _windows_save(dest: Path) -> bool:
     return False
 
 
-# ── Linux ────────────────────────────────────────────────────────────────
 
 def _is_wsl() -> bool:
     """Detect if running inside WSL (1 or 2)."""
@@ -235,7 +224,6 @@ def _linux_save(dest: Path) -> bool:
     if _is_wsl():
         if _wsl_save(dest):
             return True
-        # Fall through — WSLg might have wl-paste or xclip working
 
     if os.environ.get("WAYLAND_DISPLAY"):
         if _wayland_save(dest):
@@ -244,8 +232,6 @@ def _linux_save(dest: Path) -> bool:
     return _xclip_save(dest)
 
 
-# ── WSL2 (powershell.exe) ────────────────────────────────────────────────
-# Reuses _PS_CHECK_IMAGE / _PS_EXTRACT_IMAGE defined above.
 
 def _wsl_has_image() -> bool:
     """Check if Windows clipboard has an image (via powershell.exe)."""
@@ -290,7 +276,6 @@ def _wsl_save(dest: Path) -> bool:
     return False
 
 
-# ── Wayland (wl-paste) ──────────────────────────────────────────────────
 
 def _wayland_has_image() -> bool:
     """Check if Wayland clipboard has image content."""
@@ -312,7 +297,6 @@ def _wayland_has_image() -> bool:
 def _wayland_save(dest: Path) -> bool:
     """Use wl-paste to extract clipboard image (Wayland sessions)."""
     try:
-        # Check available MIME types
         types_r = subprocess.run(
             ["wl-paste", "--list-types"],
             capture_output=True, text=True, timeout=3,
@@ -321,7 +305,6 @@ def _wayland_save(dest: Path) -> bool:
             return False
         types = types_r.stdout.splitlines()
 
-        # Prefer PNG, fall back to other image formats
         mime = None
         for preferred in ("image/png", "image/jpeg", "image/bmp",
                           "image/gif", "image/webp"):
@@ -332,7 +315,6 @@ def _wayland_save(dest: Path) -> bool:
         if not mime:
             return False
 
-        # Extract the image data
         with open(dest, "wb") as f:
             subprocess.run(
                 ["wl-paste", "--type", mime],
@@ -343,8 +325,6 @@ def _wayland_save(dest: Path) -> bool:
             dest.unlink(missing_ok=True)
             return False
 
-        # BMP needs conversion to PNG (common in WSLg where only BMP
-        # is bridged from Windows clipboard via RDP).
         if mime == "image/bmp":
             return _convert_to_png(dest)
 
@@ -360,7 +340,6 @@ def _wayland_save(dest: Path) -> bool:
 
 def _convert_to_png(path: Path) -> bool:
     """Convert an image file to PNG in-place (requires Pillow or ImageMagick)."""
-    # Try Pillow first (likely installed in the venv)
     try:
         from PIL import Image
         img = Image.open(path)
@@ -371,7 +350,6 @@ def _convert_to_png(path: Path) -> bool:
     except Exception as e:
         logger.debug("Pillow BMP→PNG conversion failed: %s", e)
 
-    # Fall back to ImageMagick convert
     tmp = path.with_suffix(".bmp")
     try:
         path.rename(tmp)
@@ -383,7 +361,6 @@ def _convert_to_png(path: Path) -> bool:
             tmp.unlink(missing_ok=True)
             return True
         else:
-            # Convert failed — restore the original file
             tmp.rename(path)
     except FileNotFoundError:
         logger.debug("ImageMagick not installed — cannot convert BMP to PNG")
@@ -394,11 +371,9 @@ def _convert_to_png(path: Path) -> bool:
         if tmp.exists() and not path.exists():
             tmp.rename(path)
 
-    # Can't convert — BMP is still usable as-is for most APIs
     return path.exists() and path.stat().st_size > 0
 
 
-# ── X11 (xclip) ─────────────────────────────────────────────────────────
 
 def _xclip_has_image() -> bool:
     """Check if X11 clipboard has image content."""
@@ -417,7 +392,6 @@ def _xclip_has_image() -> bool:
 
 def _xclip_save(dest: Path) -> bool:
     """Use xclip to extract clipboard image (X11 sessions)."""
-    # Check if clipboard has image content
     try:
         targets = subprocess.run(
             ["xclip", "-selection", "clipboard", "-t", "TARGETS", "-o"],
@@ -431,7 +405,6 @@ def _xclip_save(dest: Path) -> bool:
     except Exception:
         return False
 
-    # Extract PNG data
     try:
         with open(dest, "wb") as f:
             subprocess.run(

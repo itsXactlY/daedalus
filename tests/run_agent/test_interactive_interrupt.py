@@ -18,7 +18,6 @@ import threading
 import time
 import os
 
-# Force stderr logging so redirect_stdout doesn't swallow it
 logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
                     format="%(asctime)s [%(threadName)s] %(message)s")
 log = logging.getLogger("interrupt_test")
@@ -52,7 +51,6 @@ def make_slow_response(delay=2.0):
 def main() -> int:
     set_interrupt(False)
 
-    # ─── Create parent agent ───
     parent = AIAgent.__new__(AIAgent)
     parent._interrupt_requested = False
     parent._interrupt_message = None
@@ -80,7 +78,6 @@ def main() -> int:
     parent.iteration_budget = IterationBudget(max_total=100)
     parent._client_kwargs = {"api_key": "test", "base_url": "http://localhost:1"}
 
-    # Monkey-patch parent.interrupt to log
     _original_interrupt = AIAgent.interrupt
 
     def logged_interrupt(self, message=None):
@@ -93,7 +90,6 @@ def main() -> int:
 
     parent.interrupt = lambda msg=None: logged_interrupt(parent, msg)
 
-    # ─── Simulate the exact CLI flow ───
     interrupt_queue = queue.Queue()
     child_running = threading.Event()
     agent_result = [None]
@@ -110,7 +106,6 @@ def main() -> int:
 
             from tools.delegate_tool import _run_single_child
 
-            # Signal that child is about to start
             original_init = AIAgent.__init__
 
             def patched_init(self_agent, *a, **kw):
@@ -139,24 +134,19 @@ def main() -> int:
                 agent_result[0] = result
                 log.info(f"🟢 agent_thread finished. Result status: {result.get('status')}")
 
-    # ─── Start agent thread (like chat() does) ───
     agent_thread = threading.Thread(target=agent_thread_func, name="agent_thread", daemon=True)
     agent_thread.start()
 
-    # ─── Wait for child to start ───
     if not child_running.wait(timeout=10):
         print("FAIL: Child never started", file=sys.stderr)
         set_interrupt(False)
         return 1
 
-    # Give child time to enter its main loop and start API call
     time.sleep(1.0)
 
-    # ─── Simulate user typing a message (like handle_enter does) ───
     log.info("📝 Simulating user typing 'Hey stop that'")
     interrupt_queue.put("Hey stop that")
 
-    # ─── Simulate chat() polling loop (like the real chat() method) ───
     log.info("📡 Starting interrupt queue polling (like chat())")
     interrupt_msg = None
     poll_count = 0
@@ -171,17 +161,15 @@ def main() -> int:
                 break
         except queue.Empty:
             poll_count += 1
-            if poll_count % 20 == 0:  # Log every 2s
+            if poll_count % 20 == 0:
                 log.info(f"   Still polling ({poll_count} iterations)...")
 
-    # ─── Wait for agent to finish ───
     log.info("⏳ Waiting for agent_thread to join...")
     t0 = time.monotonic()
     agent_thread.join(timeout=10)
     elapsed = time.monotonic() - t0
     log.info(f"✅ agent_thread joined after {elapsed:.2f}s")
 
-    # ─── Check results ───
     result = agent_result[0]
     if result:
         log.info(f"Result status: {result['status']}")

@@ -38,14 +38,11 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT = 30  # seconds per HTTP request
-_SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
-_vnc_url: Optional[str] = None  # cached from /health response
-_vnc_url_checked = False  # only probe once per process
+_DEFAULT_TIMEOUT = 30
+_SNAPSHOT_MAX_CHARS = 80_000
+_vnc_url: Optional[str] = None
+_vnc_url_checked = False
 
 
 def get_camofox_url() -> str:
@@ -107,10 +104,6 @@ def _managed_persistence_enabled() -> bool:
     return bool(camofox_cfg.get("managed_persistence"))
 
 
-# ---------------------------------------------------------------------------
-# Session management
-# ---------------------------------------------------------------------------
-# Maps task_id -> {"user_id": str, "tab_id": str|None}
 _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
@@ -189,9 +182,6 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# HTTP helpers
-# ---------------------------------------------------------------------------
 
 def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """POST JSON to camofox and return parsed response."""
@@ -225,20 +215,15 @@ def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> di
     return resp.json()
 
 
-# ---------------------------------------------------------------------------
-# Tool implementations
-# ---------------------------------------------------------------------------
 
 def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
     """Navigate to a URL via Camofox."""
     try:
         session = _get_session(task_id)
         if not session["tab_id"]:
-            # Create tab with the target URL directly
             session = _ensure_tab(task_id, url)
             data = {"ok": True, "url": url}
         else:
-            # Navigate existing tab
             data = _post(
                 f"/tabs/{session['tab_id']}/navigate",
                 {"userId": session["user_id"], "url": url},
@@ -257,7 +242,6 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                 "Share this link with the user so they can watch the browser live."
             )
 
-        # Auto-take a compact snapshot so the model can act immediately
         try:
             snap_data = _get(
                 f"/tabs/{session['tab_id']}/snapshot",
@@ -273,7 +257,7 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             result["snapshot"] = snapshot_text
             result["element_count"] = snap_data.get("refsCount", 0)
         except Exception:
-            pass  # Navigation succeeded; snapshot is a bonus
+            pass
 
         return json.dumps(result)
     except requests.HTTPError as e:
@@ -305,7 +289,6 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None,
         snapshot = data.get("snapshot", "")
         refs_count = data.get("refsCount", 0)
 
-        # Apply same summarization logic as the main browser tool
         from tools.browser_tool import (
             SNAPSHOT_SUMMARIZE_THRESHOLD,
             _extract_relevant_content,
@@ -334,7 +317,6 @@ def camofox_click(ref: str, task_id: Optional[str] = None) -> str:
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
-        # Strip @ prefix if present (our tool convention)
         clean_ref = ref.lstrip("@")
 
         data = _post(
@@ -454,9 +436,6 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
         )
         snapshot = data.get("snapshot", "")
 
-        # Parse img elements from the accessibility tree.
-        # Format: img "alt text" or img "alt text" [eN]
-        # URLs appear on /url: lines following img entries
         images = []
         lines = snapshot.split("\n")
         for i, line in enumerate(lines):
@@ -464,7 +443,6 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
             if stripped.startswith(("- img ", "img ")):
                 alt_match = re.search(r'img\s+"([^"]*)"', stripped)
                 alt = alt_match.group(1) if alt_match else ""
-                # Look for URL on the next line
                 src = ""
                 if i + 1 < len(lines):
                     url_match = re.search(r'/url:\s*(\S+)', lines[i + 1].strip())
@@ -490,13 +468,11 @@ def camofox_vision(question: str, annotate: bool = False,
         if not session["tab_id"]:
             return tool_error("No browser session. Call browser_navigate first.", success=False)
 
-        # Get screenshot as binary PNG
         resp = _get_raw(
             f"/tabs/{session['tab_id']}/screenshot",
             params={"userId": session["user_id"]},
         )
 
-        # Save screenshot to cache
         from daedalus_constants import get_daedalus_home
         screenshots_dir = get_daedalus_home() / "browser_screenshots"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
@@ -505,10 +481,8 @@ def camofox_vision(question: str, annotate: bool = False,
         with open(screenshot_path, "wb") as f:
             f.write(resp.content)
 
-        # Encode for vision LLM
         img_b64 = base64.b64encode(resp.content).decode("utf-8")
 
-        # Also get annotated snapshot if requested
         annotation_context = ""
         if annotate:
             try:
@@ -520,13 +494,9 @@ def camofox_vision(question: str, annotate: bool = False,
             except Exception:
                 pass
 
-        # Redact secrets from annotation context before sending to vision LLM.
-        # The screenshot image itself cannot be redacted, but at least the
-        # text-based accessibility tree snippet won't leak secret values.
         from agent.redact import redact_sensitive_text
         annotation_context = redact_sensitive_text(annotation_context)
 
-        # Send to vision LLM
         from agent.auxiliary_client import call_llm
 
         vision_prompt = (
@@ -559,7 +529,6 @@ def camofox_vision(question: str, annotate: bool = False,
         )
         analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
 
-        # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text
         analysis = redact_sensitive_text(analysis)
 
@@ -589,9 +558,6 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     })
 
 
-# ---------------------------------------------------------------------------
-# Cleanup
-# ---------------------------------------------------------------------------
 
 def cleanup_all_camofox_sessions() -> None:
     """Close all active camofox sessions."""

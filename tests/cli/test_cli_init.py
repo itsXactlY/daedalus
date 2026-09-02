@@ -127,7 +127,6 @@ class TestBusyInputMode:
         """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
         cli._agent_running = True
-        # Simulate what handle_enter does for non-command input while busy
         text = "follow up"
         if cli.busy_input_mode == "queue":
             cli._pending_input.put(text)
@@ -259,10 +258,10 @@ class TestRootLevelProviderOverride:
 
         config_path = daedalus_home / "config.yaml"
         config_path.write_text(yaml.safe_dump({
-            "provider": "opencode-go",  # stale root-level key
+            "provider": "opencode-go",
             "model": {
                 "default": "google/gemini-3-flash-preview",
-                "provider": "openrouter",  # correct canonical key
+                "provider": "openrouter",
             },
         }))
 
@@ -282,10 +281,9 @@ class TestRootLevelProviderOverride:
 
         config_path = daedalus_home / "config.yaml"
         config_path.write_text(yaml.safe_dump({
-            "provider": "opencode-go",  # stale root key
+            "provider": "opencode-go",
             "model": {
                 "default": "google/gemini-3-flash-preview",
-                # no explicit model.provider — defaults provide "auto"
             },
         }))
 
@@ -293,7 +291,6 @@ class TestRootLevelProviderOverride:
         monkeypatch.setattr(cli, "_daedalus_home", daedalus_home)
         cfg = cli.load_cli_config()
 
-        # Root-level "opencode-go" must NOT leak through
         assert cfg["model"]["provider"] != "opencode-go"
 
     def test_normalize_root_model_keys_moves_to_model(self):
@@ -308,10 +305,8 @@ class TestRootLevelProviderOverride:
             },
         }
         result = _normalize_root_model_keys(config)
-        # Root keys removed
         assert "provider" not in result
         assert "base_url" not in result
-        # Migrated into model section
         assert result["model"]["provider"] == "opencode-go"
         assert result["model"]["base_url"] == "https://example.com/v1"
 
@@ -328,7 +323,7 @@ class TestRootLevelProviderOverride:
         }
         result = _normalize_root_model_keys(config)
         assert result["model"]["provider"] == "correct-provider"
-        assert "provider" not in result  # root key still cleaned up
+        assert "provider" not in result
 
 
 class TestProviderResolution:

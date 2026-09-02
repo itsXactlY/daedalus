@@ -188,3 +188,7 @@ id_ed25519
 **/.env.*
 !**/.env.example
 !**/.env.sample
+state*.db
+state*.db-shm
+state*.db-wal
+screenshots/

@@ -10,15 +10,12 @@ import pytest
 from cli import _detect_file_drop
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def tmp_image(tmp_path):
     """Create a temporary .png file and return its path."""
     img = tmp_path / "screenshot.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\n")  # minimal PNG header
+    img.write_bytes(b"\x89PNG\r\n\x1a\n")
     return img
 
 
@@ -38,9 +35,6 @@ def tmp_image_with_spaces(tmp_path):
     return img
 
 
-# ---------------------------------------------------------------------------
-# Tests: returns None for non-file inputs
-# ---------------------------------------------------------------------------
 
 class TestNonFileInputs:
     def test_regular_slash_command(self):
@@ -69,9 +63,6 @@ class TestNonFileInputs:
         assert _detect_file_drop(str(tmp_path)) is None
 
 
-# ---------------------------------------------------------------------------
-# Tests: image file detection
-# ---------------------------------------------------------------------------
 
 class TestImageFileDrop:
     def test_simple_image_path(self, tmp_image):
@@ -106,9 +97,6 @@ class TestImageFileDrop:
         assert result["is_image"] is True
 
 
-# ---------------------------------------------------------------------------
-# Tests: non-image file detection
-# ---------------------------------------------------------------------------
 
 class TestNonImageFileDrop:
     def test_python_file(self, tmp_text):
@@ -126,9 +114,6 @@ class TestNonImageFileDrop:
         assert result["remainder"] == "review this code"
 
 
-# ---------------------------------------------------------------------------
-# Tests: backslash-escaped spaces (macOS drag-and-drop)
-# ---------------------------------------------------------------------------
 
 class TestEscapedSpaces:
     def test_escaped_spaces_in_path(self, tmp_image_with_spaces):
@@ -148,9 +133,6 @@ class TestEscapedSpaces:
         assert result["remainder"] == "what is this?"
 
 
-# ---------------------------------------------------------------------------
-# Tests: edge cases
-# ---------------------------------------------------------------------------
 
 class TestEdgeCases:
     def test_path_with_no_extension(self, tmp_path):

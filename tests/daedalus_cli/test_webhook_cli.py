@@ -18,7 +18,6 @@ from daedalus_cli.webhook import (
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
-    # Default: webhooks enabled (most tests need this)
     monkeypatch.setattr(
         "daedalus_cli.webhook._is_webhook_enabled", lambda: True
     )
@@ -101,7 +100,7 @@ class TestList:
     def test_with_entries(self, capsys):
         webhook_command(_make_args(webhook_action="subscribe", name="a"))
         webhook_command(_make_args(webhook_action="subscribe", name="b"))
-        capsys.readouterr()  # clear
+        capsys.readouterr()
         webhook_command(_make_args(webhook_action="list"))
         out = capsys.readouterr().out
         assert "2 webhook" in out
@@ -176,7 +175,6 @@ class TestWebhookEnabledGate:
         assert "not enabled" in out.lower()
 
     def test_allows_when_enabled(self, capsys):
-        # _is_webhook_enabled already patched to True by autouse fixture
         webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
         out = capsys.readouterr().out
         assert "Created" in out

@@ -21,7 +21,6 @@ from daedalus_cli.plugins_cmd import (
 )
 
 
-# ── _sanitize_plugin_name ─────────────────────────────────────────────────
 
 
 class TestSanitizePluginName:
@@ -64,7 +63,6 @@ class TestSanitizePluginName:
             _sanitize_plugin_name("", tmp_path)
 
 
-# ── _resolve_git_url ──────────────────────────────────────────────────────
 
 
 class TestResolveGitUrl:
@@ -99,7 +97,6 @@ class TestResolveGitUrl:
             _resolve_git_url("a/b/c")
 
 
-# ── _repo_name_from_url ──────────────────────────────────────────────────
 
 
 class TestRepoNameFromUrl:
@@ -123,7 +120,6 @@ class TestRepoNameFromUrl:
         assert _repo_name_from_url("ssh://git@github.com/owner/repo.git") == "repo"
 
 
-# ── plugins_command dispatch ──────────────────────────────────────────────
 
 
 class TestPluginsCommandDispatch:
@@ -179,7 +175,6 @@ class TestPluginsCommandDispatch:
         mock_remove.assert_called_once_with("bar")
 
 
-# ── _read_manifest ────────────────────────────────────────────────────────
 
 
 class TestReadManifest:
@@ -209,7 +204,6 @@ class TestReadManifest:
         assert result == {}
 
 
-# ── cmd_install tests ─────────────────────────────────────────────────────────
 
 
 class TestCmdInstall:
@@ -265,7 +259,6 @@ class TestCmdInstall:
         mock_display_after_install.assert_not_called()
 
 
-# ── cmd_update tests ─────────────────────────────────────────────────────────
 
 
 class TestCmdUpdate:
@@ -310,7 +303,6 @@ class TestCmdUpdate:
         assert exc_info.value.code == 1
 
 
-# ── cmd_remove tests ─────────────────────────────────────────────────────────
 
 
 class TestCmdRemove:
@@ -349,7 +341,6 @@ class TestCmdRemove:
         assert exc_info.value.code == 1
 
 
-# ── cmd_list tests ─────────────────────────────────────────────────────────
 
 
 class TestCmdList:
@@ -384,7 +375,6 @@ class TestCmdList:
         cmd_list()
 
 
-# ── _copy_example_files tests ─────────────────────────────────────────────────
 
 
 class TestCopyExampleFiles:
@@ -396,13 +386,11 @@ class TestCopyExampleFiles:
 
         console = MagicMock()
 
-        # Create example file
         example_file = tmp_path / "config.yaml.example"
         example_file.write_text("key: value")
 
         _copy_example_files(tmp_path, console)
 
-        # Should have created the file
         assert (tmp_path / "config.yaml").exists()
         console.print.assert_called()
 
@@ -412,7 +400,6 @@ class TestCopyExampleFiles:
 
         console = MagicMock()
 
-        # Create both example and real file
         example_file = tmp_path / "config.yaml.example"
         example_file.write_text("key: value")
         real_file = tmp_path / "config.yaml"
@@ -420,7 +407,6 @@ class TestCopyExampleFiles:
 
         _copy_example_files(tmp_path, console)
 
-        # Should NOT have overwritten
         assert real_file.read_text() == "existing: true"
 
     def test_handles_copy_error_gracefully(self, tmp_path):
@@ -429,19 +415,15 @@ class TestCopyExampleFiles:
 
         console = MagicMock()
 
-        # Create example file
         example_file = tmp_path / "config.yaml.example"
         example_file.write_text("key: value")
 
-        # Mock shutil.copy2 to raise an error
         with patch(
             "daedalus_cli.plugins_cmd.shutil.copy2",
             side_effect=OSError("Permission denied"),
         ):
-            # Should not raise, just warn
             _copy_example_files(tmp_path, console)
 
-        # Should have printed a warning
         assert any("Warning" in str(c) for c in console.print.call_args_list)
 
 
@@ -463,7 +445,6 @@ class TestPromptPluginEnvVars:
         console = MagicMock()
         with patch("daedalus_cli.config.get_env_value", return_value="already-set"):
             _prompt_plugin_env_vars({"requires_env": ["MY_KEY"]}, console)
-        # No prompt should appear — all vars are set
         console.print.assert_not_called()
 
     def test_prompts_for_missing_var_simple_format(self):
@@ -506,7 +487,6 @@ class TestPromptPluginEnvVars:
             _prompt_plugin_env_vars(manifest, console)
 
         mock_save.assert_called_once_with("LANGFUSE_PUBLIC_KEY", "pk-lf-123")
-        # Should show url hint
         printed = " ".join(str(c) for c in console.print.call_args_list)
         assert "langfuse.com" in printed
 
@@ -553,5 +533,4 @@ class TestPromptPluginEnvVars:
              patch("daedalus_cli.config.save_env_value") as mock_save:
             _prompt_plugin_env_vars(manifest, console)
 
-        # Should not crash, and not save anything
         mock_save.assert_not_called()

@@ -7,7 +7,6 @@ Verifies that:
 """
 
 import pytest
-#pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
 
@@ -21,9 +20,6 @@ from agent.context_compressor import SUMMARY_PREFIX
 from run_agent import AIAgent
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_tool_defs(*names: str) -> list:
     return [
@@ -82,21 +78,16 @@ def agent():
         return a
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestHTTP413Compression:
     """413 errors should trigger compression, not abort as generic 4xx."""
 
     def test_413_triggers_compression(self, agent):
         """A 413 error should call _compress_context and retry, not abort."""
-        # First call raises 413; second call succeeds after compression.
         err_413 = _make_413_error()
         ok_resp = _mock_response(content="Success after compression", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
 
-        # Prefill so there are multiple messages for compression to reduce
         prefill = [
             {"role": "user", "content": "previous question"},
             {"role": "assistant", "content": "previous answer"},
@@ -108,7 +99,6 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Compression reduces 3 messages down to 1
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "compressed prompt",
@@ -142,7 +132,6 @@ class TestHTTP413Compression:
             )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
-        # If 413 were treated as generic 4xx, result would have "failed": True
         assert result.get("failed") is not True
         assert result["completed"] is True
 
@@ -206,7 +195,6 @@ class TestHTTP413Compression:
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_called_once()
-        # Must NOT have "failed": True (which would mean the generic 4xx handler caught it)
         assert result.get("failed") is not True
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after compression"
@@ -300,7 +288,6 @@ class TestHTTP413Compression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Compression returns same number of messages → can't compress further
             mock_compress.return_value = (
                 [{"role": "user", "content": "hello"}],
                 "same prompt",
@@ -318,13 +305,9 @@ class TestPreflightCompression:
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
         agent.compression_enabled = True
-        # Set a small context so the history is "oversized", but large enough
-        # that the compressed result (2 short messages) fits in a single pass.
         agent.context_compressor.context_length = 2000
         agent.context_compressor.threshold_tokens = 200
 
-        # Build a history that will be large enough to trigger preflight
-        # (each message ~50 chars ≈ 13 tokens, 40 messages ≈ 520 tokens > 200 threshold)
         big_history = []
         for i in range(20):
             big_history.append({"role": "user", "content": f"Message number {i} with some extra text padding"})
@@ -339,7 +322,6 @@ class TestPreflightCompression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Simulate compression reducing messages to a small set that fits
             mock_compress.return_value = (
                 [
                     {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
@@ -349,7 +331,6 @@ class TestPreflightCompression:
             )
             result = agent.run_conversation("hello", conversation_history=big_history)
 
-        # Preflight compression should have been called BEFORE the API call
         mock_compress.assert_called_once()
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
@@ -357,7 +338,6 @@ class TestPreflightCompression:
     def test_no_preflight_when_under_threshold(self, agent):
         """When history fits within context, no preflight compression needed."""
         agent.compression_enabled = True
-        # Large context — history easily fits
         agent.context_compressor.context_length = 1000000
         agent.context_compressor.threshold_tokens = 850000
 
@@ -412,7 +392,7 @@ class TestToolResultPreflightCompression:
         """When tool results push estimated tokens past threshold, compress before next call."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 130_000  # below the 135k reported usage
+        agent.context_compressor.threshold_tokens = 130_000
         agent.context_compressor.last_prompt_tokens = 130_000
         agent.context_compressor.last_completion_tokens = 5_000
 

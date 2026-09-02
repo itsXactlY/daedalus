@@ -43,9 +43,6 @@ def agent(mock_manager):
     return DaedalusACPAgent(session_manager=mock_manager)
 
 
-# ---------------------------------------------------------------------------
-# initialize
-# ---------------------------------------------------------------------------
 
 
 class TestInitialize:
@@ -73,9 +70,6 @@ class TestInitialize:
         assert caps.session_capabilities.list is not None
 
 
-# ---------------------------------------------------------------------------
-# authenticate
-# ---------------------------------------------------------------------------
 
 
 class TestAuthenticate:
@@ -98,9 +92,6 @@ class TestAuthenticate:
         assert resp is None
 
 
-# ---------------------------------------------------------------------------
-# new_session / cancel / load / resume
-# ---------------------------------------------------------------------------
 
 
 class TestSessionOps:
@@ -109,7 +100,6 @@ class TestSessionOps:
         resp = await agent.new_session(cwd="/home/user/project")
         assert isinstance(resp, NewSessionResponse)
         assert resp.session_id
-        # Session should be retrievable from the manager
         state = agent.session_manager.get_session(resp.session_id)
         assert state is not None
         assert state.cwd == "/home/user/project"
@@ -171,7 +161,6 @@ class TestSessionOps:
 
     @pytest.mark.asyncio
     async def test_cancel_nonexistent_session_is_noop(self, agent):
-        # Should not raise
         await agent.cancel(session_id="does-not-exist")
 
     @pytest.mark.asyncio
@@ -215,9 +204,6 @@ class TestSessionOps:
         assert isinstance(resume_resp, ResumeSessionResponse)
 
 
-# ---------------------------------------------------------------------------
-# list / fork
-# ---------------------------------------------------------------------------
 
 
 class TestListAndFork:
@@ -246,9 +232,6 @@ class TestListAndFork:
         mock_schedule.assert_called_once_with(fork_resp.session_id)
 
 
-# ---------------------------------------------------------------------------
-# session configuration / model routing
-# ---------------------------------------------------------------------------
 
 
 class TestSessionConfiguration:
@@ -300,9 +283,6 @@ class TestSessionConfiguration:
 
     @pytest.mark.asyncio
     async def test_router_rejects_model_switch_protocol_method(self, agent):
-        # agent-client-protocol 0.12.0 defines NO session/set_model method —
-        # the router never dispatches it and the server has no handler. This
-        # pins the protocol reality so nobody re-adds a hallucinated handler.
         new_resp = await agent.new_session(cwd="/tmp")
         router = build_agent_router(agent, use_unstable_protocol=True)
 
@@ -316,9 +296,6 @@ class TestSessionConfiguration:
             )
 
 
-# ---------------------------------------------------------------------------
-# prompt
-# ---------------------------------------------------------------------------
 
 
 class TestPrompt:
@@ -342,7 +319,6 @@ class TestPrompt:
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
 
-        # Mock the agent's run_conversation
         state.agent.run_conversation = MagicMock(return_value={
             "final_response": "Hello! How can I help?",
             "messages": [
@@ -351,7 +327,6 @@ class TestPrompt:
             ],
         })
 
-        # Set up a mock connection
         mock_conn = MagicMock(spec=acp.Client)
         mock_conn.session_update = AsyncMock()
         agent._conn = mock_conn
@@ -405,9 +380,7 @@ class TestPrompt:
         prompt = [TextContentBlock(type="text", text="help me")]
         await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
-        # session_update should have been called with the final message
         mock_conn.session_update.assert_called()
-        # Get the last call's update argument
         last_call = mock_conn.session_update.call_args_list[-1]
         update = last_call[1].get("update") or last_call[0][1]
         assert update.session_update == "agent_message_chunk"
@@ -419,7 +392,6 @@ class TestPrompt:
         state = agent.session_manager.get_session(new_resp.session_id)
 
         def mock_run(*args, **kwargs):
-            # Simulate cancel being set during execution
             state.cancel_event.set()
             return {"final_response": "interrupted", "messages": []}
 
@@ -435,9 +407,6 @@ class TestPrompt:
         assert resp.stop_reason == "cancelled"
 
 
-# ---------------------------------------------------------------------------
-# on_connect
-# ---------------------------------------------------------------------------
 
 
 class TestOnConnect:
@@ -447,9 +416,6 @@ class TestOnConnect:
         assert agent._conn is mock_conn
 
 
-# ---------------------------------------------------------------------------
-# Slash commands
-# ---------------------------------------------------------------------------
 
 
 class TestSlashCommands:
@@ -581,7 +547,6 @@ class TestSlashCommands:
         mock_conn.request_permission = AsyncMock(return_value=None)
         agent._conn = mock_conn
 
-        # Mock run_in_executor to avoid actually running the agent
         with patch("asyncio.get_running_loop") as mock_loop:
             mock_loop.return_value.run_in_executor = AsyncMock(return_value={
                 "final_response": "I processed /foo",
@@ -636,9 +601,6 @@ class TestSlashCommands:
         assert runtime_calls[-1] == "anthropic"
 
 
-# ---------------------------------------------------------------------------
-# _register_session_mcp_servers
-# ---------------------------------------------------------------------------
 
 
 class TestRegisterSessionMcpServers:
@@ -648,7 +610,6 @@ class TestRegisterSessionMcpServers:
     async def test_noop_when_no_servers(self, agent, mock_manager):
         """No-op when mcp_servers is None or empty."""
         state = mock_manager.create_session(cwd="/tmp")
-        # Should not raise
         await agent._register_session_mcp_servers(state, None)
         await agent._register_session_mcp_servers(state, [])
 
@@ -658,7 +619,6 @@ class TestRegisterSessionMcpServers:
         from acp.schema import McpServerStdio, EnvVariable
 
         state = mock_manager.create_session(cwd="/tmp")
-        # Give the mock agent the attributes _register_session_mcp_servers reads
         state.agent.enabled_toolsets = ["daedalus-acp"]
         state.agent.disabled_toolsets = None
         state.agent.tools = []
@@ -747,7 +707,6 @@ class TestRegisterSessionMcpServers:
 
         assert state.agent.tools == fake_tools
         assert state.agent.valid_tool_names == {"mcp_srv_search", "terminal"}
-        # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
 
     @pytest.mark.asyncio
@@ -764,7 +723,6 @@ class TestRegisterSessionMcpServers:
         )
 
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
-            # Should not raise
             await agent._register_session_mcp_servers(state, [server])
 
     @pytest.mark.asyncio
@@ -774,13 +732,11 @@ class TestRegisterSessionMcpServers:
             resp = await agent.new_session(cwd="/tmp", mcp_servers=["fake"])
             assert resp is not None
             mock_reg.assert_called_once()
-            # Second arg should be the mcp_servers list
             assert mock_reg.call_args[0][1] == ["fake"]
 
     @pytest.mark.asyncio
     async def test_load_session_calls_register(self, agent, mock_manager):
         """load_session passes mcp_servers to _register_session_mcp_servers."""
-        # Create a session first so load can find it
         state = mock_manager.create_session(cwd="/tmp")
         sid = state.session_id
 

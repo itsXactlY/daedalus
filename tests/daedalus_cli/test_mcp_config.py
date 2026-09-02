@@ -16,9 +16,6 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _isolate_config(tmp_path, monkeypatch):
@@ -70,9 +67,6 @@ class FakeTool:
         self.description = description
 
 
-# ---------------------------------------------------------------------------
-# Tests: cmd_mcp_list
-# ---------------------------------------------------------------------------
 
 class TestMcpList:
     def test_list_empty_config(self, tmp_path, capsys):
@@ -101,8 +95,8 @@ class TestMcpList:
         out = capsys.readouterr().out
         assert "ink" in out
         assert "github" in out
-        assert "2 selected" in out  # ink has 2 in include
-        assert "disabled" in out  # github is disabled
+        assert "2 selected" in out
+        assert "disabled" in out
 
     def test_list_enabled_default_true(self, tmp_path, capsys):
         """Server without explicit enabled key defaults to enabled."""
@@ -117,9 +111,6 @@ class TestMcpList:
         assert "enabled" in out
 
 
-# ---------------------------------------------------------------------------
-# Tests: cmd_mcp_remove
-# ---------------------------------------------------------------------------
 
 class TestMcpRemove:
     def test_remove_existing_server(self, tmp_path, capsys, monkeypatch):
@@ -134,7 +125,6 @@ class TestMcpRemove:
         out = capsys.readouterr().out
         assert "Removed" in out
 
-        # Verify config updated
         from daedalus_cli.config import load_config
 
         config = load_config()
@@ -153,12 +143,10 @@ class TestMcpRemove:
             "oauth-srv": {"url": "https://example.com/mcp", "auth": "oauth"},
         })
         monkeypatch.setattr("builtins.input", lambda _: "y")
-        # Also patch get_daedalus_home in the mcp_config module namespace
         monkeypatch.setattr(
             "daedalus_cli.mcp_config.get_daedalus_home", lambda: tmp_path
         )
 
-        # Create a fake token file
         token_dir = tmp_path / "mcp-tokens"
         token_dir.mkdir()
         token_file = token_dir / "oauth-srv.json"
@@ -170,9 +158,6 @@ class TestMcpRemove:
         assert not token_file.exists()
 
 
-# ---------------------------------------------------------------------------
-# Tests: cmd_mcp_add
-# ---------------------------------------------------------------------------
 
 class TestMcpAdd:
     def test_add_no_transport(self, capsys):
@@ -196,8 +181,7 @@ class TestMcpAdd:
         monkeypatch.setattr(
             "daedalus_cli.mcp_config._probe_single_server", mock_probe
         )
-        # No auth, accept all tools
-        inputs = iter(["n", ""])  # no auth needed, enable all
+        inputs = iter(["n", ""])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         from daedalus_cli.mcp_config import cmd_mcp_add
@@ -207,7 +191,6 @@ class TestMcpAdd:
         assert "Saved" in out
         assert "2/2 tools" in out
 
-        # Verify config written
         from daedalus_cli.config import load_config
 
         config = load_config()
@@ -224,7 +207,7 @@ class TestMcpAdd:
         monkeypatch.setattr(
             "daedalus_cli.mcp_config._probe_single_server", mock_probe
         )
-        inputs = iter([""])  # accept all tools
+        inputs = iter([""])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         from daedalus_cli.mcp_config import cmd_mcp_add
@@ -255,7 +238,7 @@ class TestMcpAdd:
         monkeypatch.setattr(
             "daedalus_cli.mcp_config._probe_single_server", mock_probe_fail
         )
-        inputs = iter(["n", "y"])  # no auth, yes save disabled
+        inputs = iter(["n", "y"])
         monkeypatch.setattr("builtins.input", lambda _: next(inputs))
 
         from daedalus_cli.mcp_config import cmd_mcp_add
@@ -270,9 +253,6 @@ class TestMcpAdd:
         assert config["mcp_servers"]["broken"]["enabled"] is False
 
 
-# ---------------------------------------------------------------------------
-# Tests: cmd_mcp_test
-# ---------------------------------------------------------------------------
 
 class TestMcpTest:
     def test_test_not_found(self, tmp_path, capsys):
@@ -302,9 +282,6 @@ class TestMcpTest:
         assert "Tools discovered: 2" in out
 
 
-# ---------------------------------------------------------------------------
-# Tests: env var interpolation
-# ---------------------------------------------------------------------------
 
 class TestEnvVarInterpolation:
     def test_interpolate_simple(self, monkeypatch):
@@ -347,9 +324,6 @@ class TestEnvVarInterpolation:
         assert _interpolate_env_vars(None) is None
 
 
-# ---------------------------------------------------------------------------
-# Tests: config helpers
-# ---------------------------------------------------------------------------
 
 class TestConfigHelpers:
     def test_save_and_load_mcp_server(self, tmp_path):
@@ -386,9 +360,6 @@ class TestConfigHelpers:
         assert _env_key_for_server("my-server") == "MCP_MY_SERVER_API_KEY"
 
 
-# ---------------------------------------------------------------------------
-# Tests: dispatcher
-# ---------------------------------------------------------------------------
 
 class TestDispatcher:
     def test_no_action_shows_list(self, tmp_path, capsys):
@@ -400,9 +371,6 @@ class TestDispatcher:
         assert "Commands:" in out or "No MCP servers" in out
 
 
-# ---------------------------------------------------------------------------
-# daedalus mcp login / reauth
-# ---------------------------------------------------------------------------
 
 class TestOauthTokensPresent:
     def test_false_when_no_token_file(self, tmp_path, monkeypatch):

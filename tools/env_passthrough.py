@@ -27,8 +27,6 @@ from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
-# Session-scoped set of env var names that should pass through to sandboxes.
-# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
 _allowed_env_vars_var: ContextVar[set[str]] = ContextVar("_allowed_env_vars")
 
 
@@ -42,7 +40,6 @@ def _get_allowed() -> set[str]:
         return val
 
 
-# Cache for the config-based allowlist (loaded once per process).
 _config_passthrough: frozenset[str] | None = None
 
 

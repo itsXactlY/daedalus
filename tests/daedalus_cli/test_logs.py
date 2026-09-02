@@ -21,9 +21,6 @@ from daedalus_cli.logs import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def log_dir(tmp_path, monkeypatch):
@@ -66,9 +63,6 @@ def sample_errors_log(log_dir):
     return path
 
 
-# ---------------------------------------------------------------------------
-# _parse_since
-# ---------------------------------------------------------------------------
 
 class TestParseSince:
     def test_hours(self):
@@ -101,9 +95,6 @@ class TestParseSince:
         assert cutoff is not None
 
 
-# ---------------------------------------------------------------------------
-# _parse_line_timestamp
-# ---------------------------------------------------------------------------
 
 class TestParseLineTimestamp:
     def test_standard_format(self):
@@ -119,9 +110,6 @@ class TestParseLineTimestamp:
         assert _parse_line_timestamp("    at module.function (line 42)") is None
 
 
-# ---------------------------------------------------------------------------
-# _extract_level
-# ---------------------------------------------------------------------------
 
 class TestExtractLevel:
     def test_info(self):
@@ -140,9 +128,6 @@ class TestExtractLevel:
         assert _extract_level("just a plain line") is None
 
 
-# ---------------------------------------------------------------------------
-# _matches_filters
-# ---------------------------------------------------------------------------
 
 class TestMatchesFilters:
     def test_no_filters_always_matches(self):
@@ -173,7 +158,6 @@ class TestMatchesFilters:
         ) is False
 
     def test_since_filter_passes(self):
-        # Line from the future should always pass
         assert _matches_filters(
             "2099-01-01 00:00:00 INFO future",
             since=datetime.now(),
@@ -191,15 +175,11 @@ class TestMatchesFilters:
             line, min_level="WARNING", session_filter="abc",
             since=datetime.now(),
         ) is True
-        # Fails session filter
         assert _matches_filters(
             line, min_level="WARNING", session_filter="xyz",
         ) is False
 
 
-# ---------------------------------------------------------------------------
-# _read_last_n_lines
-# ---------------------------------------------------------------------------
 
 class TestReadLastNLines:
     def test_reads_correct_count(self, sample_agent_log):
@@ -208,7 +188,7 @@ class TestReadLastNLines:
 
     def test_reads_all_when_fewer(self, sample_agent_log):
         lines = _read_last_n_lines(sample_agent_log, 100)
-        assert len(lines) == 10  # sample has 10 lines
+        assert len(lines) == 10
 
     def test_empty_file(self, log_dir):
         empty = log_dir / "empty.log"
@@ -221,24 +201,19 @@ class TestReadLastNLines:
         assert "rotated to key-2" in lines[0]
 
 
-# ---------------------------------------------------------------------------
-# tail_log
-# ---------------------------------------------------------------------------
 
 class TestTailLog:
     def test_basic_tail(self, sample_agent_log, capsys):
         tail_log("agent", num_lines=3)
         captured = capsys.readouterr()
         assert "agent.log" in captured.out
-        # Should have the header + 3 lines
         lines = captured.out.strip().split("\n")
-        assert len(lines) == 4  # 1 header + 3 content
+        assert len(lines) == 4
 
     def test_level_filter(self, sample_agent_log, capsys):
         tail_log("agent", num_lines=50, level="ERROR")
         captured = capsys.readouterr()
         assert "level>=ERROR" in captured.out
-        # Only the ERROR line should appear
         content_lines = [l for l in captured.out.strip().split("\n") if not l.startswith("---")]
         assert len(content_lines) == 1
         assert "API call failed" in content_lines[0]
@@ -262,12 +237,9 @@ class TestTailLog:
 
     def test_missing_file_exits(self, log_dir):
         with pytest.raises(SystemExit):
-            tail_log("agent")  # agent.log doesn't exist in clean log_dir
+            tail_log("agent")
 
 
-# ---------------------------------------------------------------------------
-# list_logs
-# ---------------------------------------------------------------------------
 
 class TestListLogs:
     def test_lists_files(self, sample_agent_log, sample_errors_log, capsys):
@@ -284,5 +256,4 @@ class TestListLogs:
     def test_shows_sizes(self, sample_agent_log, capsys):
         list_logs()
         captured = capsys.readouterr()
-        # File is small, should show as bytes or KB
         assert "B" in captured.out or "KB" in captured.out

@@ -75,13 +75,12 @@ def _anthropic_resp(input_tok, output_tok, cache_read=0, cache_creation=0):
     )
 
 
-# -- Anthropic: cached tokens must be included --
 
 def test_anthropic_cache_read_and_creation_added(monkeypatch):
     agent = _make_agent(monkeypatch, "anthropic_messages", "anthropic",
                         lambda: _anthropic_resp(3, 10, cache_read=15000, cache_creation=2000))
     agent.run_conversation("hi")
-    assert agent.context_compressor.last_prompt_tokens == 17003  # 3+15000+2000
+    assert agent.context_compressor.last_prompt_tokens == 17003
     assert agent.session_prompt_tokens == 17003
 
 
@@ -96,10 +95,9 @@ def test_anthropic_cache_read_only(monkeypatch):
     agent = _make_agent(monkeypatch, "anthropic_messages", "anthropic",
                         lambda: _anthropic_resp(5, 15, cache_read=17666, cache_creation=15))
     agent.run_conversation("hi")
-    assert agent.context_compressor.last_prompt_tokens == 17686  # 5+17666+15
+    assert agent.context_compressor.last_prompt_tokens == 17686
 
 
-# -- OpenAI: prompt_tokens already total --
 
 def test_openai_prompt_tokens_unchanged(monkeypatch):
     resp = lambda: SimpleNamespace(
@@ -114,7 +112,6 @@ def test_openai_prompt_tokens_unchanged(monkeypatch):
     assert agent.context_compressor.last_prompt_tokens == 5000
 
 
-# -- Codex: no cache fields, getattr returns 0 --
 
 def test_codex_no_cache_fields(monkeypatch):
     resp = lambda: SimpleNamespace(
@@ -127,12 +124,6 @@ def test_codex_no_cache_fields(monkeypatch):
     assert agent.context_compressor.last_prompt_tokens == 3000
 
 
-# -- Session-cumulative counters must not silently under-add when a response's
-# usage object is present but omits prompt_tokens (regression: previously
-# added 0 for that call, permanently losing that call's contribution from
-# session_prompt_tokens/session_total_tokens with no way to recover it later,
-# unlike the display-only last_prompt_tokens which self-corrects on the next
-# fully-populated response). --
 
 def test_openai_missing_prompt_tokens_estimates_instead_of_zeroing_session_total(monkeypatch):
     calls = {"n": 0}
@@ -142,9 +133,6 @@ def test_openai_missing_prompt_tokens_estimates_instead_of_zeroing_session_total
         if calls["n"] == 1:
             usage = SimpleNamespace(prompt_tokens=4000, completion_tokens=100, total_tokens=4100)
         else:
-            # Second call: usage object present, prompt_tokens field absent
-            # entirely (the observed DeepSeek behavior) — completion_tokens
-            # still reported.
             usage = SimpleNamespace(completion_tokens=50)
         return SimpleNamespace(
             choices=[SimpleNamespace(index=0, message=SimpleNamespace(
@@ -161,33 +149,16 @@ def test_openai_missing_prompt_tokens_estimates_instead_of_zeroing_session_total
 
     agent.run_conversation("second")
 
-    # The display value must not have been wiped to 0 (context_compressor's
-    # own guard, tested separately in tests/agent/test_context_compressor.py).
     assert agent.context_compressor.last_prompt_tokens == 4000
 
-    # The session-cumulative total must have grown by an ESTIMATE (the last
-    # known-good prompt size) rather than staying flat at 4000 (which would
-    # mean this call's prompt contribution was silently dropped) or crashing.
-    assert agent.session_prompt_tokens == 4000 + 4000  # estimate == last known-good
-    assert agent.session_completion_tokens == 100 + 50  # completion side unaffected
+    assert agent.session_prompt_tokens == 4000 + 4000
+    assert agent.session_completion_tokens == 100 + 50
     assert agent.session_total_tokens == 4100 + (4000 + 50)
 
-    # Sibling regression: session_input_tokens (and the same value fed into
-    # cost estimation / DB persistence via `billed_usage`) must also grow by
-    # the estimate, not the raw canonical_usage.input_tokens (which is
-    # provably 0 here too -- normalize_usage() derives it from the same
-    # missing prompt_tokens field). Before the fix this stayed flat at 4000.
     assert agent.session_input_tokens == 4000 + 4000
-    # completion-side sibling counter is unaffected by this bug class --
-    # OpenAI-mode output_tokens comes from a separate, present field.
     assert agent.session_output_tokens == 100 + 50
 
 
-# -- Activity touch between tool completion and the next API call. Without
-# it, gateway/run.py's DAEDALUS_AGENT_TIMEOUT inactivity monitor has no signal
-# during context compression + the follow-up API call setup, and can kill a
-# long-running turn mid-flight as falsely "idle" (see run_agent.py's
-# _touch_activity call sites). --
 
 def test_touch_activity_between_tool_results_and_next_api_call(monkeypatch):
     touches = []

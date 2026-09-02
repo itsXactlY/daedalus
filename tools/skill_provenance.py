@@ -39,9 +39,6 @@ _write_origin: contextvars.ContextVar[str] = contextvars.ContextVar(
     default="foreground",
 )
 
-# The sentinel value the background review fork uses; mirrors
-# run_agent.py's AIAgent._memory_write_origin override in
-# _spawn_background_review().
 BACKGROUND_REVIEW = "background_review"
 
 

@@ -13,7 +13,6 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 from run_agent import AIAgent
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _tool_defs(*names):
     return [
@@ -60,7 +59,7 @@ class TestStrictApiValidation:
     def test_fireworks_compatible_messages_after_sanitization(self, monkeypatch):
         """Messages should be Fireworks-compatible after sanitization."""
         agent = _make_agent(monkeypatch, "openrouter")
-        agent.api_mode = "chat_completions"  # Fireworks uses chat completions
+        agent.api_mode = "chat_completions"
 
         messages = [
             {"role": "user", "content": "hi"},
@@ -70,8 +69,8 @@ class TestStrictApiValidation:
                 "tool_calls": [
                     {
                         "id": "call_123",
-                        "call_id": "call_123",  # Codex-only field
-                        "response_item_id": "fc_123",  # Codex-only field
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
                         "type": "function",
                         "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
                     }
@@ -80,16 +79,13 @@ class TestStrictApiValidation:
             {"role": "tool", "tool_call_id": "call_123", "content": "/tmp"},
         ]
 
-        # After _build_api_kwargs, Codex fields should be stripped
         kwargs = agent._build_api_kwargs(messages)
 
         assistant_msg = kwargs["messages"][1]
         tool_call = assistant_msg["tool_calls"][0]
 
-        # Fireworks rejects these fields
         assert "call_id" not in tool_call
         assert "response_item_id" not in tool_call
-        # Standard fields should remain
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
 
@@ -115,7 +111,6 @@ class TestStrictApiValidation:
             },
         ]
 
-        # In Codex mode, original messages should NOT be mutated
         assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
 
@@ -128,7 +123,6 @@ class TestStrictApiValidation:
             base_url="https://api.fireworks.ai/inference/v1"
         )
 
-        # Should sanitize for Fireworks (chat_completions mode)
         assert agent._should_sanitize_tool_calls() is True
 
     def test_no_sanitize_for_codex_responses(self, monkeypatch):
@@ -140,5 +134,4 @@ class TestStrictApiValidation:
             base_url="https://api.openai.com/v1"
         )
 
-        # Should NOT sanitize for Codex
         assert agent._should_sanitize_tool_calls() is False

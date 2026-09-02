@@ -38,7 +38,6 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         child_started = threading.Event()
         child_api_call_count = 0
 
-        # Create a real-enough parent agent
         parent = AIAgent.__new__(AIAgent)
         parent._interrupt_requested = False
         parent._interrupt_message = None
@@ -64,18 +63,13 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         parent._delegate_spinner = None
         parent.tool_progress_callback = None
 
-        # We'll track what happens with _active_children
         original_children = parent._active_children
 
-        # Mock the child's run_conversation to simulate a slow operation
-        # that checks _interrupt_requested like the real one does
         def mock_child_run_conversation(user_message, **kwargs):
             child_started.set()
-            # Find the child in parent._active_children
             child = parent._active_children[-1] if parent._active_children else None
             
-            # Simulate the agent loop: poll _interrupt_requested like run_conversation does
-            for i in range(100):  # Up to 10 seconds (100 * 0.1s)
+            for i in range(100):
                 if child and child._interrupt_requested:
                     interrupt_detected.set()
                     return {
@@ -96,13 +90,11 @@ class TestCLISubagentInterrupt(unittest.TestCase):
                 "interrupted": False,
             }
 
-        # Patch AIAgent to use our mock
         from tools.delegate_tool import _run_single_child
         from run_agent import IterationBudget
 
         parent.iteration_budget = IterationBudget(max_total=100)
 
-        # Run delegate in a thread (simulates agent_thread)
         delegate_result = [None]
         delegate_error = [None]
 
@@ -120,7 +112,6 @@ class TestCLISubagentInterrupt(unittest.TestCase):
                     mock_instance.tools = []
                     MockAgent.return_value = mock_instance
 
-                    # Register child manually (normally done by _build_child_agent)
                     parent._active_children.append(mock_instance)
 
                     result = _run_single_child(
@@ -136,26 +127,21 @@ class TestCLISubagentInterrupt(unittest.TestCase):
         agent_thread = threading.Thread(target=run_delegate, daemon=True)
         agent_thread.start()
 
-        # Wait for child to start
         assert child_started.wait(timeout=5), "Child never started!"
 
-        # Now simulate user interrupt (from main/process thread)
-        time.sleep(0.2)  # Give child a moment to be in its loop
+        time.sleep(0.2)
         
         print(f"Parent has {len(parent._active_children)} active children")
         assert len(parent._active_children) >= 1, f"Expected child in _active_children, got {len(parent._active_children)}"
 
-        # This is what the CLI does:
         parent.interrupt("Hey stop that")
         
         print(f"Parent._interrupt_requested: {parent._interrupt_requested}")
         for i, child in enumerate(parent._active_children):
             print(f"Child {i}._interrupt_requested: {child._interrupt_requested}")
 
-        # Wait for child to detect interrupt
         detected = interrupt_detected.wait(timeout=3.0)
         
-        # Wait for delegate to finish
         agent_thread.join(timeout=5)
 
         if delegate_error[0]:

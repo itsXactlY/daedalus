@@ -60,11 +60,11 @@ class SessionState:
     """Tracks per-session state for an ACP-managed Daedalus agent."""
 
     session_id: str
-    agent: Any  # AIAgent instance
+    agent: Any
     cwd: str = "."
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
-    cancel_event: Any = None  # threading.Event
+    cancel_event: Any = None
 
 
 class SessionManager:
@@ -87,9 +87,8 @@ class SessionManager:
         self._sessions: Dict[str, SessionState] = {}
         self._lock = Lock()
         self._agent_factory = agent_factory
-        self._db_instance = db  # None → lazy-init on first use
+        self._db_instance = db
 
-    # ---- public API ---------------------------------------------------------
 
     def create_session(self, cwd: str = ".") -> SessionState:
         """Create a new session with a unique ID and a fresh AIAgent."""
@@ -121,7 +120,6 @@ class SessionManager:
             state = self._sessions.get(session_id)
         if state is not None:
             return state
-        # Attempt to restore from database.
         return self._restore(session_id)
 
     def remove_session(self, session_id: str) -> bool:
@@ -137,7 +135,7 @@ class SessionManager:
         """Deep-copy a session's history into a new session."""
         import threading
 
-        original = self.get_session(session_id)  # checks DB too
+        original = self.get_session(session_id)
         if original is None:
             return None
 
@@ -164,7 +162,6 @@ class SessionManager:
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         """Return lightweight info dicts for all sessions (memory + database)."""
-        # Collect in-memory sessions first.
         with self._lock:
             seen_ids = set(self._sessions.keys())
             results = [
@@ -177,7 +174,6 @@ class SessionManager:
                 for s in self._sessions.values()
             ]
 
-        # Merge any persisted sessions not currently in memory.
         db = self._get_db()
         if db is not None:
             try:
@@ -186,7 +182,6 @@ class SessionManager:
                     sid = row["id"]
                     if sid in seen_ids:
                         continue
-                    # Extract cwd from model_config JSON.
                     cwd = "."
                     mc = row.get("model_config")
                     if mc:
@@ -207,7 +202,7 @@ class SessionManager:
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
-        state = self.get_session(session_id)  # checks DB too
+        state = self.get_session(session_id)
         if state is None:
             return None
         state.cwd = cwd
@@ -223,7 +218,6 @@ class SessionManager:
         for session_id in session_ids:
             _clear_task_cwd(session_id)
             self._delete_persisted(session_id)
-        # Also remove any DB-only ACP sessions not currently in memory.
         db = self._get_db()
         if db is not None:
             try:
@@ -246,7 +240,6 @@ class SessionManager:
         if state is not None:
             self._persist(state)
 
-    # ---- persistence via SessionDB ------------------------------------------
 
     def _get_db(self):
         """Lazily initialise and return the SessionDB instance.
@@ -280,7 +273,6 @@ class SessionManager:
         if db is None:
             return
 
-        # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
         session_meta = {"cwd": state.cwd}
         provider = getattr(state.agent, "provider", None)
@@ -295,7 +287,6 @@ class SessionManager:
         cwd_json = json.dumps(session_meta)
 
         try:
-            # Ensure the session record exists.
             existing = db.get_session(state.session_id)
             if existing is None:
                 db.create_session(
@@ -305,7 +296,6 @@ class SessionManager:
                     model_config={"cwd": state.cwd},
                 )
             else:
-                # Update model_config (contains cwd) if changed.
                 try:
                     with db._lock:
                         db._conn.execute(
@@ -316,7 +306,6 @@ class SessionManager:
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # Replace stored messages with current history.
             db.clear_messages(state.session_id)
             for msg in state.history:
                 db.append_message(
@@ -347,11 +336,9 @@ class SessionManager:
         if row is None:
             return None
 
-        # Only restore ACP sessions.
         if row.get("source") != "acp":
             return None
 
-        # Extract cwd from model_config.
         cwd = "."
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
@@ -370,7 +357,6 @@ class SessionManager:
 
         model = row.get("model") or None
 
-        # Load conversation history.
         try:
             history = db.get_messages_as_conversation(session_id)
         except Exception:
@@ -415,7 +401,6 @@ class SessionManager:
             logger.debug("Failed to delete ACP session %s from DB", session_id, exc_info=True)
             return False
 
-    # ---- internal -----------------------------------------------------------
 
     def _make_agent(
         self,
@@ -469,7 +454,5 @@ class SessionManager:
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)
-        # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
-        # Route any incidental human-readable agent output to stderr instead.
         agent._print_fn = _acp_stderr_print
         return agent

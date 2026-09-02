@@ -14,7 +14,6 @@ from acp.schema import (
 
 logger = logging.getLogger(__name__)
 
-# Maps ACP PermissionOptionKind -> daedalus approval result strings
 _KIND_TO_DAEDALUS = {
     "allow_once": "once",
     "allow_always": "always",
@@ -66,11 +65,10 @@ def make_approval_callback(
         outcome = response.outcome
         if isinstance(outcome, AllowedOutcome):
             option_id = outcome.option_id
-            # Look up the kind from our options list
             for opt in options:
                 if opt.option_id == option_id:
                     return _KIND_TO_DAEDALUS.get(opt.kind, "deny")
-            return "once"  # fallback for unknown option_id
+            return "once"
         else:
             return "deny"
 

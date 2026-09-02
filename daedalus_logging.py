@@ -19,16 +19,11 @@ from typing import Optional
 
 from daedalus_constants import get_daedalus_home
 
-# Sentinel to track whether setup_logging() has already run.  The function
-# is idempotent — calling it twice is safe but the second call is a no-op
-# unless ``force=True``.
 _logging_initialized = False
 
-# Default log format — includes timestamp, level, logger name, and message.
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-# Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
     "openai",
     "openai._base_client",
@@ -96,7 +91,6 @@ def setup_logging(
     log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    # Read config defaults (best-effort — config may not be loaded yet).
     cfg_level, cfg_max_size, cfg_backup = _read_logging_config()
 
     level_name = (log_level or cfg_level or "INFO").upper()
@@ -104,12 +98,10 @@ def setup_logging(
     max_bytes = (max_size_mb or cfg_max_size or 5) * 1024 * 1024
     backups = backup_count or cfg_backup or 3
 
-    # Lazy import to avoid circular dependency at module load time.
     from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
 
-    # --- agent.log (INFO+) — the main activity log -------------------------
     _add_rotating_handler(
         root,
         log_dir / "agent.log",
@@ -119,7 +111,6 @@ def setup_logging(
         formatter=RedactingFormatter(_LOG_FORMAT),
     )
 
-    # --- errors.log (WARNING+) — quick triage log --------------------------
     _add_rotating_handler(
         root,
         log_dir / "errors.log",
@@ -129,11 +120,9 @@ def setup_logging(
         formatter=RedactingFormatter(_LOG_FORMAT),
     )
 
-    # Ensure root logger level is low enough for the handlers to fire.
     if root.level == logging.NOTSET or root.level > level:
         root.setLevel(level)
 
-    # Suppress noisy third-party loggers.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
 
@@ -150,7 +139,6 @@ def setup_verbose_logging() -> None:
 
     root = logging.getLogger()
 
-    # Avoid adding duplicate stream handlers.
     for h in root.handlers:
         if isinstance(h, logging.StreamHandler) and not isinstance(h, RotatingFileHandler):
             if getattr(h, "_daedalus_verbose", False):
@@ -162,20 +150,14 @@ def setup_verbose_logging() -> None:
     handler._daedalus_verbose = True  # type: ignore[attr-defined]
     root.addHandler(handler)
 
-    # Lower root logger level so DEBUG records reach all handlers.
     if root.level > logging.DEBUG:
         root.setLevel(logging.DEBUG)
 
-    # Keep third-party libraries at WARNING to reduce noise.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
-    # rex-deploy at INFO for sandbox status.
     logging.getLogger("rex-deploy").setLevel(logging.INFO)
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _add_rotating_handler(
     logger: logging.Logger,
@@ -195,7 +177,7 @@ def _add_rotating_handler(
             isinstance(existing, RotatingFileHandler)
             and Path(getattr(existing, "baseFilename", "")).resolve() == resolved
         ):
-            return  # already attached
+            return
 
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(

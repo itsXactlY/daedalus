@@ -127,7 +127,6 @@ class TestEmit:
         with patch("gateway.hooks.HOOKS_DIR", tmp_path):
             reg.discover_and_load()
 
-        # Inject our results list into the handler's module globals
         handler_fn = reg._handlers["agent:start"][0]
         handler_fn.__globals__["results"] = results
 
@@ -182,7 +181,6 @@ class TestEmit:
     @pytest.mark.asyncio
     async def test_no_handlers_for_event(self, tmp_path):
         reg = HookRegistry()
-        # Should not raise and should have no handlers registered
         result = await reg.emit("unknown:event", {})
         assert result is None
         assert not reg._handlers.get("unknown:event")
@@ -198,7 +196,6 @@ class TestEmit:
             reg.discover_and_load()
 
         assert len(reg._handlers.get("agent:start", [])) == 1
-        # Should not raise even though handler throws
         result = await reg.emit("agent:start", {})
         assert result is None
 
@@ -218,5 +215,5 @@ class TestEmit:
         handler_fn = reg._handlers["agent:start"][0]
         handler_fn.__globals__["captured"] = captured
 
-        await reg.emit("agent:start")  # no context arg
+        await reg.emit("agent:start")
         assert captured[0] == {}

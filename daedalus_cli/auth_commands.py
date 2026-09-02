@@ -31,7 +31,6 @@ from daedalus_cli.auth import PROVIDER_REGISTRY
 from daedalus_constants import OPENROUTER_BASE_URL
 
 
-# Providers that support OAuth login in addition to API keys.
 _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth"}
 
 
@@ -63,7 +62,6 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     normalized = (raw or "").strip().lower().replace(" ", "-")
     if not normalized:
         return None
-    # Direct match on 'custom:name' format
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
     for display_name, pool_key in _get_custom_provider_names():
@@ -76,7 +74,6 @@ def _normalize_provider(provider: str) -> str:
     normalized = (provider or "").strip().lower()
     if normalized in {"or", "open-router"}:
         return "openrouter"
-    # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:
         return custom_key
@@ -314,8 +311,6 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
-    # If this was an env-seeded credential, also clear the env var from .env
-    # so it doesn't get re-seeded on the next load_pool() call.
     if removed.source.startswith("env:"):
         env_var = removed.source[len("env:"):]
         if env_var:
@@ -324,9 +319,6 @@ def auth_remove_command(args) -> None:
             if cleared:
                 print(f"Cleared {env_var} from .env")
 
-    # If this was a singleton-seeded credential (OAuth device_code, daedalus_pkce),
-    # clear the underlying auth store / credential file so it doesn't get
-    # re-seeded on the next load_pool() call.
     elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
         from daedalus_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
@@ -360,14 +352,12 @@ def auth_reset_command(args) -> None:
 
 def _interactive_auth() -> None:
     """Interactive credential pool management when `daedalus auth` is called bare."""
-    # Show current pool status first
     print("Credential Pool Status")
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
     print()
 
-    # Main menu
     choices = [
         "Add a credential",
         "Remove a credential",
@@ -419,7 +409,6 @@ def _interactive_add() -> None:
     if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
         raise SystemExit(f"Unknown provider: {provider}")
 
-    # For OAuth-capable providers, ask which type
     if provider in _OAUTH_CAPABLE_PROVIDERS:
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
@@ -457,7 +446,6 @@ def _interactive_remove() -> None:
         print(f"No credentials for {provider}.")
         return
 
-    # Show entries with indices
     for i, e in enumerate(pool.entries(), 1):
         exhausted = _format_exhausted_status(e)
         print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
@@ -564,5 +552,4 @@ def auth_command(args) -> None:
     if action == "logout":
         auth_logout_command(args)
         return
-    # No subcommand — launch interactive mode
     _interactive_auth()

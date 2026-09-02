@@ -13,7 +13,6 @@ from daedalus_cli.model_normalize import (
 )
 
 
-# ── Regression: issue #5211 ────────────────────────────────────────────
 
 class TestIssue5211OpenCodeGoDotPreservation:
     """OpenCode Go model names with dots must pass through unchanged."""
@@ -34,7 +33,6 @@ class TestIssue5211OpenCodeGoDotPreservation:
         assert "opencode-go" not in _DOT_TO_HYPHEN_PROVIDERS
 
 
-# ── Anthropic dot-to-hyphen conversion (regression) ────────────────────
 
 class TestAnthropicDotToHyphen:
     """Anthropic API still needs dots→hyphens."""
@@ -52,7 +50,6 @@ class TestAnthropicDotToHyphen:
         assert result == "claude-sonnet-4-6"
 
 
-# ── OpenCode Zen regression ────────────────────────────────────────────
 
 class TestOpenCodeZenDotToHyphen:
     """OpenCode Zen follows Anthropic convention (dots→hyphens)."""
@@ -70,7 +67,6 @@ class TestOpenCodeZenDotToHyphen:
         assert result == "claude-sonnet-4-6"
 
 
-# ── Copilot dot preservation (regression) ──────────────────────────────
 
 class TestCopilotDotPreservation:
     """Copilot preserves dots in model names."""
@@ -84,7 +80,6 @@ class TestCopilotDotPreservation:
         assert result == expected
 
 
-# ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:
     """Aggregators need vendor/model slugs."""
@@ -102,7 +97,6 @@ class TestAggregatorProviders:
         assert result == "anthropic/claude-sonnet-4.6"
 
 
-# ── detect_vendor ──────────────────────────────────────────────────────
 
 class TestDetectVendor:
     @pytest.mark.parametrize("model,expected", [

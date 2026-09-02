@@ -35,9 +35,6 @@ from agent.model_metadata import (
 )
 
 
-# =========================================================================
-# Token estimation
-# =========================================================================
 
 class TestEstimateTokensRough:
     def test_empty_string(self):
@@ -59,7 +56,7 @@ class TestEstimateTokensRough:
 
     def test_unicode_multibyte(self):
         """Unicode chars are still 1 Python char each — 4 chars/token holds."""
-        text = "你好世界"  # 4 CJK characters
+        text = "你好世界"
         assert estimate_tokens_rough(text) == 1
 
 
@@ -101,23 +98,18 @@ class TestEstimateMessagesTokensRough:
         assert result == len(str(msg)) // 4
 
 
-# =========================================================================
-# Default context lengths
-# =========================================================================
 
 class TestDefaultContextLengths:
     def test_claude_models_context_lengths(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             if "claude" not in key:
                 continue
-            # Claude 4.6 models have 1M context
             if "4.6" in key or "4-6" in key:
                 assert value == 1000000, f"{key} should be 1000000"
             else:
                 assert value == 200000, f"{key} should be 200000"
 
     def test_gpt4_models_128k_or_1m(self):
-        # gpt-4.1 and gpt-4.1-mini have 1M context; other gpt-4* have 128k
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             if "gpt-4" in key and "gpt-4.1" not in key:
                 assert value == 128000, f"{key} should be 128000"
@@ -140,9 +132,6 @@ class TestDefaultContextLengths:
         assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
 
 
-# =========================================================================
-# get_model_context_length — resolution order
-# =========================================================================
 
 class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
@@ -181,7 +170,7 @@ class TestGetModelContextLength:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("my/model", "http://local", 32768)
             result = get_model_context_length("my/model", base_url="http://local")
-            assert result == 32768  # cache wins over API's 999999
+            assert result == 32768
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_no_base_url_skips_cache(self, mock_fetch, tmp_path):
@@ -190,7 +179,6 @@ class TestGetModelContextLength:
         cache_file = tmp_path / "cache.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("custom/model", "http://local", 32768)
-            # No base_url → cache skipped → falls to probe tier
             result = get_model_context_length("custom/model")
             assert result == CONTEXT_PROBE_TIERS[0]
 
@@ -298,9 +286,6 @@ class TestGetModelContextLength:
         assert result == 200000
 
 
-# =========================================================================
-# _strip_provider_prefix — Ollama model:tag vs provider:model
-# =========================================================================
 
 class TestStripProviderPrefix:
     def test_known_provider_prefix_is_stripped(self):
@@ -341,9 +326,6 @@ class TestStripProviderPrefix:
         assert result == 32768
 
 
-# =========================================================================
-# fetch_model_metadata — caching, TTL, slugs, failures
-# =========================================================================
 
 class TestFetchModelMetadata:
     def _reset_cache(self):
@@ -367,7 +349,7 @@ class TestFetchModelMetadata:
 
         result2 = fetch_model_metadata()
         assert "test/model" in result2
-        assert mock_get.call_count == 1  # cached
+        assert mock_get.call_count == 1
 
     @patch("agent.model_metadata.requests.get")
     def test_api_failure_returns_empty_on_cold_cache(self, mock_get):
@@ -381,7 +363,7 @@ class TestFetchModelMetadata:
         """On API failure with existing cache, stale data is returned."""
         import agent.model_metadata as mm
         mm._model_metadata_cache = {"old/model": {"context_length": 50000}}
-        mm._model_metadata_cache_time = 0  # expired
+        mm._model_metadata_cache_time = 0
 
         mock_get.side_effect = Exception("Network error")
         result = fetch_model_metadata(force_refresh=True)
@@ -405,7 +387,6 @@ class TestFetchModelMetadata:
         mock_get.return_value = mock_response
 
         result = fetch_model_metadata(force_refresh=True)
-        # Both the original ID and canonical slug should work
         assert "anthropic/claude-3.5-sonnet:beta" in result
         assert "anthropic/claude-3.5-sonnet" in result
         assert result["anthropic/claude-3.5-sonnet"]["context_length"] == 200000
@@ -445,10 +426,9 @@ class TestFetchModelMetadata:
         fetch_model_metadata(force_refresh=True)
         assert mock_get.call_count == 1
 
-        # Simulate TTL expiry
         mm._model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL - 1
         fetch_model_metadata()
-        assert mock_get.call_count == 2  # refetched
+        assert mock_get.call_count == 2
 
     @patch("agent.model_metadata.requests.get")
     def test_malformed_json_no_data_key(self, mock_get):
@@ -463,9 +443,6 @@ class TestFetchModelMetadata:
         assert result == {}
 
 
-# =========================================================================
-# Context probe tiers
-# =========================================================================
 
 class TestContextProbeTiers:
     def test_tiers_descending(self):
@@ -506,9 +483,6 @@ class TestGetNextProbeTier:
         assert get_next_probe_tier(0) is None
 
 
-# =========================================================================
-# Error message parsing
-# =========================================================================
 
 class TestParseContextLimitFromError:
     def test_openai_format(self):
@@ -535,7 +509,6 @@ class TestParseContextLimitFromError:
 
     def test_anthropic_format(self):
         msg = "prompt is too long: 250000 tokens > 200000 maximum"
-        # Should extract 200000 (the limit), not 250000 (the input size)
         assert parse_context_limit_from_error(msg) == 200000
 
     def test_lmstudio_format(self):
@@ -554,9 +527,6 @@ class TestParseContextLimitFromError:
         assert parse_context_limit_from_error(msg) is None
 
 
-# =========================================================================
-# Persistent context length cache
-# =========================================================================
 
 class TestContextLengthCache:
     def test_save_and_load(self, tmp_path):

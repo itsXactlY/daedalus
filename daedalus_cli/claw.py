@@ -38,7 +38,6 @@ _OPENCLAW_SCRIPT = (
     / "openclaw_to_daedalus.py"
 )
 
-# Fallback: user may have installed the skill from the Hub
 _OPENCLAW_SCRIPT_INSTALLED = (
     get_daedalus_home()
     / "skills"
@@ -48,11 +47,8 @@ _OPENCLAW_SCRIPT_INSTALLED = (
     / "openclaw_to_daedalus.py"
 )
 
-# Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moldbot")
 
-# State files commonly found in OpenClaw workspace directories that cause
-# confusion after migration (the agent discovers them and writes to them)
 _WORKSPACE_STATE_GLOBS = (
     "*/todo.json",
     "*/sessions/*",
@@ -75,8 +71,6 @@ def _load_migration_module(script_path: Path):
     if spec is None or spec.loader is None:
         return None
     mod = importlib.util.module_from_spec(spec)
-    # Register in sys.modules so @dataclass can resolve the module
-    # (Python 3.11+ requires this for dynamically loaded modules)
     sys.modules[spec.name] = mod
     try:
         spec.loader.exec_module(mod)
@@ -103,18 +97,15 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
     """
     findings: list[tuple[Path, str]] = []
 
-    # Direct state files in the root
     for name in ("todo.json", "sessions", "logs"):
         candidate = source_dir / name
         if candidate.exists():
             kind = "directory" if candidate.is_dir() else "file"
             findings.append((candidate, f"Root {kind}: {name}"))
 
-    # State files inside workspace directories
     for child in sorted(source_dir.iterdir()):
         if not child.is_dir() or child.name.startswith("."):
             continue
-        # Check for workspace-like subdirectories
         for state_name in ("todo.json", "sessions", "logs", "memory"):
             state_path = child / state_name
             if state_path.exists():
@@ -134,12 +125,10 @@ def _archive_directory(source_dir: Path, dry_run: bool = False) -> Path:
     archive_name = f"{source_dir.name}.pre-migration"
     archive_path = source_dir.parent / archive_name
 
-    # If archive already exists, add timestamp
     if archive_path.exists():
         archive_name = f"{source_dir.name}.pre-migration-{timestamp}"
         archive_path = source_dir.parent / archive_name
 
-    # If still exists (multiple runs same day), add counter
     counter = 2
     while archive_path.exists():
         archive_name = f"{source_dir.name}.pre-migration-{timestamp}-{counter}"
@@ -172,14 +161,12 @@ def claw_command(args):
 
 def _cmd_migrate(args):
     """Run the OpenClaw → Daedalus migration."""
-    # Check current and legacy OpenClaw directories
     explicit_source = getattr(args, "source", None)
     if explicit_source:
         source_dir = Path(explicit_source)
     else:
         source_dir = Path.home() / ".openclaw"
         if not source_dir.is_dir():
-            # Try legacy directory names
             for legacy in (".clawdbot", ".moldbot"):
                 candidate = Path.home() / legacy
                 if candidate.is_dir():
@@ -192,7 +179,6 @@ def _cmd_migrate(args):
     workspace_target = getattr(args, "workspace_target", None)
     skill_conflict = getattr(args, "skill_conflict", "skip")
 
-    # If using the "full" preset, secrets are included by default
     if preset == "full":
         migrate_secrets = True
 
@@ -216,7 +202,6 @@ def _cmd_migrate(args):
         )
     )
 
-    # Check source directory
     if not source_dir.is_dir():
         print()
         print_error(f"OpenClaw directory not found: {source_dir}")
@@ -224,7 +209,6 @@ def _cmd_migrate(args):
         print_info("You can specify a custom path: daedalus claw migrate --source /path/to/.openclaw")
         return
 
-    # Find the migration script
     script_path = _find_migration_script()
     if not script_path:
         print()
@@ -235,7 +219,6 @@ def _cmd_migrate(args):
         print_info("Make sure the openclaw-migration skill is installed.")
         return
 
-    # Show what we're doing
     daedalus_home = get_daedalus_home()
     print()
     print_header("Migration Settings")
@@ -251,18 +234,15 @@ def _cmd_migrate(args):
         print_info(f"Workspace:   {workspace_target}")
     print()
 
-    # For execute mode (non-dry-run), confirm unless --yes was passed
     if not dry_run and not getattr(args, "yes", False):
         if not prompt_yes_no("Proceed with migration?", default=True):
             print_info("Migration cancelled.")
             return
 
-    # Ensure config.yaml exists before migration tries to read it
     config_path = get_config_path()
     if not config_path.exists():
         save_config(load_config())
 
-    # Load and run the migration
     try:
         mod = _load_migration_module(script_path)
         if mod is None:
@@ -291,10 +271,8 @@ def _cmd_migrate(args):
         logger.debug("OpenClaw migration error", exc_info=True)
         return
 
-    # Print results
     _print_migration_report(report, dry_run)
 
-    # After successful non-dry-run migration, offer to archive the source directory
     if not dry_run and report.get("summary", {}).get("migrated", 0) > 0:
         _offer_source_archival(source_dir, getattr(args, "yes", False))
 
@@ -309,7 +287,6 @@ def _offer_source_archival(source_dir: Path, auto_yes: bool = False):
     if not source_dir.is_dir():
         return
 
-    # Scan for state files that could cause problems
     state_files = _scan_workspace_state(source_dir)
 
     print()
@@ -319,7 +296,6 @@ def _offer_source_archival(source_dir: Path, auto_yes: bool = False):
     if state_files:
         print()
         print(color("  Found state files:", Colors.YELLOW))
-        # Show up to 10 most relevant findings
         for path, desc in state_files[:10]:
             print(f"      {desc}")
         if len(state_files) > 10:
@@ -373,7 +349,6 @@ def _cmd_cleanup(args):
         )
     )
 
-    # Find OpenClaw directories
     if explicit_source:
         dirs_to_check = [Path(explicit_source)]
     else:
@@ -390,10 +365,8 @@ def _cmd_cleanup(args):
         print()
         print_header(f"Found: {source_dir}")
 
-        # Scan for state files
         state_files = _scan_workspace_state(source_dir)
 
-        # Show directory stats
         try:
             workspace_dirs = [
                 d for d in source_dir.iterdir()
@@ -445,7 +418,6 @@ def _cmd_cleanup(args):
             else:
                 print_info("Skipped.")
 
-    # Summary
     print()
     if dry_run:
         print_info(f"Dry run complete. {len(dirs_to_check)} directory(ies) would be archived.")
@@ -474,10 +446,8 @@ def _print_migration_report(report: dict, dry_run: bool):
 
     print()
 
-    # Detailed items
     items = report.get("items", [])
     if items:
-        # Group by status
         migrated_items = [i for i in items if i.get("status") == "migrated"]
         skipped_items = [i for i in items if i.get("status") == "skipped"]
         conflict_items = [i for i in items if i.get("status") == "conflict"]
@@ -520,7 +490,6 @@ def _print_migration_report(report: dict, dry_run: bool):
                 print(f"      {kind:<22s}  {reason}")
             print()
 
-    # Summary line
     parts = []
     if migrated:
         action = "would migrate" if dry_run else "migrated"
@@ -537,7 +506,6 @@ def _print_migration_report(report: dict, dry_run: bool):
     else:
         print_info("Nothing to migrate.")
 
-    # Output directory
     output_dir = report.get("output_dir")
     if output_dir:
         print_info(f"Full report saved to: {output_dir}")
@@ -549,7 +517,6 @@ def _print_migration_report(report: dict, dry_run: bool):
     elif migrated:
         print()
         print_success("Migration complete!")
-        # Warn if API keys were skipped (migrate_secrets not enabled)
         skipped_keys = [
             i for i in report.get("items", [])
             if i.get("kind") == "provider-keys" and i.get("status") == "skipped"

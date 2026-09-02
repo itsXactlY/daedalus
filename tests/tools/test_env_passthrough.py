@@ -165,7 +165,6 @@ class TestTerminalIntegration:
     def test_blocklisted_var_blocked_by_default(self):
         from tools.environments.local import _sanitize_subprocess_env, _DAEDALUS_PROVIDER_ENV_BLOCKLIST
 
-        # Pick a var we know is in the blocklist
         blocked_var = next(iter(_DAEDALUS_PROVIDER_ENV_BLOCKLIST))
         env = {blocked_var: "secret_value", "PATH": "/usr/bin"}
         result = _sanitize_subprocess_env(env)
@@ -189,11 +188,9 @@ class TestTerminalIntegration:
         blocked_var = next(iter(_DAEDALUS_PROVIDER_ENV_BLOCKLIST))
         monkeypatch.setenv(blocked_var, "secret_value")
 
-        # Without passthrough — blocked
         result_before = _make_run_env({})
         assert blocked_var not in result_before
 
-        # With passthrough — allowed
         register_env_passthrough([blocked_var])
         result_after = _make_run_env({})
         assert blocked_var in result_after

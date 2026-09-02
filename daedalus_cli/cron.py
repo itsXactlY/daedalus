@@ -94,7 +94,6 @@ def cron_list(show_all: bool = False):
         if script:
             print(f"    Script:    {script}")
 
-        # Execution history
         last_status = job.get("last_status")
         if last_status:
             last_run = job.get("last_run_at", "?")

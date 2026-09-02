@@ -59,7 +59,7 @@ class TestGetConnectedPlatforms:
             platforms={
                 Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
                 Platform.DISCORD: PlatformConfig(enabled=False, token="d"),
-                Platform.SLACK: PlatformConfig(enabled=True),  # no token
+                Platform.SLACK: PlatformConfig(enabled=True),
             },
         )
         connected = config.get_connected_platforms()

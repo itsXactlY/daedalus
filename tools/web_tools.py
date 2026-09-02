@@ -66,7 +66,6 @@ from tools.website_policy import check_website_access
 logger = logging.getLogger(__name__)
 
 
-# ─── Backend Selection ────────────────────────────────────────────────────────
 
 def _has_env(name: str) -> bool:
     val = os.getenv(name)
@@ -91,9 +90,6 @@ def _get_backend() -> str:
     if configured in ("parallel", "firecrawl", "tavily", "exa"):
         return configured
 
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
@@ -104,7 +100,7 @@ def _get_backend() -> str:
         if available:
             return backend
 
-    return "firecrawl"  # default (backward compat)
+    return "firecrawl"
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -119,7 +115,6 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("TAVILY_API_KEY")
     return False
 
-# ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 _firecrawl_client = None
 _firecrawl_client_config = None
@@ -239,7 +234,6 @@ def _get_firecrawl_client():
     _firecrawl_client_config = client_config
     return _firecrawl_client
 
-# ─── Parallel Client ─────────────────────────────────────────────────────────
 
 _parallel_client = None
 _async_parallel_client = None
@@ -279,7 +273,6 @@ def _get_async_parallel_client():
         _async_parallel_client = AsyncParallel(api_key=api_key)
     return _async_parallel_client
 
-# ─── Tavily Client ───────────────────────────────────────────────────────────
 
 _TAVILY_BASE_URL = "https://api.tavily.com"
 
@@ -338,7 +331,6 @@ def _normalize_tavily_documents(response: dict, fallback_url: str = "") -> List[
             "raw_content": raw,
             "metadata": {"sourceURL": url, "title": result.get("title", "")},
         })
-    # Handle failed results
     for fail in response.get("failed_results", []):
         documents.append({
             "url": fail.get("url", fallback_url),
@@ -501,27 +493,23 @@ async def process_content_with_llm(
     Returns:
         Optional[str]: Processed markdown content, or None if content too short or processing fails
     """
-    # Size thresholds
-    MAX_CONTENT_SIZE = 2_000_000  # 2M chars - refuse entirely above this
-    CHUNK_THRESHOLD = 500_000     # 500k chars - use chunked processing above this
-    CHUNK_SIZE = 100_000          # 100k chars per chunk
-    MAX_OUTPUT_SIZE = 5000        # Hard cap on final output size
+    MAX_CONTENT_SIZE = 2_000_000
+    CHUNK_THRESHOLD = 500_000
+    CHUNK_SIZE = 100_000
+    MAX_OUTPUT_SIZE = 5000
     
     try:
         content_len = len(content)
         
-        # Refuse if content is absurdly large
         if content_len > MAX_CONTENT_SIZE:
             size_mb = content_len / 1_000_000
             logger.warning("Content too large (%.1fMB > 2MB limit). Refusing to process.", size_mb)
             return f"[Content too large to process: {size_mb:.1f}MB. Try using web_crawl with specific extraction instructions, or search for a more focused source.]"
         
-        # Skip processing if content is too short
         if content_len < min_length:
             logger.debug("Content too short (%d < %d chars), skipping LLM processing", content_len, min_length)
             return None
         
-        # Create context information
         context_info = []
         if title:
             context_info.append(f"Title: {title}")
@@ -529,24 +517,20 @@ async def process_content_with_llm(
             context_info.append(f"Source: {url}")
         context_str = "\n".join(context_info) + "\n\n" if context_info else ""
         
-        # Check if we need chunked processing
         if content_len > CHUNK_THRESHOLD:
             logger.info("Content large (%d chars). Using chunked processing...", content_len)
             return await _process_large_content_chunked(
                 content, context_str, model, CHUNK_SIZE, MAX_OUTPUT_SIZE
             )
         
-        # Standard single-pass processing for normal content
         logger.info("Processing content with LLM (%d characters)", content_len)
         
         processed_content = await _call_summarizer_llm(content, context_str, model)
         
         if processed_content:
-            # Enforce output cap
             if len(processed_content) > MAX_OUTPUT_SIZE:
                 processed_content = processed_content[:MAX_OUTPUT_SIZE] + "\n\n[... summary truncated for context management ...]"
             
-            # Log compression metrics
             processed_length = len(processed_content)
             compression_ratio = processed_length / content_len if content_len > 0 else 1.0
             logger.info("Content processed: %d -> %d chars (%.1f%%)", content_len, processed_length, compression_ratio * 100)
@@ -560,9 +544,6 @@ async def process_content_with_llm(
             "or switch to a faster auxiliary model.",
             str(e)[:120],
         )
-        # Fall back to truncated raw content instead of returning a useless
-        # error message.  The first ~5000 chars are almost always more useful
-        # to the model than "[Failed to process content: ...]".
         truncated = content[:MAX_OUTPUT_SIZE]
         if len(content) > MAX_OUTPUT_SIZE:
             truncated += (
@@ -597,7 +578,6 @@ async def _call_summarizer_llm(
         Summarized content or None on failure
     """
     if is_chunk:
-        # Chunk-specific prompt - aware that this is partial content
         system_prompt = """You are an expert content analyst processing a SECTION of a larger document. Your job is to extract and summarize the key information from THIS SECTION ONLY.
 
 Important guidelines for chunk processing:
@@ -619,7 +599,6 @@ SECTION CONTENT:
 Extract all important information from this section in a structured format. Focus on facts, data, insights, and key details. Do not add introductions or conclusions."""
 
     else:
-        # Standard full-document prompt
         system_prompt = """You are an expert content analyst. Your job is to process web content and create a comprehensive yet concise summary that preserves all important information while dramatically reducing bulk.
 
 Create a well-structured markdown summary that includes:
@@ -636,8 +615,6 @@ Your goal is to preserve ALL important information while reducing length. Never 
 
 Create a markdown summary that captures all key information in a well-organized, scannable format. Include important quotes and code snippets in their original formatting. Focus on actionable information, specific details, and unique insights."""
 
-    # Call the LLM with retry logic — keep retries low since summarization
-    # is a nice-to-have; the caller falls back to truncated content on failure.
     max_retries = 2
     retry_delay = 2
     last_error = None
@@ -657,9 +634,6 @@ Create a markdown summary that captures all key information in a well-organized,
                 ],
                 "temperature": 0.1,
                 "max_tokens": max_tokens,
-                # No explicit timeout — async_call_llm reads auxiliary.web_extract.timeout
-                # from config (default 360s / 6min).  Users with slow local models can
-                # increase it in config.yaml.
             }
             if extra_body:
                 call_kwargs["extra_body"] = extra_body
@@ -667,13 +641,12 @@ Create a markdown summary that captures all key information in a well-organized,
             content = extract_content_or_reasoning(response)
             if content:
                 return content
-            # Reasoning-only / empty response — let the retry loop handle it
             logger.warning("LLM returned empty content (attempt %d/%d), retrying", attempt + 1, max_retries)
             if attempt < max_retries - 1:
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(retry_delay * 2, 60)
                 continue
-            return content  # Return whatever we got after exhausting retries
+            return content
         except RuntimeError:
             logger.warning("No auxiliary model available for web content processing")
             return None
@@ -711,7 +684,6 @@ async def _process_large_content_chunked(
     Returns:
         Synthesized summary or None on failure
     """
-    # Split content into chunks
     chunks = []
     for i in range(0, len(content), chunk_size):
         chunk = content[i:i + chunk_size]
@@ -719,7 +691,6 @@ async def _process_large_content_chunked(
     
     logger.info("Split into %d chunks of ~%d chars each", len(chunks), chunk_size)
     
-    # Summarize each chunk in parallel
     async def summarize_chunk(chunk_idx: int, chunk_content: str) -> tuple[int, Optional[str]]:
         """Summarize a single chunk."""
         try:
@@ -739,11 +710,9 @@ async def _process_large_content_chunked(
             logger.warning("Chunk %d/%d failed: %s", chunk_idx + 1, len(chunks), str(e)[:50])
             return chunk_idx, None
     
-    # Run all chunk summarizations in parallel
     tasks = [summarize_chunk(i, chunk) for i, chunk in enumerate(chunks)]
     results = await asyncio.gather(*tasks)
     
-    # Collect successful summaries in order
     summaries = []
     for chunk_idx, summary in sorted(results, key=lambda x: x[0]):
         if summary:
@@ -755,14 +724,12 @@ async def _process_large_content_chunked(
     
     logger.info("Got %d/%d chunk summaries", len(summaries), len(chunks))
     
-    # If only one chunk succeeded, just return it (with cap)
     if len(summaries) == 1:
         result = summaries[0]
         if len(result) > max_output_size:
             result = result[:max_output_size] + "\n\n[... truncated ...]"
         return result
     
-    # Synthesize the summaries into a final summary
     logger.info("Synthesizing %d summaries...", len(summaries))
     
     combined_summaries = "\n\n---\n\n".join(summaries)
@@ -803,13 +770,11 @@ Create a single, unified markdown summary."""
         response = await async_call_llm(**call_kwargs)
         final_summary = extract_content_or_reasoning(response)
 
-        # Retry once on empty content (reasoning-only response)
         if not final_summary:
             logger.warning("Synthesis LLM returned empty content, retrying once")
             response = await async_call_llm(**call_kwargs)
             final_summary = extract_content_or_reasoning(response)
 
-        # If still None after retry, fall back to concatenated summaries
         if not final_summary:
             logger.warning("Synthesis failed after retry — concatenating chunk summaries")
             fallback = "\n\n".join(summaries)
@@ -817,7 +782,6 @@ Create a single, unified markdown summary."""
                 fallback = fallback[:max_output_size] + "\n\n[... truncated ...]"
             return fallback
 
-        # Enforce hard cap
         if len(final_summary) > max_output_size:
             final_summary = final_summary[:max_output_size] + "\n\n[... summary truncated for context management ...]"
         
@@ -830,7 +794,6 @@ Create a single, unified markdown summary."""
         
     except Exception as e:
         logger.warning("Synthesis failed: %s", str(e)[:100])
-        # Fall back to concatenated summaries with truncation
         fallback = "\n\n".join(summaries)
         if len(fallback) > max_output_size:
             fallback = fallback[:max_output_size] + "\n\n[... truncated due to synthesis failure ...]"
@@ -853,24 +816,17 @@ def clean_base64_images(text: str) -> str:
     Returns:
         Cleaned text with base64 images replaced with placeholders
     """
-    # Pattern to match base64 encoded images wrapped in parentheses
-    # Matches: (data:image/[type];base64,[base64-string])
     base64_with_parens_pattern = r'\(data:image/[^;]+;base64,[A-Za-z0-9+/=]+\)'
     
-    # Pattern to match base64 encoded images without parentheses
-    # Matches: data:image/[type];base64,[base64-string]
     base64_pattern = r'data:image/[^;]+;base64,[A-Za-z0-9+/=]+'
     
-    # Replace parentheses-wrapped images first
     cleaned_text = re.sub(base64_with_parens_pattern, '[BASE64_IMAGE_REMOVED]', text)
     
-    # Then replace any remaining non-parentheses images
     cleaned_text = re.sub(base64_pattern, '[BASE64_IMAGE_REMOVED]', cleaned_text)
     
     return cleaned_text
 
 
-# ─── Exa Client ──────────────────────────────────────────────────────────────
 
 _exa_client = None
 
@@ -893,7 +849,6 @@ def _get_exa_client():
     return _exa_client
 
 
-# ─── Exa Search & Extract Helpers ─────────────────────────────────────────────
 
 def _exa_search(query: str, limit: int = 10) -> dict:
     """Search using the Exa SDK and return results as a dict."""
@@ -955,7 +910,6 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
-# ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
     """Search using the Parallel SDK and return results as a dict."""
@@ -1081,7 +1035,6 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch to the configured backend
         backend = _get_backend()
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
@@ -1128,7 +1081,6 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         results_count = len(web_results)
         logger.info("Found %d search results", results_count)
         
-        # Build response with just search metadata (URLs, titles, descriptions)
         response_data = {
             "success": True,
             "data": {
@@ -1136,15 +1088,12 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             }
         }
         
-        # Capture debug information
         debug_call_data["results_count"] = results_count
         
-        # Convert to JSON
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         
         debug_call_data["final_response_size"] = len(result_json)
         
-        # Log debug information
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
         
@@ -1190,7 +1139,6 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
-    # Block URLs containing embedded secrets (exfiltration prevention)
     from agent.redact import _PREFIX_RE
     for _url in urls:
         if _PREFIX_RE.search(_url):
@@ -1220,7 +1168,6 @@ async def web_extract_tool(
     try:
         logger.info("Extracting content from %d URL(s)", len(urls))
 
-        # ── SSRF protection — filter out private/internal URLs before any backend ──
         safe_urls = []
         ssrf_blocked: List[Dict[str, Any]] = []
         for url in urls:
@@ -1232,7 +1179,6 @@ async def web_extract_tool(
             else:
                 safe_urls.append(url)
 
-        # Dispatch only safe URLs to the configured backend
         if not safe_urls:
             results = []
         else:
@@ -1250,19 +1196,14 @@ async def web_extract_tool(
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
             else:
-                # ── Firecrawl extraction ──
-                # Determine requested formats for Firecrawl v2
                 formats: List[str] = []
                 if format == "markdown":
                     formats = ["markdown"]
                 elif format == "html":
                     formats = ["html"]
                 else:
-                    # Default: request markdown for LLM-readiness and include html as backup
                     formats = ["markdown", "html"]
 
-                # Always use individual scraping for simplicity and reliability
-                # Batch scraping adds complexity without much benefit for small numbers of URLs
                 results: List[Dict[str, Any]] = []
 
                 from tools.interrupt import is_interrupted as _is_interrupted
@@ -1271,7 +1212,6 @@ async def web_extract_tool(
                         results.append({"url": url, "error": "Interrupted", "title": ""})
                         continue
 
-                    # Website policy check — block before fetching
                     blocked = check_website_access(url)
                     if blocked:
                         logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
@@ -1284,8 +1224,6 @@ async def web_extract_tool(
 
                     try:
                         logger.info("Scraping: %s", url)
-                        # Run synchronous Firecrawl scrape in a thread with a
-                        # 60s timeout so a hung fetch doesn't block the session.
                         try:
                             scrape_result = await asyncio.wait_for(
                                 asyncio.to_thread(
@@ -1309,7 +1247,6 @@ async def web_extract_tool(
                         content_markdown = scrape_payload.get("markdown")
                         content_html = scrape_payload.get("html")
 
-                        # Ensure metadata is a dict (not an object)
                         if not isinstance(metadata, dict):
                             if hasattr(metadata, 'model_dump'):
                                 metadata = metadata.model_dump()
@@ -1318,10 +1255,8 @@ async def web_extract_tool(
                             else:
                                 metadata = {}
 
-                        # Get title from metadata
                         title = metadata.get("title", "")
 
-                        # Re-check final URL after redirect
                         final_url = metadata.get("sourceURL", url)
                         final_blocked = check_website_access(final_url)
                         if final_blocked:
@@ -1333,7 +1268,6 @@ async def web_extract_tool(
                             })
                             continue
 
-                        # Choose content based on requested format
                         chosen_content = content_markdown if (format == "markdown" or (format is None and content_markdown)) else content_html or content_markdown or ""
 
                         results.append({
@@ -1341,7 +1275,7 @@ async def web_extract_tool(
                             "title": title,
                             "content": chosen_content,
                             "raw_content": chosen_content,
-                            "metadata": metadata  # Now guaranteed to be a dict
+                            "metadata": metadata
                         })
 
                     except Exception as scrape_err:
@@ -1354,7 +1288,6 @@ async def web_extract_tool(
                             "error": str(scrape_err)
                         })
 
-        # Merge any SSRF-blocked results back in
         if ssrf_blocked:
             results = ssrf_blocked + results
 
@@ -1368,12 +1301,10 @@ async def web_extract_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         
-        # Process each result with LLM if enabled
         if use_llm_processing and auxiliary_available:
             logger.info("Processing extracted content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
-            # Prepare tasks for parallel processing
             async def process_single_result(result):
                 """Process a single result with LLM and return updated result with metrics."""
                 url = result.get('url', 'Unknown URL')
@@ -1385,7 +1316,6 @@ async def web_extract_tool(
                 
                 original_size = len(raw_content)
                 
-                # Process content with LLM
                 processed = await process_content_with_llm(
                     raw_content, url, title, effective_model, min_length
                 )
@@ -1394,7 +1324,6 @@ async def web_extract_tool(
                     processed_size = len(processed)
                     compression_ratio = processed_size / original_size if original_size > 0 else 1.0
                     
-                    # Update result with processed content
                     result['content'] = processed
                     result['raw_content'] = raw_content
                     
@@ -1417,12 +1346,10 @@ async def web_extract_tool(
                     }
                     return result, metrics, "too_short"
             
-            # Run all LLM processing in parallel
             results_list = response.get('results', [])
             tasks = [process_single_result(result) for result in results_list]
             processed_results = await asyncio.gather(*tasks)
             
-            # Collect metrics and print results
             for result, metrics, status in processed_results:
                 url = result.get('url', 'Unknown URL')
                 if status == "processed":
@@ -1438,13 +1365,11 @@ async def web_extract_tool(
             if use_llm_processing and not auxiliary_available:
                 logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
-            # Print summary of extracted pages for debugging (original behavior)
             for result in response.get('results', []):
                 url = result.get('url', 'Unknown URL')
                 content_length = len(result.get('raw_content', ''))
                 logger.info("%s (%d characters)", url, content_length)
         
-        # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
             {
                 "url": r.get("url", ""),
@@ -1470,7 +1395,6 @@ async def web_extract_tool(
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")
         
-        # Log debug information
         _debug.log_call("web_extract_tool", debug_call_data)
         _debug.save()
         
@@ -1540,18 +1464,14 @@ async def web_crawl_tool(
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
 
-        # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
-            # Ensure URL has protocol
             if not url.startswith(('http://', 'https://')):
                 url = f'https://{url}'
 
-            # SSRF protection — block private/internal addresses
             if not is_safe_url(url):
                 return json.dumps({"results": [{"url": url, "title": "", "content": "",
                     "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
 
-            # Website policy check
             blocked = check_website_access(url)
             if blocked:
                 logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
@@ -1574,14 +1494,11 @@ async def web_crawl_tool(
             results = _normalize_tavily_documents(raw, fallback_url=url)
 
             response = {"results": results}
-            # Fall through to the shared LLM processing and trimming below
-            # (skip the Firecrawl-specific crawl logic)
             pages_crawled = len(response.get('results', []))
             logger.info("Crawled %d pages", pages_crawled)
             debug_call_data["pages_crawled"] = pages_crawled
             debug_call_data["original_response_size"] = len(json.dumps(response))
 
-            # Process each result with LLM if enabled
             if use_llm_processing and auxiliary_available:
                 logger.info("Processing crawled content with LLM (parallel)...")
                 debug_call_data["processing_applied"].append("llm_processing")
@@ -1624,7 +1541,6 @@ async def web_crawl_tool(
             _debug.save()
             return cleaned_result
 
-        # web_crawl requires Firecrawl or the Firecrawl tool-gateway — Parallel has no crawl API
         if not check_firecrawl_api_key():
             return json.dumps({
                 "error": "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
@@ -1632,7 +1548,6 @@ async def web_crawl_tool(
                 "success": False,
             }, ensure_ascii=False)
 
-        # Ensure URL has protocol
         if not url.startswith(('http://', 'https://')):
             url = f'https://{url}'
             logger.info("Added https:// prefix to URL: %s", url)
@@ -1640,32 +1555,24 @@ async def web_crawl_tool(
         instructions_text = f" with instructions: '{instructions}'" if instructions else ""
         logger.info("Crawling %s%s", url, instructions_text)
         
-        # SSRF protection — block private/internal addresses
         if not is_safe_url(url):
             return json.dumps({"results": [{"url": url, "title": "", "content": "",
                 "error": "Blocked: URL targets a private or internal network address"}]}, ensure_ascii=False)
 
-        # Website policy check — block before crawling
         blocked = check_website_access(url)
         if blocked:
             logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
             return json.dumps({"results": [{"url": url, "title": "", "content": "", "error": blocked["message"],
                 "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}]}, ensure_ascii=False)
 
-        # Use Firecrawl's v2 crawl functionality
-        # Docs: https://docs.firecrawl.dev/features/crawl
-        # The crawl() method automatically waits for completion and returns all data
         
-        # Build crawl parameters - keep it simple
         crawl_params = {
-            "limit": 20,  # Limit number of pages to crawl
+            "limit": 20,
             "scrape_options": {
-                "formats": ["markdown"]  # Just markdown for simplicity
+                "formats": ["markdown"]
             }
         }
         
-        # Note: The 'prompt' parameter is not documented for crawl
-        # Instructions are typically used with the Extract endpoint, not Crawl
         if instructions:
             logger.info("Instructions parameter ignored (not supported in crawl API)")
         
@@ -1684,16 +1591,13 @@ async def web_crawl_tool(
 
         pages: List[Dict[str, Any]] = []
         
-        # Process crawl results - the crawl method returns a CrawlJob object with data attribute
         data_list = []
         
-        # The crawl_result is a CrawlJob object with a 'data' attribute containing list of Document objects
         if hasattr(crawl_result, 'data'):
             data_list = crawl_result.data if crawl_result.data else []
             logger.info("Status: %s", getattr(crawl_result, 'status', 'unknown'))
             logger.info("Retrieved %d pages", len(data_list))
             
-            # Debug: Check other attributes if no data
             if not data_list:
                 logger.debug("CrawlJob attributes: %s", [attr for attr in dir(crawl_result) if not attr.startswith('_')])
                 logger.debug("Status: %s", getattr(crawl_result, 'status', 'N/A'))
@@ -1709,26 +1613,21 @@ async def web_crawl_tool(
                 logger.debug("Result attributes: %s", list(crawl_result.__dict__.keys()))
         
         for item in data_list:
-            # Process each crawled page - properly handle object serialization
             page_url = "Unknown URL"
             title = ""
             content_markdown = None
             content_html = None
             metadata = {}
             
-            # Extract data from the item
             if hasattr(item, 'model_dump'):
-                # Pydantic model - use model_dump to get dict
                 item_dict = item.model_dump()
                 content_markdown = item_dict.get('markdown')
                 content_html = item_dict.get('html')
                 metadata = item_dict.get('metadata', {})
             elif hasattr(item, '__dict__'):
-                # Regular object with attributes
                 content_markdown = getattr(item, 'markdown', None)
                 content_html = getattr(item, 'html', None)
                 
-                # Handle metadata - convert to dict if it's an object
                 metadata_obj = getattr(item, 'metadata', {})
                 if hasattr(metadata_obj, 'model_dump'):
                     metadata = metadata_obj.model_dump()
@@ -1739,12 +1638,10 @@ async def web_crawl_tool(
                 else:
                     metadata = {}
             elif isinstance(item, dict):
-                # Already a dictionary
                 content_markdown = item.get('markdown')
                 content_html = item.get('html')
                 metadata = item.get('metadata', {})
             
-            # Ensure metadata is a dict (not an object)
             if not isinstance(metadata, dict):
                 if hasattr(metadata, 'model_dump'):
                     metadata = metadata.model_dump()
@@ -1753,11 +1650,9 @@ async def web_crawl_tool(
                 else:
                     metadata = {}
             
-            # Extract URL and title from metadata
             page_url = metadata.get("sourceURL", metadata.get("url", "Unknown URL"))
             title = metadata.get("title", "")
             
-            # Re-check crawled page URL against policy
             page_blocked = check_website_access(page_url)
             if page_blocked:
                 logger.info("Blocked crawled page %s by rule %s", page_blocked["host"], page_blocked["rule"])
@@ -1768,7 +1663,6 @@ async def web_crawl_tool(
                 })
                 continue
 
-            # Choose content (prefer markdown)
             content = content_markdown or content_html or ""
             
             pages.append({
@@ -1776,7 +1670,7 @@ async def web_crawl_tool(
                 "title": title,
                 "content": content,
                 "raw_content": content,
-                "metadata": metadata  # Now guaranteed to be a dict
+                "metadata": metadata
             })
 
         response = {"results": pages}
@@ -1787,12 +1681,10 @@ async def web_crawl_tool(
         debug_call_data["pages_crawled"] = pages_crawled
         debug_call_data["original_response_size"] = len(json.dumps(response))
         
-        # Process each result with LLM if enabled
         if use_llm_processing and auxiliary_available:
             logger.info("Processing crawled content with LLM (parallel)...")
             debug_call_data["processing_applied"].append("llm_processing")
             
-            # Prepare tasks for parallel processing
             async def process_single_crawl_result(result):
                 """Process a single crawl result with LLM and return updated result with metrics."""
                 page_url = result.get('url', 'Unknown URL')
@@ -1804,7 +1696,6 @@ async def web_crawl_tool(
                 
                 original_size = len(content)
                 
-                # Process content with LLM
                 processed = await process_content_with_llm(
                     content, page_url, title, effective_model, min_length
                 )
@@ -1813,7 +1704,6 @@ async def web_crawl_tool(
                     processed_size = len(processed)
                     compression_ratio = processed_size / original_size if original_size > 0 else 1.0
                     
-                    # Update result with processed content
                     result['raw_content'] = content
                     result['content'] = processed
                     
@@ -1836,12 +1726,10 @@ async def web_crawl_tool(
                     }
                     return result, metrics, "too_short"
             
-            # Run all LLM processing in parallel
             results_list = response.get('results', [])
             tasks = [process_single_crawl_result(result) for result in results_list]
             processed_results = await asyncio.gather(*tasks)
             
-            # Collect metrics and print results
             for result, metrics, status in processed_results:
                 page_url = result.get('url', 'Unknown URL')
                 if status == "processed":
@@ -1857,13 +1745,11 @@ async def web_crawl_tool(
             if use_llm_processing and not auxiliary_available:
                 logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
                 debug_call_data["processing_applied"].append("llm_processing_unavailable")
-            # Print summary of crawled pages for debugging (original behavior)
             for result in response.get('results', []):
                 page_url = result.get('url', 'Unknown URL')
                 content_length = len(result.get('content', ''))
                 logger.info("%s (%d characters)", page_url, content_length)
         
-        # Trim output to minimal fields per entry: title, content, error
         trimmed_results = [
             {
                 "url": r.get("url", ""),
@@ -1877,13 +1763,11 @@ async def web_crawl_tool(
         trimmed_response = {"results": trimmed_results}
         
         result_json = json.dumps(trimmed_response, indent=2, ensure_ascii=False)
-        # Clean base64 images from crawled content
         cleaned_result = clean_base64_images(result_json)
         
         debug_call_data["final_response_size"] = len(cleaned_result)
         debug_call_data["processing_applied"].append("base64_image_removal")
         
-        # Log debug information
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
         
@@ -1900,7 +1784,6 @@ async def web_crawl_tool(
         return tool_error(error_msg)
 
 
-# Convenience function to check Firecrawl credentials
 def check_firecrawl_api_key() -> bool:
     """
     Check whether the Firecrawl backend is available.
@@ -1942,7 +1825,6 @@ if __name__ == "__main__":
     print("🌐 Standalone Web Tools Module")
     print("=" * 40)
     
-    # Check if API keys are available
     web_available = check_web_api_key()
     tool_gateway_available = _is_tool_gateway_ready()
     firecrawl_key_available = bool(os.getenv("FIRECRAWL_API_KEY", "").strip())
@@ -1991,7 +1873,6 @@ if __name__ == "__main__":
         print(f"🧠 LLM content processing available with {default_summarizer_model}")
         print(f"   Default min length for processing: {DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION} chars")
     
-    # Show debug mode status
     if _debug.active:
         print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
         print(f"   Debug logs will be saved to: {_debug.log_dir}/web_tools_debug_{_debug.session_id}.json")
@@ -2040,9 +1921,6 @@ if __name__ == "__main__":
     print("\n📝 Run 'python test_web_tools_llm.py' to test LLM processing capabilities")
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {

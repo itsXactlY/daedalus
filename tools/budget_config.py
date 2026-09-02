@@ -7,14 +7,10 @@ Per-tool resolution: pinned > config overrides > registry > default.
 from dataclasses import dataclass, field
 from typing import Dict
 
-# Tools whose thresholds must never be overridden.
-# read_file=inf prevents infinite persist->read->persist loops.
 PINNED_THRESHOLDS: Dict[str, float] = {
     "read_file": float("inf"),
 }
 
-# Defaults matching the current hardcoded values in tool_result_storage.py.
-# Kept here as the single source of truth; tool_result_storage.py imports these.
 DEFAULT_RESULT_SIZE_CHARS: int = 100_000
 DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
@@ -48,5 +44,4 @@ class BudgetConfig:
         return registry.get_max_result_size(tool_name, default=self.default_result_size)
 
 
-# Default config -- matches current hardcoded behavior exactly.
 DEFAULT_BUDGET = BudgetConfig()

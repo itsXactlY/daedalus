@@ -60,7 +60,7 @@ class TestSessionSourceRoundtrip:
         restored = SessionSource.from_dict(d)
         assert restored.platform == Platform.LOCAL
         assert restored.chat_id == "cli"
-        assert restored.chat_type == "dm"  # default value preserved
+        assert restored.chat_type == "dm"
 
     def test_chat_id_coerced_to_string(self):
         """from_dict should handle numeric chat_id (common from Telegram)."""
@@ -311,7 +311,6 @@ class TestBuildSessionContextPrompt:
 
         assert "Multi-user thread" in prompt
         assert "[sender name]" in prompt
-        # Should NOT show a specific **User:** line (would bust cache)
         assert "**User:** Alice" not in prompt
 
     def test_non_thread_group_shows_user(self):
@@ -363,13 +362,12 @@ class TestSessionStoreRewriteTranscript:
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these tests
+        s._db = None
         s._loaded = True
         return s
 
     def test_rewrite_replaces_jsonl(self, store, tmp_path):
         session_id = "test_session_1"
-        # Write initial transcript
         for msg in [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
@@ -378,7 +376,6 @@ class TestSessionStoreRewriteTranscript:
         ]:
             store.append_to_transcript(session_id, msg)
 
-        # Rewrite with truncated history
         store.rewrite_transcript(session_id, [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
@@ -418,7 +415,7 @@ class TestLoadTranscriptCorruptLines:
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
         with open(transcript_path, "w") as f:
             f.write('{"role": "user", "content": "hello"}\n')
-            f.write('{"role": "assistant", "content": "hi th')  # truncated
+            f.write('{"role": "assistant", "content": "hi th')
             f.write("\n")
             f.write('{"role": "user", "content": "goodbye"}\n')
 
@@ -469,13 +466,11 @@ class TestLoadTranscriptPreferLongerSource:
         """Legacy session: JSONL has full history, SQLite has only recent turn."""
         sid = "legacy_session"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 10 messages (legacy history — written before SQLite existed)
         for i in range(10):
             role = "user" if i % 2 == 0 else "assistant"
             store_with_db.append_to_transcript(
                 sid, {"role": role, "content": f"msg-{i}"}, skip_db=True,
             )
-        # SQLite has only 2 messages (recent turn after migration)
         store_with_db._db.append_message(session_id=sid, role="user", content="new-q")
         store_with_db._db.append_message(session_id=sid, role="assistant", content="new-a")
 
@@ -487,14 +482,12 @@ class TestLoadTranscriptPreferLongerSource:
         """Fully migrated session: SQLite has more (JSONL stopped growing)."""
         sid = "migrated_session"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # JSONL has 2 old messages
         store_with_db.append_to_transcript(
             sid, {"role": "user", "content": "old-q"}, skip_db=True,
         )
         store_with_db.append_to_transcript(
             sid, {"role": "assistant", "content": "old-a"}, skip_db=True,
         )
-        # SQLite has 4 messages (superset after migration)
         for i in range(4):
             role = "user" if i % 2 == 0 else "assistant"
             store_with_db._db.append_message(session_id=sid, role=role, content=f"db-{i}")
@@ -526,20 +519,17 @@ class TestLoadTranscriptPreferLongerSource:
         """When both have same count, SQLite wins (has richer fields like reasoning)."""
         sid = "equal_session"
         store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
-        # Write 2 messages to JSONL only
         store_with_db.append_to_transcript(
             sid, {"role": "user", "content": "jsonl-q"}, skip_db=True,
         )
         store_with_db.append_to_transcript(
             sid, {"role": "assistant", "content": "jsonl-a"}, skip_db=True,
         )
-        # Write 2 different messages to SQLite only
         store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
         store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
 
         result = store_with_db.load_transcript(sid)
         assert len(result) == 2
-        # Should be the SQLite version (equal count → prefers SQLite)
         assert result[0]["content"] == "db-q"
 
 
@@ -779,7 +769,6 @@ class TestWhatsAppDMSessionKeyConsistency:
             user_id="42",
         )
         key = build_session_key(source)
-        # DM logic: chat_id + thread_id, user_id never included
         assert key == "agent:main:telegram:dm:99:topic-1"
 
 
@@ -812,9 +801,7 @@ class TestHasAnySessions:
     def test_uses_database_count_when_available(self, store_with_mock_db):
         """has_any_sessions should use database session_count, not len(_entries)."""
         store = store_with_mock_db
-        # Simulate single-platform user with only 1 entry in memory
         store._entries = {"telegram:12345": MagicMock()}
-        # But database has 3 sessions (current + 2 previous resets)
         store._db.session_count.return_value = 3
 
         assert store.has_any_sessions() is True
@@ -824,7 +811,6 @@ class TestHasAnySessions:
         """First session ever should return False (only current session in DB)."""
         store = store_with_mock_db
         store._entries = {"telegram:12345": MagicMock()}
-        # Database has exactly 1 session (the current one just created)
         store._db.session_count.return_value = 1
 
         assert store.has_any_sessions() is False
@@ -838,7 +824,6 @@ class TestHasAnySessions:
         store._db = None
         store._entries = {"key1": MagicMock(), "key2": MagicMock()}
 
-        # > 1 entries means has sessions
         assert store.has_any_sessions() is True
 
         store._entries = {"key1": MagicMock()}
@@ -887,7 +872,6 @@ class TestLastPromptTokens:
             "input_tokens": 100,
             "output_tokens": 50,
             "total_tokens": 150,
-            # No last_prompt_tokens — old format
         }
         entry = SessionEntry.from_dict(data)
         assert entry.last_prompt_tokens == 0
@@ -934,8 +918,8 @@ class TestLastPromptTokens:
         )
         store._entries = {"k1": entry}
 
-        store.update_session("k1")  # No last_prompt_tokens arg
-        assert entry.last_prompt_tokens == 50000  # unchanged
+        store.update_session("k1")
+        assert entry.last_prompt_tokens == 50000
 
     def test_update_session_zero_resets(self, tmp_path):
         """update_session with last_prompt_tokens=0 should reset the field."""
@@ -970,7 +954,6 @@ class TestRewriteTranscriptPreservesReasoning:
         session_id = "reasoning-test"
         db.create_session(session_id=session_id, source="cli")
 
-        # Insert a message WITH all three reasoning fields
         db.append_message(
             session_id=session_id,
             role="assistant",
@@ -980,23 +963,19 @@ class TestRewriteTranscriptPreservesReasoning:
             codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
         )
 
-        # Verify all three were stored
         before = db.get_messages_as_conversation(session_id)
         assert before[0].get("reasoning") == "I need to think step by step."
         assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
-        # Now simulate /retry: build the SessionStore and call rewrite_transcript
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
         store._db = db
         store._loaded = True
 
-        # rewrite_transcript receives the messages that load_transcript returned
         store.rewrite_transcript(session_id, before)
 
-        # Load again — all three reasoning fields must survive
         after = db.get_messages_as_conversation(session_id)
         assert after[0].get("reasoning") == "I need to think step by step."
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]

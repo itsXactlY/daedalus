@@ -30,7 +30,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-# Container id -> canonical file extension.
 CONTAINER_TO_EXT = {
     "m4a": ".m4a",
     "mp4": ".mp4",
@@ -42,7 +41,6 @@ CONTAINER_TO_EXT = {
     "webm": ".webm",
 }
 
-# MP4 ftyp brands that mean "this is audio" (iOS voice notes use M4A ).
 _MP4_AUDIO_BRANDS = (b"m4a ", b"m4b ")
 
 
@@ -55,8 +53,6 @@ def sniff_container(data: bytes) -> Optional[str]:
     image detection first.
     """
     if len(data) >= 8 and data[4:8] == b"ftyp":
-        # Brand at bytes 8-11: audio brands ("M4A ", "M4B ") are voice
-        # notes / audiobooks; everything else (isom/mp42/avc1/qt) is video.
         if len(data) >= 12 and data[8:12].lower() in _MP4_AUDIO_BRANDS:
             return "m4a"
         return "mp4"
@@ -69,9 +65,6 @@ def sniff_container(data: bytes) -> Optional[str]:
     if data.startswith(b"ID3"):
         return "mp3"
     if len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0:
-        # ``0xFF 0xFx`` is shared by MP3 and ADTS AAC. Bits 3-1 of byte 1
-        # disambiguate: ADTS has ``ID=0`` and ``layer=00`` (mask 0xF6,
-        # target 0xF0); MP3 has ``ID=1`` and ``layer`` in {01,10,11}.
         if (data[1] & 0xF6) == 0xF0:
             return "aac"
         return "mp3"

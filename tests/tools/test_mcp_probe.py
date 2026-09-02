@@ -68,7 +68,6 @@ class TestProbeMcpServerTools:
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
              patch("tools.mcp_tool._stop_mcp_loop"):
 
-            # Simulate running the async probe
             def run_coro(coro, timeout=120):
                 loop = asyncio.new_event_loop()
                 try:
@@ -128,7 +127,7 @@ class TestProbeMcpServerTools:
     def test_handles_tool_without_description(self):
         """Tools without descriptions get empty string."""
         config = {"github": {"command": "npx", "connect_timeout": 5}}
-        mock_tool = SimpleNamespace(name="my_tool")  # no description attribute
+        mock_tool = SimpleNamespace(name="my_tool")
 
         mock_server = MagicMock()
         mock_server._tools = [mock_tool]

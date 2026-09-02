@@ -50,14 +50,10 @@ from urllib.parse import urlparse
 
 from pydantic import Field
 
-# Ensure daedalus root is on path
 _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-# ---------------------------------------------------------------------------
-# Optional HuggingFace datasets import
-# ---------------------------------------------------------------------------
 try:
     from datasets import load_dataset
     HF_AVAILABLE = True
@@ -74,10 +70,6 @@ from environments.tool_context import ToolContext
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Fallback sample dataset (used when HuggingFace is unavailable)
-# Multi-hop questions requiring real web search to answer.
-# ---------------------------------------------------------------------------
 SAMPLE_QUESTIONS = [
     {
         "question": "What is the current population of the capital city of the country that won the 2022 FIFA World Cup?",
@@ -142,14 +134,10 @@ SAMPLE_QUESTIONS = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
 class WebResearchEnvConfig(DaedalusAgentEnvConfig):
     """Configuration for the web research RL environment."""
 
-    # Reward weights
     correctness_weight: float = Field(
         default=0.6,
         description="Weight for answer correctness in reward (LLM judge score).",
@@ -167,7 +155,6 @@ class WebResearchEnvConfig(DaedalusAgentEnvConfig):
         description="Bonus reward for citing ≥2 distinct domains.",
     )
 
-    # Efficiency thresholds
     efficient_max_calls: int = Field(
         default=5,
         description="Maximum tool calls before efficiency penalty begins.",
@@ -177,7 +164,6 @@ class WebResearchEnvConfig(DaedalusAgentEnvConfig):
         description="Tool call count where efficiency penalty steepens.",
     )
 
-    # Eval
     eval_size: int = Field(
         default=20,
         description="Number of held-out items for evaluation.",
@@ -187,16 +173,12 @@ class WebResearchEnvConfig(DaedalusAgentEnvConfig):
         description="Fraction of dataset to hold out for evaluation (0.0–1.0).",
     )
 
-    # Dataset
     dataset_name: str = Field(
         default="google/frames-benchmark",
         description="HuggingFace dataset name for research questions.",
     )
 
 
-# ---------------------------------------------------------------------------
-# Environment
-# ---------------------------------------------------------------------------
 
 class WebResearchEnv(DaedalusAgentBaseEnv):
     """
@@ -216,7 +198,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
     name = "web-research"
     env_config_cls = WebResearchEnvConfig
 
-    # Default toolsets for this environment — web + file for saving notes
     default_toolsets = ["web", "file"]
 
     @classmethod
@@ -256,16 +237,12 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
         self._eval_items: list[dict] = []
         self._index: int = 0
 
-        # Metrics tracking for wandb
         self._reward_buffer: list[float] = []
         self._correctness_buffer: list[float] = []
         self._tool_usage_buffer: list[float] = []
         self._efficiency_buffer: list[float] = []
         self._diversity_buffer: list[float] = []
 
-    # ------------------------------------------------------------------
-    # 1. Setup — load dataset
-    # ------------------------------------------------------------------
 
     async def setup(self) -> None:
         """Load the FRAMES benchmark or fall back to built-in samples."""
@@ -282,7 +259,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
                     }
                     for row in ds
                 ]
-                # Hold out for eval
                 eval_size = max(
                     self.config.eval_size,
                     int(len(self._items) * self.config.eval_split_ratio),
@@ -298,7 +274,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
             except Exception as e:
                 logger.warning(f"Could not load FRAMES from HuggingFace: {e}. Using built-in samples.")
 
-        # Fallback
         random.shuffle(SAMPLE_QUESTIONS)
         split = max(1, len(SAMPLE_QUESTIONS) * 8 // 10)
         self._items = SAMPLE_QUESTIONS[:split]
@@ -308,9 +283,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
             f"{len(self._eval_items)} eval items."
         )
 
-    # ------------------------------------------------------------------
-    # 2. get_next_item — return the next question
-    # ------------------------------------------------------------------
 
     async def get_next_item(self) -> dict:
         """Return the next item, cycling through the dataset."""
@@ -320,9 +292,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
         self._index += 1
         return item
 
-    # ------------------------------------------------------------------
-    # 3. format_prompt — build the user-facing prompt
-    # ------------------------------------------------------------------
 
     def format_prompt(self, item: dict) -> str:
         """Format the research question as a task prompt."""
@@ -338,9 +307,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
             f"- Cite the sources you used"
         )
 
-    # ------------------------------------------------------------------
-    # 4. compute_reward — multi-signal scoring
-    # ------------------------------------------------------------------
 
     async def compute_reward(
         self,
@@ -356,13 +322,11 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
           efficiency_weight  * efficiency   — penalizes wasteful tool usage
           + diversity_bonus                 — source diversity (≥2 distinct domains)
         """
-        # Extract final response from messages (last assistant message with content)
         final_response = ""
         tools_used: list[str] = []
         for msg in reversed(result.messages):
             if msg.get("role") == "assistant" and msg.get("content") and not final_response:
                 final_response = msg["content"]
-            # Collect tool names from tool call messages
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     fn = tc.get("function", {}) if isinstance(tc, dict) else {}
@@ -373,18 +337,15 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
 
         cfg = self.config
 
-        # ---- Signal 1: Answer correctness (LLM judge) ----------------
         correctness = await self._llm_judge(
             question=item["question"],
             expected=item["answer"],
             model_answer=final_response,
         )
 
-        # ---- Signal 2: Web tool usage --------------------------------
         web_tools = {"web_search", "web_extract", "search", "firecrawl"}
         tool_used = 1.0 if any(t in web_tools for t in tools_used) else 0.0
 
-        # ---- Signal 3: Efficiency ------------------------------------
         if tool_call_count <= cfg.efficient_max_calls:
             efficiency = 1.0
         elif tool_call_count <= cfg.heavy_penalty_calls:
@@ -392,20 +353,17 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
         else:
             efficiency = max(0.0, 1.0 - (tool_call_count - cfg.efficient_max_calls) * 0.12)
 
-        # ---- Bonus: Source diversity ---------------------------------
         domains = self._extract_domains(final_response)
         diversity = cfg.diversity_bonus if len(domains) >= 2 else 0.0
 
-        # ---- Combine ------------------------------------------------
         reward = (
             cfg.correctness_weight * correctness
             + cfg.tool_usage_weight * tool_used
             + cfg.efficiency_weight * efficiency
             + diversity
         )
-        reward = min(1.0, max(0.0, reward))  # clamp to [0, 1]
+        reward = min(1.0, max(0.0, reward))
 
-        # Track for wandb
         self._reward_buffer.append(reward)
         self._correctness_buffer.append(correctness)
         self._tool_usage_buffer.append(tool_used)
@@ -420,9 +378,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
 
         return reward
 
-    # ------------------------------------------------------------------
-    # 5. evaluate — run on held-out eval split
-    # ------------------------------------------------------------------
 
     async def evaluate(self, *args, **kwargs) -> None:
         """Run evaluation on the held-out split using the full agent loop with tools.
@@ -448,7 +403,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
         start_time = time.time()
         samples = []
 
-        # Resolve tools once for all eval items
         tools, valid_names = self._resolve_tools_for_group()
 
         for i, item in enumerate(eval_items):
@@ -456,27 +410,24 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
             logger.info(f"Eval [{i+1}/{len(eval_items)}]: {item['question'][:80]}...")
 
             try:
-                # Build messages
                 messages: List[Dict[str, Any]] = []
                 if self.config.system_prompt:
                     messages.append({"role": "system", "content": self.config.system_prompt})
                 messages.append({"role": "user", "content": self.format_prompt(item)})
 
-                # Run the full agent loop with tools
                 agent = DaedalusAgentLoop(
                     server=self.server,
                     tool_schemas=tools,
                     valid_tool_names=valid_names,
                     max_turns=self.config.max_agent_turns,
                     task_id=task_id,
-                    temperature=0.0,  # Deterministic for eval
+                    temperature=0.0,
                     max_tokens=self.config.max_token_length,
                     extra_body=self.config.extra_body,
                     budget_config=self.config.build_budget_config(),
                 )
                 result = await agent.run(messages)
 
-                # Extract final response and tool usage from messages
                 final_response = ""
                 tool_call_count = 0
                 for msg in reversed(result.messages):
@@ -485,10 +436,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
                     if msg.get("role") == "assistant" and msg.get("tool_calls"):
                         tool_call_count += len(msg["tool_calls"])
 
-                # Compute reward (includes LLM judge for correctness)
-                # Temporarily save buffer lengths so we can extract the
-                # correctness score without calling judge twice, and avoid
-                # polluting training metric buffers with eval data.
                 buf_len = len(self._correctness_buffer)
                 ctx = ToolContext(task_id)
                 try:
@@ -496,14 +443,11 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
                 finally:
                     ctx.cleanup()
 
-                # Extract correctness from the buffer (compute_reward appended it)
-                # then remove eval entries from training buffers
                 correctness = (
                     self._correctness_buffer[buf_len]
                     if len(self._correctness_buffer) > buf_len
                     else 0.0
                 )
-                # Roll back buffers to avoid polluting training metrics
                 for buf in (
                     self._reward_buffer, self._correctness_buffer,
                     self._tool_usage_buffer, self._efficiency_buffer,
@@ -541,7 +485,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
 
         end_time = time.time()
 
-        # Compute aggregate metrics
         correctness_scores = [s["correctness"] for s in samples]
         rewards = [s["reward"] for s in samples]
         tool_counts = [s["tool_calls"] for s in samples]
@@ -568,9 +511,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
             end_time=end_time,
         )
 
-    # ------------------------------------------------------------------
-    # 6. wandb_log — custom metrics
-    # ------------------------------------------------------------------
 
     async def wandb_log(self, wandb_metrics: Optional[Dict] = None) -> None:
         """Log reward breakdown metrics to wandb."""
@@ -586,7 +526,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
             wandb_metrics["train/mean_diversity"] = sum(self._diversity_buffer) / n
             wandb_metrics["train/total_rollouts"] = n
 
-            # Accuracy buckets
             wandb_metrics["train/correct_rate"] = (
                 sum(1 for c in self._correctness_buffer if c >= 0.7) / n
             )
@@ -594,7 +533,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
                 sum(1 for t in self._tool_usage_buffer if t > 0) / n
             )
 
-            # Clear buffers
             self._reward_buffer.clear()
             self._correctness_buffer.clear()
             self._tool_usage_buffer.clear()
@@ -603,9 +541,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
 
         await super().wandb_log(wandb_metrics)
 
-    # ------------------------------------------------------------------
-    # Private helpers
-    # ------------------------------------------------------------------
 
     async def _llm_judge(
         self,
@@ -711,9 +646,6 @@ class WebResearchEnv(DaedalusAgentBaseEnv):
         return domains
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     WebResearchEnv.cli()

@@ -38,12 +38,7 @@ from agent.skill_utils import (
     parse_frontmatter,
 )
 
-# ── Rule data ────────────────────────────────────────────────────────────────
 
-# Shell utilities the agent already has wrapped as first-class tools. Naming
-# them in SKILL.md prose steers the model to a raw shell call instead of the
-# native tool. Maps the banned token -> the native tool the prose should name.
-# (CONTRIBUTING.md "Skill authoring standards" rule 2.)
 _SHELL_UTIL_TO_TOOL: Dict[str, str] = {
     "grep": "search_files",
     "rg": "search_files",
@@ -56,7 +51,6 @@ _SHELL_UTIL_TO_TOOL: Dict[str, str] = {
     "ls": "search_files (target='files')",
 }
 
-# Marketing words the description must not contain (rule 1).
 _MARKETING_WORDS = (
     "powerful",
     "comprehensive",
@@ -68,21 +62,17 @@ _MARKETING_WORDS = (
     "robust",
 )
 
-# POSIX-only primitives that, if a bundled script uses them, require the skill
-# to declare ``platforms:`` (rule 3). Detected in scripts/, not in prose.
 _POSIX_PRIMITIVES = (
     "fcntl",
     "termios",
-    "os.setsid",  # windows-footgun: ok  (search-pattern string, not a call)
-    "signal.SIGKILL",  # windows-footgun: ok  (search-pattern string, not a call)
+    "os.setsid",
+    "signal.SIGKILL",
     "osascript",
     "/proc/",
     "apt-get",
     "systemctl",
 )
 
-# Scaffolding files a skill should not ship (skill-creator anti-pattern; keeps
-# skills dense). These are noise, not skill content.
 _FORBIDDEN_FILES = (
     "README.md",
     "CHANGELOG.md",
@@ -92,8 +82,6 @@ _FORBIDDEN_FILES = (
     ".gitignore",
 )
 
-# Recommended modern section order (rule 5). We check presence of the load
-# bearing ones, not exact ordering, to avoid being a change-detector.
 _EXPECTED_SECTIONS = ("When to Use", "When to use")
 
 ERROR = "error"
@@ -104,7 +92,7 @@ WARNING = "warning"
 class LintFinding:
     """A single lint result. ``severity`` is advisory metadata for the caller."""
 
-    severity: str  # ERROR | WARNING
+    severity: str
     rule: str
     message: str
 
@@ -113,7 +101,6 @@ class LintFinding:
         return f"{badge} [{self.rule}] {self.message}"
 
 
-# ── Individual checks ────────────────────────────────────────────────────────
 
 
 def _check_name_matches_dir(
@@ -154,9 +141,6 @@ def _check_name_format(frontmatter: Dict[str, Any]) -> List[LintFinding]:
 
 def _check_description(frontmatter: Dict[str, Any]) -> List[LintFinding]:
     findings: List[LintFinding] = []
-    # Raw description as authored — extract_skill_description() applies the
-    # 60-char prompt truncation, so it can never exceed the limit; measure the
-    # raw frontmatter value for the length check.
     desc = str(frontmatter.get("description", "")).strip().strip("'\"")
     if not desc:
         return findings
@@ -232,8 +216,6 @@ def _check_shell_utilities(body: str) -> List[LintFinding]:
     findings: List[LintFinding] = []
     prose = _strip_code_blocks(body)
     for util, tool in _SHELL_UTIL_TO_TOOL.items():
-        # Backtick-wrapped mention in prose, e.g. `grep` — the failure mode
-        # CONTRIBUTING rule 2 targets. Bare words in sentences are too noisy.
         if re.search(rf"`{re.escape(util)}`", prose):
             findings.append(
                 LintFinding(
@@ -265,15 +247,11 @@ def _check_reference_links(body: str, skill_dir: Optional[Path]) -> List[LintFin
         return []
     findings: List[LintFinding] = []
     seen: set[str] = set()
-    # Only references/, templates/, assets/ are reliably skill-owned. `scripts/`
-    # is excluded: dev skills routinely mention repo-root scripts like
-    # `scripts/run_tests.sh` that legitimately live outside the skill dir.
     for match in re.finditer(r"(references|templates|assets)/[\w./-]+", body):
         rel = match.group(0)
         if rel in seen:
             continue
         seen.add(rel)
-        # Skip obvious placeholders / globs.
         if "*" in rel or rel.endswith("/"):
             continue
         if not (skill_dir / rel).exists():
@@ -295,7 +273,7 @@ def _check_platforms_gating(
     if skill_dir is None:
         return []
     if frontmatter.get("platforms"):
-        return []  # already gated
+        return []
     scripts_dir = skill_dir / "scripts"
     if not scripts_dir.is_dir():
         return []
@@ -360,7 +338,6 @@ def _check_platform_list_valid(frontmatter: Dict[str, Any]) -> List[LintFinding]
     return []
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 
 def _strip_code_blocks(body: str) -> str:
@@ -368,7 +345,6 @@ def _strip_code_blocks(body: str) -> str:
     return re.sub(r"```.*?```", "", body, flags=re.S)
 
 
-# ── Public API ───────────────────────────────────────────────────────────────
 
 
 def lint_content(

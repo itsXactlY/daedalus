@@ -23,26 +23,18 @@ from agent.prompt_builder import _scan_context_content
 
 logger = logging.getLogger(__name__)
 
-# Context files to look for in subdirectories, in priority order.
-# Same filenames as prompt_builder.py but we load ALL found (not first-wins)
-# since different subdirectories may use different conventions.
 _HINT_FILENAMES = [
     "AGENTS.md", "agents.md",
     "CLAUDE.md", "claude.md",
     ".cursorrules",
 ]
 
-# Maximum chars per hint file to prevent context bloat
 _MAX_HINT_CHARS = 8_000
 
-# Tool argument keys that typically contain file paths
 _PATH_ARG_KEYS = {"path", "file_path", "workdir"}
 
-# Tools that take shell commands where we should extract paths
 _COMMAND_TOOLS = {"terminal"}
 
-# How many parent directories to walk up when looking for hints.
-# Prevents scanning all the way to / for deeply nested paths.
 _MAX_ANCESTOR_WALK = 5
 
 class SubdirectoryHintTracker:
@@ -61,7 +53,6 @@ class SubdirectoryHintTracker:
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         self._loaded_dirs: Set[Path] = set()
-        # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
 
     def check_tool_call(
@@ -94,13 +85,11 @@ class SubdirectoryHintTracker:
         """Extract directory paths from tool call arguments."""
         candidates: Set[Path] = set()
 
-        # Direct path arguments
         for key in _PATH_ARG_KEYS:
             val = args.get(key)
             if isinstance(val, str) and val.strip():
                 self._add_path_candidate(val, candidates)
 
-        # Shell commands — extract path-like tokens
         if tool_name in _COMMAND_TOOLS:
             cmd = args.get("command", "")
             if isinstance(cmd, str):
@@ -122,10 +111,8 @@ class SubdirectoryHintTracker:
             if not p.is_absolute():
                 p = self.working_dir / p
             p = p.resolve()
-            # Use parent if it's a file path (has extension or doesn't exist as dir)
             if p.suffix or (p.exists() and p.is_file()):
                 p = p.parent
-            # Walk up ancestors — stop at already-loaded or root
             for _ in range(_MAX_ANCESTOR_WALK):
                 if p in self._loaded_dirs:
                     break
@@ -133,7 +120,7 @@ class SubdirectoryHintTracker:
                     candidates.add(p)
                 parent = p.parent
                 if parent == p:
-                    break  # filesystem root
+                    break
                 p = parent
         except (OSError, ValueError):
             pass
@@ -146,13 +133,10 @@ class SubdirectoryHintTracker:
             tokens = cmd.split()
 
         for token in tokens:
-            # Skip flags
             if token.startswith("-"):
                 continue
-            # Must look like a path (contains / or .)
             if "/" not in token and "." not in token:
                 continue
-            # Skip URLs
             if token.startswith(("http://", "https://", "git@")):
                 continue
             self._add_path_candidate(token, candidates)
@@ -178,14 +162,12 @@ class SubdirectoryHintTracker:
                 content = hint_path.read_text(encoding="utf-8").strip()
                 if not content:
                     continue
-                # Same security scan as startup context loading
                 content = _scan_context_content(content, filename)
                 if len(content) > _MAX_HINT_CHARS:
                     content = (
                         content[:_MAX_HINT_CHARS]
                         + f"\n\n[...truncated {filename}: {len(content):,} chars total]"
                     )
-                # Best-effort relative path for display
                 rel_path = str(hint_path)
                 try:
                     rel_path = str(hint_path.relative_to(self.working_dir))
@@ -194,9 +176,8 @@ class SubdirectoryHintTracker:
                         rel_path = str(hint_path.relative_to(Path.home()))
                         rel_path = "~/" + rel_path
                     except ValueError:
-                        pass  # keep absolute
+                        pass
                 found_hints.append((rel_path, content))
-                # First match wins per directory (like startup loading)
                 break
             except Exception as exc:
                 logger.debug("Could not read %s: %s", hint_path, exc)

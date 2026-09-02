@@ -57,7 +57,7 @@ class TestStopTrainingRunFileHandles:
         state.api_log_file = bad_fh
         state.trainer_log_file = good_fh
 
-        _stop_training_run(state)  # should not raise
+        _stop_training_run(state)
 
         bad_fh.close.assert_called_once()
         good_fh.close.assert_called_once()
@@ -65,8 +65,7 @@ class TestStopTrainingRunFileHandles:
     def test_handles_missing_file_attrs(self):
         """RunState without log file attrs should not crash."""
         state = _make_run_state()
-        # No log file attrs set at all — getattr(..., None) should handle it
-        _stop_training_run(state)  # should not raise
+        _stop_training_run(state)
 
 
 class TestStopTrainingRunProcesses:
@@ -76,7 +75,7 @@ class TestStopTrainingRunProcesses:
         state = _make_run_state()
         for attr in ("api_process", "trainer_process", "env_process"):
             proc = MagicMock()
-            proc.poll.return_value = None  # still running
+            proc.poll.return_value = None
             setattr(state, attr, proc)
 
         _stop_training_run(state)
@@ -87,7 +86,7 @@ class TestStopTrainingRunProcesses:
     def test_does_not_terminate_exited_processes(self):
         state = _make_run_state()
         proc = MagicMock()
-        proc.poll.return_value = 0  # already exited
+        proc.poll.return_value = 0
         state.api_process = proc
 
         _stop_training_run(state)
@@ -96,20 +95,16 @@ class TestStopTrainingRunProcesses:
 
     def test_handles_none_processes(self):
         state = _make_run_state()
-        # All process attrs are None by default
-        _stop_training_run(state)  # should not raise
+        _stop_training_run(state)
 
     def test_handles_mixed_running_and_exited_processes(self):
         state = _make_run_state()
-        # api still running
         api = MagicMock()
         api.poll.return_value = None
         state.api_process = api
-        # trainer already exited
         trainer = MagicMock()
         trainer.poll.return_value = 0
         state.trainer_process = trainer
-        # env is None
         state.env_process = None
 
         _stop_training_run(state)
@@ -138,5 +133,5 @@ class TestStopTrainingRunStatus:
 
     def test_no_crash_with_no_processes_and_no_files(self):
         state = _make_run_state()
-        _stop_training_run(state)  # should not raise
+        _stop_training_run(state)
         assert state.status == "pending"

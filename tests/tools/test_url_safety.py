@@ -78,7 +78,6 @@ class TestIsSafeUrl:
         ]):
             assert is_safe_url("https://example.com") is True
 
-    # ── New tests for hardened SSRF protection ──
 
     def test_cgnat_100_64_blocked(self):
         """100.64.0.0/10 (CGNAT/Shared Address Space) is NOT covered by
@@ -149,7 +148,6 @@ class TestIsSafeUrl:
         with patch("socket.getaddrinfo", return_value=[
             (2, 1, 6, "", ("100.0.0.1", 0)),
         ]):
-            # 100.0.0.1 is a global IP, not in CGNAT range
             assert is_safe_url("http://legit-host.example/") is True
 
 

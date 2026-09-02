@@ -5,27 +5,21 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# tools/__init__.py re-exports a *function* called ``terminal_tool`` which
-# shadows the module of the same name.  Use sys.modules to get the real module
-# so patch.object works correctly.
 import sys
 import tools.terminal_tool  # noqa: F401 -- ensure module is loaded
 _tt_mod = sys.modules["tools.terminal_tool"]
 from tools.terminal_tool import get_active_environments_info, _check_disk_usage_warning
 
-# 1 MiB of data so the rounded MB value is clearly distinguishable
 _1MB = b"x" * (1024 * 1024)
 
 
 @pytest.fixture()
 def fake_scratch(tmp_path):
     """Create fake daedalus scratch directories with known sizes."""
-    # Task A: 1 MiB
     task_a_dir = tmp_path / "daedalus-sandbox-aaaaaaaa"
     task_a_dir.mkdir()
     (task_a_dir / "data.bin").write_bytes(_1MB)
 
-    # Task B: 1 MiB
     task_b_dir = tmp_path / "daedalus-sandbox-bbbbbbbb"
     task_b_dir.mkdir()
     (task_b_dir / "data.bin").write_bytes(_1MB)
@@ -44,8 +38,6 @@ class TestDiskUsageGlob:
              patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch):
             info = get_active_environments_info()
 
-        # Task A only: ~1.0 MB. With the bug (hardcoded daedalus-*),
-        # it would also count task B -> ~2.0 MB.
         assert info["total_disk_usage_mb"] == pytest.approx(1.0, abs=0.1)
 
     def test_multiple_tasks_no_double_counting(self, fake_scratch):
@@ -59,8 +51,6 @@ class TestDiskUsageGlob:
              patch.object(_tt_mod, "_get_scratch_dir", return_value=fake_scratch):
             info = get_active_environments_info()
 
-        # Should be ~2.0 MB total (1 MB per task).
-        # With the bug, each task globs everything -> ~4.0 MB.
         assert info["total_disk_usage_mb"] == pytest.approx(2.0, abs=0.1)
 
 

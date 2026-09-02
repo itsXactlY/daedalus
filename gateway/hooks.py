@@ -42,9 +42,8 @@ class HookRegistry:
     """
 
     def __init__(self):
-        # event_type -> [handler_fn, ...]
         self._handlers: Dict[str, List[Callable]] = {}
-        self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._loaded_hooks: List[dict] = []
 
     @property
     def loaded_hooks(self) -> List[dict]:
@@ -103,7 +102,6 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no events declared", flush=True)
                     continue
 
-                # Dynamically load the handler module
                 spec = importlib.util.spec_from_file_location(
                     f"daedalus_hook_{hook_name}", handler_path
                 )
@@ -119,7 +117,6 @@ class HookRegistry:
                     print(f"[hooks] Skipping {hook_name}: no 'handle' function found", flush=True)
                     continue
 
-                # Register the handler for each declared event
                 for event in events:
                     self._handlers.setdefault(event, []).append(handle_fn)
 
@@ -151,10 +148,8 @@ class HookRegistry:
         if context is None:
             context = {}
 
-        # Collect handlers: exact match + wildcard match
         handlers = list(self._handlers.get(event_type, []))
 
-        # Check for wildcard patterns (e.g., "command:*" matches "command:reset")
         if ":" in event_type:
             base = event_type.split(":")[0]
             wildcard_key = f"{base}:*"
@@ -163,7 +158,6 @@ class HookRegistry:
         for fn in handlers:
             try:
                 result = fn(event_type, context)
-                # Support both sync and async handlers
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as e:

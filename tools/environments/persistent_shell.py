@@ -40,16 +40,13 @@ class PersistentShellMixin:
     def _cleanup_temp_files(self): ...
 
     _session_id: str = ""
-    _poll_interval_start: float = 0.01  # initial poll interval (10ms)
-    _poll_interval_max: float = 0.25    # max poll interval (250ms) — reduces I/O for long commands
+    _poll_interval_start: float = 0.01
+    _poll_interval_max: float = 0.25
 
     @property
     def _temp_prefix(self) -> str:
         return f"/tmp/daedalus-persistent-{self._session_id}"
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def _init_persistent_shell(self):
         self._shell_lock = threading.Lock()
@@ -126,9 +123,6 @@ class PersistentShellMixin:
         if hasattr(self, "_drain_thread") and self._drain_thread.is_alive():
             self._drain_thread.join(timeout=1.0)
 
-    # ------------------------------------------------------------------
-    # execute() / cleanup() — shared dispatcher, subclasses inherit
-    # ------------------------------------------------------------------
 
     def execute(self, command: str, cwd: str = "", *,
                 timeout: int | None = None,
@@ -158,9 +152,6 @@ class PersistentShellMixin:
         if self.persistent:
             self._cleanup_persistent_shell()
 
-    # ------------------------------------------------------------------
-    # Shell I/O
-    # ------------------------------------------------------------------
 
     def _drain_shell_output(self):
         try:
@@ -194,9 +185,6 @@ class PersistentShellMixin:
             exit_code = 1
         return output, exit_code, cwd.strip()
 
-    # ------------------------------------------------------------------
-    # Execution
-    # ------------------------------------------------------------------
 
     def _execute_persistent(self, command: str, cwd: str, *,
                             timeout: int | None = None,
@@ -238,7 +226,7 @@ class PersistentShellMixin:
         )
         self._send_to_shell(ipc_script)
         deadline = time.monotonic() + timeout
-        poll_interval = self._poll_interval_start  # starts at 10ms, backs off to 250ms
+        poll_interval = self._poll_interval_start
 
         while True:
             if is_interrupted():
@@ -270,9 +258,6 @@ class PersistentShellMixin:
                 break
 
             time.sleep(poll_interval)
-            # Exponential backoff: fast start (10ms) for quick commands,
-            # ramps up to 250ms for long-running commands — reduces I/O by 10-25x
-            # on WSL2 where polling keeps the VM hot and memory pressure high.
             poll_interval = min(poll_interval * 1.5, self._poll_interval_max)
 
         output, exit_code, new_cwd = self._read_persistent_output()

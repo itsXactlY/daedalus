@@ -21,9 +21,6 @@ from tools.vision_tools import (
 )
 
 
-# ---------------------------------------------------------------------------
-# _validate_image_url — urlparse-based validation
-# ---------------------------------------------------------------------------
 
 
 class TestValidateImageUrl:
@@ -105,9 +102,6 @@ class TestValidateImageUrl:
         assert _validate_image_url(["https://example.com"]) is False
 
 
-# ---------------------------------------------------------------------------
-# _determine_mime_type
-# ---------------------------------------------------------------------------
 
 
 class TestDetermineMimeType:
@@ -130,9 +124,6 @@ class TestDetermineMimeType:
         assert _determine_mime_type(Path("file.xyz")) == "image/jpeg"
 
 
-# ---------------------------------------------------------------------------
-# _image_to_base64_data_url
-# ---------------------------------------------------------------------------
 
 
 class TestImageToBase64DataUrl:
@@ -153,9 +144,6 @@ class TestImageToBase64DataUrl:
             _image_to_base64_data_url(tmp_path / "nonexistent.png")
 
 
-# ---------------------------------------------------------------------------
-# _handle_vision_analyze — type signature & behavior
-# ---------------------------------------------------------------------------
 
 
 class TestHandleVisionAnalyze:
@@ -173,9 +161,7 @@ class TestHandleVisionAnalyze:
                     "question": "What is this?",
                 }
             )
-            # It should be an Awaitable (coroutine)
             assert isinstance(result, Awaitable)
-            # Clean up the coroutine to avoid RuntimeWarning
             result.close()
 
     def test_prompt_contains_question(self):
@@ -190,10 +176,9 @@ class TestHandleVisionAnalyze:
                     "question": "Describe the cat",
                 }
             )
-            # Clean up coroutine
             coro.close()
             call_args = mock_tool.call_args
-            full_prompt = call_args[0][1]  # second positional arg
+            full_prompt = call_args[0][1]
             assert "Describe the cat" in full_prompt
             assert "Fully describe and explain" in full_prompt
 
@@ -211,7 +196,7 @@ class TestHandleVisionAnalyze:
             )
             coro.close()
             call_args = mock_tool.call_args
-            model = call_args[0][2]  # third positional arg
+            model = call_args[0][2]
             assert model == "custom/model-v1"
 
     def test_falls_back_to_default_model(self):
@@ -222,7 +207,6 @@ class TestHandleVisionAnalyze:
             ) as mock_tool,
             patch.dict(os.environ, {}, clear=False),
         ):
-            # Ensure AUXILIARY_VISION_MODEL is not set
             os.environ.pop("AUXILIARY_VISION_MODEL", None)
             mock_tool.return_value = json.dumps({"result": "ok"})
             coro = _handle_vision_analyze(
@@ -231,8 +215,6 @@ class TestHandleVisionAnalyze:
             coro.close()
             call_args = mock_tool.call_args
             model = call_args[0][2]
-            # With no AUXILIARY_VISION_MODEL set, model should be None
-            # (the centralized call_llm router picks the default)
             assert model is None
 
     def test_empty_args_graceful(self):
@@ -246,9 +228,6 @@ class TestHandleVisionAnalyze:
             result.close()
 
 
-# ---------------------------------------------------------------------------
-# Error logging with exc_info — verify tracebacks are logged
-# ---------------------------------------------------------------------------
 
 
 class TestErrorLoggingExcInfo:
@@ -275,7 +254,6 @@ class TestErrorLoggingExcInfo:
                     "https://example.com/img.jpg", dest, max_retries=1
                 )
 
-            # Should have logged with exc_info (traceback present)
             error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
             assert len(error_records) >= 1
             assert error_records[0].exc_info is not None
@@ -296,7 +274,6 @@ class TestErrorLoggingExcInfo:
                 "https://example.com/img.jpg", "describe this", "test/model"
             )
             result_data = json.loads(result)
-            # Error response uses "success": False, not an "error" key
             assert result_data["success"] is False
 
             error_records = [r for r in caplog.records if r.levelno >= logging.ERROR]
@@ -305,7 +282,6 @@ class TestErrorLoggingExcInfo:
     @pytest.mark.asyncio
     async def test_cleanup_error_logs_exc_info(self, tmp_path, caplog):
         """Temp file cleanup failure should log warning with exc_info."""
-        # Create a real temp file that will be "downloaded"
         temp_dir = tmp_path / "temp_vision_images"
         temp_dir.mkdir()
 
@@ -324,7 +300,6 @@ class TestErrorLoggingExcInfo:
             ),
             caplog.at_level(logging.WARNING, logger="tools.vision_tools"),
         ):
-            # Mock the async_call_llm function to return a mock response
             mock_response = MagicMock()
             mock_choice = MagicMock()
             mock_choice.message.content = "A test image description"
@@ -333,7 +308,6 @@ class TestErrorLoggingExcInfo:
             with (
                 patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
             ):
-                # Make unlink fail to trigger cleanup warning
                 original_unlink = Path.unlink
 
                 def failing_unlink(self, *args, **kwargs):
@@ -426,9 +400,6 @@ class TestVisionSafetyGuards:
         assert not (tmp_path / "cat.png").exists()
 
 
-# ---------------------------------------------------------------------------
-# check_vision_requirements & get_debug_session_info
-# ---------------------------------------------------------------------------
 
 
 class TestVisionRequirements:
@@ -452,20 +423,13 @@ class TestVisionRequirements:
     def test_debug_session_info_returns_dict(self):
         info = get_debug_session_info()
         assert isinstance(info, dict)
-        # DebugSession.get_session_info() returns these keys
         assert "enabled" in info
         assert "session_id" in info
         assert "total_calls" in info
 
 
-# ---------------------------------------------------------------------------
-# Integration: registry entry
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Tilde expansion in local file paths
-# ---------------------------------------------------------------------------
 
 
 class TestTildeExpansion:
@@ -474,7 +438,6 @@ class TestTildeExpansion:
     @pytest.mark.asyncio
     async def test_tilde_path_expanded_to_local_file(self, tmp_path, monkeypatch):
         """vision_analyze_tool should expand ~ in file paths."""
-        # Create a fake image file under a fake home directory
         fake_home = tmp_path / "fakehome"
         fake_home.mkdir()
         img = fake_home / "test_image.png"

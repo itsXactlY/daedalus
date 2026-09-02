@@ -60,14 +60,14 @@ def lazy_singleton(factory: Callable[[], T]) -> Callable[[], T]:
     retries (the lock is released either way).
     """
     lock = threading.Lock()
-    box: list = []  # one-element [instance]; empty == not yet built
+    box: list = []
 
     @functools.wraps(factory)
     def accessor() -> T:
         if box:
             return box[0]
         with lock:
-            if box:  # re-check inside the lock
+            if box:
                 return box[0]
             instance = factory()
             box.append(instance)
@@ -112,12 +112,10 @@ class SingletonSlot(Generic[T]):
         self._set = False
 
     def get(self, factory: Callable[[], T]) -> T:
-        # Fast path: already built, no lock needed (a set bool + ref read is
-        # atomic under CPython's GIL).
         if self._set:
             return self._value  # type: ignore[return-value]
         with self._lock:
-            if self._set:  # re-check inside the lock
+            if self._set:
                 return self._value  # type: ignore[return-value]
             value = factory()
             self._value = value

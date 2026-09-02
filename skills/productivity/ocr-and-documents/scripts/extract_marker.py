@@ -39,7 +39,6 @@ def convert(path, output_dir=None, output_format="markdown", use_llm=False):
     else:
         print(rendered.markdown)
 
-    # Save images if output_dir specified
     if output_dir and hasattr(rendered, "images") and rendered.images:
         from pathlib import Path
         Path(output_dir).mkdir(parents=True, exist_ok=True)

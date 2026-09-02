@@ -11,7 +11,5 @@ Provides subcommands for:
 - daedalus cron          - Manage cron jobs
 """
 
-# Human-readable distribution version. PEP 440 metadata in
-# pyproject.toml normalises this to "0.8.1+daedalus".
-__version__ = "0.8.1-Daedalus"
+__version__ = "0.8.2-Daedalus"
 __release_date__ = "2026.8.9"

@@ -28,8 +28,6 @@ _DEFAULT_WEBSITE_BLOCKLIST = {
     "shared_files": [],
 }
 
-# Cache: parsed policy + timestamp.  Avoids re-reading config.yaml on every
-# URL check (a web_crawl with 50 pages would otherwise mean 51 YAML parses).
 _CACHE_TTL_SECONDS = 30.0
 _cache_lock = threading.Lock()
 _cached_policy: Optional[Dict[str, Any]] = None
@@ -140,7 +138,6 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
     resolved_path = str(config_path) if config_path else "__default__"
     now = time.monotonic()
 
-    # Return cached policy if still fresh and same path
     if config_path is None:
         with _cache_lock:
             if (
@@ -189,7 +186,6 @@ def load_website_blocklist(config_path: Optional[Path] = None) -> Dict[str, Any]
 
     result = {"enabled": enabled, "rules": rules}
 
-    # Cache the result (only for the default path — explicit paths are tests)
     if config_path == _get_default_config_path():
         with _cache_lock:
             _cached_policy = result
@@ -239,8 +235,6 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
     (fail-open) so a config typo doesn't break all web tools.  Pass
     ``config_path`` explicitly (tests) to get strict error propagation.
     """
-    # Fast path: if no explicit config_path and the cached policy is disabled
-    # or empty, skip all work (no YAML read, no host extraction).
     if config_path is None:
         with _cache_lock:
             if _cached_policy is not None and not _cached_policy.get("enabled"):
@@ -254,7 +248,7 @@ def check_website_access(url: str, config_path: Optional[Path] = None) -> Option
         policy = load_website_blocklist(config_path)
     except WebsitePolicyError as exc:
         if config_path is not None:
-            raise  # Tests pass explicit paths — let errors propagate
+            raise
         logger.warning("Website policy config error (failing open): %s", exc)
         return None
     except Exception as exc:

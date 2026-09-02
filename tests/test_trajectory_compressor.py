@@ -14,9 +14,6 @@ from trajectory_compressor import (
 )
 
 
-# ---------------------------------------------------------------------------
-# CompressionConfig
-# ---------------------------------------------------------------------------
 
 
 class TestCompressionConfig:
@@ -83,7 +80,6 @@ metrics:
         yaml_file.write_text("compression:\n  target_max_tokens: 8000\n")
         config = CompressionConfig.from_yaml(str(yaml_file))
         assert config.target_max_tokens == 8000
-        # Other sections keep defaults
         assert config.protect_last_n_turns == 4
         assert config.num_workers == 4
 
@@ -91,12 +87,9 @@ metrics:
         yaml_file = tmp_path / "config.yaml"
         yaml_file.write_text("{}\n")
         config = CompressionConfig.from_yaml(str(yaml_file))
-        assert config.target_max_tokens == 15250  # all defaults
+        assert config.target_max_tokens == 15250
 
 
-# ---------------------------------------------------------------------------
-# TrajectoryMetrics
-# ---------------------------------------------------------------------------
 
 
 class TestTrajectoryMetrics:
@@ -125,9 +118,6 @@ class TestTrajectoryMetrics:
         assert d["skipped_under_target"] is False
 
 
-# ---------------------------------------------------------------------------
-# AggregateMetrics
-# ---------------------------------------------------------------------------
 
 
 class TestAggregateMetrics:
@@ -201,9 +191,6 @@ class TestAggregateMetrics:
         assert d["tokens"]["overall_compression_ratio"] == 0.0
 
 
-# ---------------------------------------------------------------------------
-# TrajectoryCompressor._find_protected_indices
-# ---------------------------------------------------------------------------
 
 
 def _make_compressor(config=None):
@@ -213,7 +200,6 @@ def _make_compressor(config=None):
     with patch.object(TrajectoryCompressor, '_init_tokenizer'), \
          patch.object(TrajectoryCompressor, '_init_summarizer'):
         compressor = TrajectoryCompressor(config)
-    # Provide a simple token counter for tests (1 token per 4 chars)
     compressor.tokenizer = MagicMock()
     compressor.tokenizer.encode = lambda text: [0] * (len(text) // 4)
     return compressor
@@ -235,17 +221,14 @@ class TestFindProtectedIndices:
             {"from": "human", "value": "Thanks."},
         ]
         protected, start, end = tc._find_protected_indices(trajectory)
-        # First system (0), human (1), gpt (2), tool (3) are protected
         assert 0 in protected
         assert 1 in protected
         assert 2 in protected
         assert 3 in protected
-        # Last 4 turns (6,7,8,9) are protected
         assert 6 in protected
         assert 7 in protected
         assert 8 in protected
         assert 9 in protected
-        # Compressible region should be between head and tail
         assert start >= 4
         assert end <= 6
 
@@ -257,9 +240,8 @@ class TestFindProtectedIndices:
             {"from": "gpt", "value": "hello"},
         ]
         protected, start, end = tc._find_protected_indices(trajectory)
-        # All 3 turns should be protected (first of each + last 4 covers all)
         assert len(protected) == 3
-        assert start >= end  # Nothing to compress
+        assert start >= end
 
     def test_protect_last_n_zero(self):
         config = CompressionConfig()
@@ -276,7 +258,6 @@ class TestFindProtectedIndices:
             {"from": "tool", "value": "r3"},
         ]
         protected, start, end = tc._find_protected_indices(trajectory)
-        # Only first occurrences protected, no tail protection
         assert 0 in protected
         assert 1 in protected
         assert 2 in protected
@@ -293,7 +274,7 @@ class TestFindProtectedIndices:
             {"from": "human", "value": "thanks"},
         ]
         protected, start, end = tc._find_protected_indices(trajectory)
-        assert 0 in protected  # first human
+        assert 0 in protected
 
     def test_disable_protect_first_system(self):
         config = CompressionConfig()
@@ -310,12 +291,9 @@ class TestFindProtectedIndices:
             {"from": "tool", "value": "r3"},
         ]
         protected, _, _ = tc._find_protected_indices(trajectory)
-        assert 0 not in protected  # system not protected
+        assert 0 not in protected
 
 
-# ---------------------------------------------------------------------------
-# TrajectoryCompressor._extract_turn_content_for_summary
-# ---------------------------------------------------------------------------
 
 
 class TestExtractTurnContent:
@@ -331,7 +309,6 @@ class TestExtractTurnContent:
         assert "I will search." in content
         assert "[Turn 1 - TOOL]" in content
         assert "Search result: found it." in content
-        # Turn 2 should NOT be included (end is exclusive)
         assert "[Turn 2" not in content
 
     def test_long_content_truncated(self):
@@ -350,9 +327,6 @@ class TestExtractTurnContent:
         assert content == ""
 
 
-# ---------------------------------------------------------------------------
-# TrajectoryCompressor.count_tokens / count_trajectory_tokens
-# ---------------------------------------------------------------------------
 
 
 class TestTokenCounting:
@@ -362,22 +336,21 @@ class TestTokenCounting:
 
     def test_count_tokens_basic(self):
         tc = _make_compressor()
-        # Our mock: 1 token per 4 chars
         assert tc.count_tokens("12345678") == 2
 
     def test_count_trajectory_tokens(self):
         tc = _make_compressor()
         trajectory = [
-            {"from": "system", "value": "12345678"},   # 2 tokens
-            {"from": "human", "value": "1234567890ab"}, # 3 tokens
+            {"from": "system", "value": "12345678"},
+            {"from": "human", "value": "1234567890ab"},
         ]
         assert tc.count_trajectory_tokens(trajectory) == 5
 
     def test_count_turn_tokens(self):
         tc = _make_compressor()
         trajectory = [
-            {"from": "system", "value": "1234"},     # 1 token
-            {"from": "human", "value": "12345678"},  # 2 tokens
+            {"from": "system", "value": "1234"},
+            {"from": "human", "value": "12345678"},
         ]
         result = tc.count_turn_tokens(trajectory)
         assert result == [1, 2]
@@ -385,7 +358,6 @@ class TestTokenCounting:
     def test_count_tokens_fallback_on_error(self):
         tc = _make_compressor()
         tc.tokenizer.encode = MagicMock(side_effect=Exception("fail"))
-        # Should fallback to len(text) // 4
         assert tc.count_tokens("12345678") == 2
 
 

@@ -232,11 +232,9 @@ def test_load_website_blocklist_wraps_shared_file_read_errors(tmp_path, monkeypa
 
     monkeypatch.setattr(Path, "read_text", failing_read_text)
 
-    # Unreadable shared files are now warned and skipped (not raised),
-    # so the blocklist loads successfully but without those rules.
     result = load_website_blocklist(config_path)
     assert result["enabled"] is True
-    assert result["rules"] == []  # shared file rules skipped
+    assert result["rules"] == []
 
 
 def test_check_website_access_uses_dynamic_daedalus_home(monkeypatch, tmp_path):
@@ -259,9 +257,6 @@ def test_check_website_access_uses_dynamic_daedalus_home(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-    # Invalidate the module-level cache so the new DAEDALUS_HOME is picked up.
-    # A prior test may have cached a default policy (enabled=False) under the
-    # old DAEDALUS_HOME set by the autouse _isolate_daedalus_home fixture.
     from tools.website_policy import invalidate_cache
     invalidate_cache()
 
@@ -298,7 +293,6 @@ def test_check_website_access_blocks_scheme_less_urls(tmp_path):
 def test_browser_navigate_returns_policy_block(monkeypatch):
     from tools import browser_tool
 
-    # Allow SSRF check to pass so the policy check is reached
     monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
     monkeypatch.setattr(
         browser_tool,
@@ -342,7 +336,6 @@ def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path)
         encoding="utf-8",
     )
 
-    # check_website_access should return None (allow) — missing file is skipped
     result = check_website_access("https://allowed.test", config_path=config_path)
     assert result is None
 
@@ -351,7 +344,6 @@ def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path)
 async def test_web_extract_short_circuits_blocked_url(monkeypatch):
     from tools import web_tools
 
-    # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
     monkeypatch.setattr(
         web_tools,
@@ -381,25 +373,21 @@ def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypat
     config_path = tmp_path / "config.yaml"
     config_path.write_text("security: [oops\n", encoding="utf-8")
 
-    # With explicit config_path (test mode), errors propagate
     with pytest.raises(WebsitePolicyError):
         check_website_access("https://example.com", config_path=config_path)
 
-    # Simulate default path by pointing DAEDALUS_HOME to tmp_path
     monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
     from tools import website_policy
     website_policy.invalidate_cache()
 
-    # With default path, errors are caught and fail open
     result = check_website_access("https://example.com")
-    assert result is None  # allowed, not crashed
+    assert result is None
 
 
 @pytest.mark.asyncio
 async def test_web_extract_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
 
-    # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
 
     def fake_check(url):
@@ -439,9 +427,7 @@ async def test_web_extract_blocks_redirected_final_url(monkeypatch):
 async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
     from tools import web_tools
 
-    # web_crawl_tool checks for Firecrawl env before website policy
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
-    # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
     monkeypatch.setattr(
         web_tools,
@@ -470,9 +456,7 @@ async def test_web_crawl_short_circuits_blocked_url(monkeypatch):
 async def test_web_crawl_blocks_redirected_final_url(monkeypatch):
     from tools import web_tools
 
-    # web_crawl_tool checks for Firecrawl env before website policy
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
-    # Allow test URLs past SSRF check so website policy is what gets tested
     monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
 
     def fake_check(url):

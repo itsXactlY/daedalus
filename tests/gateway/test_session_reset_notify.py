@@ -21,9 +21,6 @@ from gateway.config import (
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_source(platform=Platform.TELEGRAM, chat_id="123", user_id="u1"):
     return SessionSource(
@@ -41,9 +38,6 @@ def _make_store(policy=None, tmp_path=None):
     return store
 
 
-# ---------------------------------------------------------------------------
-# _should_reset returns reason string
-# ---------------------------------------------------------------------------
 
 class TestShouldResetReason:
     def test_returns_none_when_not_expired(self, tmp_path):
@@ -55,7 +49,7 @@ class TestShouldResetReason:
             session_key="test",
             session_id="s1",
             created_at=datetime.now(),
-            updated_at=datetime.now(),  # just updated
+            updated_at=datetime.now(),
         )
         source = _make_source()
         assert store._should_reset(entry, source) is None
@@ -69,7 +63,7 @@ class TestShouldResetReason:
             session_key="test",
             session_id="s1",
             created_at=datetime.now() - timedelta(hours=2),
-            updated_at=datetime.now() - timedelta(hours=1),  # 60min ago > 30min threshold
+            updated_at=datetime.now() - timedelta(hours=1),
         )
         source = _make_source()
         assert store._should_reset(entry, source) == "idle"
@@ -84,7 +78,7 @@ class TestShouldResetReason:
             session_key="test",
             session_id="s1",
             created_at=now - timedelta(days=2),
-            updated_at=now - timedelta(days=1),  # last active yesterday
+            updated_at=now - timedelta(days=1),
         )
         source = _make_source()
         assert store._should_reset(entry, source) == "daily"
@@ -104,9 +98,6 @@ class TestShouldResetReason:
         assert store._should_reset(entry, source) is None
 
 
-# ---------------------------------------------------------------------------
-# SessionEntry captures reason
-# ---------------------------------------------------------------------------
 
 class TestSessionEntryReason:
     def test_auto_reset_reason_stored(self, tmp_path):
@@ -116,15 +107,12 @@ class TestSessionEntryReason:
         )
         source = _make_source()
 
-        # Create initial session
         entry1 = store.get_or_create_session(source)
         assert not entry1.was_auto_reset
 
-        # Age it past the idle threshold
         entry1.updated_at = datetime.now() - timedelta(minutes=5)
         store._save()
 
-        # Next call should create a new session with reason
         entry2 = store.get_or_create_session(source)
         assert entry2.was_auto_reset is True
         assert entry2.auto_reset_reason == "idle"
@@ -139,7 +127,6 @@ class TestSessionEntryReason:
         source = _make_source()
 
         entry1 = store.get_or_create_session(source)
-        # No tokens used — session was idle with no conversation
         entry1.updated_at = datetime.now() - timedelta(minutes=5)
         store._save()
 
@@ -156,7 +143,6 @@ class TestSessionEntryReason:
         source = _make_source()
 
         entry1 = store.get_or_create_session(source)
-        # Simulate some conversation happened
         entry1.total_tokens = 5000
         entry1.updated_at = datetime.now() - timedelta(minutes=5)
         store._save()
@@ -166,9 +152,6 @@ class TestSessionEntryReason:
         assert entry2.reset_had_activity is True
 
 
-# ---------------------------------------------------------------------------
-# SessionResetPolicy notify config
-# ---------------------------------------------------------------------------
 
 class TestResetPolicyNotify:
     def test_notify_defaults_true(self):

@@ -6,7 +6,6 @@ import types
 
 import pytest
 
-# Ensure dotenv doesn't interfere
 if "dotenv" not in sys.modules:
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -28,9 +27,6 @@ from daedalus_cli.auth import (
 )
 
 
-# =============================================================================
-# Provider Registry tests
-# =============================================================================
 
 class TestProviderRegistry:
     """Test that new providers are correctly registered."""
@@ -51,7 +47,7 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY[provider_id]
         assert pconfig.name == name
         assert pconfig.auth_type == auth_type
-        assert pconfig.inference_base_url  # must have a default base URL
+        assert pconfig.inference_base_url
 
     def test_zai_env_vars(self):
         pconfig = PROVIDER_REGISTRY["zai"]
@@ -112,9 +108,6 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["openai-codex"].auth_type == "oauth_external"
 
 
-# =============================================================================
-# Provider Resolution tests
-# =============================================================================
 
 PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
@@ -270,9 +263,6 @@ class TestResolveProvider:
             resolve_provider("auto")
 
 
-# =============================================================================
-# API Key Provider Status tests
-# =============================================================================
 
 class TestApiKeyProviderStatus:
 
@@ -342,9 +332,6 @@ class TestApiKeyProviderStatus:
         assert status["configured"] is False
 
 
-# =============================================================================
-# Credential Resolution tests
-# =============================================================================
 
 class TestResolveApiKeyProviderCredentials:
 
@@ -486,9 +473,6 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["source"] == "ZAI_API_KEY"
 
 
-# =============================================================================
-# Runtime Provider Resolution tests
-# =============================================================================
 
 class TestRuntimeProviderResolution:
 
@@ -589,9 +573,6 @@ class TestRuntimeProviderResolution:
         assert result["args"] == ["--acp", "--stdio", "--debug"]
 
 
-# =============================================================================
-# _has_any_provider_configured tests
-# =============================================================================
 
 class TestHasAnyProviderConfigured:
 
@@ -632,11 +613,9 @@ class TestHasAnyProviderConfigured:
         daedalus_home.mkdir()
         monkeypatch.setattr(config_module, "get_env_path", lambda: daedalus_home / ".env")
         monkeypatch.setattr(config_module, "get_daedalus_home", lambda: daedalus_home)
-        # Clear all provider env vars so earlier checks don't short-circuit
         for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                      "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
             monkeypatch.delenv(var, raising=False)
-        # Simulate valid Claude Code credentials
         monkeypatch.setattr(
             "agent.anthropic_adapter.read_claude_code_credentials",
             lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
@@ -661,7 +640,6 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: daedalus_home / ".env")
         monkeypatch.setattr(config_module, "get_daedalus_home", lambda: daedalus_home)
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
-        # Clear all provider env vars
         for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                      "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
             monkeypatch.delenv(var, raising=False)
@@ -731,17 +709,14 @@ class TestHasAnyProviderConfigured:
         from daedalus_cli import config as config_module
         daedalus_home = tmp_path / ".daedalus"
         daedalus_home.mkdir()
-        # Write a config with a non-default model to simulate explicit configuration
         config_file = daedalus_home / "config.yaml"
         config_file.write_text(yaml.dump({"model": {"default": "my-local-model"}}))
         monkeypatch.setattr(config_module, "get_env_path", lambda: daedalus_home / ".env")
         monkeypatch.setattr(config_module, "get_daedalus_home", lambda: daedalus_home)
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
-        # Clear all provider env vars
         for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                      "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
             monkeypatch.delenv(var, raising=False)
-        # Simulate valid Claude Code credentials
         monkeypatch.setattr(
             "agent.anthropic_adapter.read_claude_code_credentials",
             lambda: {"accessToken": "sk-ant-test", "refreshToken": "ref-tok"},
@@ -754,9 +729,6 @@ class TestHasAnyProviderConfigured:
         assert _has_any_provider_configured() is True
 
 
-# =============================================================================
-# Kimi Code auto-detection tests
-# =============================================================================
 
 MOONSHOT_DEFAULT_URL = "https://api.moonshot.ai/v1"
 
@@ -885,9 +857,6 @@ class TestZaiEndpointAutoDetect:
         assert creds["api_key"] == ""
 
 
-# =============================================================================
-# Kimi / Moonshot model list isolation tests
-# =============================================================================
 
 class TestKimiMoonshotModelListIsolation:
     """Moonshot (legacy) users must not see Coding Plan-only models."""
@@ -912,9 +881,6 @@ class TestKimiMoonshotModelListIsolation:
         assert "kimi-k2-thinking-turbo" in coding_models
 
 
-# =============================================================================
-# Hugging Face provider model list tests
-# =============================================================================
 
 class TestHuggingFaceModels:
     """Verify Hugging Face model lists are consistent across all locations."""

@@ -46,7 +46,6 @@ class TestDiscoverHomebrewNodeDirs:
         def mock_isdir(p):
             if p == "/opt/homebrew/opt":
                 return True
-            # node@20/bin and node@24/bin exist
             if p in (
                 "/opt/homebrew/opt/node@20/bin",
                 "/opt/homebrew/opt/node@24/bin",
@@ -111,7 +110,6 @@ class TestFindAgentBrowser:
                 return None
             return None
 
-        # Mock Path.exists() to prevent the local node_modules check from matching
         original_path_exists = Path.exists
 
         def mock_path_exists(self):
@@ -260,7 +258,6 @@ class TestRunBrowserCommandPathConstruction:
         in the subprocess env PATH passed to Popen."""
         captured_env = {}
 
-        # Create a mock Popen that captures the env dict
         mock_proc = MagicMock()
         mock_proc.returncode = 0
         mock_proc.wait.return_value = 0
@@ -275,7 +272,6 @@ class TestRunBrowserCommandPathConstruction:
             "cdp_url": None,
         }
 
-        # Write fake JSON output to the stdout temp file
         fake_json = json.dumps({"success": True})
         stdout_file = tmp_path / "stdout"
         stdout_file.write_text(fake_json)
@@ -285,15 +281,13 @@ class TestRunBrowserCommandPathConstruction:
             "/opt/homebrew/opt/node@20/bin",
         ]
 
-        # We need os.path.isdir to return True for our fake dirs
-        # but we also need real isdir for tmp_path operations
         real_isdir = os.path.isdir
 
         def selective_isdir(p):
             if p in fake_homebrew_dirs or p.startswith(str(tmp_path)):
                 return True
             if "/opt/homebrew/" in p:
-                return True  # _SANE_PATH dirs
+                return True
             return real_isdir(p)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
@@ -306,15 +300,13 @@ class TestRunBrowserCommandPathConstruction:
              patch("os.close"), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
-            # The function reads from temp files for stdout/stderr
             with patch("builtins.open", mock_open(read_data=fake_json)):
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
-        # Verify Homebrew node dirs made it into the subprocess PATH
         result_path = captured_env.get("PATH", "")
         assert "/opt/homebrew/opt/node@24/bin" in result_path
         assert "/opt/homebrew/opt/node@20/bin" in result_path
-        assert "/opt/homebrew/bin" in result_path  # from _SANE_PATH
+        assert "/opt/homebrew/bin" in result_path
 
     def test_subprocess_path_includes_sane_path_homebrew(self, tmp_path):
         """_SANE_PATH Homebrew entries should appear even without versioned node dirs."""

@@ -19,9 +19,6 @@ from gateway.platforms.base import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Minimal adapter for testing pending message storage
-# ---------------------------------------------------------------------------
 
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
@@ -41,9 +38,6 @@ class _StubAdapter(BasePlatformAdapter):
         return {"id": chat_id, "type": "dm"}
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestQueueMessageStorage:
     """Verify /queue stores messages correctly in adapter._pending_messages."""
@@ -76,7 +70,6 @@ class TestQueueMessageStorage:
         retrieved = adapter.get_pending_message(session_key)
         assert retrieved is not None
         assert retrieved.text == "queued prompt"
-        # Should be consumed (cleared)
         assert adapter.get_pending_message(session_key) is None
 
     def test_queue_does_not_set_interrupt_event(self):
@@ -84,10 +77,8 @@ class TestQueueMessageStorage:
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
-        # Simulate an active session (agent running)
         adapter._active_sessions[session_key] = asyncio.Event()
 
-        # Store a queued message (what /queue does)
         event = MessageEvent(
             text="queued",
             message_type=MessageType.TEXT,
@@ -96,7 +87,6 @@ class TestQueueMessageStorage:
         )
         adapter._pending_messages[session_key] = event
 
-        # The interrupt event should NOT be set
         assert not adapter._active_sessions[session_key].is_set()
         assert not adapter.has_pending_interrupt(session_key)
 
@@ -107,7 +97,6 @@ class TestQueueMessageStorage:
 
         adapter._active_sessions[session_key] = asyncio.Event()
 
-        # Simulate regular message arrival (what handle_message does)
         event = MessageEvent(
             text="new message",
             message_type=MessageType.TEXT,
@@ -115,7 +104,7 @@ class TestQueueMessageStorage:
             message_id="m1",
         )
         adapter._pending_messages[session_key] = event
-        adapter._active_sessions[session_key].set()  # this is what handle_message does
+        adapter._active_sessions[session_key].set()
 
         assert adapter.has_pending_interrupt(session_key)
 
@@ -129,7 +118,6 @@ class TestQueueConsumptionAfterCompletion:
         adapter = _StubAdapter()
         session_key = "telegram:user:123"
 
-        # Simulate: agent starts, /queue stores a message, agent finishes
         adapter._active_sessions[session_key] = asyncio.Event()
         event = MessageEvent(
             text="process this after",
@@ -139,10 +127,8 @@ class TestQueueConsumptionAfterCompletion:
         )
         adapter._pending_messages[session_key] = event
 
-        # Agent finishes (no interrupt)
         del adapter._active_sessions[session_key]
 
-        # The queued message should still be retrievable
         retrieved = adapter.get_pending_message(session_key)
         assert retrieved is not None
         assert retrieved.text == "process this after"

@@ -43,7 +43,6 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
 
-# Configuration for image generation
 DEFAULT_MODEL = "fal-ai/flux-2-pro"
 DEFAULT_ASPECT_RATIO = "landscape"
 DEFAULT_NUM_INFERENCE_STEPS = 50
@@ -51,11 +50,9 @@ DEFAULT_GUIDANCE_SCALE = 4.5
 DEFAULT_NUM_IMAGES = 1
 DEFAULT_OUTPUT_FORMAT = "png"
 
-# Safety settings
 ENABLE_SAFETY_CHECKER = False
-SAFETY_TOLERANCE = "5"  # Maximum tolerance (1-5, where 5 is most permissive)
+SAFETY_TOLERANCE = "5"
 
-# Aspect ratio mapping - simplified choices for model to select
 ASPECT_RATIO_MAP = {
     "landscape": "landscape_16_9",
     "square": "square_hd",
@@ -63,7 +60,6 @@ ASPECT_RATIO_MAP = {
 }
 VALID_ASPECT_RATIOS = list(ASPECT_RATIO_MAP.keys())
 
-# Configuration for automatic upscaling
 UPSCALER_MODEL = "fal-ai/clarity-upscaler"
 UPSCALER_FACTOR = 2
 UPSCALER_SAFETY_CHECKER = False
@@ -74,7 +70,6 @@ UPSCALER_RESEMBLANCE = 0.6
 UPSCALER_GUIDANCE_SCALE = 4
 UPSCALER_NUM_INFERENCE_STEPS = 18
 
-# Valid parameter values for validation based on FLUX 2 Pro documentation
 VALID_IMAGE_SIZES = [
     "square_hd", "square", "portrait_4_3", "portrait_16_9", "landscape_4_3", "landscape_16_9"
 ]
@@ -242,7 +237,6 @@ def _validate_parameters(
     """
     validated = {}
     
-    # Validate image_size
     if isinstance(image_size, str):
         if image_size not in VALID_IMAGE_SIZES:
             raise ValueError(f"Invalid image_size '{image_size}'. Must be one of: {VALID_IMAGE_SIZES}")
@@ -260,27 +254,22 @@ def _validate_parameters(
     else:
         raise ValueError("image_size must be either a preset string or a dict with width/height")
     
-    # Validate num_inference_steps
     if not isinstance(num_inference_steps, int) or num_inference_steps < 1 or num_inference_steps > 100:
         raise ValueError("num_inference_steps must be an integer between 1 and 100")
     validated["num_inference_steps"] = num_inference_steps
     
-    # Validate guidance_scale (FLUX 2 Pro default is 4.5)
     if not isinstance(guidance_scale, (int, float)) or guidance_scale < 0.1 or guidance_scale > 20.0:
         raise ValueError("guidance_scale must be a number between 0.1 and 20.0")
     validated["guidance_scale"] = float(guidance_scale)
     
-    # Validate num_images
     if not isinstance(num_images, int) or num_images < 1 or num_images > 4:
         raise ValueError("num_images must be an integer between 1 and 4")
     validated["num_images"] = num_images
     
-    # Validate output_format
     if output_format not in VALID_OUTPUT_FORMATS:
         raise ValueError(f"Invalid output_format '{output_format}'. Must be one of: {VALID_OUTPUT_FORMATS}")
     validated["output_format"] = output_format
     
-    # Validate acceleration
     if acceleration not in VALID_ACCELERATION_MODES:
         raise ValueError(f"Invalid acceleration '{acceleration}'. Must be one of: {VALID_ACCELERATION_MODES}")
     validated["acceleration"] = acceleration
@@ -305,7 +294,6 @@ def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]:
     try:
         logger.info("Upscaling image with Clarity Upscaler...")
         
-        # Prepare arguments for upscaler
         upscaler_arguments = {
             "image_url": image_url,
             "prompt": f"{UPSCALER_DEFAULT_PROMPT}, {original_prompt}",
@@ -318,16 +306,11 @@ def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]:
             "enable_safety_checker": UPSCALER_SAFETY_CHECKER
         }
         
-        # Use sync API — fal_client.submit() uses httpx.Client (no event loop).
-        # The async API (submit_async) caches a global httpx.AsyncClient via
-        # @cached_property, which breaks when asyncio.run() destroys the loop
-        # between calls (gateway thread-pool pattern).
         handler = _submit_fal_request(
             UPSCALER_MODEL,
             arguments=upscaler_arguments,
         )
         
-        # Get the upscaled result (sync — blocks until done)
         result = handler.get()
         
         if result and "image" in result:
@@ -382,7 +365,6 @@ def image_generate_tool(
                  "image": str or None  # URL of the upscaled image, or None if failed
              }
     """
-    # Validate and map aspect_ratio to actual image_size
     aspect_ratio_lower = aspect_ratio.lower().strip() if aspect_ratio else DEFAULT_ASPECT_RATIO
     if aspect_ratio_lower not in ASPECT_RATIO_MAP:
         logger.warning("Invalid aspect_ratio '%s', defaulting to '%s'", aspect_ratio, DEFAULT_ASPECT_RATIO)
@@ -411,23 +393,19 @@ def image_generate_tool(
     try:
         logger.info("Generating %s image(s) with FLUX 2 Pro: %s", num_images, prompt[:80])
         
-        # Validate prompt
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
         
-        # Check API key availability
         if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
             message = "FAL_KEY environment variable not set"
             if managed_nous_tools_enabled():
                 message += " and managed FAL gateway is unavailable"
             raise ValueError(message)
         
-        # Validate other parameters
         validated_params = _validate_parameters(
             image_size, num_inference_steps, guidance_scale, num_images, output_format, "none"
         )
         
-        # Prepare arguments for FAL.ai FLUX 2 Pro API
         arguments = {
             "prompt": prompt.strip(),
             "image_size": validated_params["image_size"],
@@ -437,10 +415,9 @@ def image_generate_tool(
             "output_format": validated_params["output_format"],
             "enable_safety_checker": ENABLE_SAFETY_CHECKER,
             "safety_tolerance": SAFETY_TOLERANCE,
-            "sync_mode": True  # Use sync mode for immediate results
+            "sync_mode": True
         }
         
-        # Add seed if provided
         if seed is not None and isinstance(seed, int):
             arguments["seed"] = seed
         
@@ -450,18 +427,15 @@ def image_generate_tool(
         logger.info("  Steps: %s", validated_params['num_inference_steps'])
         logger.info("  Guidance: %s", validated_params['guidance_scale'])
         
-        # Submit request to FAL.ai using sync API (avoids cached event loop issues)
         handler = _submit_fal_request(
             DEFAULT_MODEL,
             arguments=arguments,
         )
         
-        # Get the result (sync — blocks until done)
         result = handler.get()
         
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
         
-        # Process the response
         if not result or "images" not in result:
             raise ValueError("Invalid response from FAL.ai API - no images returned")
         
@@ -469,7 +443,6 @@ def image_generate_tool(
         if not images:
             raise ValueError("No images were generated")
         
-        # Format image data and upscale images
         formatted_images = []
         for img in images:
             if isinstance(img, dict) and "url" in img:
@@ -479,14 +452,11 @@ def image_generate_tool(
                     "height": img.get("height", 0)
                 }
                 
-                # Attempt to upscale the image
                 upscaled_image = _upscale_image(img["url"], prompt.strip())
                 
                 if upscaled_image:
-                    # Use upscaled image if successful
                     formatted_images.append(upscaled_image)
                 else:
-                    # Fall back to original image if upscaling fails
                     logger.warning("Using original image as fallback")
                     original_image["upscaled"] = False
                     formatted_images.append(original_image)
@@ -497,7 +467,6 @@ def image_generate_tool(
         upscaled_count = sum(1 for img in formatted_images if img.get("upscaled", False))
         logger.info("Generated %s image(s) in %.1fs (%s upscaled)", len(formatted_images), generation_time, upscaled_count)
         
-        # Prepare successful response - minimal format
         response_data = {
             "success": True,
             "image": formatted_images[0]["url"] if formatted_images else None
@@ -507,7 +476,6 @@ def image_generate_tool(
         debug_call_data["images_generated"] = len(formatted_images)
         debug_call_data["generation_time"] = generation_time
         
-        # Log debug information
         _debug.log_call("image_generate_tool", debug_call_data)
         _debug.save()
         
@@ -518,7 +486,6 @@ def image_generate_tool(
         error_msg = f"Error generating image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
         
-        # Include error details so callers can diagnose failures
         response_data = {
             "success": False,
             "image": None,
@@ -552,11 +519,9 @@ def check_image_generation_requirements() -> bool:
         bool: True if requirements are met, False otherwise
     """
     try:
-        # Check API key
         if not check_fal_api_key():
             return False
         
-        # Check if fal_client is available
         import fal_client  # noqa: F401 — SDK presence check
         return True
         
@@ -581,7 +546,6 @@ if __name__ == "__main__":
     print("🎨 Image Generation Tools Module - FLUX 2 Pro + Auto Upscaling")
     print("=" * 60)
     
-    # Check if API key is available
     api_available = check_fal_api_key()
     
     if not api_available:
@@ -592,7 +556,6 @@ if __name__ == "__main__":
     else:
         print("✅ FAL.ai API key found")
     
-    # Check if fal_client is available
     try:
         import fal_client
         print("✅ fal_client library available")
@@ -605,7 +568,6 @@ if __name__ == "__main__":
     print(f"🤖 Using model: {DEFAULT_MODEL}")
     print(f"🔍 Auto-upscaling with: {UPSCALER_MODEL} ({UPSCALER_FACTOR}x)")
     
-    # Show debug mode status
     if _debug.active:
         print(f"🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
         print(f"   Debug logs will be saved to: ./logs/image_tools_debug_{_debug.session_id}.json")
@@ -649,9 +611,6 @@ if __name__ == "__main__":
     print("  # Logs saved to: ./logs/image_tools_debug_UUID.json")
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
@@ -698,6 +657,6 @@ registry.register(
     handler=_handle_image_generate,
     check_fn=check_image_generation_requirements,
     requires_env=[],
-    is_async=False,  # Switched to sync fal_client API to fix "Event loop is closed" in gateway
+    is_async=False,
     emoji="🎨",
 )

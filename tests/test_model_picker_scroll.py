@@ -19,9 +19,6 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-# ---------------------------------------------------------------------------
-# Pure scroll-offset logic extracted from _curses_menu for unit testing
-# ---------------------------------------------------------------------------
 
 def _compute_scroll_offset(cursor: int, scroll_offset: int, visible: int, n_choices: int) -> int:
     """Mirror of the scroll adjustment block inside _curses_menu."""
@@ -39,12 +36,9 @@ def _visible_indices(cursor: int, scroll_offset: int, visible: int, n_choices: i
     return list(range(scroll_offset, min(scroll_offset + visible, n_choices)))
 
 
-# ---------------------------------------------------------------------------
-# Tests: scroll offset calculation
-# ---------------------------------------------------------------------------
 
 class TestScrollOffsetLogic:
-    N = 13  # typical extended-providers list length
+    N = 13
 
     def test_cursor_at_zero_no_scroll(self):
         """Start position: offset stays 0, first items visible."""
@@ -62,20 +56,19 @@ class TestScrollOffsetLogic:
 
     def test_cursor_wraps_to_cancel_via_up(self):
         """UP from index 0 wraps to last item; last item must be visible."""
-        wrapped_cursor = (0 - 1) % self.N  # == 12
+        wrapped_cursor = (0 - 1) % self.N
         indices = _visible_indices(wrapped_cursor, 0, 8, self.N)
         assert wrapped_cursor in indices
 
     def test_cursor_above_window_scrolls_up(self):
         """Cursor above current window: offset tracks cursor."""
-        # window currently shows [5..12], cursor moves to 3
         offset = _compute_scroll_offset(3, 5, 8, self.N)
         assert offset == 3
         assert 3 in _visible_indices(3, 5, 8, self.N)
 
     def test_visible_window_never_exceeds_list(self):
         """Offset is clamped so the window never starts past the list end."""
-        offset = _compute_scroll_offset(12, 0, 20, self.N)  # window larger than list
+        offset = _compute_scroll_offset(12, 0, 20, self.N)
         assert offset == 0
 
     def test_single_item_list(self):
@@ -100,7 +93,7 @@ class TestScrollOffsetLogic:
         visible = 6
         scroll_offset = 0
         cursor = 0
-        for _ in range(self.N + 2):  # wrap around twice
+        for _ in range(self.N + 2):
             scroll_offset = _compute_scroll_offset(cursor, scroll_offset, visible, self.N)
             rendered = list(range(scroll_offset, min(scroll_offset + visible, self.N)))
             assert cursor in rendered, f"cursor={cursor} not in rendered={rendered}"

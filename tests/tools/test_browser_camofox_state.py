@@ -30,7 +30,6 @@ class TestCamofoxIdentity:
         with patch.object(state, "get_daedalus_home", return_value=tmp_path):
             a = state.get_camofox_identity("task-a")
             b = state.get_camofox_identity("task-b")
-            # Same user (same profile), different session keys
             assert a["user_id"] == b["user_id"]
             assert a["session_key"] != b["session_key"]
 
@@ -62,5 +61,4 @@ class TestCamofoxConfigDefaults:
     def test_config_version_unchanged(self):
         from daedalus_cli.config import DEFAULT_CONFIG
 
-        # managed_persistence is auto-merged by _deep_merge, no version bump needed
         assert DEFAULT_CONFIG["_config_version"] == 12

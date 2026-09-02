@@ -11,8 +11,6 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
-# One consolidated tool with an `action` discriminator. Keeps the schema
-# compact and the per-turn token cost low.
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
@@ -64,7 +62,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "without opening the native menu (no focus steal)."
                 ),
             },
-            # ── capture ────────────────────────────────────────────
             "mode": {
                 "type": "string",
                 "enum": ["som", "vision", "ax"],
@@ -128,7 +125,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "minimum": 1,
                 "maximum": 1000,
             },
-            # ── click / drag / scroll targeting ────────────────────
             "element": {
                 "type": "integer",
                 "description": (
@@ -164,7 +160,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 },
                 "description": "Modifier keys held during the action.",
             },
-            # ── drag ───────────────────────────────────────────────
             "from_element": {"type": "integer",
                               "description": "Source element index (drag)."},
             "to_element": {"type": "integer",
@@ -181,7 +176,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "minItems": 2, "maxItems": 2,
                 "description": "Target [x,y] (drag; use when no element available).",
             },
-            # ── scroll ─────────────────────────────────────────────
             "direction": {
                 "type": "string",
                 "enum": ["up", "down", "left", "right"],
@@ -191,7 +185,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "integer",
                 "description": "Scroll wheel ticks. Default 3.",
             },
-            # ── set_value ──────────────────────────────────────────
             "value": {
                 "type": "string",
                 "description": (
@@ -201,7 +194,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "AXValue-settable elements, pass the numeric or string value."
                 ),
             },
-            # ── type / key / wait ──────────────────────────────────
             "text": {
                 "type": "string",
                 "description": "Text to type (respects the current layout).",
@@ -217,7 +209,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "number",
                 "description": "Seconds to wait. Max 30.",
             },
-            # ── focus_app ──────────────────────────────────────────
             "raise_window": {
                 "type": "boolean",
                 "description": (
@@ -227,7 +218,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "matching the background co-work model."
                 ),
             },
-            # ── delivery (verify → escalate ladder) ────────────────
             "delivery_mode": {
                 "type": "string",
                 "enum": ["background", "foreground"],
@@ -256,7 +246,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "approval scope. Default false."
                 ),
             },
-            # ── cua-driver typed browser route ─────────────────────
             "tab_id": {
                 "type": "string",
                 "description": "Opaque tab capability returned by cua_browser_state.",
@@ -333,7 +322,6 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "y": {"type": "number", "description": "Typed browser viewport y coordinate."},
             "to_x": {"type": "number", "description": "Typed browser drag destination x."},
             "to_y": {"type": "number", "description": "Typed browser drag destination y."},
-            # ── return shape ───────────────────────────────────────
             "capture_after": {
                 "type": "boolean",
                 "description": (

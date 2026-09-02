@@ -65,17 +65,14 @@ class TestDMThreadSeeding:
 
     def test_thread_session_seeded_from_parent(self, store):
         """New DM thread session should contain the parent's transcript."""
-        # Create parent DM session with history
         parent_source = _dm_source()
         parent_entry = store.get_or_create_session(parent_source)
         for msg in PARENT_HISTORY:
             store.append_to_transcript(parent_entry.session_id, msg)
 
-        # Create thread session (user replied in thread)
         thread_source = _dm_source(thread_id="1234567890.000001")
         thread_entry = store.get_or_create_session(thread_source)
 
-        # Thread should have parent's history
         thread_transcript = store.load_transcript(thread_entry.session_id)
         assert len(thread_transcript) == 2
         assert thread_transcript[0]["content"] == "What's the weather?"
@@ -88,14 +85,12 @@ class TestDMThreadSeeding:
         for msg in PARENT_HISTORY:
             store.append_to_transcript(parent_entry.session_id, msg)
 
-        # Create thread and add a message to it
         thread_source = _dm_source(thread_id="1234567890.000001")
         thread_entry = store.get_or_create_session(thread_source)
         store.append_to_transcript(thread_entry.session_id, {
             "role": "user", "content": "thread-only message"
         })
 
-        # Parent should still have only its original messages
         parent_transcript = store.load_transcript(parent_entry.session_id)
         assert len(parent_transcript) == 2
         assert all(m["content"] != "thread-only message" for m in parent_transcript)
@@ -107,23 +102,19 @@ class TestDMThreadSeeding:
         for msg in PARENT_HISTORY:
             store.append_to_transcript(parent_entry.session_id, msg)
 
-        # Thread A
         thread_a_source = _dm_source(thread_id="1111.000001")
         thread_a_entry = store.get_or_create_session(thread_a_source)
         store.append_to_transcript(thread_a_entry.session_id, {
             "role": "user", "content": "thread A message"
         })
 
-        # Thread B
         thread_b_source = _dm_source(thread_id="2222.000002")
         thread_b_entry = store.get_or_create_session(thread_b_source)
 
-        # Thread B should have parent history, not thread A's additions
         thread_b_transcript = store.load_transcript(thread_b_entry.session_id)
         assert len(thread_b_transcript) == 2
         assert all(m["content"] != "thread A message" for m in thread_b_transcript)
 
-        # Thread A should have parent history + its own message
         thread_a_transcript = store.load_transcript(thread_a_entry.session_id)
         assert len(thread_a_transcript) == 3
 
@@ -134,23 +125,19 @@ class TestDMThreadSeeding:
         for msg in PARENT_HISTORY:
             store.append_to_transcript(parent_entry.session_id, msg)
 
-        # Create thread session
         thread_source = _dm_source(thread_id="1234567890.000001")
         thread_entry = store.get_or_create_session(thread_source)
         store.append_to_transcript(thread_entry.session_id, {
             "role": "user", "content": "follow-up"
         })
 
-        # Add more to parent after thread was created
         store.append_to_transcript(parent_entry.session_id, {
             "role": "user", "content": "new parent message"
         })
 
-        # Get the same thread session again (not new — created_at != updated_at)
         thread_entry_again = store.get_or_create_session(thread_source)
         assert thread_entry_again.session_id == thread_entry.session_id
 
-        # Should still have 3 messages (2 seeded + 1 follow-up), not re-seeded
         thread_transcript = store.load_transcript(thread_entry_again.session_id)
         assert len(thread_transcript) == 3
         assert thread_transcript[2]["content"] == "follow-up"
@@ -184,7 +171,6 @@ class TestDMThreadSeedingEdgeCases:
         """If parent session exists but has no transcript, thread starts empty."""
         parent_source = _dm_source()
         store.get_or_create_session(parent_source)
-        # No messages appended to parent
 
         thread_source = _dm_source(thread_id="1234567890.000001")
         thread_entry = store.get_or_create_session(thread_source)
@@ -197,7 +183,6 @@ class TestDMThreadSeedingEdgeCases:
         source = _dm_source()
         entry = store.get_or_create_session(source)
 
-        # Should just be a normal empty session
         transcript = store.load_transcript(entry.session_id)
         assert len(transcript) == 0
 

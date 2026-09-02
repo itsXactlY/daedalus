@@ -13,7 +13,6 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import pytest
-# pytestmark removed — tests run fine (61 pass, ~99s)
 
 import json
 import os
@@ -93,7 +92,7 @@ class TestDaedalusToolsGeneration(unittest.TestCase):
     def test_empty_list_generates_nothing(self):
         src = generate_daedalus_tools_module([])
         self.assertNotIn("def terminal(", src)
-        self.assertIn("def _call(", src)  # infrastructure still present
+        self.assertIn("def _call(", src)
 
     def test_non_allowed_tools_ignored(self):
         src = generate_daedalus_tools_module(["vision_analyze", "terminal"])
@@ -123,9 +122,7 @@ class TestExecuteCode(unittest.TestCase):
     def _run(self, code, enabled_tools=None):
         """Helper: run code with mocked handle_function_call."""
         with patch("tools.code_execution_tool._rpc_server_loop") as mock_rpc:
-            # Use real execution but mock the tool dispatcher
             pass
-        # Actually run with full integration, mocking at the model_tools level
         with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
             result = execute_code(
                 code=code,
@@ -190,9 +187,7 @@ from daedalus_tools import terminal
 result = terminal("echo hi")
 print(result)
 """
-        # Only enable web_search -- terminal should be excluded
         result = self._run(code, enabled_tools=["web_search"])
-        # terminal won't be in daedalus_tools.py, so import fails
         self.assertEqual(result["status"], "error")
 
     def test_empty_code(self):
@@ -227,7 +222,6 @@ raise RuntimeError("deliberate crash")
         """Script that sleeps too long is killed."""
         code = "import time; time.sleep(999)"
         with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
-            # Override config to use a very short timeout
             with patch("tools.code_execution_tool._load_config", return_value={"timeout": 2, "max_tool_calls": 50}):
                 result = json.loads(execute_code(
                     code=code,
@@ -334,9 +328,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     and get a TypeError.  This test catches that drift.
     """
 
-    # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
-    # Parameters intentionally blocked in the sandbox
     _BLOCKED_TERMINAL_PARAMS = {"background", "check_interval", "pty", "notify_on_complete"}
 
     def test_stubs_cover_all_schema_params(self):
@@ -345,7 +337,6 @@ class TestStubSchemaDrift(unittest.TestCase):
         import re
         from tools.code_execution_tool import _TOOL_STUBS
 
-        # Import the registry and trigger tool registration
         from tools.registry import registry
         import tools.file_tools  # noqa: F401 - registers read_file, write_file, patch, search_files
         import tools.web_tools  # noqa: F401 - registers web_search, web_extract
@@ -353,8 +344,6 @@ class TestStubSchemaDrift(unittest.TestCase):
         for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
             entry = registry._tools.get(tool_name)
             if not entry:
-                # Tool might not be registered yet (e.g., terminal uses a
-                # different registration path).  Skip gracefully.
                 continue
 
             schema_props = entry.schema.get("parameters", {}).get("properties", {})
@@ -362,8 +351,6 @@ class TestStubSchemaDrift(unittest.TestCase):
             if tool_name == "terminal":
                 schema_params -= self._BLOCKED_TERMINAL_PARAMS
 
-            # Extract parameter names from the stub signature string
-            # Match word before colon: "pattern: str, target: str = ..."
             stub_params = set(re.findall(r'(\w+)\s*:', sig))
 
             missing = schema_params - stub_params
@@ -382,7 +369,6 @@ class TestStubSchemaDrift(unittest.TestCase):
 
         for tool_name, (func_name, sig, doc, args_expr) in _TOOL_STUBS.items():
             stub_params = set(re.findall(r'(\w+)\s*:', sig))
-            # Check that each param name appears in the args dict expression
             for param in stub_params:
                 self.assertIn(
                     f'"{param}"',
@@ -407,22 +393,15 @@ class TestStubSchemaDrift(unittest.TestCase):
         without TypeError when called with keyword arguments."""
         src = generate_daedalus_tools_module(list(SANDBOX_ALLOWED_TOOLS))
 
-        # Compile the generated module to check for syntax errors
         compile(src, "daedalus_tools.py", "exec")
 
-        # Verify specific parameter signatures are in the source
-        # search_files must accept context, offset, output_mode
         self.assertIn("context", src)
         self.assertIn("offset", src)
         self.assertIn("output_mode", src)
 
-        # patch must accept mode and patch params
         self.assertIn("mode", src)
 
 
-# ---------------------------------------------------------------------------
-# build_execute_code_schema
-# ---------------------------------------------------------------------------
 
 class TestBuildExecuteCodeSchema(unittest.TestCase):
     """Tests for build_execute_code_schema — the dynamic schema generator."""
@@ -469,7 +448,6 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         enabled = {"read_file", "write_file", "patch"}
         schema = build_execute_code_schema(enabled)
         code_desc = schema["parameters"]["properties"]["code"]["description"]
-        # Should use sorted first 2: patch, read_file
         self.assertIn("patch", code_desc)
         self.assertIn("read_file", code_desc)
 
@@ -496,7 +474,6 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         tools_to_include  = {"execute_code"}
         intersection      = empty set
         """
-        # Simulate model_tools.py:233
         tools_to_include = {"execute_code"}
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & tools_to_include
 
@@ -543,9 +520,6 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         self.assertEqual(schema_none["description"], schema_all["description"])
 
 
-# ---------------------------------------------------------------------------
-# Environment variable filtering (security critical)
-# ---------------------------------------------------------------------------
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestEnvVarFiltering(unittest.TestCase):
@@ -646,9 +620,6 @@ class TestEnvVarFiltering(unittest.TestCase):
             os.environ.update(env_backup)
 
 
-# ---------------------------------------------------------------------------
-# execute_code edge cases
-# ---------------------------------------------------------------------------
 
 class TestExecuteCodeEdgeCases(unittest.TestCase):
 
@@ -710,9 +681,6 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("fallback ok", result["output"])
 
 
-# ---------------------------------------------------------------------------
-# _load_config
-# ---------------------------------------------------------------------------
 
 class TestLoadConfig(unittest.TestCase):
     def test_returns_empty_dict_when_cli_config_unavailable(self):
@@ -730,9 +698,6 @@ class TestLoadConfig(unittest.TestCase):
         self.assertIsInstance(result, dict)
 
 
-# ---------------------------------------------------------------------------
-# Interrupt event
-# ---------------------------------------------------------------------------
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestInterruptHandling(unittest.TestCase):
@@ -797,11 +762,8 @@ print("TAIL_MARKER_END")
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         output = result["output"]
-        # Head should be preserved
         self.assertIn("HEAD_MARKER_START", output)
-        # Tail should be preserved (this is the key improvement)
         self.assertIn("TAIL_MARKER_END", output)
-        # Truncation notice should be present
         self.assertIn("TRUNCATED", output)
 
     def test_truncation_notice_format(self):

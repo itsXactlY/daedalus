@@ -24,21 +24,16 @@ from typing import Optional
 
 from daedalus_constants import get_daedalus_home, display_daedalus_home
 
-# Known log files (name → filename)
 LOG_FILES = {
     "agent": "agent.log",
     "errors": "errors.log",
     "gateway": "gateway.log",
 }
 
-# Log line timestamp regex — matches "2026-04-05 22:35:00,123" or
-# "2026-04-05 22:35:00" at the start of a line.
 _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 
-# Level extraction — matches " INFO ", " WARNING ", " ERROR ", " DEBUG ", " CRITICAL "
 _LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
 
-# Level ordering for >= filtering
 _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
 
 
@@ -142,7 +137,6 @@ def tail_log(
         print(f"(Logs are created when Daedalus runs — try 'daedalus chat' first)")
         sys.exit(1)
 
-    # Parse --since into a datetime cutoff
     since_dt = None
     if since:
         since_dt = _parse_since(since)
@@ -157,7 +151,6 @@ def tail_log(
 
     has_filters = min_level is not None or session is not None or since_dt is not None
 
-    # Read and display the tail
     try:
         lines = _read_tail(log_path, num_lines, has_filters=has_filters,
                            min_level=min_level, session_filter=session,
@@ -166,7 +159,6 @@ def tail_log(
         print(f"Permission denied: {log_path}")
         sys.exit(1)
 
-    # Print header
     filter_parts = []
     if min_level:
         filter_parts.append(f"level>={min_level}")
@@ -187,7 +179,6 @@ def tail_log(
     if not follow:
         return
 
-    # Follow mode — poll for new content
     try:
         _follow_log(log_path, min_level=min_level, session_filter=session,
                      since=since_dt)
@@ -209,8 +200,6 @@ def _read_tail(
     When filters are active, we read more raw lines to find enough matches.
     """
     if has_filters:
-        # Read more lines to ensure we get enough after filtering.
-        # For large files, read last 10K lines and filter down.
         raw_lines = _read_last_n_lines(path, max(num_lines * 20, 2000))
         filtered = [
             l for l in raw_lines
@@ -233,13 +222,11 @@ def _read_last_n_lines(path: Path, n: int) -> list:
         if size == 0:
             return []
 
-        # For files up to 1MB, just read the whole thing — simple and correct.
         if size <= 1_048_576:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 all_lines = f.readlines()
             return all_lines[-n:]
 
-        # For large files, read chunks from the end.
         with open(path, "rb") as f:
             chunk_size = 8192
             lines = []
@@ -252,15 +239,12 @@ def _read_last_n_lines(path: Path, n: int) -> list:
                 chunk = f.read(read_size)
                 chunk_lines = chunk.split(b"\n")
                 if lines:
-                    # Merge the last partial line of the new chunk with the
-                    # first partial line of what we already have.
                     lines[0] = chunk_lines[-1] + lines[0]
                     lines = chunk_lines[:-1] + lines
                 else:
                     lines = chunk_lines
                 chunk_size = min(chunk_size * 2, 65536)
 
-            # Decode and return last N non-empty lines.
             decoded = []
             for raw in lines:
                 if not raw.strip():
@@ -272,7 +256,6 @@ def _read_last_n_lines(path: Path, n: int) -> list:
             return decoded[-n:]
 
     except Exception:
-        # Fallback: read entire file
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()
         return all_lines[-n:]
@@ -287,7 +270,6 @@ def _follow_log(
 ) -> None:
     """Poll a log file for new content and print matching lines."""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
-        # Seek to end
         f.seek(0, 2)
         while True:
             line = f.readline()

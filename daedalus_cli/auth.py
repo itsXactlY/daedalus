@@ -51,21 +51,17 @@ try:
 except Exception:
     msvcrt = None
 
-# =============================================================================
-# Constants
-# =============================================================================
 
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 
-# Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
 DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "daedalus-cli"
 DEFAULT_NOUS_SCOPE = "inference:mint_agent_key"
-DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
-ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
-DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
+DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60
+ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
@@ -79,24 +75,19 @@ QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
 
-# =============================================================================
-# Provider Registry
-# =============================================================================
 
 @dataclass
 class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
+    auth_type: str
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
     scope: str = ""
     extra: Dict[str, Any] = field(default_factory=dict)
-    # For API-key providers: env vars to check (in priority order)
     api_key_env_vars: tuple = ()
-    # Optional env var for base URL override
     base_url_env_var: str = ""
 
 
@@ -219,10 +210,6 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="opencode-go",
         name="OpenCode Go",
         auth_type="api_key",
-        # OpenCode Go mixes API surfaces by model:
-        # - GLM / Kimi use OpenAI-compatible chat completions under /v1
-        # - MiniMax models use Anthropic Messages under /v1/messages
-        # Keep the provider base at /v1 and select api_mode per-model.
         inference_base_url="https://opencode.ai/zen/go/v1",
         api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
@@ -246,14 +233,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 }
 
 
-# =============================================================================
-# Kimi Code Endpoint Detection
-# =============================================================================
 
-# Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
-# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
-# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
-# KIMI_BASE_URL explicitly.
 KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
 
 
@@ -341,7 +321,6 @@ def _resolve_api_key_provider_secret(
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
-        # Use the dedicated copilot auth module for proper token validation
         try:
             from daedalus_cli.copilot_auth import resolve_copilot_token
             token, source = resolve_copilot_token()
@@ -361,16 +340,9 @@ def _resolve_api_key_provider_secret(
     return "", ""
 
 
-# =============================================================================
-# Z.AI Endpoint Detection
-# =============================================================================
 
-# Z.AI has separate billing for general vs coding plans, and global vs China
-# endpoints.  A key that works on one may return "Insufficient balance" on
-# another.  We probe at setup time and store the working endpoint.
 
 ZAI_ENDPOINTS = [
-    # (id, base_url, default_model, label)
     ("global",        "https://api.z.ai/api/paas/v4",        "glm-5",   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", "glm-5",   "China"),
     ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-4.7", "Global (Coding Plan)"),
@@ -425,7 +397,6 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if env_override:
         return env_override
 
-    # Check provider-state cache for a previously-detected endpoint.
     auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "zai") or {}
     cached = state.get("detected_endpoint")
@@ -435,10 +406,8 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
             logger.debug("Z.AI: using cached endpoint %s", cached["base_url"])
             return cached["base_url"]
 
-    # Probe — may take up to ~8s per endpoint.
     detected = detect_zai_endpoint(api_key)
     if detected and detected.get("base_url"):
-        # Persist the detection result keyed on the API key hash.
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
         state["detected_endpoint"] = {
             "base_url": detected["base_url"],
@@ -455,9 +424,6 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     return default_url
 
 
-# =============================================================================
-# Error Types
-# =============================================================================
 
 class AuthError(RuntimeError):
     """Structured auth error with UX mapping hints."""
@@ -527,9 +493,6 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
     logger.info("oauth_trace %s", json.dumps(payload, sort_keys=True, ensure_ascii=False))
 
 
-# =============================================================================
-# Auth Store — persistence layer for ~/.daedalus/auth.json
-# =============================================================================
 
 def _auth_file_path() -> Path:
     return get_daedalus_home() / "auth.json"
@@ -544,7 +507,6 @@ _auth_lock_holder = threading.local()
 @contextmanager
 def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     """Cross-process advisory lock for auth.json reads+writes.  Reentrant."""
-    # Reentrant: if this thread already holds the lock, just yield.
     if getattr(_auth_lock_holder, "depth", 0) > 0:
         _auth_lock_holder.depth += 1
         try:
@@ -564,8 +526,6 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
             _auth_lock_holder.depth = 0
         return
 
-    # On Windows, msvcrt.locking needs the file to have content and the
-    # file pointer at position 0.  Ensure the lock file has at least 1 byte.
     if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
         lock_path.write_text(" ", encoding="utf-8")
 
@@ -616,7 +576,6 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         raw.setdefault("providers", {})
         return raw
 
-    # Migrate from PR's "systems" format if present
     if isinstance(raw, dict) and isinstance(raw.get("systems"), dict):
         systems = raw["systems"]
         providers = {}
@@ -656,7 +615,6 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
                 tmp_path.unlink()
         except OSError:
             pass
-    # Restrict file permissions to owner only
     try:
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
@@ -767,9 +725,6 @@ def deactivate_provider() -> None:
         _save_auth_store(auth_store)
 
 
-# =============================================================================
-# Provider Resolution — picks which provider to use
-# =============================================================================
 
 
 def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
@@ -788,7 +743,6 @@ def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
         for ci in issues:
             prefix = "ERROR" if ci.severity == "error" else "WARNING"
             lines.append(f"  [{prefix}] {ci.message}")
-            # Show first line of hint
             first_hint = ci.hint.splitlines()[0] if ci.hint else ""
             if first_hint:
                 lines.append(f"    → {first_hint}")
@@ -815,7 +769,6 @@ def resolve_provider(
     """
     normalized = (requested or "auto").strip().lower()
 
-    # Normalize provider aliases
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
@@ -831,7 +784,6 @@ def resolve_provider(
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
-        # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "vllm": "custom", "llamacpp": "custom",
         "llama.cpp": "custom", "llama-cpp": "custom",
@@ -845,7 +797,6 @@ def resolve_provider(
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
-        # Check for common config.yaml issues that cause this error
         _config_hint = _get_config_hint_for_unknown_provider(normalized)
         msg = f"Unknown provider '{normalized}'."
         if _config_hint:
@@ -854,11 +805,9 @@ def resolve_provider(
             msg += " Check 'daedalus model' for available providers, or run 'daedalus doctor' to diagnose config issues."
         raise AuthError(msg, code="invalid_provider")
 
-    # Explicit one-off CLI creds always mean openrouter/custom
     if explicit_api_key or explicit_base_url:
         return "openrouter"
 
-    # Check auth store for an active OAuth provider
     try:
         auth_store = _load_auth_store()
         active = auth_store.get("active_provider")
@@ -872,13 +821,9 @@ def resolve_provider(
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
-    # Auto-detect API-key providers by checking their env vars
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
-        # GitHub tokens are commonly present for repo/tool access but should not
-        # hijack inference auto-selection unless the user explicitly chooses
-        # Copilot/GitHub Models as the provider.
         if pid == "copilot":
             continue
         for env_var in pconfig.api_key_env_vars:
@@ -893,9 +838,6 @@ def resolve_provider(
     )
 
 
-# =============================================================================
-# Timestamp / TTL helpers
-# =============================================================================
 
 def _parse_iso_timestamp(value: Any) -> Optional[float]:
     if not isinstance(value, str) or not value:
@@ -1127,22 +1069,12 @@ def get_qwen_auth_status() -> Dict[str, Any]:
         }
 
 
-# =============================================================================
-# SSH / remote session detection
-# =============================================================================
 
 def _is_remote_session() -> bool:
     """Detect if running in an SSH session where webbrowser.open() won't work."""
     return bool(os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY"))
 
 
-# =============================================================================
-# OpenAI Codex auth — tokens stored in ~/.daedalus/auth.json (not ~/.codex/)
-#
-# Daedalus maintains its own Codex OAuth session separate from the Codex CLI
-# and VS Code extension. This prevents refresh token rotation conflicts
-# where one app's refresh invalidates the other's session.
-# =============================================================================
 
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Daedalus auth store (~/.daedalus/auth.json).
@@ -1214,7 +1146,7 @@ def refresh_codex_oauth_pure(
     timeout_seconds: float = 20.0,
 ) -> Dict[str, Any]:
     """Refresh Codex OAuth tokens without mutating Daedalus auth state."""
-    del access_token  # Access token is only used by callers to decide whether to refresh.
+    del access_token
     if not isinstance(refresh_token, str) or not refresh_token.strip():
         raise AuthError(
             "Codex auth is missing refresh_token. Run `daedalus auth` to re-authenticate.",
@@ -1339,9 +1271,6 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         refresh_token = tokens.get("refresh_token")
         if not access_token or not refresh_token:
             return None
-        # Reject expired tokens — importing stale tokens from ~/.codex/
-        # that can't be refreshed leaves the user stuck with "Login successful!"
-        # but no working credentials.
         if _codex_access_token_is_expiring(access_token, 0):
             logger.debug(
                 "Codex CLI tokens at %s are expired — skipping import.", auth_path,
@@ -1362,12 +1291,9 @@ def resolve_codex_runtime_credentials(
     try:
         data = _read_codex_tokens()
     except AuthError as orig_err:
-        # Only attempt migration when there are NO tokens stored at all
-        # (code == "codex_auth_missing"), not when tokens exist but are invalid.
         if orig_err.code != "codex_auth_missing":
             raise
 
-        # Migration: user had Codex as active provider with old storage (~/.codex/).
         cli_tokens = _import_codex_cli_tokens()
         if cli_tokens:
             logger.info("Migrating Codex credentials from ~/.codex/ to Daedalus auth store")
@@ -1386,7 +1312,6 @@ def resolve_codex_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        # Re-read under lock to avoid racing with other Daedalus processes
         with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
             data = _read_codex_tokens(_lock=False)
             tokens = dict(data["tokens"])
@@ -1415,9 +1340,6 @@ def resolve_codex_runtime_credentials(
     }
 
 
-# =============================================================================
-# TLS verification helper
-# =============================================================================
 
 def _resolve_verify(
     *,
@@ -1446,9 +1368,6 @@ def _resolve_verify(
     return True
 
 
-# =============================================================================
-# OAuth Device Code Flow — generic, parameterized by provider
-# =============================================================================
 
 def _request_device_code(
     client: httpx.Client,
@@ -1526,9 +1445,6 @@ def _poll_for_token(
     raise TimeoutError("Timed out waiting for device authorization")
 
 
-# =============================================================================
-# Nous Portal — token refresh, agent key minting, model discovery
-# =============================================================================
 
 def _refresh_access_token(
     *,
@@ -1634,13 +1550,10 @@ def fetch_nous_models(
         model_id = item.get("id")
         if isinstance(model_id, str) and model_id.strip():
             mid = model_id.strip()
-            # Skip Daedalus models — they're not reliable for agentic tool-calling
             if "daedalus" in mid.lower():
                 continue
             model_ids.append(mid)
 
-    # Sort: prefer opus > pro > haiku/flash > sonnet (sonnet is cheap/fast,
-    # users who want the best model should see opus first).
     def _model_priority(mid: str) -> tuple:
         low = mid.lower()
         if "opus" in low:
@@ -1941,7 +1854,6 @@ def resolve_nous_runtime_credentials(
                 raise AuthError("No access token found for Nous Portal login.",
                                 provider="nous", relogin_required=True)
 
-            # Step 1: refresh access token if expiring
             if _is_expiring(state.get("expires_at"), ACCESS_TOKEN_REFRESH_SKEW_SECONDS):
                 if not isinstance(refresh_token, str) or not refresh_token:
                     raise AuthError("Session expired and no refresh token is available.",
@@ -1981,10 +1893,8 @@ def resolve_nous_runtime_credentials(
                     previous_refresh_token_fp=_token_fingerprint(previous_refresh_token),
                     new_refresh_token_fp=_token_fingerprint(refresh_token),
                 )
-                # Persist immediately so downstream mint failures cannot drop rotated refresh tokens.
                 _persist_state("post_refresh_access_expiring")
 
-            # Step 2: mint agent key if missing/expiring
             used_cached_key = False
             mint_payload: Optional[Dict[str, Any]] = None
 
@@ -2008,7 +1918,6 @@ def resolve_nous_runtime_credentials(
                         sequence_id=sequence_id,
                         code=exc.code,
                     )
-                    # Retry path: access token may be stale server-side despite local checks
                     latest_refresh_token = state.get("refresh_token")
                     if (
                         exc.code in {"invalid_token", "invalid_grant"}
@@ -2048,7 +1957,6 @@ def resolve_nous_runtime_credentials(
                             previous_refresh_token_fp=_token_fingerprint(latest_refresh_token),
                             new_refresh_token_fp=_token_fingerprint(refresh_token),
                         )
-                        # Persist retry refresh immediately for crash safety and cross-process visibility.
                         _persist_state("post_refresh_mint_retry")
 
                         mint_payload = _mint_agent_key(
@@ -2075,7 +1983,6 @@ def resolve_nous_runtime_credentials(
                     reused=bool(mint_payload.get("reused", False)),
                 )
 
-            # Persist routing and TLS metadata for non-interactive refresh/mint
             state["portal_base_url"] = portal_base_url
             state["inference_base_url"] = inference_base_url
             state["client_id"] = client_id
@@ -2110,9 +2017,6 @@ def resolve_nous_runtime_credentials(
     }
 
 
-# =============================================================================
-# Status helpers
-# =============================================================================
 
 def get_nous_auth_status() -> Dict[str, Any]:
     """Status snapshot for `daedalus status` output."""
@@ -2142,8 +2046,6 @@ def get_codex_auth_status() -> Dict[str, Any]:
     Checks the credential pool first (where `daedalus auth` stores credentials),
     then falls back to the legacy provider state.
     """
-    # Check credential pool first — this is where `daedalus auth` and
-    # `daedalus model` store device_code tokens.
     try:
         from agent.credential_pool import load_pool
         pool = load_pool("openai-codex")
@@ -2166,7 +2068,6 @@ def get_codex_auth_status() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Fall back to legacy provider state
     try:
         creds = resolve_codex_runtime_credentials()
         return {
@@ -2212,7 +2113,7 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
         "name": pconfig.name,
         "key_source": key_source,
         "base_url": base_url,
-        "logged_in": bool(api_key),  # compat with OAuth status shape
+        "logged_in": bool(api_key),
     }
 
 
@@ -2257,7 +2158,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_qwen_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
-    # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
         return get_api_key_provider_status(target)
@@ -2342,9 +2242,6 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     }
 
 
-# =============================================================================
-# External credential detection
-# =============================================================================
 
 def detect_external_credentials() -> List[Dict[str, Any]]:
     """Scan for credentials from other CLI tools that Daedalus can reuse.
@@ -2356,7 +2253,6 @@ def detect_external_credentials() -> List[Dict[str, Any]]:
     """
     found: List[Dict[str, Any]] = []
 
-    # Codex CLI: ~/.codex/auth.json (importable, not shared)
     cli_tokens = _import_codex_cli_tokens()
     if cli_tokens:
         codex_path = Path.home() / ".codex" / "auth.json"
@@ -2369,9 +2265,6 @@ def detect_external_credentials() -> List[Dict[str, Any]]:
     return found
 
 
-# =============================================================================
-# CLI Commands — login / logout
-# =============================================================================
 
 def _update_config_for_provider(
     provider_id: str,
@@ -2387,13 +2280,11 @@ def _update_config_for_provider(
     mismatched model/provider (e.g. ``anthropic/claude-opus-4.6`` sent to
     MiniMax's API).
     """
-    # Set active_provider in auth.json so auto-resolution picks this provider
     with _auth_store_lock():
         auth_store = _load_auth_store()
         auth_store["active_provider"] = provider_id
         _save_auth_store(auth_store)
 
-    # Update config.yaml model section
     config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2411,12 +2302,8 @@ def _update_config_for_provider(
     if inference_base_url and inference_base_url.strip():
         model_cfg["base_url"] = inference_base_url.rstrip("/")
     else:
-        # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
 
-    # When switching to a non-OpenRouter provider, ensure model.default is
-    # valid for the new provider.  An OpenRouter-formatted name like
-    # "anthropic/claude-opus-4.6" will fail on direct-API providers.
     if default_model:
         cur_default = model_cfg.get("default", "")
         if not cur_default or "/" in cur_default:
@@ -2466,7 +2353,6 @@ def _prompt_model_selection(
 
     _unavailable = unavailable_models or []
 
-    # Reorder: current model first, then the rest (deduplicated)
     ordered = []
     if current_model and current_model in model_ids:
         ordered.append(current_model)
@@ -2474,17 +2360,14 @@ def _prompt_model_selection(
         if mid not in ordered:
             ordered.append(mid)
 
-    # All models for column-width computation (selectable + unavailable)
     all_models = list(ordered) + list(_unavailable)
 
-    # Column-aligned labels when pricing is available
     has_pricing = bool(pricing and any(pricing.get(m) for m in all_models))
     name_col = max((len(m) for m in all_models), default=0) + 2 if has_pricing else 0
 
-    # Pre-compute formatted prices and dynamic column widths
     _price_cache: dict[str, tuple[str, str, str]] = {}
-    price_col = 3  # minimum width
-    cache_col = 0  # only set if any model has cache pricing
+    price_col = 3
+    cache_col = 0
     has_cache = False
     if has_pricing:
         for mid in all_models:
@@ -2502,7 +2385,7 @@ def _prompt_model_selection(
             price_col = max(price_col, len(inp), len(out))
             cache_col = max(cache_col, len(cache))
         if has_cache:
-            cache_col = max(cache_col, 5)  # minimum: "Cache" header
+            cache_col = max(cache_col, 5)
 
     def _label(mid):
         if has_pricing:
@@ -2517,26 +2400,19 @@ def _prompt_model_selection(
             base += "  ← currently in use"
         return base
 
-    # Default cursor on the current model (index 0 if it was reordered to top)
     default_idx = 0
 
-    # Build a pricing header hint for the menu title
     menu_title = "Select default model:"
     if has_pricing:
-        # Align the header with the model column.
-        # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
-        # a 3-char cursor region ("-> " or "   "), so content starts at col 5.
         pad = " " * 5
         header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
         if has_cache:
             header += f"  {'Cache':>{cache_col}}"
         menu_title += header + "  /Mtok"
 
-    # ANSI escape for dim text
     _DIM = "\033[2m"
     _RESET = "\033[0m"
 
-    # Try arrow-key menu first, fall back to number input
     try:
         from simple_term_menu import TerminalMenu
 
@@ -2544,10 +2420,6 @@ def _prompt_model_selection(
         choices.append("  Enter custom model name")
         choices.append("  Skip (keep current)")
 
-        # Print the unavailable block BEFORE the menu via regular print().
-        # simple_term_menu pads title lines to terminal width (causes wrapping),
-        # so we keep the title minimal and use stdout for the static block.
-        # clear_screen=False means our printed output stays visible above.
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         if _unavailable:
             print(menu_title)
@@ -2584,7 +2456,6 @@ def _prompt_model_selection(
     except (ImportError, NotImplementedError):
         pass
 
-    # Fallback: numbered list
     print(menu_title)
     num_width = len(str(len(ordered) + 2))
     for i, mid in enumerate(ordered, 1):
@@ -2630,7 +2501,6 @@ def _save_model_choice(model_id: str) -> None:
     from daedalus_cli.config import save_config, load_config
 
     config = load_config()
-    # Always use dict format so provider/base_url can be stored alongside
     if isinstance(config.get("model"), dict):
         config["model"]["default"] = model_id
     else:
@@ -2649,13 +2519,8 @@ def login_command(args) -> None:
 def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.daedalus/auth.json."""
 
-    # Check for existing Daedalus-owned credentials
     try:
         existing = resolve_codex_runtime_credentials()
-        # Verify the resolved token is actually usable (not expired).
-        # resolve_codex_runtime_credentials attempts refresh, so if we get
-        # here the token should be valid — but double-check before telling
-        # the user "Login successful!".
         _resolved_key = existing.get("api_key", "")
         if isinstance(_resolved_key, str) and _resolved_key and not _codex_access_token_is_expiring(_resolved_key, 60):
             print("Existing Codex credentials found in Daedalus auth store.")
@@ -2674,7 +2539,6 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
     except AuthError:
         pass
 
-    # Check for existing Codex CLI tokens we can import
     cli_tokens = _import_codex_cli_tokens()
     if cli_tokens:
         print("Found existing Codex CLI credentials at ~/.codex/auth.json")
@@ -2693,7 +2557,6 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
             print(f"  Config updated: {config_path} (model.provider=openai-codex)")
             return
 
-    # Run a fresh device code flow — Daedalus gets its own OAuth session
     print()
     print("Signing in to OpenAI Codex...")
     print("(Daedalus creates its own session — won't affect Codex CLI or VS Code)")
@@ -2701,7 +2564,6 @@ def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
 
     creds = _codex_device_code_login()
 
-    # Save tokens to Daedalus auth store
     _save_codex_tokens(creds["tokens"], creds.get("last_refresh"))
     config_path = _update_config_for_provider("openai-codex", creds.get("base_url", DEFAULT_CODEX_BASE_URL))
     print()
@@ -2718,7 +2580,6 @@ def _codex_device_code_login() -> Dict[str, Any]:
     issuer = "https://auth.openai.com"
     client_id = CODEX_OAUTH_CLIENT_ID
 
-    # Step 1: Request device code
     try:
         with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
             resp = client.post(
@@ -2749,7 +2610,6 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="device_code_incomplete",
         )
 
-    # Step 2: Show user the code
     print("To continue, follow these steps:\n")
     print("  1. Open this URL in your browser:")
     print(f"     \033[94m{issuer}/codex/device\033[0m\n")
@@ -2757,8 +2617,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
     print(f"     \033[94m{user_code}\033[0m\n")
     print("Waiting for sign-in... (press Ctrl+C to cancel)")
 
-    # Step 3: Poll for authorization code
-    max_wait = 15 * 60  # 15 minutes
+    max_wait = 15 * 60
     start = _time.monotonic()
     code_resp = None
 
@@ -2776,7 +2635,7 @@ def _codex_device_code_login() -> Dict[str, Any]:
                     code_resp = poll_resp.json()
                     break
                 elif poll_resp.status_code in (403, 404):
-                    continue  # User hasn't completed login yet
+                    continue
                 else:
                     raise AuthError(
                         f"Device auth polling returned status {poll_resp.status_code}.",
@@ -2792,7 +2651,6 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="device_code_timeout",
         )
 
-    # Step 4: Exchange authorization code for tokens
     authorization_code = code_resp.get("authorization_code", "")
     code_verifier = code_resp.get("code_verifier", "")
     redirect_uri = f"{issuer}/deviceauth/callback"
@@ -2838,7 +2696,6 @@ def _codex_device_code_login() -> Dict[str, Any]:
             provider="openai-codex", code="token_exchange_no_access_token",
         )
 
-    # Return tokens for the caller to persist (no longer writes to ~/.codex/)
     base_url = (
         os.getenv("DAEDALUS_CODEX_BASE_URL", "").strip().rstrip("/")
         or DEFAULT_CODEX_BASE_URL

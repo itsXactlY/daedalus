@@ -27,9 +27,6 @@ from agent.anthropic_adapter import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Auth helpers
-# ---------------------------------------------------------------------------
 
 
 class TestIsOAuthToken:
@@ -40,11 +37,9 @@ class TestIsOAuthToken:
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
     def test_managed_key(self):
-        # Managed keys from ~/.claude.json are NOT regular API keys
         assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is True
 
     def test_jwt_token(self):
-        # JWTs from OAuth flow
         assert _is_oauth_token("eyJhbGciOiJSUzI1NiJ9.test") is True
 
     def test_empty(self):
@@ -70,11 +65,10 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["api_key"] == "sk-ant-api03-something"
             assert "auth_token" not in kwargs
-            # API key auth should still get common betas
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "oauth-2025-04-20" not in betas  # OAuth-only beta NOT present
-            assert "claude-code-20250219" not in betas  # OAuth-only beta NOT present
+            assert "oauth-2025-04-20" not in betas
+            assert "claude-code-20250219" not in betas
 
     def test_custom_base_url(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -286,7 +280,6 @@ class TestRefreshOauthToken:
             result = _refresh_oauth_token(creds)
 
         assert result == "new-token-abc"
-        # Verify credentials were written back
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
         written = json.loads(cred_file.read_text())
@@ -334,7 +327,6 @@ class TestResolveWithRefresh:
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
 
-        # Set up expired creds with a refresh token
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -346,7 +338,6 @@ class TestResolveWithRefresh:
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        # Mock refresh to succeed
         with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
             result = resolve_anthropic_token()
 
@@ -386,7 +377,6 @@ class TestRunOauthSetupToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
 
-        # Pre-create credential files that will be found after subprocess
         cred_file = tmp_path / ".claude" / ".credentials.json"
         cred_file.parent.mkdir(parents=True)
         cred_file.write_text(json.dumps({
@@ -441,9 +431,6 @@ class TestRunOauthSetupToken:
         assert token is None
 
 
-# ---------------------------------------------------------------------------
-# Model name normalization
-# ---------------------------------------------------------------------------
 
 
 class TestNormalizeModelName:
@@ -471,9 +458,6 @@ class TestNormalizeModelName:
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
 
 
-# ---------------------------------------------------------------------------
-# Tool conversion
-# ---------------------------------------------------------------------------
 
 
 class TestConvertTools:
@@ -503,9 +487,6 @@ class TestConvertTools:
         assert convert_tools_to_anthropic(None) == []
 
 
-# ---------------------------------------------------------------------------
-# Message conversion
-# ---------------------------------------------------------------------------
 
 
 class TestConvertMessages:
@@ -608,7 +589,6 @@ class TestConvertMessages:
             {"role": "tool", "tool_call_id": "tc_1", "content": "result data"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        # tool result is in the second message (user role)
         user_msg = [m for m in result if m["role"] == "user"][0]
         assert user_msg["content"][0]["type"] == "tool_result"
         assert user_msg["content"][0]["tool_use_id"] == "tc_1"
@@ -627,7 +607,6 @@ class TestConvertMessages:
             {"role": "tool", "tool_call_id": "tc_2", "content": "result 2"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        # assistant + merged user (with 2 tool_results)
         user_msgs = [m for m in result if m["role"] == "user"]
         assert len(user_msgs) == 1
         assert len(user_msgs[0]["content"]) == 2
@@ -644,7 +623,6 @@ class TestConvertMessages:
             {"role": "user", "content": "never mind"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        # tc_orphan has no matching tool_result, should be stripped
         assistant_blocks = result[0]["content"]
         assert all(b.get("type") != "tool_use" for b in assistant_blocks)
 
@@ -658,13 +636,10 @@ class TestConvertMessages:
         messages = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there"},
-            # The assistant tool_use message was removed by compression,
-            # but the tool_result survived:
             {"role": "tool", "tool_call_id": "tc_gone", "content": "stale result"},
             {"role": "user", "content": "Thanks"},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        # tc_gone has no matching tool_use — its tool_result should be stripped
         for m in result:
             if m["role"] == "user" and isinstance(m["content"], list):
                 assert all(
@@ -704,7 +679,6 @@ class TestConvertMessages:
             {"role": "user", "content": "Hi"},
         ]
         system, result = convert_messages_to_anthropic(messages)
-        # When cache_control is present, system should be a list of blocks
         assert isinstance(system, list)
         assert system[0]["cache_control"] == {"type": "ephemeral"}
 
@@ -885,9 +859,6 @@ class TestConvertMessages:
         assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
 
 
-# ---------------------------------------------------------------------------
-# Build kwargs
-# ---------------------------------------------------------------------------
 
 
 class TestBuildAnthropicKwargs:
@@ -976,7 +947,7 @@ class TestBuildAnthropicKwargs:
             max_tokens=None,
             reasoning_config=None,
         )
-        assert kwargs["max_tokens"] == 64_000  # Sonnet 4 output limit
+        assert kwargs["max_tokens"] == 64_000
 
     def test_default_max_tokens_opus_4_6(self):
         kwargs = build_anthropic_kwargs(
@@ -1044,19 +1015,19 @@ class TestBuildAnthropicKwargs:
     def test_context_length_clamp(self):
         """max_tokens should be clamped to context_length if it's smaller."""
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-6",  # 128K output
+            model="claude-opus-4-6",
             messages=[{"role": "user", "content": "Hi"}],
             tools=None,
             max_tokens=None,
             reasoning_config=None,
             context_length=50000,
         )
-        assert kwargs["max_tokens"] == 49999  # context_length - 1
+        assert kwargs["max_tokens"] == 49999
 
     def test_context_length_no_clamp_when_larger(self):
         """No clamping when context_length exceeds output limit."""
         kwargs = build_anthropic_kwargs(
-            model="claude-sonnet-4-6",  # 64K output
+            model="claude-sonnet-4-6",
             messages=[{"role": "user", "content": "Hi"}],
             tools=None,
             max_tokens=None,
@@ -1066,9 +1037,6 @@ class TestBuildAnthropicKwargs:
         assert kwargs["max_tokens"] == 64_000
 
 
-# ---------------------------------------------------------------------------
-# Model output limit lookup
-# ---------------------------------------------------------------------------
 
 
 class TestGetAnthropicMaxOutput:
@@ -1103,13 +1071,9 @@ class TestGetAnthropicMaxOutput:
     def test_longest_prefix_wins(self):
         """'claude-3-5-sonnet' should match before 'claude-3-5'."""
         from agent.anthropic_adapter import _get_anthropic_max_output
-        # claude-3-5-sonnet (8192) should win over a hypothetical shorter match
         assert _get_anthropic_max_output("claude-3-5-sonnet-20241022") == 8_192
 
 
-# ---------------------------------------------------------------------------
-# _to_plain_data hardening
-# ---------------------------------------------------------------------------
 
 
 class TestToPlainData:
@@ -1127,7 +1091,7 @@ class TestToPlainData:
     def test_circular_reference_does_not_recurse_forever(self):
         """Circular dict reference should be stringified, not infinite-loop."""
         d: dict = {"key": "value"}
-        d["self"] = d  # circular
+        d["self"] = d
         result = _to_plain_data(d)
         assert isinstance(result, dict)
         assert result["key"] == "value"
@@ -1160,9 +1124,6 @@ class TestToPlainData:
         assert result == {"type": "thinking", "thinking": "reason", "signature": "sig"}
 
 
-# ---------------------------------------------------------------------------
-# Response normalization
-# ---------------------------------------------------------------------------
 
 
 class TestNormalizeResponse:
@@ -1248,9 +1209,6 @@ class TestNormalizeResponse:
         assert len(msg.tool_calls) == 1
 
 
-# ---------------------------------------------------------------------------
-# Role alternation
-# ---------------------------------------------------------------------------
 
 
 class TestRoleAlternation:
@@ -1276,9 +1234,6 @@ class TestRoleAlternation:
         assert [m["role"] for m in result] == ["user", "assistant", "user"]
 
 
-# ---------------------------------------------------------------------------
-# Thinking block signature management
-# ---------------------------------------------------------------------------
 
 
 class TestThinkingBlockSignatureManagement:
@@ -1313,17 +1268,14 @@ class TestThinkingBlockSignatureManagement:
         ]
         _, result = convert_messages_to_anthropic(messages)
 
-        # Find both assistant messages
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 2
 
-        # First (non-last) assistant: no thinking blocks
         first_types = [b.get("type") for b in assistants[0]["content"]]
         assert "thinking" not in first_types
         assert "redacted_thinking" not in first_types
-        assert "tool_use" in first_types  # tool_use should survive
+        assert "tool_use" in first_types
 
-        # Last assistant: thinking block preserved with signature
         last_blocks = assistants[1]["content"]
         thinking_blocks = [b for b in last_blocks if b.get("type") == "thinking"]
         assert len(thinking_blocks) == 1
@@ -1355,16 +1307,13 @@ class TestThinkingBlockSignatureManagement:
                 "content": "Response text.",
                 "reasoning_details": [
                     {"type": "thinking", "thinking": "Unsigned reasoning."},
-                    # No 'signature' field
                 ],
             },
         ]
         _, result = convert_messages_to_anthropic(messages)
         blocks = result[0]["content"]
 
-        # No thinking blocks should remain
         assert not any(b.get("type") == "thinking" for b in blocks)
-        # The reasoning text should be preserved as a text block
         text_contents = [b.get("text", "") for b in blocks if b.get("type") == "text"]
         assert "Unsigned reasoning." in text_contents
 
@@ -1393,7 +1342,6 @@ class TestThinkingBlockSignatureManagement:
                 "content": "Response.",
                 "reasoning_details": [
                     {"type": "redacted_thinking"},
-                    # No 'data' field
                 ],
             },
         ]
@@ -1447,11 +1395,9 @@ class TestThinkingBlockSignatureManagement:
         ]
         _, result = convert_messages_to_anthropic(messages)
 
-        # Should be merged into one assistant message
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 1
 
-        # Only the first thinking block should remain (signed, on the last/only assistant)
         blocks = assistants[0]["content"]
         thinking = [b for b in blocks if b.get("type") == "thinking"]
         assert len(thinking) == 1
@@ -1465,15 +1411,12 @@ class TestThinkingBlockSignatureManagement:
                 "content": "",
                 "reasoning_details": [
                     {"type": "thinking", "thinking": "Only thinking, no text."},
-                    # Unsigned — will be downgraded, but content was empty string
                 ],
             },
             {"role": "user", "content": "Next message."},
             {"role": "assistant", "content": "Final."},
         ]
         _, result = convert_messages_to_anthropic(messages)
-        # First assistant is non-last, so thinking is stripped completely.
-        # The original content was empty and thinking was unsigned → placeholder
         first_assistant = result[0]
         assert first_assistant["role"] == "assistant"
         assert len(first_assistant["content"]) >= 1
@@ -1511,7 +1454,6 @@ class TestThinkingBlockSignatureManagement:
         assistants = [m for m in result if m["role"] == "assistant"]
         assert len(assistants) == 3
 
-        # First two: no thinking blocks
         for a in assistants[:2]:
             assert not any(
                 b.get("type") in ("thinking", "redacted_thinking")
@@ -1519,7 +1461,6 @@ class TestThinkingBlockSignatureManagement:
                 if isinstance(b, dict)
             )
 
-        # Last one: thinking preserved
         last_thinking = [
             b for b in assistants[2]["content"]
             if isinstance(b, dict) and b.get("type") == "thinking"
@@ -1528,9 +1469,6 @@ class TestThinkingBlockSignatureManagement:
         assert last_thinking[0]["signature"] == "sig_3"
 
 
-# ---------------------------------------------------------------------------
-# Tool choice
-# ---------------------------------------------------------------------------
 
 
 class TestToolChoice:

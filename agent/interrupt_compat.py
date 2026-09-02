@@ -14,10 +14,6 @@ def request_hard_interrupt(agent: Any, message: str | None = None) -> bool:
     usable without sending the newer ``hard_cancel=`` keyword they do not know.
     Returns ``False`` only when neither callable is available.
     """
-    # Avoid treating a dynamic ``__getattr__`` proxy (notably an unspecced
-    # ``MagicMock`` or a third-party RPC facade) as if it genuinely implements
-    # the new ABI. Static lookup proves the attribute exists on the instance or
-    # its type before normal descriptor binding retrieves the callable.
     try:
         inspect.getattr_static(agent, "hard_interrupt")
     except AttributeError:

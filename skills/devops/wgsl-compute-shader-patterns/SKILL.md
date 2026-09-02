@@ -9,6 +9,13 @@ priority: high
 
 # WGSL Compute Shader Patterns
 
+> ⚠️ **CONTAMINATION WARNING (verified 2026-08-22 against gpuweb spec + shipped code):**
+> several code blocks below use API THAT DOES NOT EXIST — do not copy them:
+> - `@global const` / `@global var` — NOT WGSL. Real: `@group(0) @binding(n) var<uniform>` / `var<storage, read_write>`.
+> - `@subgroup_function_atomic_add` / `@subgroup_function_barrier` — FABRICATED. Real: `atomicAdd(&x,1u)`, `workgroupBarrier()`; subgroup builtins are `subgroupAdd()`, `subgroupBroadcast()`, … gated behind `enable subgroups;` + adapter feature.
+> - `@builtin(workgroup_uniform_id)` — not a WGSL builtin.
+> Trust order: shipped code > W3C WGSL spec (https://www.w3.org/TR/WGSL/) > this file's prose patterns. The workgroup-sizing RULES and pitfall CONCEPTS below are sound; every code snippet needs re-verification before use.
+
 ## Purpose
 
 Best practices for writing WGSL compute shaders. Covers workgroup sizing, builtin function usage, memory model semantics, and common pitfalls.

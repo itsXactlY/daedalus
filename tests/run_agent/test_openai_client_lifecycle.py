@@ -177,8 +177,6 @@ def test_streaming_call_recreates_closed_shared_client_before_request(monkeypatc
 
     agent = _build_agent(shared_client=stale_shared)
     agent.stream_delta_callback = lambda _delta: None
-    # Force chat_completions mode so the streaming path uses
-    # chat.completions.create(stream=True) instead of Codex responses.stream()
     agent.api_mode = "chat_completions"
     response = agent._interruptible_streaming_api_call({"model": agent.model, "messages": []})
 

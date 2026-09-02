@@ -185,7 +185,6 @@ def cmd_book(token_id: str):
     print(f"Orderbook for {token_id[:30]}...")
     print(f"Last trade: {_fmt_pct(last)}  |  Tick size: {book.get('tick_size', '?')}")
     print(f"\n  Top bids ({len(bids)} total):")
-    # Show bids sorted by price descending (best bids first)
     sorted_bids = sorted(bids, key=lambda x: float(x.get("price", 0)), reverse=True)
     for b in sorted_bids[:10]:
         print(f"    {_fmt_pct(b['price']):>7}  |  Size: {float(b['size']):>10.2f}")

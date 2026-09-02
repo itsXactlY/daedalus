@@ -23,32 +23,25 @@ from prompt_toolkit.completion import Completer, Completion
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# CommandDef dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class CommandDef:
     """Definition of a single slash command."""
 
-    name: str                          # canonical name without slash: "background"
-    description: str                   # human-readable description
-    category: str                      # "Session", "Configuration", etc.
-    aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
-    args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
-    subcommands: tuple[str, ...] = ()  # tab-completable subcommands
-    cli_only: bool = False             # only available in CLI
-    gateway_only: bool = False         # only available in gateway/messaging
-    gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
-    execute: str | None = None         # key into daedalus_cli.slash_exec.EXECUTORS, when migrated
+    name: str
+    description: str
+    category: str
+    aliases: tuple[str, ...] = ()
+    args_hint: str = ""
+    subcommands: tuple[str, ...] = ()
+    cli_only: bool = False
+    gateway_only: bool = False
+    gateway_config_gate: str | None = None
+    execute: str | None = None
 
 
-# ---------------------------------------------------------------------------
-# Central registry -- single source of truth
-# ---------------------------------------------------------------------------
 
 COMMAND_REGISTRY: list[CommandDef] = [
-    # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
                aliases=("reset",)),
     CommandDef("clear", "Clear screen and start a new session", "Session",
@@ -85,7 +78,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 
-    # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
@@ -110,7 +102,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
-    # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
                args_hint="[list|disable|enable] [name...]", cli_only=True),
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",
@@ -131,7 +122,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills", execute="bundles"),
 
-    # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
@@ -145,15 +135,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Daedalus Agent to the latest version", "Info",
                gateway_only=True),
 
-    # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
                cli_only=True, aliases=("exit", "q")),
 ]
 
 
-# ---------------------------------------------------------------------------
-# Derived lookups -- rebuilt once at import time, refreshed by rebuild_lookups()
-# ---------------------------------------------------------------------------
 
 def _build_command_lookup() -> dict[str, CommandDef]:
     """Map every name and alias to its CommandDef."""
@@ -176,13 +162,6 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
-# Commands that must cancel an in-flight agent turn before dispatching,
-# rather than being queued as a pending message (which would either leak
-# into the conversation as user text, or deadlock commands that wait on
-# the running turn). Minimal port: upstream derives this from a
-# ``busy_policy`` field on CommandDef; this fork's CommandDef doesn't have
-# that field, so it's a hardcoded set matching upstream's documented class
-# of commands (/stop, /new, /reset) instead of the full registry rework.
 _INTERRUPT_THEN_DISPATCH_COMMANDS = frozenset({"stop", "new", "reset"})
 
 
@@ -263,7 +242,6 @@ def _build_description(cmd: CommandDef) -> str:
     return cmd.description
 
 
-# Backwards-compatible flat dict: "/command" -> description
 COMMANDS: dict[str, str] = {}
 for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
@@ -271,7 +249,6 @@ for _cmd in COMMAND_REGISTRY:
         for _alias in _cmd.aliases:
             COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
 
-# Backwards-compatible categorized dict
 COMMANDS_BY_CATEGORY: dict[str, dict[str, str]] = {}
 for _cmd in COMMAND_REGISTRY:
     if not _cmd.gateway_only:
@@ -281,16 +258,11 @@ for _cmd in COMMAND_REGISTRY:
             _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
 
 
-# Subcommands lookup: "/cmd" -> ["sub1", "sub2", ...]
 SUBCOMMANDS: dict[str, list[str]] = {}
 for _cmd in COMMAND_REGISTRY:
     if _cmd.subcommands:
         SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
 
-# Also extract subcommands hinted in args_hint via pipe-separated patterns
-# e.g. args_hint="[on|off|tts|status]" for commands that don't have explicit subcommands.
-# NOTE: If a command already has explicit subcommands, this fallback is skipped.
-# Use the `subcommands` field on CommandDef for intentional tab-completable args.
 _PIPE_SUBS_RE = re.compile(r"[a-z]+(?:\|[a-z]+)+")
 for _cmd in COMMAND_REGISTRY:
     key = f"/{_cmd.name}"
@@ -301,13 +273,7 @@ for _cmd in COMMAND_REGISTRY:
         SUBCOMMANDS[key] = m.group(0).split("|")
 
 
-# ---------------------------------------------------------------------------
-# Gateway helpers
-# ---------------------------------------------------------------------------
 
-# Set of all command names + aliases recognized by the gateway.
-# Includes config-gated commands so the gateway can dispatch them
-# (the handler checks the config gate at runtime).
 GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
     name
     for cmd in COMMAND_REGISTRY
@@ -371,7 +337,6 @@ def gateway_help_lines() -> list[str]:
         args = f" {cmd.args_hint}" if cmd.args_hint else ""
         alias_parts: list[str] = []
         for a in cmd.aliases:
-            # Skip internal aliases like reload_mcp (underscore variant)
             if a.replace("-", "_") == cmd.name.replace("-", "_") and a != cmd.name:
                 continue
             alias_parts.append(f"`/{a}`")
@@ -401,11 +366,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
 _CMD_NAME_LIMIT = 32
 """Max command name length shared by Telegram and Discord."""
 
-# Backward-compat alias — tests and external code may reference the old name.
 _TG_NAME_LIMIT = _CMD_NAME_LIMIT
 
-# Telegram Bot API allows only lowercase a-z, 0-9, and underscores in
-# command names.  This regex strips everything else after initial conversion.
 _TG_INVALID_CHARS = re.compile(r"[^a-z0-9_]")
 _TG_MULTI_UNDERSCORE = re.compile(r"_{2,}")
 
@@ -448,7 +410,6 @@ def _clamp_command_names(
                     if candidate not in used:
                         break
                 else:
-                    # All 10 digit slots exhausted — skip entry
                     continue
             name = candidate
         if name in used:
@@ -458,13 +419,9 @@ def _clamp_command_names(
     return result
 
 
-# Backward-compat alias.
 _clamp_telegram_names = _clamp_command_names
 
 
-# ---------------------------------------------------------------------------
-# Shared skill/plugin collection for gateway platforms
-# ---------------------------------------------------------------------------
 
 def _collect_gateway_skill_entries(
     platform: str,
@@ -503,7 +460,6 @@ def _collect_gateway_skill_entries(
     """
     all_entries: list[tuple[str, str, str]] = []
 
-    # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
     plugin_pairs: list[tuple[str, str]] = []
     try:
         from daedalus_cli.plugins import get_plugin_manager
@@ -522,11 +478,9 @@ def _collect_gateway_skill_entries(
 
     plugin_pairs = _clamp_command_names(plugin_pairs, reserved_names)
     reserved_names.update(n for n, _ in plugin_pairs)
-    # Plugins have no cmd_key — use empty string as placeholder
     for n, d in plugin_pairs:
         all_entries.append((n, d, ""))
 
-    # --- Tier 2: Built-in skill commands (trimmed at cap) -----------------
     _platform_disabled: set[str] = set()
     try:
         from agent.skill_utils import get_disabled_skill_names
@@ -562,13 +516,10 @@ def _collect_gateway_skill_entries(
     except Exception:
         pass
 
-    # Clamp names; _clamp_command_names works on (name, desc) pairs so we
-    # need to zip/unzip.
     skill_pairs = [(n, d) for n, d, _ in skill_triples]
     key_by_pair = {(n, d): k for n, d, k in skill_triples}
     skill_pairs = _clamp_command_names(skill_pairs, reserved_names)
 
-    # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
     hidden_count = max(0, len(skill_pairs) - remaining)
     for n, d in skill_pairs[:remaining]:
@@ -577,9 +528,6 @@ def _collect_gateway_skill_entries(
     return all_entries[:max_slots], hidden_count
 
 
-# ---------------------------------------------------------------------------
-# Platform-specific wrappers
-# ---------------------------------------------------------------------------
 
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
     """Return Telegram menu commands capped to the Bot API limit.
@@ -610,7 +558,6 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
-    # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
     return all_commands[:max_commands], hidden_count
 
@@ -665,7 +612,7 @@ def discord_skill_commands(
     return _collect_gateway_skill_entries(
         platform="discord",
         max_slots=max_slots,
-        reserved_names=set(reserved_names),  # copy — don't mutate caller's set
+        reserved_names=set(reserved_names),
         desc_limit=100,
     )
 
@@ -801,9 +748,6 @@ def slack_subcommand_map() -> dict[str, str]:
     return mapping
 
 
-# ---------------------------------------------------------------------------
-# Autocomplete
-# ---------------------------------------------------------------------------
 
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, skill commands, and skill bundles."""
@@ -854,15 +798,12 @@ class SlashCommandCompleter(Completer):
         """
         if not text:
             return None
-        # Walk backwards to find the start of the current "word".
-        # Words are delimited by spaces, but paths can contain almost anything.
         i = len(text) - 1
         while i >= 0 and text[i] != " ":
             i -= 1
         word = text[i + 1:]
         if not word:
             return None
-        # Only trigger path completion for path-like tokens
         if word.startswith(("./", "../", "~/", "/")) or "/" in word:
             return word
         return None
@@ -871,7 +812,6 @@ class SlashCommandCompleter(Completer):
     def _path_completions(word: str, limit: int = 30):
         """Yield Completion objects for file paths matching *word*."""
         expanded = os.path.expanduser(word)
-        # Split into directory part and prefix to match inside it
         if expanded.endswith("/"):
             search_dir = expanded
             prefix = ""
@@ -895,13 +835,11 @@ class SlashCommandCompleter(Completer):
             full_path = os.path.join(search_dir, entry)
             is_dir = os.path.isdir(full_path)
 
-            # Build the completion text (what replaces the typed word)
             if word.startswith("~"):
                 display_path = "~/" + os.path.relpath(full_path, os.path.expanduser("~"))
             elif os.path.isabs(word):
                 display_path = full_path
             else:
-                # Keep relative
                 display_path = os.path.relpath(full_path)
 
             if is_dir:
@@ -923,7 +861,6 @@ class SlashCommandCompleter(Completer):
         """Extract a bare ``@`` token for context reference completions."""
         if not text:
             return None
-        # Walk backwards to find the start of the current word
         i = len(text) - 1
         while i >= 0 and text[i] != " ":
             i -= 1
@@ -942,7 +879,6 @@ class SlashCommandCompleter(Completer):
         """
         lowered = word.lower()
 
-        # Static context references
         _STATIC_REFS = (
             ("@diff", "Git working tree diff"),
             ("@staged", "Git staged diff"),
@@ -960,7 +896,6 @@ class SlashCommandCompleter(Completer):
                     display_meta=meta,
                 )
 
-        # If the user typed @file: or @folder:, delegate to path completions
         for prefix in ("@file:", "@folder:"):
             if word.startswith(prefix):
                 path_part = word[len(prefix):] or "."
@@ -999,8 +934,7 @@ class SlashCommandCompleter(Completer):
                     count += 1
                 return
 
-        # Bare @ or @partial — show matching files/folders from cwd
-        query = word[1:]  # strip the @
+        query = word[1:]
         if not query:
             search_dir, match_prefix = ".", ""
         else:
@@ -1022,7 +956,7 @@ class SlashCommandCompleter(Completer):
             if match_prefix and not entry.lower().startswith(prefix_lower):
                 continue
             if entry.startswith("."):
-                continue  # skip hidden files in bare @ mode
+                continue
             if count >= limit:
                 break
             full_path = os.path.join(search_dir, entry)
@@ -1043,7 +977,6 @@ class SlashCommandCompleter(Completer):
     def _model_completions(self, sub_text: str, sub_lower: str):
         """Yield completions for /model from config aliases + built-in aliases."""
         seen = set()
-        # Config-based direct aliases (preferred — include provider info)
         try:
             from daedalus_cli.model_switch import (
                 _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
@@ -1058,7 +991,6 @@ class SlashCommandCompleter(Completer):
                         display=name,
                         display_meta=f"{da.model} ({da.provider})",
                     )
-            # Built-in catalog aliases not already covered
             for name in sorted(MODEL_ALIASES.keys()):
                 if name in seen:
                     continue
@@ -1076,30 +1008,25 @@ class SlashCommandCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
-            # Try @ context completion (Claude Code-style)
             ctx_word = self._extract_context_word(text)
             if ctx_word is not None:
                 yield from self._context_completions(ctx_word)
                 return
-            # Try file path completion for non-slash input
             path_word = self._extract_path_word(text)
             if path_word is not None:
                 yield from self._path_completions(path_word)
             return
 
-        # Check if we're completing a subcommand (base command already typed)
         parts = text.split(maxsplit=1)
         base_cmd = parts[0].lower()
         if len(parts) > 1 or (len(parts) == 1 and text.endswith(" ")):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
 
-            # Dynamic model alias completions for /model
             if " " not in sub_text and base_cmd == "/model":
                 yield from self._model_completions(sub_text, sub_lower)
                 return
 
-            # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS:
                 for sub in SUBCOMMANDS[base_cmd]:
                     if sub.startswith(sub_lower) and sub != sub_lower:
@@ -1122,8 +1049,6 @@ class SlashCommandCompleter(Completer):
                     display_meta=desc,
                 )
 
-        # A bundle shadows a skill with the same slash name — skip the
-        # skill completion so the bundle is the only suggestion offered.
         bundles = self._iter_skill_bundles()
         for cmd, info in self._iter_skill_commands().items():
             if cmd in bundles:
@@ -1153,9 +1078,6 @@ class SlashCommandCompleter(Completer):
                 )
 
 
-# ---------------------------------------------------------------------------
-# Inline auto-suggest (ghost text) for slash commands
-# ---------------------------------------------------------------------------
 
 class SlashCommandAutoSuggest(AutoSuggest):
     """Inline ghost-text suggestions for slash commands and their subcommands.
@@ -1170,14 +1092,12 @@ class SlashCommandAutoSuggest(AutoSuggest):
         completer: SlashCommandCompleter | None = None,
     ) -> None:
         self._history = history_suggest
-        self._completer = completer  # Reuse its model cache
+        self._completer = completer
 
     def get_suggestion(self, buffer, document):
         text = document.text_before_cursor
 
-        # Only suggest for slash commands
         if not text.startswith("/"):
-            # Fall back to history for regular text
             if self._history:
                 return self._history.get_suggestion(buffer, document)
             return None
@@ -1186,26 +1106,22 @@ class SlashCommandAutoSuggest(AutoSuggest):
         base_cmd = parts[0].lower()
 
         if len(parts) == 1 and not text.endswith(" "):
-            # Still typing the command name: /upd → suggest "ate"
             word = text[1:].lower()
             for cmd in COMMANDS:
-                cmd_name = cmd[1:]  # strip leading /
+                cmd_name = cmd[1:]
                 if cmd_name.startswith(word) and cmd_name != word:
                     return Suggestion(cmd_name[len(word):])
             return None
 
-        # Command is complete — suggest subcommands or model names
         sub_text = parts[1] if len(parts) > 1 else ""
         sub_lower = sub_text.lower()
 
-        # Static subcommands
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:
             if " " not in sub_text:
                 for sub in SUBCOMMANDS[base_cmd]:
                     if sub.startswith(sub_lower) and sub != sub_lower:
                         return Suggestion(sub[len(sub_text):])
 
-        # Fall back to history
         if self._history:
             return self._history.get_suggestion(buffer, document)
         return None

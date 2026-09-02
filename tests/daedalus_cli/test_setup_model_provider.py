@@ -69,14 +69,13 @@ def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, m
     _clear_provider_env(monkeypatch)
     _stub_tts(monkeypatch)
 
-    # Pre-set custom provider
     _write_model_config("custom", "http://localhost:8080/v1", "local-model")
 
     config = load_config()
     assert config["model"]["provider"] == "custom"
 
     def fake_select():
-        pass  # user chose "cancel" or "keep current"
+        pass
 
     monkeypatch.setattr("daedalus_cli.main.select_provider_and_model", fake_select)
 
@@ -102,7 +101,7 @@ def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(
     config = load_config()
 
     def fake_select():
-        pass  # keep current
+        pass
 
     monkeypatch.setattr("daedalus_cli.main.select_provider_and_model", fake_select)
 
@@ -119,7 +118,6 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
     _clear_provider_env(monkeypatch)
     save_env_value("OPENROUTER_API_KEY", "or-key")
 
-    # Pre-write config so the pool step sees provider="openrouter"
     _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
 
     config = load_config()
@@ -133,11 +131,11 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
             return [_Entry("primary"), _Entry("secondary")]
 
     def fake_select():
-        pass  # no-op — config already has provider set
+        pass
 
     def fake_prompt_choice(question, choices, default=0):
         if "rotation strategy" in question:
-            return 1  # round robin
+            return 1
         tts_idx = _maybe_keep_current_tts(question, choices)
         if tts_idx is not None:
             return tts_idx
@@ -146,14 +144,12 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
     def fake_prompt_yes_no(question, default=True):
         return False
 
-    # Patch directly on the module objects to ensure local imports pick them up.
     import daedalus_cli.main as _main_mod
     import daedalus_cli.setup as _setup_mod
     import agent.credential_pool as _pool_mod
     import agent.auxiliary_client as _aux_mod
 
     monkeypatch.setattr(_main_mod, "select_provider_and_model", fake_select)
-    # NOTE: _stub_tts overwrites prompt_choice, so set our mock AFTER it.
     _stub_tts(monkeypatch)
     monkeypatch.setattr(_setup_mod, "prompt_choice", fake_prompt_choice)
     monkeypatch.setattr(_setup_mod, "prompt_yes_no", fake_prompt_yes_no)
@@ -163,7 +159,6 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
 
     setup_model_provider(config)
 
-    # The pool has 2 entries, so the strategy prompt should fire
     strategy = config.get("credential_pool_strategies", {}).get("openrouter")
     assert strategy == "round_robin", f"Expected round_robin but got {strategy}"
 
@@ -173,7 +168,6 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
     _clear_provider_env(monkeypatch)
     save_env_value("OPENROUTER_API_KEY", "or-key")
 
-    # Pre-write config so the pool step sees provider="openrouter"
     _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
 
     config = load_config()
@@ -198,7 +192,7 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
         add_calls.append(args.provider)
 
     def fake_select():
-        pass  # no-op — config already has provider set
+        pass
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select same-provider rotation strategy:":
@@ -235,7 +229,6 @@ def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypa
     _clear_provider_env(monkeypatch)
     save_env_value("OPENROUTER_API_KEY", "or-key")
 
-    # Pre-write config so the pool step sees provider="openrouter"
     _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
 
     config = load_config()
@@ -254,7 +247,7 @@ def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypa
             ]
 
     def fake_select():
-        pass  # no-op — config already has provider set
+        pass
 
     def fake_prompt_choice(question, choices, default=0):
         if "rotation strategy" in question:
@@ -286,7 +279,7 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
 
     def fake_prompt_choice(question, choices, default=0):
         if question == "Select your inference provider:":
-            return 15  # GitHub Copilot ACP
+            return 15
         if question == "Select default model:":
             return 0
         if question == "Configure vision:":
@@ -363,7 +356,6 @@ def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(
     _clear_provider_env(monkeypatch)
     _stub_tts(monkeypatch)
 
-    # Start with custom
     _write_model_config("custom", "http://localhost:11434/v1", "qwen3.5:32b")
 
     config = load_config()

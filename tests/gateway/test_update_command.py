@@ -37,9 +37,6 @@ def _make_runner():
     return runner
 
 
-# ---------------------------------------------------------------------------
-# _handle_update_command
-# ---------------------------------------------------------------------------
 
 
 class TestHandleUpdateCommand:
@@ -61,33 +58,23 @@ class TestHandleUpdateCommand:
         """Returns an error when .git does not exist."""
         runner = _make_runner()
         event = _make_event()
-        # Point _daedalus_home to tmp_path and project_root to a dir without .git
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         with patch("gateway.run._daedalus_home", tmp_path), \
              patch("gateway.run.Path") as MockPath:
-            # Path(__file__).parent.parent.resolve() -> fake_root
             MockPath.return_value = MagicMock()
             MockPath.__truediv__ = Path.__truediv__
-            # Easier: just patch the __file__ resolution in the method
             pass
 
-        # Simpler approach — mock at method level using a wrapper
         from gateway.run import GatewayRunner
         runner = _make_runner()
 
         with patch("gateway.run._daedalus_home", tmp_path):
-            # The handler does Path(__file__).parent.parent.resolve()
-            # We need to make project_root / '.git' not exist.
-            # Since Path(__file__) resolves to the real gateway/run.py,
-            # project_root will be the real daedalus dir (which HAS .git).
-            # Patch Path to control this.
             original_path = Path
 
             class FakePath(type(Path())):
                 pass
 
-            # Actually, simplest: just patch the specific file attr
             fake_file = str(fake_root / "gateway" / "run.py")
             (fake_root / "gateway").mkdir(parents=True)
             (fake_root / "gateway" / "run.py").touch()
@@ -103,7 +90,6 @@ class TestHandleUpdateCommand:
         runner = _make_runner()
         event = _make_event()
 
-        # Create project dir WITH .git
         fake_root = tmp_path / "project"
         fake_root.mkdir()
         (fake_root / ".git").mkdir()
@@ -147,7 +133,6 @@ class TestHandleUpdateCommand:
 
         assert "Starting Daedalus update" in result
         call_args = mock_popen.call_args[0][0]
-        # The update_cmd uses sys.executable -m daedalus_cli.main
         joined = " ".join(call_args) if isinstance(call_args, list) else call_args
         assert "daedalus_cli.main" in joined or "bash" in call_args[0]
 
@@ -236,7 +221,6 @@ class TestHandleUpdateCommand:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Verify setsid was used
         call_args = mock_popen.call_args[0][0]
         assert call_args[0] == "/usr/bin/setsid"
         assert call_args[1] == "bash"
@@ -273,12 +257,10 @@ class TestHandleUpdateCommand:
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)
 
-        # Verify plain bash -c fallback (no nohup, no setsid)
         call_args = mock_popen.call_args[0][0]
         assert call_args[0] == "bash"
         assert "nohup" not in call_args[2]
         assert ".update_exit_code" in call_args[2]
-        # start_new_session=True should be in kwargs
         call_kwargs = mock_popen.call_args[1]
         assert call_kwargs.get("start_new_session") is True
         assert "Starting Daedalus update" in result
@@ -305,7 +287,6 @@ class TestHandleUpdateCommand:
             result = await runner._handle_update_command(event)
 
         assert "Failed to start update" in result
-        # Pending file should be cleaned up
         assert not (daedalus_home / ".update_pending.json").exists()
         assert not (daedalus_home / ".update_exit_code").exists()
 
@@ -333,9 +314,6 @@ class TestHandleUpdateCommand:
         assert "stream progress" in result
 
 
-# ---------------------------------------------------------------------------
-# _send_update_notification
-# ---------------------------------------------------------------------------
 
 
 class TestSendUpdateNotification:
@@ -349,7 +327,6 @@ class TestSendUpdateNotification:
         daedalus_home.mkdir()
 
         with patch("gateway.run._daedalus_home", daedalus_home):
-            # Should not raise
             await runner._send_update_notification()
 
     @pytest.mark.asyncio
@@ -406,7 +383,6 @@ class TestSendUpdateNotification:
         daedalus_home = tmp_path / "daedalus"
         daedalus_home.mkdir()
 
-        # Write pending marker
         pending = {
             "platform": "telegram",
             "chat_id": "67890",
@@ -419,7 +395,6 @@ class TestSendUpdateNotification:
         )
         (daedalus_home / ".update_exit_code").write_text("0")
 
-        # Mock the adapter
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
@@ -429,7 +404,7 @@ class TestSendUpdateNotification:
 
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
-        assert call_args[0][0] == "67890"  # chat_id
+        assert call_args[0][0] == "67890"
         assert "Update complete" in call_args[0][1] or "update finished" in call_args[0][1].lower()
 
     @pytest.mark.asyncio
@@ -475,9 +450,7 @@ class TestSendUpdateNotification:
             await runner._send_update_notification()
 
         sent_text = mock_adapter.send.call_args[0][1]
-        # Should start with truncation marker
         assert "…" in sent_text
-        # Total message should not be absurdly long
         assert len(sent_text) < 4500
 
     @pytest.mark.asyncio
@@ -512,7 +485,6 @@ class TestSendUpdateNotification:
 
         pending = {"platform": "telegram", "chat_id": "111", "user_id": "222"}
         (daedalus_home / ".update_pending.json").write_text(json.dumps(pending))
-        # No .update_output.txt created
         (daedalus_home / ".update_exit_code").write_text("0")
 
         mock_adapter = AsyncMock()
@@ -566,7 +538,6 @@ class TestSendUpdateNotification:
         output_path.write_text("✓ Done")
         exit_code_path.write_text("0")
 
-        # Adapter send raises
         mock_adapter = AsyncMock()
         mock_adapter.send.side_effect = RuntimeError("network error")
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
@@ -574,7 +545,6 @@ class TestSendUpdateNotification:
         with patch("gateway.run._daedalus_home", daedalus_home):
             await runner._send_update_notification()
 
-        # Files should still be cleaned up (finally block)
         assert not pending_path.exists()
         assert not output_path.exists()
         assert not exit_code_path.exists()
@@ -590,10 +560,8 @@ class TestSendUpdateNotification:
         pending_path.write_text("{corrupt json!!")
 
         with patch("gateway.run._daedalus_home", daedalus_home):
-            # Should not raise
             await runner._send_update_notification()
 
-        # File should be cleaned up
         assert not pending_path.exists()
 
     @pytest.mark.asyncio
@@ -611,23 +579,17 @@ class TestSendUpdateNotification:
         output_path.write_text("Done")
         exit_code_path.write_text("0")
 
-        # Only telegram adapter available, but pending says discord
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
 
         with patch("gateway.run._daedalus_home", daedalus_home):
             await runner._send_update_notification()
 
-        # send should not have been called (wrong platform)
         mock_adapter.send.assert_not_called()
-        # Files should still be cleaned up
         assert not pending_path.exists()
         assert not exit_code_path.exists()
 
 
-# ---------------------------------------------------------------------------
-# /update in help and known_commands
-# ---------------------------------------------------------------------------
 
 
 class TestUpdateInHelp:
@@ -643,8 +605,6 @@ class TestUpdateInHelp:
 
     def test_update_is_known_command(self):
         """The /update command is in the help text (proxy for _known_commands)."""
-        # _known_commands is local to _handle_message, so we verify by
-        # checking the help output includes it.
         from gateway.run import GatewayRunner
         import inspect
         source = inspect.getsource(GatewayRunner._handle_message)

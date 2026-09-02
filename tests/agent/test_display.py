@@ -57,7 +57,7 @@ class TestBuildToolPreview:
         long_cmd = "a" * 100
         result = build_tool_preview("terminal", {"command": long_cmd}, max_len=40)
         assert result is not None
-        assert len(result) <= 43  # max_len + "..."
+        assert len(result) <= 43
 
     def test_process_tool_with_none_args(self):
         """Process tool special case should also handle None args."""

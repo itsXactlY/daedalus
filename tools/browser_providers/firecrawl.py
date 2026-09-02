@@ -23,9 +23,6 @@ class FirecrawlProvider(CloudBrowserProvider):
     def is_configured(self) -> bool:
         return bool(os.environ.get("FIRECRAWL_API_KEY"))
 
-    # ------------------------------------------------------------------
-    # Session lifecycle
-    # ------------------------------------------------------------------
 
     def _api_url(self) -> str:
         return os.environ.get("FIRECRAWL_API_URL", _BASE_URL)

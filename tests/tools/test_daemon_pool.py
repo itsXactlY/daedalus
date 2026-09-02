@@ -25,7 +25,6 @@ def test_workers_are_daemon_threads():
         ).result(timeout=10)
         is_daemon, worker = info
         assert is_daemon is True
-        # Not registered with concurrent.futures' atexit join hook.
         assert worker not in _threads_queues
     finally:
         pool.shutdown(wait=True)
@@ -35,7 +34,7 @@ def test_idle_worker_reuse():
     pool = DaemonThreadPoolExecutor(max_workers=4)
     try:
         tid1 = pool.submit(threading.get_ident).result(timeout=10)
-        time.sleep(0.05)  # let the worker park on the idle semaphore
+        time.sleep(0.05)
         tid2 = pool.submit(threading.get_ident).result(timeout=10)
         assert tid1 == tid2
     finally:

@@ -35,7 +35,6 @@ def _mock_client(base_url="https://openrouter.ai/api/v1", api_key="fb-key"):
     return mock
 
 
-# ── Chain initialisation ──────────────────────────────────────────────────
 
 
 class TestFallbackChainInit:
@@ -81,7 +80,6 @@ class TestFallbackChainInit:
         assert agent._fallback_chain == []
 
 
-# ── Chain advancement ─────────────────────────────────────────────────────
 
 
 class TestFallbackChainAdvancement:
@@ -133,8 +131,8 @@ class TestFallbackChainAdvancement:
         agent = _make_agent(fallback_model=fbs)
         with patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc:
             mock_rpc.side_effect = [
-                (None, None),                    # broken provider
-                (_mock_client(), "gpt-4o"),       # fallback succeeds
+                (None, None),
+                (_mock_client(), "gpt-4o"),
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"

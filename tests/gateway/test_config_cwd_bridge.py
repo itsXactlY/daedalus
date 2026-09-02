@@ -21,12 +21,10 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
     """
     env = dict(initial_env or {})
 
-    # --- Replicate lines 54-56: generic top-level bridge (for context) ---
     for key, val in cfg.items():
         if isinstance(val, (str, int, float, bool)) and key not in env:
             env[key] = str(val)
 
-    # --- Replicate lines 59-87: terminal config bridge ---
     terminal_cfg = cfg.get("terminal", {})
     if terminal_cfg and isinstance(terminal_cfg, dict):
         terminal_env_map = {
@@ -42,7 +40,6 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 else:
                     env[env_var] = str(val)
 
-    # --- NEW: top-level aliases (the fix being tested) ---
     top_level_aliases = {
         "cwd": "TERMINAL_CWD",
         "backend": "TERMINAL_ENV",
@@ -53,10 +50,9 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             if isinstance(alias_val, str) and alias_val.strip():
                 env[alias_env] = alias_val.strip()
 
-    # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
-        messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
+        messaging_cwd = env.get("MESSAGING_CWD") or "/root"
         env["TERMINAL_CWD"] = messaging_cwd
 
     return env
@@ -106,18 +102,12 @@ class TestTopLevelCwdAlias:
     def test_no_cwd_no_messaging_cwd_falls_back_to_home(self):
         cfg = {}
         result = _simulate_config_bridge(cfg)
-        assert result["TERMINAL_CWD"] == "/root"  # Path.home() for root user
+        assert result["TERMINAL_CWD"] == "/root"
 
     def test_dot_cwd_triggers_messaging_fallback(self):
         """cwd: '.' should trigger MESSAGING_CWD fallback."""
         cfg = {"cwd": "."}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/home/daedalus"})
-        # "." is stripped but truthy, so it gets set as TERMINAL_CWD
-        # Then the MESSAGING_CWD fallback does NOT trigger since TERMINAL_CWD
-        # is set and not in (".", "auto", "cwd").
-        # Wait — "." IS in the fallback list! So this should fall through.
-        # Actually the alias sets it to ".", then the messaging fallback
-        # checks if it's in (".", "auto", "cwd") and overrides.
         assert result["TERMINAL_CWD"] == "/home/daedalus"
 
     def test_auto_cwd_triggers_messaging_fallback(self):

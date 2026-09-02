@@ -115,7 +115,7 @@ def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatc
         ["systemctl", "enable", gateway.get_service_name()],
     ]
     assert helper_calls == []
-    assert "Configured to run as: alice" not in out  # generated test unit has no User= line
+    assert "Configured to run as: alice" not in out
     assert "System service installed and enabled" in out
 
 
@@ -173,9 +173,6 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
     assert calls == [(True, True, "alice")]
 
 
-# ---------------------------------------------------------------------------
-# _wait_for_gateway_exit
-# ---------------------------------------------------------------------------
 
 
 class TestWaitForGatewayExit:
@@ -184,7 +181,6 @@ class TestWaitForGatewayExit:
     def test_returns_immediately_when_no_pid(self, monkeypatch):
         """If get_running_pid returns None, exit instantly."""
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
-        # Should return without sleeping at all.
         gateway._wait_for_gateway_exit(timeout=1.0, force_after=0.5)
 
     def test_returns_when_process_exits_gracefully(self, monkeypatch):
@@ -200,27 +196,22 @@ class TestWaitForGatewayExit:
         monkeypatch.setattr("time.sleep", lambda _: None)
 
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=999.0)
-        # Should have polled until None was returned.
         assert poll_count == 3
 
     def test_force_kills_after_grace_period(self, monkeypatch):
         """When the process doesn't exit, SIGKILL the saved PID."""
         import time as _time
 
-        # Simulate monotonic time advancing past force_after
         call_num = 0
         def fake_monotonic():
             nonlocal call_num
             call_num += 1
-            # First two calls: initial deadline + force_deadline setup (time 0)
-            # Then each loop iteration advances time
-            return call_num * 2.0  # 2, 4, 6, 8, ...
+            return call_num * 2.0
 
         kills = []
         def mock_kill(pid, sig):
             kills.append((pid, sig))
 
-        # get_running_pid returns the PID until kill is sent, then None
         def mock_get_running_pid():
             return None if kills else 42
 
@@ -240,7 +231,7 @@ class TestWaitForGatewayExit:
         def fake_monotonic():
             nonlocal call_num
             call_num += 1
-            return call_num * 3.0  # Jump past force_after quickly
+            return call_num * 3.0
 
         def mock_kill(pid, sig):
             raise ProcessLookupError
@@ -250,5 +241,4 @@ class TestWaitForGatewayExit:
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 99)
         monkeypatch.setattr("os.kill", mock_kill)
 
-        # Should not raise — ProcessLookupError means it's already gone.
         gateway._wait_for_gateway_exit(timeout=10.0, force_after=2.0)

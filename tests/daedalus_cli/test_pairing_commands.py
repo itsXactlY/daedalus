@@ -29,8 +29,6 @@ class TestCmdApproveLockoutMessage:
         out = capsys.readouterr().out
         assert "locked out" in out
         assert "minute" in out
-        # The final call must NOT still say "not found or expired" — that's
-        # the misleading message this fix replaces once a lockout is active.
         last_call_output = out.strip().splitlines()[-3:]
         assert not any("not found or expired" in line for line in last_call_output)
 

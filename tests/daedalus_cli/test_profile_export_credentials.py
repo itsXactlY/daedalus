@@ -27,7 +27,6 @@ class TestCredentialExclusion:
         profile_dir = profiles_root / "testprofile"
         profile_dir.mkdir(parents=True)
 
-        # Create a profile with credentials
         (profile_dir / "config.yaml").write_text("model: gpt-4\n")
         (profile_dir / "auth.json").write_text('{"tokens": {"access": "sk-secret"}}')
         (profile_dir / ".env").write_text("OPENROUTER_API_KEY=sk-secret-key\n")
@@ -42,7 +41,6 @@ class TestCredentialExclusion:
         output = tmp_path / "export.tar.gz"
         result = export_profile("testprofile", str(output))
 
-        # Check archive contents
         with tarfile.open(result, "r:gz") as tf:
             names = tf.getnames()
 

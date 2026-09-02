@@ -162,7 +162,7 @@ async def test_resolve_allowed_usernames_preserves_wildcard(monkeypatch, initial
     """
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     adapter._allowed_user_ids = set(initial_allowed)
-    adapter._client = SimpleNamespace(guilds=[])  # no guilds → no resolution work
+    adapter._client = SimpleNamespace(guilds=[])
 
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", ",".join(sorted(initial_allowed)))
 
@@ -222,20 +222,15 @@ async def test_reconnect_closes_previous_client_to_prevent_zombie_websocket(monk
     monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
     monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
 
-    # First connect — fresh adapter, no prior client.
     assert await adapter.connect() is True
     assert len(created) == 1
     first_bot = created[0]
     assert first_bot._closed is False, "first bot should still be open after connect()"
 
-    # Second connect WITHOUT disconnect — simulates an in-process reconnect.
-    # Without the fix, first_bot would remain open (zombie), and both would
-    # receive every Discord event, causing double responses.
     assert await adapter.connect() is True
     assert len(created) == 2
     second_bot = created[1]
 
-    # The first bot must be closed before the second is assigned.
     assert first_bot._closed is True, (
         "First Discord client must be closed on re-entry of connect() to prevent "
         "zombie websocket (#18187)"
@@ -269,7 +264,7 @@ async def test_connect_timeout_cancels_bot_task(monkeypatch):
     class NeverReadyBot(FakeBot):
         """Bot whose start() never fires on_ready — simulates a slow gateway handshake."""
         async def start(self, token):
-            await asyncio.Event().wait()  # hang forever
+            await asyncio.Event().wait()
 
     monkeypatch.setattr(
         discord_platform.commands,
@@ -308,9 +303,8 @@ async def test_disconnect_cancels_running_bot_task(monkeypatch):
     monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
     monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
 
-    # Simulate a zombie bot_task that never finishes (as if discord.py is mid-handshake)
     async def _forever():
-        await asyncio.Event().wait()  # hang forever
+        await asyncio.Event().wait()
 
     zombie_task = asyncio.create_task(_forever())
     adapter._bot_task = zombie_task
@@ -322,7 +316,6 @@ async def test_disconnect_cancels_running_bot_task(monkeypatch):
 
     await adapter.disconnect()
 
-    # The task must have been cancelled (done + cancelled) and cleared from the adapter.
     assert adapter._bot_task is None, "disconnect() must clear _bot_task"
     assert zombie_task.done(), "disconnect() must have awaited the bot task to completion"
     assert zombie_task.cancelled(), "disconnect() must cancel the zombie bot task"
@@ -538,7 +531,6 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
             )
 
         def to_dict(self):
-            # Match real AppCommand.to_dict() — no nsfw/dm_permission/default_member_permissions
             return {
                 "id": self.id,
                 "type": 1,
@@ -559,7 +551,6 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
         "dm_permission": False,
         "default_member_permissions": "8",
     }
-    # Existing command has matching attrs — should report unchanged, NOT falsely diff.
     existing = _ExistingCommand(
         42,
         "admin",
@@ -587,7 +578,6 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
 
     summary = await adapter._safe_sync_slash_commands()
 
-    # Without the fix, this would be unchanged=0, recreated=1 (false diff).
     assert summary == {
         "total": 1,
         "unchanged": 1,
@@ -601,9 +591,6 @@ async def test_safe_sync_reads_permission_attrs_from_existing_command():
     fake_http.upsert_global_command.assert_not_awaited()
 
 
-# ============================================================================
-# #31049: unconfigured platform skips reconnection (non-retryable fatal error)
-# ============================================================================
 
 class TestDiscordUnconfiguredNonRetryable:
     """Verify that missing dependency/token sets a non-retryable fatal error
@@ -614,7 +601,6 @@ class TestDiscordUnconfiguredNonRetryable:
         """connect() with discord.py unavailable → non-retryable fatal error."""
         _ensure_discord_mock()
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake"))
-        # Simulate discord.py not installed
         monkeypatch.setattr(discord_platform, "DISCORD_AVAILABLE", False)
         result = await adapter.connect()
         assert result is False

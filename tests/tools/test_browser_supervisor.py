@@ -70,9 +70,6 @@ def chrome_cdp(request):
     become real OOPIFs (needed by the iframe interaction tests).
     """
 
-    # xdist worker_id is "master" in single-process mode or "gw0".."gwN" otherwise.
-    # Under subprocess-per-file isolation there's no xdist, so we fall back
-    # to "master" via the session-scoped fixture below.
     worker_id = request.getfixturevalue("worker_id") if "worker_id" in request.fixturenames else "master"
     if worker_id == "master":
         port_offset = 0
@@ -89,7 +86,7 @@ def chrome_cdp(request):
             "--no-default-browser-check",
             "--headless=new",
             "--disable-gpu",
-            "--site-per-process",  # force OOPIFs for cross-origin iframes
+            "--site-per-process",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -126,13 +123,6 @@ def chrome_cdp(request):
 
     yield ws_url, port
 
-    # Tear down Chrome. The stdlib `subprocess._wait()` POSIX implementation
-    # has a known race (https://bugs.python.org/issue38630): when SIGCHLD
-    # arrives concurrently with `proc.wait()`, `_try_wait(WNOHANG)` can
-    # return a foreign pid and the `assert pid == self.pid or pid == 0`
-    # fires. We saw this in CI on slice 1 after this fixture's teardown
-    # (PR #33661 follow-up). Swallow the stdlib race + force-kill if wait
-    # hangs, then always reap so we don't leak a zombie.
     try:
         proc.terminate()
     except Exception:
@@ -190,7 +180,7 @@ def _fire_on_page(cdp_url: str, expression: str) -> None:
             )
             sid = attach["result"]["sessionId"]
             await call("Page.navigate", {"url": _test_page_url()}, session_id=sid)
-            await asyncio.sleep(1.5)  # let the page load
+            await asyncio.sleep(1.5)
             await call(
                 "Runtime.evaluate",
                 {"expression": expression, "returnByValue": True},
@@ -224,16 +214,13 @@ def test_supervisor_start_and_snapshot(chrome_cdp, supervisor_registry):
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(task_id="pytest-1", cdp_url=cdp_url)
 
-    # Navigate so the frame tree populates.
     _fire_on_page(cdp_url, "/* no dialog */ void 0")
 
-    # Give a moment for frame events to propagate
     time.sleep(1.0)
     snap = supervisor.snapshot()
     assert snap.active is True
     assert snap.task_id == "pytest-1"
     assert snap.pending_dialogs == ()
-    # At minimum a top frame should exist after the navigate.
     assert snap.frame_tree.get("top") is not None
 
 
@@ -251,7 +238,6 @@ def test_main_frame_alert_detection_and_dismiss(chrome_cdp, supervisor_registry)
 
     result = supervisor.respond_to_dialog("dismiss")
     assert result["ok"] is True
-    # State cleared after dismiss
     time.sleep(0.3)
     assert supervisor.snapshot().pending_dialogs == ()
 
@@ -278,7 +264,6 @@ def test_prompt_dialog_with_response_text(chrome_cdp, supervisor_registry):
     cdp_url, _port = chrome_cdp
     supervisor = supervisor_registry.get_or_start(task_id="pytest-4", cdp_url=cdp_url)
 
-    # Fire a prompt and stash the answer on window
     _fire_on_page(
         cdp_url,
         "setTimeout(() => { window.__promptResult = prompt('give me a token', 'default-x'); }, 50)",

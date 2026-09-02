@@ -21,9 +21,6 @@ def _make_browser_result(url="https://example.com"):
     return {"success": True, "data": {"title": "OK", "url": url}}
 
 
-# ---------------------------------------------------------------------------
-# Pre-navigation SSRF check
-# ---------------------------------------------------------------------------
 
 
 class TestPreNavigationSsrf:
@@ -51,7 +48,6 @@ class TestPreNavigationSsrf:
             lambda *a, **kw: _make_browser_result(),
         )
 
-    # -- Cloud mode: SSRF active -----------------------------------------------
 
     def test_cloud_blocks_private_url_by_default(self, monkeypatch, _common_patches):
         """SSRF protection blocks private URLs in cloud mode."""
@@ -84,7 +80,6 @@ class TestPreNavigationSsrf:
 
         assert result["success"] is True
 
-    # -- Local mode: SSRF skipped ----------------------------------------------
 
     def test_local_allows_private_url(self, monkeypatch, _common_patches):
         """Local backends skip SSRF — private URLs are always allowed."""
@@ -107,9 +102,6 @@ class TestPreNavigationSsrf:
         assert result["success"] is True
 
 
-# ---------------------------------------------------------------------------
-# _is_local_backend() unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestIsLocalBackend:
@@ -135,9 +127,6 @@ class TestIsLocalBackend:
         assert browser_tool._is_local_backend() is False
 
 
-# ---------------------------------------------------------------------------
-# Post-redirect SSRF check
-# ---------------------------------------------------------------------------
 
 
 class TestPostRedirectSsrf:
@@ -161,7 +150,6 @@ class TestPostRedirectSsrf:
             },
         )
 
-    # -- Cloud mode: redirect SSRF active --------------------------------------
 
     def test_cloud_blocks_redirect_to_private(self, monkeypatch, _common_patches):
         """Redirects to private addresses are blocked in cloud mode."""
@@ -199,7 +187,6 @@ class TestPostRedirectSsrf:
         assert result["success"] is True
         assert result["url"] == self.PRIVATE_FINAL_URL
 
-    # -- Local mode: redirect SSRF skipped -------------------------------------
 
     def test_local_allows_redirect_to_private(self, monkeypatch, _common_patches):
         """Redirects to private addresses pass in local mode."""

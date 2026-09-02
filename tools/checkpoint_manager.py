@@ -30,9 +30,6 @@ from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 CHECKPOINT_BASE = get_daedalus_home() / "checkpoints"
 
@@ -59,16 +56,11 @@ DEFAULT_EXCLUDES = [
     ".git/",
 ]
 
-# Git subprocess timeout (seconds).
 _GIT_TIMEOUT: int = max(10, min(60, int(os.getenv("DAEDALUS_CHECKPOINT_TIMEOUT", "30"))))
 
-# Max files to snapshot — skip huge directories to avoid slowdowns.
 _MAX_FILES = 50_000
 
 
-# ---------------------------------------------------------------------------
-# Shadow repo helpers
-# ---------------------------------------------------------------------------
 
 def _shadow_repo_path(working_dir: str) -> Path:
     """Deterministic shadow repo path: sha256(abs_path)[:16]."""
@@ -182,9 +174,6 @@ def _dir_file_count(path: str) -> int:
     return count
 
 
-# ---------------------------------------------------------------------------
-# CheckpointManager
-# ---------------------------------------------------------------------------
 
 class CheckpointManager:
     """Manages automatic filesystem checkpoints.
@@ -206,19 +195,13 @@ class CheckpointManager:
         self.enabled = enabled
         self.max_snapshots = max_snapshots
         self._checkpointed_dirs: Set[str] = set()
-        self._git_available: Optional[bool] = None  # lazy probe
+        self._git_available: Optional[bool] = None
 
-    # ------------------------------------------------------------------
-    # Turn lifecycle
-    # ------------------------------------------------------------------
 
     def new_turn(self) -> None:
         """Reset per-turn dedup.  Call at the start of each agent iteration."""
         self._checkpointed_dirs.clear()
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def ensure_checkpoint(self, working_dir: str, reason: str = "auto") -> bool:
         """Take a checkpoint if enabled and not already done this turn.
@@ -229,7 +212,6 @@ class CheckpointManager:
         if not self.enabled:
             return False
 
-        # Lazy git probe
         if self._git_available is None:
             self._git_available = shutil.which("git") is not None
             if not self._git_available:
@@ -239,10 +221,6 @@ class CheckpointManager:
 
         abs_dir = str(Path(working_dir).resolve())
 
-        # Skip root, home, /tmp, and other overly broad directories.
-        # /tmp is transient by definition — snapshotting it only burns disk
-        # (a shadow repo of /tmp grows to hundreds of MB and is worthless
-        # as a rollback target).
         if (
             abs_dir in ("/", str(Path.home()))
             or abs_dir.startswith("/tmp")
@@ -250,7 +228,6 @@ class CheckpointManager:
             logger.debug("Checkpoint skipped: directory too broad (%s)", abs_dir)
             return False
 
-        # Already checkpointed this turn?
         if abs_dir in self._checkpointed_dirs:
             return False
 
@@ -295,11 +272,10 @@ class CheckpointManager:
                     "insertions": 0,
                     "deletions": 0,
                 }
-                # Get diffstat for this commit
                 stat_ok, stat_out, _ = _run_git(
                     ["diff", "--shortstat", f"{parts[0]}~1", parts[0]],
                     shadow, abs_dir,
-                    allowed_returncodes={128, 129},  # first commit has no parent
+                    allowed_returncodes={128, 129},
                 )
                 if stat_ok and stat_out:
                     self._parse_shortstat(stat_out, entry)
@@ -331,29 +307,24 @@ class CheckpointManager:
         if not (shadow / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        # Verify the commit exists
         ok, _, err = _run_git(
             ["cat-file", "-t", commit_hash], shadow, abs_dir,
         )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found"}
 
-        # Stage current state to compare against checkpoint
         _run_git(["add", "-A"], shadow, abs_dir, timeout=_GIT_TIMEOUT * 2)
 
-        # Get stat summary: checkpoint vs current working tree
         ok_stat, stat_out, _ = _run_git(
             ["diff", "--stat", commit_hash, "--cached"],
             shadow, abs_dir,
         )
 
-        # Get actual diff (limited to avoid terminal flood)
         ok_diff, diff_out, _ = _run_git(
             ["diff", commit_hash, "--cached", "--no-color"],
             shadow, abs_dir,
         )
 
-        # Unstage to avoid polluting the shadow repo index
         _run_git(["reset", "HEAD", "--quiet"], shadow, abs_dir)
 
         if not ok_stat and not ok_diff:
@@ -384,17 +355,14 @@ class CheckpointManager:
         if not (shadow / "HEAD").exists():
             return {"success": False, "error": "No checkpoints exist for this directory"}
 
-        # Verify the commit exists
         ok, _, err = _run_git(
             ["cat-file", "-t", commit_hash], shadow, abs_dir,
         )
         if not ok:
             return {"success": False, "error": f"Checkpoint '{commit_hash}' not found", "debug": err or None}
 
-        # Take a checkpoint of current state before restoring (so you can undo the undo)
         self._take(abs_dir, f"pre-rollback snapshot (restoring to {commit_hash[:8]})")
 
-        # Restore — full directory or single file
         restore_target = file_path if file_path else "."
         ok, stdout, err = _run_git(
             ["checkout", commit_hash, "--", restore_target],
@@ -404,7 +372,6 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Restore failed: {err}", "debug": err or None}
 
-        # Get info about what was restored
         ok2, reason_out, _ = _run_git(
             ["log", "--format=%s", "-1", commit_hash], shadow, abs_dir,
         )
@@ -433,7 +400,6 @@ class CheckpointManager:
         else:
             candidate = path.parent
 
-        # Walk up looking for project root markers
         markers = {".git", "pyproject.toml", "package.json", "Cargo.toml",
                     "go.mod", "Makefile", "pom.xml", ".hg", "Gemfile"}
         check = candidate
@@ -442,29 +408,22 @@ class CheckpointManager:
                 return str(check)
             check = check.parent
 
-        # No project root found — use the file's parent
         return str(candidate)
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
 
     def _take(self, working_dir: str, reason: str) -> bool:
         """Take a snapshot.  Returns True on success."""
         shadow = _shadow_repo_path(working_dir)
 
-        # Init if needed
         err = _init_shadow_repo(shadow, working_dir)
         if err:
             logger.debug("Checkpoint init failed: %s", err)
             return False
 
-        # Quick size guard — don't try to snapshot enormous directories
         if _dir_file_count(working_dir) > _MAX_FILES:
             logger.debug("Checkpoint skipped: >%d files in %s", _MAX_FILES, working_dir)
             return False
 
-        # Stage everything
         ok, _, err = _run_git(
             ["add", "-A"], shadow, working_dir, timeout=_GIT_TIMEOUT * 2,
         )
@@ -472,7 +431,6 @@ class CheckpointManager:
             logger.debug("Checkpoint git-add failed: %s", err)
             return False
 
-        # Check if there's anything to commit
         ok_diff, diff_out, _ = _run_git(
             ["diff", "--cached", "--quiet"],
             shadow,
@@ -480,11 +438,9 @@ class CheckpointManager:
             allowed_returncodes={1},
         )
         if ok_diff:
-            # No changes to commit
             logger.debug("Checkpoint skipped: no changes in %s", working_dir)
             return False
 
-        # Commit
         ok, _, err = _run_git(
             ["commit", "-m", reason, "--allow-empty-message"],
             shadow, working_dir, timeout=_GIT_TIMEOUT * 2,
@@ -495,7 +451,6 @@ class CheckpointManager:
 
         logger.debug("Checkpoint taken in %s: %s", working_dir, reason)
 
-        # Prune old snapshots
         self._prune(shadow, working_dir)
 
         return True
@@ -531,7 +486,6 @@ class CheckpointManager:
         if count <= self.max_snapshots:
             return
 
-        # Newest max_snapshots commits, newest-first.
         ok, all_commits, _ = _run_git(
             ["rev-list", "HEAD"], shadow_repo, working_dir,
         )
@@ -540,7 +494,6 @@ class CheckpointManager:
             return
         keep = all_commits.splitlines()[: self.max_snapshots]
 
-        # Rebuild the chain oldest-first so commit-tree can chain parents.
         new_head = None
         for commit in reversed(keep):
             ok, tree, _ = _run_git(
@@ -555,8 +508,6 @@ class CheckpointManager:
             if not ok:
                 logger.debug("Checkpoint prune: message lookup failed for %s", commit[:8])
                 return
-            # Preserve original author identity + timestamp so the rewritten
-            # commits read like the originals.
             ok, ident, _ = _run_git(
                 ["log", "-1", "--format=%an%x00%ae%x00%aI", commit],
                 shadow_repo, working_dir,
@@ -586,7 +537,6 @@ class CheckpointManager:
                 return
             new_head = new_commit
 
-        # Move the branch to the rebuilt head and drop the old chain.
         ok_branch, branch, _ = _run_git(
             ["symbolic-ref", "--short", "HEAD"], shadow_repo, working_dir,
         )
@@ -597,7 +547,6 @@ class CheckpointManager:
             ["update-ref", f"refs/heads/{branch}", new_head],
             shadow_repo, working_dir,
         )
-        # Expire reflogs and physically delete the orphaned objects.
         _run_git(["reflog", "expire", "--expire=now", "--all"],
                  shadow_repo, working_dir)
         _run_git(["gc", "--prune=now", "--quiet"],
@@ -617,14 +566,12 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
 
     lines = [f"📸 Checkpoints for {directory}:\n"]
     for i, cp in enumerate(checkpoints, 1):
-        # Parse ISO timestamp to something readable
         ts = cp["timestamp"]
         if "T" in ts:
-            ts = ts.split("T")[1].split("+")[0].split("-")[0][:5]  # HH:MM
+            ts = ts.split("T")[1].split("+")[0].split("-")[0][:5]
             date = cp["timestamp"].split("T")[0]
             ts = f"{date} {ts}"
 
-        # Build change summary
         files = cp.get("files_changed", 0)
         ins = cp.get("insertions", 0)
         dele = cp.get("deletions", 0)
@@ -641,19 +588,6 @@ def format_checkpoint_list(checkpoints: List[Dict], directory: str) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Store-wide management — status / prune / clear
-#
-# Adapted from nousresearch/main's tools/checkpoint_manager.py for this
-# fork's simpler layout: CHECKPOINT_BASE/{sha256(abs_dir)[:16]}/ shadow repos
-# directly, no "v2 store" migration or legacy-<ts>/ archives. Upstream's
-# store_status()/prune_checkpoints()/clear_all()/clear_legacy() assume that
-# migrated-store shape; porting it wholesale would mean migrating this
-# fork's live checkpoint data to a format it was never written in. These
-# adapted versions work against the actual on-disk layout instead, and keep
-# upstream's response-dict shape (legacy_size_bytes/legacy_archives always
-# empty here) so daedalus_cli/checkpoints.py's CLI layer needs no changes.
-# ---------------------------------------------------------------------------
 
 def _dir_size_bytes(path: Path) -> int:
     total = 0

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "daedalus"
-version = "0.8.1+daedalus"
+version = "0.8.2+daedalus"
 description = "Daedalus — a clean, secret-free distribution of the Daedalus self-improving AI agent"
 readme = "README.md"
 requires-python = ">=3.14"

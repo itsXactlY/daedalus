@@ -78,7 +78,6 @@ class TestCreateSkillSizeLimit:
         assert "100,000" in result["error"]
 
     def test_create_at_limit(self, isolate_skills):
-        # Content at exactly the limit should succeed
         frontmatter = "---\nname: edge-skill\ndescription: Edge case\n---\n# Edge\n\n"
         body_budget = MAX_SKILL_CONTENT_CHARS - len(frontmatter)
         content = frontmatter + ("x" * body_budget)
@@ -91,13 +90,10 @@ class TestEditSkillSizeLimit:
     """edit action rejects oversized content."""
 
     def test_edit_over_limit(self, isolate_skills):
-        # Create a small skill first
         small = _make_skill_content(1000)
         json.loads(skill_manage(action="create", name="grow-me", content=small))
 
-        # Try to edit it to be oversized
         big = _make_skill_content(MAX_SKILL_CONTENT_CHARS + 100)
-        # Fix the name in frontmatter
         big = big.replace("name: test-skill", "name: grow-me")
         result = json.loads(skill_manage(action="edit", name="grow-me", content=big))
         assert result["success"] is False
@@ -108,11 +104,9 @@ class TestPatchSkillSizeLimit:
     """patch action checks resulting size, not just the new_string."""
 
     def test_patch_that_would_exceed_limit(self, isolate_skills):
-        # Create a skill near the limit
         near_limit = _make_skill_content(MAX_SKILL_CONTENT_CHARS - 50)
         json.loads(skill_manage(action="create", name="near-limit", content=near_limit))
 
-        # Patch that adds enough to go over
         result = json.loads(skill_manage(
             action="patch",
             name="near-limit",
@@ -124,7 +118,6 @@ class TestPatchSkillSizeLimit:
 
     def test_patch_that_reduces_size_on_oversized_skill(self, isolate_skills, tmp_path):
         """Patches that shrink an already-oversized skill should succeed."""
-        # Manually create an oversized skill (simulating hand-placed)
         skill_dir = tmp_path / "skills" / "bloated"
         skill_dir.mkdir(parents=True)
         oversized = _make_skill_content(MAX_SKILL_CONTENT_CHARS + 5000)
@@ -132,8 +125,6 @@ class TestPatchSkillSizeLimit:
         (skill_dir / "SKILL.md").write_text(oversized, encoding="utf-8")
         assert len(oversized) > MAX_SKILL_CONTENT_CHARS
 
-        # Patch that removes content to bring it under the limit.
-        # Use replace_all to replace the repeated x's with a shorter string.
         result = json.loads(skill_manage(
             action="patch",
             name="bloated",
@@ -141,21 +132,18 @@ class TestPatchSkillSizeLimit:
             new_string="y",
             replace_all=True,
         ))
-        # Should succeed because the result is well within limits
         assert result["success"] is True
 
     def test_patch_supporting_file_size_limit(self, isolate_skills):
         """Patch on a supporting file also checks size."""
         small = _make_skill_content(1000)
         json.loads(skill_manage(action="create", name="with-ref", content=small))
-        # Create a supporting file
         json.loads(skill_manage(
             action="write_file",
             name="with-ref",
             file_path="references/data.md",
             file_content="# Data\n\nSmall content.",
         ))
-        # Try to patch it to be oversized
         result = json.loads(skill_manage(
             action="patch",
             name="with-ref",
@@ -211,5 +199,4 @@ class TestHandPlacedSkillsNoLimit:
 
         result = json.loads(skill_view("manual-giant"))
         assert "content" in result
-        # The full content is returned — no truncation at the storage layer
         assert len(result["content"]) > MAX_SKILL_CONTENT_CHARS

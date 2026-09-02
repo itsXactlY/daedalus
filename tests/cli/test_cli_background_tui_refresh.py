@@ -34,7 +34,6 @@ class TestBackgroundCommandTuiRefresh:
         mock_app = MagicMock()
         cli_obj._app = mock_app
 
-        # Track call order
         call_order = []
         original_invalidate = mock_app.invalidate
 
@@ -44,18 +43,15 @@ class TestBackgroundCommandTuiRefresh:
 
         mock_app.invalidate = track_invalidate
 
-        # Patch print to track when it's called
         with patch("builtins.print") as mock_print:
             mock_print.side_effect = lambda *args, **kwargs: call_order.append("print")
 
-            # Simulate the background task output code path
             if cli_obj._app:
                 cli_obj._app.invalidate()
                 import time
-                time.sleep(0.01)  # reduced for test
+                time.sleep(0.01)
             print()
 
-        # Verify invalidate was called before print
         assert call_order[0] == "invalidate"
         assert "print" in call_order
 
@@ -71,7 +67,6 @@ class TestBackgroundCommandTuiRefresh:
         with patch("builtins.print") as mock_print:
             mock_print.side_effect = lambda *args, **kwargs: call_order.append("print")
 
-            # Simulate error path
             if cli_obj._app:
                 cli_obj._app.invalidate()
                 import time
@@ -86,20 +81,16 @@ class TestBackgroundCommandTuiRefresh:
         cli_obj = _make_cli()
         cli_obj._app = None
 
-        # This should not raise
         if cli_obj._app:
             cli_obj._app.invalidate()
-        # If we get here without exception, test passes
 
     def test_background_task_thread_safety(self):
         """Background task tracking is thread-safe."""
         cli_obj = _make_cli()
 
-        # Simulate adding and removing background tasks
         task_id = "test_task_1"
         cli_obj._background_tasks[task_id] = MagicMock()
         assert task_id in cli_obj._background_tasks
 
-        # Clean up
         cli_obj._background_tasks.pop(task_id, None)
         assert task_id not in cli_obj._background_tasks

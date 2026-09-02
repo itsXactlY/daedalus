@@ -40,10 +40,8 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     runner._session_db = session_db
     runner._running_agents = {}
 
-    # Compute the real session key if an event is provided
     session_key = build_session_key(event.source) if event else "agent:main:telegram:dm"
 
-    # Mock session_store that returns a session entry with a known session_id
     mock_session_entry = MagicMock()
     mock_session_entry.session_id = current_session_id
     mock_session_entry.session_key = session_key
@@ -53,15 +51,11 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store.switch_session.return_value = mock_session_entry
     runner.session_store = mock_store
 
-    # Stub out memory flushing
     runner._async_flush_memories = AsyncMock()
 
     return runner
 
 
-# ---------------------------------------------------------------------------
-# _handle_resume_command
-# ---------------------------------------------------------------------------
 
 
 class TestHandleResumeCommand:
@@ -98,7 +92,7 @@ class TestHandleResumeCommand:
         """With no arg and no titled sessions, shows instructions."""
         from daedalus_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram")  # No title
+        db.create_session("sess_001", "telegram")
 
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
@@ -123,7 +117,6 @@ class TestHandleResumeCommand:
 
         assert "Resumed" in result
         assert "My Project" in result
-        # Verify switch_session was called with the old session ID
         runner.session_store.switch_session.assert_called_once()
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "old_session_abc"
@@ -174,7 +167,6 @@ class TestHandleResumeCommand:
         result = await runner._handle_resume_command(event)
 
         assert "Resumed" in result
-        # Should resolve to #2 (latest in lineage)
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "sess_v2"
         db.close()
@@ -191,7 +183,6 @@ class TestHandleResumeCommand:
         event = _make_event(text="/resume Old Work")
         runner = _make_runner(session_db=db, current_session_id="current_session_001",
                               event=event)
-        # Simulate a running agent using the real session key
         real_key = _session_key_for_event(event)
         runner._running_agents[real_key] = MagicMock()
 

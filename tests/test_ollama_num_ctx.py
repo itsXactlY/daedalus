@@ -12,9 +12,6 @@ import pytest
 from agent.model_metadata import query_ollama_num_ctx
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Level 1: query_ollama_num_ctx — Ollama API interaction
-# ═══════════════════════════════════════════════════════════════════════
 
 
 def _mock_httpx_client(show_response_data, status_code=200):
@@ -41,7 +38,6 @@ class TestQueryOllamaNumCtx:
         mock_ctx, _ = _mock_httpx_client(show_data)
 
         with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"):
-            # httpx is imported inside the function — patch the module import
             import httpx
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_num_ctx("llama3.1:8b", "http://localhost:11434/v1")
@@ -99,7 +95,6 @@ class TestQueryOllamaNumCtx:
             with patch.object(httpx, "Client", return_value=mock_ctx):
                 result = query_ollama_num_ctx("local:qwen2.5:7b", "http://localhost:11434/v1")
 
-        # Verify the post was called with stripped name (no "local:" prefix)
         call_args = mock_client.post.call_args
         assert call_args[1]["json"]["name"] == "qwen2.5:7b" or call_args[0][1] is not None
         assert result == 32768

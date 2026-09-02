@@ -5,7 +5,6 @@ from rich.text import Text
 import pytest
 
 
-# ── CLI tests ──────────────────────────────────────────────────────────────
 
 class TestCLIQuickCommands:
     """Test quick command dispatch in DaedalusCLI.process_command."""
@@ -37,7 +36,6 @@ class TestCLIQuickCommands:
         cli = self._make_cli({"err": {"type": "exec", "command": "echo error >&2"}})
         result = cli.process_command("/err")
         assert result is True
-        # stderr fallback — should print something
         cli.console.print.assert_called_once()
 
     def test_exec_command_no_output_shows_fallback(self):
@@ -52,7 +50,6 @@ class TestCLIQuickCommands:
         cli = self._make_cli({"shortcut": {"type": "alias", "target": "/help"}})
         with patch.object(cli, "process_command", wraps=cli.process_command) as spy:
             cli.process_command("/shortcut")
-            # Should recursively call process_command with /help
             spy.assert_any_call("/help")
 
     def test_alias_command_passes_args(self):
@@ -109,7 +106,6 @@ class TestCLIQuickCommands:
         assert "timed out" in args.lower()
 
 
-# ── Gateway tests ──────────────────────────────────────────────────────────
 
 class TestGatewayQuickCommands:
     """Test quick command dispatch in GatewayRunner._handle_message."""

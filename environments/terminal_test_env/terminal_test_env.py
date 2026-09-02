@@ -35,7 +35,6 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-# Ensure repo root is on sys.path for imports
 _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -51,9 +50,6 @@ from environments.tool_context import ToolContext
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Inline task definitions -- no external dataset needed
-# =============================================================================
 
 TRAIN_TASKS = [
     {
@@ -85,7 +81,7 @@ EVAL_TASKS = [
 class TerminalTestEnvConfig(DaedalusAgentEnvConfig):
     """Config with defaults suitable for terminal testing."""
 
-    pass  # Inherits all fields, overrides defaults in config_init
+    pass
 
 
 class TerminalTestEnv(DaedalusAgentBaseEnv):
@@ -115,12 +111,10 @@ class TerminalTestEnv(DaedalusAgentBaseEnv):
         Claude for inference. API keys loaded from ~/daedalus/.env.
         """
         env_config = TerminalTestEnvConfig(
-            # Terminal + file tools only
             enabled_toolsets=["terminal", "file"],
             disabled_toolsets=None,
             distribution=None,
-            # Agent settings
-            max_agent_turns=10,  # Simple tasks, don't need many turns
+            max_agent_turns=10,
             max_token_length=16000,
             agent_temperature=1.0,
             system_prompt=(
@@ -128,29 +122,25 @@ class TerminalTestEnv(DaedalusAgentBaseEnv):
                 "Complete the user's request by using the available tools. "
                 "Be precise and follow instructions exactly."
             ),
-            # Modal terminal backend for cloud-isolated sandboxes per rollout
             terminal_backend="modal",
-            # Atropos settings
-            group_size=3,              # 3 rollouts per group
+            group_size=3,
             tokenizer_name="NousResearch/q-30b-t-h45-e1",
             tool_call_parser="hermes",
-            steps_per_eval=3,          # Eval after all 3 steps
-            total_steps=3,             # 3 groups total (1 group per step)
+            steps_per_eval=3,
+            total_steps=3,
             use_wandb=True,
             wandb_name="terminal-test",
-            ensure_scores_are_not_same=False,  # Allow all-same scores for simple tasks
-            # No external dataset
+            ensure_scores_are_not_same=False,
             dataset_name=None,
         )
 
-        # OpenRouter with Claude -- API key loaded from .env (OPENROUTER_API_KEY)
         server_configs = [
             APIServerConfig(
                 base_url="https://openrouter.ai/api/v1",
                 model_name="anthropic/claude-opus-4.6",
                 server_type="openai",
                 api_key=os.getenv("OPENROUTER_API_KEY", ""),
-                health_check=False,  # OpenRouter doesn't have a /health endpoint
+                health_check=False,
             )
         ]
 
@@ -161,7 +151,6 @@ class TerminalTestEnv(DaedalusAgentBaseEnv):
         self.train_tasks = list(TRAIN_TASKS)
         self.eval_tasks = list(EVAL_TASKS)
         self.iter = 0
-        # Track reward stats for wandb logging
         self.reward_buffer: List[float] = []
 
     async def get_next_item(self) -> Dict[str, str]:
@@ -188,7 +177,6 @@ class TerminalTestEnv(DaedalusAgentBaseEnv):
         """
         verify_result = ctx.terminal(f"cat {item['verify_path']}")
 
-        # File doesn't exist or can't be read
         if verify_result["exit_code"] != 0:
             self.reward_buffer.append(0.0)
             return 0.0
@@ -196,12 +184,10 @@ class TerminalTestEnv(DaedalusAgentBaseEnv):
         actual = verify_result.get("output", "").strip()
         expected = item["expected_content"].strip()
 
-        # Exact match
         if actual == expected:
             self.reward_buffer.append(1.0)
             return 1.0
 
-        # Partial credit: expected content is present but has extra stuff
         if expected in actual:
             self.reward_buffer.append(0.5)
             return 0.5
@@ -221,8 +207,6 @@ class TerminalTestEnv(DaedalusAgentBaseEnv):
 
         for eval_item in self.eval_tasks:
             try:
-                # For eval, we do a simple single-turn completion (not full agent loop)
-                # to keep eval fast. The agent loop is tested via training.
                 completion = await self.server.chat_completion(
                     messages=[
                         {"role": "system", "content": self.config.system_prompt or ""},

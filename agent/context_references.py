@@ -120,7 +120,6 @@ def preprocess_context_references(
         url_fetcher=url_fetcher,
         allowed_root=allowed_root,
     )
-    # Safe for both CLI (no loop) and gateway (loop already running).
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -145,8 +144,6 @@ async def preprocess_context_references_async(
         return ContextReferenceResult(message=message, original_message=message)
 
     cwd_path = Path(cwd).expanduser().resolve()
-    # Default to the current working directory so @ references cannot escape
-    # the active workspace unless a caller explicitly widens the root.
     allowed_root_path = (
         Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
     )

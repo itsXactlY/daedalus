@@ -16,9 +16,6 @@ import pytest
 from gateway.platforms.base import BasePlatformAdapter
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _extract(content: str, existing_files: set[str] | None = None):
     """
@@ -43,9 +40,6 @@ def _extract(content: str, existing_files: set[str] | None = None):
         return BasePlatformAdapter.extract_local_files(content)
 
 
-# ---------------------------------------------------------------------------
-# Basic detection
-# ---------------------------------------------------------------------------
 
 class TestBasicDetection:
 
@@ -105,9 +99,6 @@ class TestBasicDetection:
         assert paths == ["/tmp/my-screenshot-2024.png"]
 
 
-# ---------------------------------------------------------------------------
-# Non-existent files are skipped
-# ---------------------------------------------------------------------------
 
 class TestIsfileGuard:
 
@@ -115,10 +106,10 @@ class TestIsfileGuard:
         """Paths that don't exist on disk are not extracted."""
         paths, cleaned = _extract(
             "See /tmp/nope.png here",
-            existing_files=set(),  # nothing exists
+            existing_files=set(),
         )
         assert paths == []
-        assert "/tmp/nope.png" in cleaned  # not stripped
+        assert "/tmp/nope.png" in cleaned
 
     def test_only_existing_paths_extracted(self):
         """Mix of existing and non-existing — only existing are returned."""
@@ -131,18 +122,12 @@ class TestIsfileGuard:
         assert "/tmp/fake.jpg" in cleaned
 
 
-# ---------------------------------------------------------------------------
-# URL false-positive prevention
-# ---------------------------------------------------------------------------
 
 class TestURLRejection:
 
     def test_https_url_not_matched(self):
         """Paths embedded in HTTP URLs must not be extracted."""
         paths, cleaned = _extract("Visit https://example.com/images/photo.png for details")
-        # The regex lookbehind should prevent matching the URL's path segment
-        # Even if it did match, isfile would be False for /images/photo.png
-        # (we mock isfile to True-for-all here, so the lookbehind is the guard)
         assert paths == []
         assert "https://example.com/images/photo.png" in cleaned
 
@@ -152,13 +137,9 @@ class TestURLRejection:
 
     def test_file_url_not_matched(self):
         paths, _ = _extract("Open file:///home/user/doc.png in browser")
-        # file:// has :// before /home so lookbehind blocks it
         assert paths == []
 
 
-# ---------------------------------------------------------------------------
-# Code block exclusion
-# ---------------------------------------------------------------------------
 
 class TestCodeBlockExclusion:
 
@@ -166,7 +147,7 @@ class TestCodeBlockExclusion:
         text = "Here's how:\n```python\nimg = open('/tmp/image.png')\n```\nDone."
         paths, cleaned = _extract(text)
         assert paths == []
-        assert "/tmp/image.png" in cleaned  # not stripped
+        assert "/tmp/image.png" in cleaned
 
     def test_inline_code_skipped(self):
         text = "Use the path `/tmp/image.png` in your config"
@@ -201,9 +182,6 @@ class TestCodeBlockExclusion:
         assert paths == []
 
 
-# ---------------------------------------------------------------------------
-# Deduplication
-# ---------------------------------------------------------------------------
 
 class TestDeduplication:
 
@@ -220,9 +198,6 @@ class TestDeduplication:
         assert paths[0] == "/home/user/photos/a.png"
 
 
-# ---------------------------------------------------------------------------
-# Text cleanup
-# ---------------------------------------------------------------------------
 
 class TestTextCleanup:
 
@@ -257,9 +232,6 @@ class TestTextCleanup:
         assert cleaned == ""
 
 
-# ---------------------------------------------------------------------------
-# Edge cases
-# ---------------------------------------------------------------------------
 
 class TestEdgeCases:
 

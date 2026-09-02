@@ -17,9 +17,6 @@ from agent.memory_manager import MemoryManager
 from agent.builtin_memory_provider import BuiltinMemoryProvider
 
 
-# ---------------------------------------------------------------------------
-# SQLite FTS5 memory provider — a real, minimal plugin implementation
-# ---------------------------------------------------------------------------
 
 
 class SQLiteMemoryProvider(MemoryProvider):
@@ -38,7 +35,7 @@ class SQLiteMemoryProvider(MemoryProvider):
         return "sqlite_memory"
 
     def is_available(self) -> bool:
-        return True  # SQLite is always available
+        return True
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._conn = sqlite3.connect(self._db_path)
@@ -64,7 +61,6 @@ class SQLiteMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._conn or not query:
             return ""
-        # FTS5 search
         try:
             rows = self._conn.execute(
                 "SELECT content FROM memories WHERE memories MATCH ? LIMIT 5",
@@ -158,9 +154,6 @@ class SQLiteMemoryProvider(MemoryProvider):
             self._conn = None
 
 
-# ---------------------------------------------------------------------------
-# End-to-end tests
-# ---------------------------------------------------------------------------
 
 
 class TestSQLiteMemoryPlugin:
@@ -175,46 +168,37 @@ class TestSQLiteMemoryPlugin:
         mgr.add_provider(builtin)
         mgr.add_provider(sqlite_mem)
 
-        # Initialize
         mgr.initialize_all(session_id="test-session-1", platform="cli")
         assert sqlite_mem._conn is not None
 
-        # System prompt — empty at first
         prompt = mgr.build_system_prompt()
         assert "SQLite Memory Plugin" not in prompt
 
-        # Store via tool call
         result = json.loads(mgr.handle_tool_call(
             "sqlite_retain", {"content": "User prefers dark mode", "context": "preference"}
         ))
         assert result["result"] == "Stored."
 
-        # System prompt now shows count
         prompt = mgr.build_system_prompt()
         assert "1 memories stored" in prompt
 
-        # Recall via tool call
         result = json.loads(mgr.handle_tool_call(
             "sqlite_recall", {"query": "dark mode"}
         ))
         assert len(result["results"]) == 1
         assert "dark mode" in result["results"][0]["content"]
 
-        # Sync a turn (auto-stores conversation)
         mgr.sync_all("What's my theme?", "You prefer dark mode.")
         count = sqlite_mem._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        assert count == 2  # 1 explicit + 1 synced
+        assert count == 2
 
-        # Prefetch for next turn
         prefetched = mgr.prefetch_all("dark mode")
         assert "dark mode" in prefetched
 
-        # Memory bridge — mirroring builtin writes
         mgr.on_memory_write("add", "user", "Timezone: US Pacific")
         count = sqlite_mem._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
         assert count == 3
 
-        # Shutdown
         mgr.shutdown_all()
         assert sqlite_mem._conn is None
 
@@ -227,36 +211,30 @@ class TestSQLiteMemoryPlugin:
         mgr.add_provider(sqlite_mem)
         mgr.initialize_all(session_id="test-2")
 
-        # Builtin has no tools
         assert len(builtin.get_tool_schemas()) == 0
-        # SQLite has 2 tools
         schemas = mgr.get_all_tool_schemas()
         names = {s["name"] for s in schemas}
         assert names == {"sqlite_retain", "sqlite_recall"}
 
-        # Routing works
         assert mgr.has_tool("sqlite_retain")
         assert mgr.has_tool("sqlite_recall")
-        assert not mgr.has_tool("memory")  # builtin doesn't register this
+        assert not mgr.has_tool("memory")
 
     def test_second_external_plugin_rejected(self):
         """Only one external memory provider is allowed at a time."""
         mgr = MemoryManager()
         p1 = SQLiteMemoryProvider()
         p2 = SQLiteMemoryProvider()
-        # Hack name for p2
         p2._name_override = "sqlite_memory_2"
         original_name = p2.__class__.name
         type(p2).name = property(lambda self: getattr(self, '_name_override', 'sqlite_memory'))
 
         mgr.add_provider(p1)
-        mgr.add_provider(p2)  # should be rejected
+        mgr.add_provider(p2)
 
-        # Only p1 was accepted
         assert len(mgr.providers) == 1
         assert mgr.provider_names == ["sqlite_memory"]
 
-        # Restore class
         type(p2).name = original_name
         mgr.shutdown_all()
 
@@ -265,25 +243,22 @@ class TestSQLiteMemoryPlugin:
         from agent.builtin_memory_provider import BuiltinMemoryProvider
 
         mgr = MemoryManager()
-        builtin = BuiltinMemoryProvider()  # name="builtin", always accepted
+        builtin = BuiltinMemoryProvider()
         ext = SQLiteMemoryProvider()
 
         mgr.add_provider(builtin)
         mgr.add_provider(ext)
         mgr.initialize_all(session_id="test-4")
 
-        # Break external provider's connection
         ext._conn.close()
         ext._conn = None
 
-        # Sync — external fails silently, builtin (no-op sync) succeeds
-        mgr.sync_all("user", "assistant")  # should not raise
+        mgr.sync_all("user", "assistant")
 
         mgr.shutdown_all()
 
     def test_plugin_registration_flow(self):
         """Simulate the full plugin load → agent init path."""
-        # Simulate what AIAgent.__init__ does via plugins/memory/ discovery
         provider = SQLiteMemoryProvider()
 
         mem_mgr = MemoryManager()
@@ -294,6 +269,6 @@ class TestSQLiteMemoryPlugin:
 
         assert len(mem_mgr.providers) == 2
         assert mem_mgr.provider_names == ["builtin", "sqlite_memory"]
-        assert provider._conn is not None  # initialized = connection established
+        assert provider._conn is not None
 
         mem_mgr.shutdown_all()

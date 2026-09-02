@@ -81,7 +81,7 @@ def adapter(monkeypatch):
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
-    adapter._text_batch_delay_seconds = 0  # disable batching for tests
+    adapter._text_batch_delay_seconds = 0
     adapter.handle_message = AsyncMock()
     return adapter
 
@@ -100,7 +100,6 @@ def make_message(*, channel, content: str, mentions=None):
     )
 
 
-# ── ignored_channels ─────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -127,9 +126,6 @@ async def test_non_ignored_channel_processes_normally(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "500,600")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    # Stub auto-thread creation so this test focuses on ignored-channel
-    # routing only — auto-thread failures now correctly skip agent invocation
-    # (#20243), which would otherwise mask the assertion below.
     adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
 
     message = make_message(channel=FakeTextChannel(channel_id=700), content="hello")
@@ -145,9 +141,6 @@ async def test_ignored_channels_empty_string_ignores_nothing(adapter, monkeypatc
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
 
-    # Stub auto-thread creation so this test focuses on ignored-channel
-    # routing only — auto-thread failures now correctly skip agent invocation
-    # (#20243), which would otherwise mask the assertion below.
     adapter._auto_create_thread = AsyncMock(return_value=FakeThread(channel_id=999))
 
     message = make_message(channel=FakeTextChannel(channel_id=500), content="hello")
@@ -156,7 +149,6 @@ async def test_ignored_channels_empty_string_ignores_nothing(adapter, monkeypatc
     adapter.handle_message.assert_awaited_once()
 
 
-# ── no_thread_channels ───────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
@@ -179,7 +171,6 @@ async def test_no_thread_channel_skips_auto_thread(adapter, monkeypatch):
     assert event.source.chat_type == "group"
 
 
-# ── auto-thread failure must not silently fall back to inline (#20243) ──
 
 
 @pytest.mark.asyncio
@@ -206,17 +197,13 @@ async def test_auto_thread_failure_skips_agent_and_notifies_user(adapter, monkey
     await adapter._handle_message(message)
 
     adapter._auto_create_thread.assert_awaited_once()
-    # Agent must NOT be invoked when the routing target failed.
     adapter.handle_message.assert_not_awaited()
-    # User gets a visible explanation in the parent channel instead of a silent
-    # inline reply.
     channel.send.assert_awaited_once()
     sent_text = channel.send.await_args.args[0]
     assert "could not create" in sent_text.lower()
     assert "thread" in sent_text.lower()
 
 
-# ── config.py bridging ───────────────────────────────────────────────
 
 
 def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
@@ -229,8 +216,6 @@ def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
         },
     }))
     monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
-    # Use setenv (not delenv) so monkeypatch registers cleanup even when
-    # the var doesn't exist yet — load_gateway_config will overwrite it.
     monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "")
 
     from gateway.config import load_gateway_config

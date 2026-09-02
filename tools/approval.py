@@ -19,10 +19,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Per-thread/per-task gateway session identity.
-# Gateway runs agent turns concurrently in executor threads, so reading a
-# process-global env var for session identity is racy. Keep env fallback for
-# legacy single-threaded callers, but prefer the context-local value when set.
 _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
@@ -46,8 +42,6 @@ def get_current_session_key(default: str = "default") -> str:
         return session_key
     return os.getenv("DAEDALUS_SESSION_KEY", default)
 
-# Sensitive write targets that should trigger approval even when referenced
-# via shell expansions like $HOME or $DAEDALUS_HOME.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
 _DAEDALUS_ENV_PATH = (
     r'(?:~\/\.daedalus/|'
@@ -61,9 +55,6 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_DAEDALUS_ENV_PATH})'
 )
 
-# =========================================================================
-# Dangerous command patterns
-# =========================================================================
 
 DANGEROUS_PATTERNS = [
     (r'\brm\s+(-[^\s]*\s+)*/', "delete in root path"),
@@ -84,7 +75,6 @@ DANGEROUS_PATTERNS = [
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),
     (r'\bpkill\s+-9\b', "force kill processes"),
     (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
-    # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
@@ -94,12 +84,9 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
-    # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart daedalus-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart daedalus-gateway')"),
-    # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(daedalus|gateway|cli\.py)\b', "kill daedalus/gateway process (self-termination)"),
-    # File copy/move/edit into sensitive system paths
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
@@ -129,9 +116,6 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
 
 
-# =========================================================================
-# Detection
-# =========================================================================
 
 def _normalize_command_for_detection(command: str) -> str:
     """Normalize a command string before dangerous-pattern matching.
@@ -142,11 +126,8 @@ def _normalize_command_for_detection(command: str) -> str:
     """
     from tools.ansi_strip import strip_ansi
 
-    # Strip all ANSI escape sequences (CSI, OSC, DCS, 8-bit C1, etc.)
     command = strip_ansi(command)
-    # Strip null bytes
     command = command.replace('\x00', '')
-    # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
     return command
 
@@ -165,22 +146,12 @@ def detect_dangerous_command(command: str) -> tuple:
     return (False, None, None)
 
 
-# =========================================================================
-# Per-session approval state (thread-safe)
-# =========================================================================
 
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _permanent_approved: set = set()
 
-# =========================================================================
-# Blocking gateway approval (mirrors CLI's synchronous input() flow)
-# =========================================================================
-# Per-session QUEUE of pending approvals.  Multiple threads (parallel
-# subagents, execute_code RPC handlers) can block concurrently — each gets
-# its own threading.Event.  /approve resolves the oldest, /approve all
-# resolves every pending approval in the session.
 
 
 class _ApprovalEntry:
@@ -189,12 +160,12 @@ class _ApprovalEntry:
 
     def __init__(self, data: dict):
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
-        self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        self.data = data
+        self.result: Optional[str] = None
 
 
-_gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
-_gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_gateway_queues: dict[str, list] = {}
+_gateway_notify_cbs: dict[str, object] = {}
 
 
 def register_gateway_notify(session_key: str, cb) -> None:
@@ -319,15 +290,11 @@ def clear_session(session_key: str):
         _session_approved.pop(session_key, None)
         _pending.pop(session_key, None)
         _gateway_notify_cbs.pop(session_key, None)
-        # Signal ALL blocked threads so they don't hang forever
         entries = _gateway_queues.pop(session_key, [])
         for entry in entries:
             entry.event.set()
 
 
-# =========================================================================
-# Config persistence for permanent allowlist
-# =========================================================================
 
 def load_permanent_allowlist() -> set:
     """Load permanently allowed command patterns from config.
@@ -357,9 +324,6 @@ def save_permanent_allowlist(patterns: set):
         logger.warning("Could not save allowlist: %s", e)
 
 
-# =========================================================================
-# Approval prompting + orchestration
-# =========================================================================
 
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
@@ -554,7 +518,6 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo: bypass all approval prompts
     if os.getenv("DAEDALUS_YOLO_MODE"):
         return {"approved": True, "message": None}
 
@@ -611,9 +574,6 @@ def check_dangerous_command(command: str, env_type: str,
     return {"approved": True, "message": None}
 
 
-# =========================================================================
-# Combined pre-exec guard (tirith + dangerous command detection)
-# =========================================================================
 
 def _format_tirith_description(tirith_result: dict) -> str:
     """Build a human-readable description from tirith findings.
@@ -651,11 +611,9 @@ def check_all_command_guards(command: str, env_type: str,
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
     """
-    # Skip containers for both checks
     if env_type in ("singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass all approval prompts
     approval_mode = _get_approval_mode()
     if os.getenv("DAEDALUS_YOLO_MODE") or approval_mode == "off":
         return {"approved": True, "message": None}
@@ -664,36 +622,24 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = os.getenv("DAEDALUS_GATEWAY_SESSION")
     is_ask = os.getenv("DAEDALUS_EXEC_ASK")
 
-    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
-    # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
         return {"approved": True, "message": None}
 
-    # --- Phase 1: Gather findings from both checks ---
 
-    # Tirith check — wrapper guarantees no raise for expected failures.
-    # Only catch ImportError (module not installed).
     tirith_result = {"action": "allow", "findings": [], "summary": ""}
     try:
         from tools.tirith_security import check_command_security
         tirith_result = check_command_security(command)
     except ImportError:
-        pass  # tirith module not installed — allow
+        pass
 
-    # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
-    # --- Phase 2: Decide ---
 
-    # Collect warnings that need approval
-    warnings = []  # list of (pattern_key, description, is_tirith)
+    warnings = []
 
     session_key = get_current_session_key()
 
-    # Tirith block/warn → approvable warning with rich findings.
-    # Previously, tirith "block" was a hard block with no approval prompt.
-    # Now both block and warn go through the approval flow so users can
-    # inspect the explanation and approve if they understand the risk.
     if tirith_result["action"] in ("block", "warn"):
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
@@ -706,19 +652,13 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
-    # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
 
-    # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
-    # When approvals.mode=smart, ask the aux LLM before prompting the user.
-    # Inspired by OpenAI Codex's Smart Approvals guardian subagent
-    # (openai/codex#13860).
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":
-            # Auto-approve and grant session-level approval for these patterns
             for key, _, _ in warnings:
                 approve_session(session_key, key)
             logger.debug("Smart approval: auto-approved '%s' (%s)",
@@ -734,29 +674,19 @@ def check_all_command_guards(command: str, env_type: str,
                            "The command was assessed as genuinely dangerous. Do NOT retry.",
                 "smart_denied": True,
             }
-        # verdict == "escalate" → fall through to manual prompt
 
-    # --- Phase 3: Approval ---
 
-    # Combine descriptions for a single approval prompt
     combined_desc = "; ".join(desc for _, desc, _ in warnings)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
 
-    # Gateway/async approval — block the agent thread until the user
-    # responds with /approve or /deny, mirroring the CLI's synchronous
-    # input() flow.  The agent never sees "approval_required"; it either
-    # gets the command output (approved) or a definitive "BLOCKED" message.
     if is_gateway or is_ask:
         notify_cb = None
         with _lock:
             notify_cb = _gateway_notify_cbs.get(session_key)
 
         if notify_cb is not None:
-            # --- Blocking gateway approval (queue-based) ---
-            # Each call gets its own _ApprovalEntry so parallel subagents
-            # and execute_code threads can block concurrently.
             approval_data = {
                 "command": command,
                 "pattern_key": primary_key,
@@ -767,7 +697,6 @@ def check_all_command_guards(command: str, env_type: str,
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
 
-            # Notify the user (bridges sync agent thread → async gateway)
             try:
                 notify_cb(approval_data)
             except Exception as exc:
@@ -785,7 +714,6 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min)
             timeout = _get_approval_config().get("gateway_timeout", 300)
             try:
                 timeout = int(timeout)
@@ -793,7 +721,6 @@ def check_all_command_guards(command: str, env_type: str,
                 timeout = 300
             resolved = entry.event.wait(timeout=timeout)
 
-            # Clean up this entry from the queue
             with _lock:
                 queue = _gateway_queues.get(session_key, [])
                 if entry in queue:
@@ -811,7 +738,6 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # User approved — persist based on scope (same logic as CLI)
             for key, _, is_tirith in warnings:
                 if choice == "session" or (choice == "always" and is_tirith):
                     approve_session(session_key, key)
@@ -819,14 +745,10 @@ def check_all_command_guards(command: str, env_type: str,
                     approve_session(session_key, key)
                     approve_permanent(key)
                     save_permanent_allowlist(_permanent_approved)
-                # choice == "once": no persistence — command allowed this
-                # single time only, matching the CLI's behavior.
 
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
 
-        # Fallback: no gateway callback registered (e.g. cron, batch).
-        # Return approval_required for backward compat.
         submit_pending(session_key, {
             "command": command,
             "pattern_key": primary_key,
@@ -844,8 +766,6 @@ def check_all_command_guards(command: str, env_type: str,
             ),
         }
 
-    # CLI interactive: single combined prompt
-    # Hide [a]lways when any tirith warning is present
     choice = prompt_dangerous_approval(command, combined_desc,
                                        allow_permanent=not has_tirith,
                                        approval_callback=approval_callback)
@@ -858,13 +778,10 @@ def check_all_command_guards(command: str, env_type: str,
             "description": combined_desc,
         }
 
-    # Persist approval for each warning individually
     for key, _, is_tirith in warnings:
         if choice == "session" or (choice == "always" and is_tirith):
-            # tirith: session only (no permanent broad allowlisting)
             approve_session(session_key, key)
         elif choice == "always":
-            # dangerous patterns: permanent allowed
             approve_session(session_key, key)
             approve_permanent(key)
             save_permanent_allowlist(_permanent_approved)
@@ -873,7 +790,6 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
-# Load permanent allowlist from config on module import
 load_permanent_allowlist()
 
 
@@ -902,8 +818,6 @@ def _bash_exec_payload(args: list[str]) -> tuple[bool, str | None]:
             continue
 
         chars = token[1:]
-        # Bash option letters are case-sensitive. Restricting this to its
-        # documented alphabet preserves invalid controls such as `-Wc`.
         if not set(chars) <= _BASH_SHORT_OPTION_LETTERS:
             index += 1
             continue

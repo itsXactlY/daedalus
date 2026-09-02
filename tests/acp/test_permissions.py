@@ -32,8 +32,6 @@ def _setup_callback(outcome, timeout=60.0):
 
     response = _make_response(outcome)
 
-    # Patch asyncio.run_coroutine_threadsafe so it returns a future
-    # that immediately yields the response.
     future = MagicMock(spec=Future)
     future.result.return_value = response
 

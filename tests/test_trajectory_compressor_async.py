@@ -78,7 +78,6 @@ class TestAsyncClientLazyCreation:
             client1 = comp._get_async_client()
             client2 = comp._get_async_client()
 
-        # Should have created two separate instances
         assert call_count == 2
         assert instances[0] is not instances[1]
 
@@ -96,13 +95,9 @@ class TestSourceLineVerification:
     def test_no_eager_async_openai_in_init(self):
         """__init__ should NOT create AsyncOpenAI eagerly."""
         src = self._read_file()
-        # The old pattern: self.async_client = AsyncOpenAI(...) in _init_summarizer
-        # should not exist — only self.async_client = None
         lines = src.split("\n")
         for i, line in enumerate(lines, 1):
             if "self.async_client = AsyncOpenAI(" in line and "_get_async_client" not in lines[max(0,i-3):i+1]:
-                # Allow it inside _get_async_client method
-                # Check if we're inside _get_async_client by looking at context
                 context = "\n".join(lines[max(0,i-10):i+1])
                 if "_get_async_client" not in context:
                     pytest.fail(

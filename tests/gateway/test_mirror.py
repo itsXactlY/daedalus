@@ -157,7 +157,6 @@ class TestMirrorToSession:
 
         assert result is True
 
-        # Check JSONL was written
         transcript = sessions_dir / "sess_abc.jsonl"
         assert transcript.exists()
         msg = json.loads(transcript.read_text().strip())

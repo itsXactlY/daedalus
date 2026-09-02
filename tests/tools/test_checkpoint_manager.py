@@ -22,9 +22,6 @@ from tools.checkpoint_manager import (
 )
 
 
-# =========================================================================
-# Fixtures
-# =========================================================================
 
 @pytest.fixture()
 def work_dir(tmp_path):
@@ -56,9 +53,6 @@ def disabled_mgr(checkpoint_base, monkeypatch):
     return CheckpointManager(enabled=False)
 
 
-# =========================================================================
-# Shadow repo path
-# =========================================================================
 
 class TestShadowRepoPath:
     def test_deterministic(self, work_dir, checkpoint_base, monkeypatch):
@@ -79,9 +73,6 @@ class TestShadowRepoPath:
         assert str(p).startswith(str(checkpoint_base))
 
 
-# =========================================================================
-# Shadow repo init
-# =========================================================================
 
 class TestShadowRepoInit:
     def test_creates_git_repo(self, work_dir, checkpoint_base, monkeypatch):
@@ -124,21 +115,15 @@ class TestShadowRepoInit:
         assert err2 is None
 
 
-# =========================================================================
-# CheckpointManager — disabled
-# =========================================================================
 
 class TestDisabledManager:
     def test_ensure_checkpoint_returns_false(self, disabled_mgr, work_dir):
         assert disabled_mgr.ensure_checkpoint(str(work_dir)) is False
 
     def test_new_turn_works(self, disabled_mgr):
-        disabled_mgr.new_turn()  # should not raise
+        disabled_mgr.new_turn()
 
 
-# =========================================================================
-# CheckpointManager — taking checkpoints
-# =========================================================================
 
 class TestTakeCheckpoint:
     def test_first_checkpoint(self, mgr, work_dir):
@@ -155,7 +140,7 @@ class TestTakeCheckpoint:
         r1 = mgr.ensure_checkpoint(str(work_dir), "first")
         r2 = mgr.ensure_checkpoint(str(work_dir), "second")
         assert r1 is True
-        assert r2 is False  # dedup'd
+        assert r2 is False
 
     def test_new_turn_resets_dedup(self, mgr, work_dir):
         r1 = mgr.ensure_checkpoint(str(work_dir), "turn 1")
@@ -163,17 +148,14 @@ class TestTakeCheckpoint:
 
         mgr.new_turn()
 
-        # Modify a file so there's something to commit
         (work_dir / "main.py").write_text("print('modified')\\n")
         r2 = mgr.ensure_checkpoint(str(work_dir), "turn 2")
         assert r2 is True
 
     def test_no_changes_skips_commit(self, mgr, work_dir):
-        # First checkpoint
         mgr.ensure_checkpoint(str(work_dir), "initial")
         mgr.new_turn()
 
-        # No file changes — should return False (nothing to commit)
         r = mgr.ensure_checkpoint(str(work_dir), "no changes")
         assert r is False
 
@@ -186,9 +168,6 @@ class TestTakeCheckpoint:
         assert r is False
 
 
-# =========================================================================
-# CheckpointManager — listing checkpoints
-# =========================================================================
 
 class TestListCheckpoints:
     def test_empty_when_no_checkpoints(self, mgr, work_dir):
@@ -217,34 +196,25 @@ class TestListCheckpoints:
 
         result = mgr.list_checkpoints(str(work_dir))
         assert len(result) == 3
-        # Most recent first
         assert result[0]["reason"] == "third"
         assert result[2]["reason"] == "first"
 
 
-# =========================================================================
-# CheckpointManager — restoring
-# =========================================================================
 
 class TestRestore:
     def test_restore_to_previous(self, mgr, work_dir):
-        # Write original content
         (work_dir / "main.py").write_text("original\\n")
         mgr.ensure_checkpoint(str(work_dir), "original state")
         mgr.new_turn()
 
-        # Modify the file
         (work_dir / "main.py").write_text("modified\\n")
 
-        # Get the checkpoint hash
         checkpoints = mgr.list_checkpoints(str(work_dir))
         assert len(checkpoints) == 1
 
-        # Restore
         result = mgr.restore(str(work_dir), checkpoints[0]["hash"])
         assert result["success"] is True
 
-        # File should be back to original
         assert (work_dir / "main.py").read_text() == "original\\n"
 
     def test_restore_invalid_hash(self, mgr, work_dir):
@@ -266,15 +236,11 @@ class TestRestore:
         checkpoints = mgr.list_checkpoints(str(work_dir))
         mgr.restore(str(work_dir), checkpoints[0]["hash"])
 
-        # Should now have 2 checkpoints: original + pre-rollback
         all_cps = mgr.list_checkpoints(str(work_dir))
         assert len(all_cps) >= 2
         assert "pre-rollback" in all_cps[0]["reason"]
 
 
-# =========================================================================
-# CheckpointManager — working dir resolution
-# =========================================================================
 
 class TestWorkingDirResolution:
     def test_resolves_git_project_root(self, tmp_path):
@@ -311,9 +277,6 @@ class TestWorkingDirResolution:
         assert result == str(filepath.parent)
 
 
-# =========================================================================
-# Git env isolation
-# =========================================================================
 
 class TestGitEnvIsolation:
     def test_sets_git_dir(self, tmp_path):
@@ -334,9 +297,6 @@ class TestGitEnvIsolation:
         assert "GIT_INDEX_FILE" not in env
 
 
-# =========================================================================
-# format_checkpoint_list
-# =========================================================================
 
 class TestFormatCheckpointList:
     def test_empty_list(self):
@@ -355,31 +315,24 @@ class TestFormatCheckpointList:
         assert "/rollback" in result
 
 
-# =========================================================================
-# File count guard
-# =========================================================================
 
 class TestDirFileCount:
     def test_counts_files(self, work_dir):
         count = _dir_file_count(str(work_dir))
-        assert count >= 2  # main.py + README.md
+        assert count >= 2
 
     def test_nonexistent_dir(self, tmp_path):
         count = _dir_file_count(str(tmp_path / "nonexistent"))
         assert count == 0
 
 
-# =========================================================================
-# Error resilience
-# =========================================================================
 
 class TestErrorResilience:
     def test_no_git_installed(self, work_dir, checkpoint_base, monkeypatch):
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         mgr = CheckpointManager(enabled=True)
-        # Mock git not found
         monkeypatch.setattr("shutil.which", lambda x: None)
-        mgr._git_available = None  # reset lazy probe
+        mgr._git_available = None
         result = mgr.ensure_checkpoint(str(work_dir), "test")
         assert result is False
 
@@ -408,14 +361,10 @@ class TestErrorResilience:
         def broken_run_git(*args, **kwargs):
             raise OSError("git exploded")
         monkeypatch.setattr("tools.checkpoint_manager._run_git", broken_run_git)
-        # Should not raise
         result = mgr.ensure_checkpoint(str(work_dir), "test")
         assert result is False
 
 
-# =========================================================================
-# Store-wide status / prune / clear
-# =========================================================================
 
 @pytest.fixture()
 def store_scratch():
@@ -475,7 +424,6 @@ class TestStoreStatus:
             assert mgr.ensure_checkpoint(str(live_wd), reason="init")
             live_hash_dir = _shadow_repo_path(str(live_wd))
 
-        # simulate an orphan: shadow repo present, workdir gone
         orphan_wd = store_scratch / "gone_project"
         orphan_wd.mkdir()
         with patch("tools.checkpoint_manager.CHECKPOINT_BASE", base):
@@ -492,7 +440,7 @@ class TestStoreStatus:
         assert live["workdir"] == str(live_wd.resolve())
         assert live["commits"] >= 1
         assert info["total_size_bytes"] > 0
-        assert info["legacy_size_bytes"] == 0  # no legacy concept on this fork's layout
+        assert info["legacy_size_bytes"] == 0
 
 
 class TestPruneCheckpoints:
@@ -542,7 +490,6 @@ class TestPruneCheckpoints:
         shutil.rmtree(wd1)
         shutil.rmtree(wd2)
 
-        # allowlist empty -> neither orphan authorized for deletion
         result = prune_checkpoints(delete_orphans=True, retention_days=999,
                                     max_total_size_mb=10_000,
                                     orphan_allowlist=set(), checkpoint_base=base)

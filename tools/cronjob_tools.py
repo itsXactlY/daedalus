@@ -12,7 +12,6 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
@@ -28,10 +27,6 @@ from cron.jobs import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Cron prompt scanning — critical-severity patterns only, since cron prompts
-# run in fresh sessions with full tool access.
-# ---------------------------------------------------------------------------
 
 _CRON_THREAT_PATTERNS = [
     (r'ignore\s+(?:\w+\s+)*(?:previous|all|above|prior)\s+(?:\w+\s+)*instructions', "prompt_injection"),
@@ -117,7 +112,6 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
     if model_name and not provider_name:
-        # Pin to the current main provider so the job is stable
         try:
             from daedalus_cli.config import load_config
             cfg = load_config()
@@ -125,7 +119,7 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
             if isinstance(model_cfg, dict):
                 provider_name = model_cfg.get("provider") or None
         except Exception:
-            pass  # Best-effort; provider stays None
+            pass
     return (provider_name, model_name)
 
 
@@ -148,14 +142,12 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     Returns an error string if blocked, else None (valid).
     """
     if not script or not script.strip():
-        return None  # empty/None = clearing the field, always OK
+        return None
 
     from daedalus_constants import get_daedalus_home
 
     raw = script.strip()
 
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.daedalus/scripts/ are allowed.
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
             f"Script path must be relative to ~/.daedalus/scripts/. "
@@ -163,7 +155,6 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
             f"Place scripts in ~/.daedalus/scripts/ and use just the filename."
         )
 
-    # Validate containment after resolution
     scripts_dir = get_daedalus_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     resolved = (scripts_dir / raw).resolve()
@@ -225,7 +216,7 @@ def cronjob(
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
-    del task_id  # unused but kept for handler signature compatibility
+    del task_id
 
     try:
         normalized = (action or "").strip().lower()
@@ -241,7 +232,6 @@ def cronjob(
                 if scan_error:
                     return tool_error(scan_error, success=False)
 
-            # Validate script path before storing
             if script:
                 script_error = _validate_cron_script_path(script)
                 if script_error:
@@ -342,14 +332,12 @@ def cronjob(
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
             if script is not None:
-                # Pass empty string to clear an existing script
                 if script:
                     script_error = _validate_cron_script_path(script)
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if repeat is not None:
-                # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
                 repeat_state = dict(job.get("repeat") or {})
                 repeat_state["times"] = normalized_repeat
@@ -372,9 +360,6 @@ def cronjob(
         return tool_error(str(e), success=False)
 
 
-# ---------------------------------------------------------------------------
-# Compatibility wrappers
-# ---------------------------------------------------------------------------
 
 def schedule_cronjob(
     prompt: str,
@@ -502,7 +487,6 @@ def check_cronjob_requirements() -> bool:
     )
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

@@ -48,13 +48,7 @@ from daedalus_constants import get_daedalus_home
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
-# Directories/files to include in snapshots (relative to daedalus_home).
-# state.db is intentionally excluded — it's 135MB and changes every tool call.
-# The WAL handles state.db incrementally; restore() falls back to WAL for it.
 INCLUDE_FILES: Set[str] = {
     "config.yaml",
     "auth.json",
@@ -64,7 +58,6 @@ INCLUDE_FILES: Set[str] = {
     "processes.json",
 }
 
-# Patterns to exclude from ALL walks
 EXCLUDE_PATTERNS: Set[str] = {
     ".snapshots",
     "daedalus",
@@ -107,25 +100,17 @@ EXCLUDE_PATTERNS: Set[str] = {
     "tools",
 }
 
-# SQLite WAL/SHM files — never snapshot these directly
 SQLITE_WAL_PATTERNS = {".db-wal", ".db-shm"}
 
-# Debounce windows (seconds)
 _DEBOUNCE_DEFAULT = 30
 _DEBOUNCE_MEMORY = 15
 
-# ---------------------------------------------------------------------------
-# Module-level state for debouncing
-# ---------------------------------------------------------------------------
 _last_snapshot_time: float = 0
 _last_state_hash: str = ""
 _debounce_lock = threading.Lock()
-_snapshot_count: int = 0  # for periodic prune
+_snapshot_count: int = 0
 
 
-# ---------------------------------------------------------------------------
-# Core Engine
-# ---------------------------------------------------------------------------
 
 def _update_state_hash(h: str) -> None:
     """Update the module-level state hash (must be called from within SnapshotEngine)."""
@@ -147,16 +132,13 @@ class SnapshotEngine:
         self.branches_dir = self.store / "branches"
         self.branch_head = self.store / "BRANCH_HEAD"
 
-        # Ensure directories exist
         self.objects.mkdir(parents=True, exist_ok=True)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self.wal_dir.mkdir(parents=True, exist_ok=True)
         self.branches_dir.mkdir(parents=True, exist_ok=True)
 
-        # Initialize history DB
         self._init_history_db()
 
-        # Initialize default branch if none exists
         if not self.branch_head.exists():
             self.branch_head.write_text("main")
 
@@ -195,7 +177,6 @@ class SnapshotEngine:
             CREATE INDEX IF NOT EXISTS idx_snapshots_branch
             ON snapshots(branch)
         """)
-        # WAL table — append-only log of individual state changes between snapshots
         conn.execute("""
             CREATE TABLE IF NOT EXISTS wal_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,7 +195,6 @@ class SnapshotEngine:
         conn.commit()
         conn.close()
 
-    # -- File hashing --------------------------------------------------------
 
     @staticmethod
     def _hash_bytes(data: bytes) -> str:
@@ -228,7 +208,6 @@ class SnapshotEngine:
                 h.update(chunk)
         return h.hexdigest()
 
-    # -- Object store --------------------------------------------------------
 
     def _store_object(self, data: bytes) -> str:
         """Store bytes in the content-addressed object store. Returns SHA-256."""
@@ -253,7 +232,6 @@ class SnapshotEngine:
             return obj_path.read_bytes()
         return None
 
-    # -- Write-Ahead Log -----------------------------------------------------
 
     def wal_append(self, rel_path: str, data: bytes) -> None:
         """Append a state change to the WAL.
@@ -278,7 +256,6 @@ class SnapshotEngine:
         """Append a file's contents to the WAL."""
         try:
             if abs_path.name == "state.db":
-                # Safe copy for SQLite
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
                     tmp_path = Path(tmp.name)
@@ -334,8 +311,7 @@ class SnapshotEngine:
         if not entries:
             return []
 
-        # Deduplicate: keep only the latest version of each file
-        latest: Dict[str, str] = {}  # rel_path -> sha256
+        latest: Dict[str, str] = {}
         for e in entries:
             latest[e["rel_path"]] = e["sha256"]
 
@@ -348,8 +324,6 @@ class SnapshotEngine:
             target.parent.mkdir(parents=True, exist_ok=True)
             try:
                 if target.name == "state.db":
-                    # Remove old WAL/SHM files FIRST — they belong to the old
-                    # (possibly corrupted) DB and would corrupt the restored one.
                     for suffix in ("-wal", "-shm"):
                         old_aux = Path(str(target) + suffix)
                         old_aux.unlink(missing_ok=True)
@@ -383,7 +357,6 @@ class SnapshotEngine:
         except Exception:
             return 0
 
-    # -- Branching -----------------------------------------------------------
 
     def get_branch(self) -> str:
         """Get the current branch name."""
@@ -412,13 +385,11 @@ class SnapshotEngine:
             logger.error("Branch already exists: %s", name)
             return False
 
-        # Determine the snapshot to point at
         if from_snapshot:
             snap_id = from_snapshot
         else:
             snap_id = self.get_head()
 
-        # Write branch ref (points to a snapshot ID)
         branch_file.write_text(snap_id or "")
         logger.info("Created branch '%s' at %s", name, snap_id)
         return True
@@ -439,15 +410,12 @@ class SnapshotEngine:
 
         snap_id = branch_file.read_text().strip()
 
-        # Snapshot current state on current branch before switching
         current_branch = self.get_branch()
         if current_branch != name:
             self.snapshot(label=f"branch-switch-from-{current_branch}", trigger="branch_switch")
 
-        # Switch branch
         self.branch_head.write_text(name)
 
-        # Restore branch state if it has a snapshot
         if snap_id:
             self.restore(snap_id)
 
@@ -484,7 +452,6 @@ class SnapshotEngine:
         current = self.get_branch()
         branches = []
 
-        # Always include main
         main_snap = ""
         main_file = self.branches_dir / "main"
         if main_file.exists():
@@ -495,7 +462,6 @@ class SnapshotEngine:
             "is_current": current == "main",
         })
 
-        # Other branches
         if self.branches_dir.exists():
             for bf in sorted(self.branches_dir.iterdir()):
                 if bf.is_file() and bf.name != "main":
@@ -514,7 +480,6 @@ class SnapshotEngine:
         branch_file.parent.mkdir(parents=True, exist_ok=True)
         branch_file.write_text(snap_id)
 
-    # -- SQLite safe copy ----------------------------------------------------
 
     def _safe_copy_db(self, src: Path, dst: Path) -> bool:
         """Copy a SQLite database safely using the backup API.
@@ -531,25 +496,16 @@ class SnapshotEngine:
         conn = None
         backup_conn = None
         try:
-            # Step 1: Open read-write (checkpoint requires write access)
             conn = sqlite3.connect(str(src), timeout=10)
 
-            # Step 2: WAL checkpoint — flush pending writes into main DB file.
-            # TRUNCATE ensures the WAL is emptied, so the .db file alone is
-            # sufficient for a consistent snapshot.
             try:
                 conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except sqlite3.OperationalError:
-                # Checkpoint may fail if another writer holds the WAL.
-                # backup() can still handle this, so continue.
                 pass
 
-            # Step 3: SQLite backup API — the ONLY safe way to copy a live DB.
             backup_conn = sqlite3.connect(str(dst))
             conn.backup(backup_conn)
 
-            # Step 4: Verify backup integrity before accepting.
-            # A corrupt backup is worse than no backup.
             integrity = backup_conn.execute("PRAGMA integrity_check").fetchone()[0]
             backup_conn.close()
             backup_conn = None
@@ -567,7 +523,6 @@ class SnapshotEngine:
             dst.unlink(missing_ok=True)
             return False
         finally:
-            # Always clean up connections
             if backup_conn is not None:
                 try:
                     backup_conn.close()
@@ -579,7 +534,6 @@ class SnapshotEngine:
                 except Exception:
                     pass
 
-    # -- Snapshot creation ---------------------------------------------------
 
     def _collect_state_files(self) -> List[Tuple[str, Path]]:
         """Collect all files to snapshot. Returns [(rel_path, abs_path)]."""
@@ -587,7 +541,6 @@ class SnapshotEngine:
         for rel_name in sorted(INCLUDE_FILES):
             abs_path = self.daedalus_home / rel_name
             if abs_path.exists() and abs_path.is_file():
-                # Skip WAL files
                 if any(str(abs_path).endswith(p) for p in SQLITE_WAL_PATTERNS):
                     continue
                 files.append((rel_name, abs_path))
@@ -623,7 +576,6 @@ class SnapshotEngine:
         """
         state_hash = self.compute_state_hash()
 
-        # Skip if state hasn't changed since last snapshot
         head = self.get_head()
         if head:
             try:
@@ -633,7 +585,6 @@ class SnapshotEngine:
                     (head,),
                 ).fetchone()
                 conn.close()
-                # If head exists and state hash matches, skip
                 if row and state_hash == _last_state_hash:
                     logger.debug("State unchanged, skipping snapshot")
                     return None
@@ -651,10 +602,8 @@ class SnapshotEngine:
         total_size = 0
         unique_hashes: Set[str] = set()
 
-        # Collect and store files
         for rel_path, abs_path in self._collect_state_files():
             try:
-                # Special handling for SQLite databases
                 if abs_path.suffix == ".db" and abs_path.name == "state.db":
                     tmp_path = snap_dir / "_tmp_db"
                     if self._safe_copy_db(abs_path, tmp_path):
@@ -681,11 +630,9 @@ class SnapshotEngine:
             shutil.rmtree(snap_dir, ignore_errors=True)
             return None
 
-        # Write manifest
         with open(snap_dir / "manifest.json", "w") as f:
             json.dump(manifest, f, indent=2)
 
-        # Write metadata
         branch = self.get_branch()
         meta = {
             "id": snap_id,
@@ -701,16 +648,12 @@ class SnapshotEngine:
         with open(snap_dir / "meta.json", "w") as f:
             json.dump(meta, f, indent=2)
 
-        # Update HEAD
         self.head_file.write_text(snap_id)
 
-        # Update branch HEAD
         self.update_branch_head(snap_id)
 
-        # WAL flush — mark unflushed entries as belonging to this snapshot
         wal_count = self.wal_flush(snap_id)
 
-        # Update history DB
         try:
             conn = sqlite3.connect(str(self.history_db))
             conn.execute(
@@ -728,7 +671,6 @@ class SnapshotEngine:
         except Exception as e:
             logger.warning("Failed to update history DB: %s", e)
 
-        # Update module-level debounce state
         _update_state_hash(state_hash)
 
         logger.info(
@@ -737,7 +679,6 @@ class SnapshotEngine:
         )
         return snap_id
 
-    # -- Restore -------------------------------------------------------------
 
     def _wal_state_db_at(self, snapshot_id: str) -> Optional[str]:
         """Return the SHA256 of the latest state.db WAL entry at or before snapshot_id."""
@@ -778,7 +719,6 @@ class SnapshotEngine:
         with open(manifest_path) as f:
             manifest: Dict[str, str] = json.load(f)
 
-        # state.db is no longer snapshotted directly — recover from WAL
         if "state.db" not in manifest:
             db_sha = self._wal_state_db_at(snapshot_id)
             if db_sha:
@@ -795,17 +735,13 @@ class SnapshotEngine:
             target.parent.mkdir(parents=True, exist_ok=True)
 
             try:
-                # For state.db, use the safe copy approach (write object to tmp, then restore)
                 if target.name == "state.db":
-                    # Remove old WAL/SHM files FIRST — they belong to the old
-                    # (possibly corrupted) DB and would corrupt the restored one.
                     for suffix in ("-wal", "-shm"):
                         old_aux = Path(str(target) + suffix)
                         old_aux.unlink(missing_ok=True)
 
                     tmp_path = target.parent / f".{target.name}.snap_restore"
                     shutil.copy2(obj_path, tmp_path)
-                    # Replace the live DB
                     target.unlink(missing_ok=True)
                     shutil.move(str(tmp_path), str(target))
                 else:
@@ -814,13 +750,11 @@ class SnapshotEngine:
             except Exception as e:
                 logger.error("Failed to restore %s: %s", rel_path, e)
 
-        # Update HEAD
         self.head_file.write_text(snapshot_id)
 
         logger.info("Restored %d/%d files from snapshot %s", restored, len(manifest), snapshot_id)
         return restored > 0
 
-    # -- List ----------------------------------------------------------------
 
     def get_head(self) -> Optional[str]:
         """Get the current HEAD snapshot ID."""
@@ -854,7 +788,6 @@ class SnapshotEngine:
             conn.close()
             return [dict(r) for r in rows]
         except Exception:
-            # Fallback: scan filesystem
             result = []
             if self.snapshots_dir.exists():
                 for d in sorted(self.snapshots_dir.iterdir(), reverse=True):
@@ -868,7 +801,6 @@ class SnapshotEngine:
                                 pass
             return result[:limit]
 
-    # -- Diff ----------------------------------------------------------------
 
     def diff(self, snap_id_a: str, snap_id_b: str) -> Dict[str, Any]:
         """Compare two snapshots. Returns changed/added/removed files."""
@@ -905,7 +837,6 @@ class SnapshotEngine:
             "removed": removed,
         }
 
-    # -- Prune ---------------------------------------------------------------
 
     def prune(
         self,
@@ -928,30 +859,25 @@ class SnapshotEngine:
 
         keep: Set[str] = set()
 
-        # Always keep last N
         for s in snaps[:keep_last]:
             keep.add(s["id"])
 
-        # Keep hourly (one per hour)
         seen_hours: Set[str] = set()
         for s in snaps:
             ts = s.get("timestamp", "")
-            hour_key = ts[:10] + ts[10:13]  # YYYYMMDD-HH
+            hour_key = ts[:10] + ts[10:13]
             if hour_key not in seen_hours and len(seen_hours) < keep_hourly:
                 keep.add(s["id"])
                 seen_hours.add(hour_key)
 
-        # Keep daily (one per day)
         seen_days: Set[str] = set()
         for s in snaps:
             ts = s.get("timestamp", "")
-            day_key = ts[:8]  # YYYYMMDD
+            day_key = ts[:8]
             if day_key not in seen_days and len(seen_days) < keep_daily:
                 keep.add(s["id"])
                 seen_days.add(day_key)
 
-        # Delete everything not in keep set
-        # NEVER delete snapshots on non-main branches (safety for upgrade experiments)
         non_main_snaps: Set[str] = set()
         for s in snaps:
             if s.get("branch", "main") != "main":
@@ -965,7 +891,6 @@ class SnapshotEngine:
                     shutil.rmtree(snap_dir, ignore_errors=True)
                     deleted += 1
 
-        # Clean up history DB
         if deleted:
             try:
                 conn = sqlite3.connect(str(self.history_db))
@@ -978,10 +903,8 @@ class SnapshotEngine:
             except Exception as e:
                 logger.warning("Failed to clean history DB during prune: %s", e)
 
-        # Clean orphaned objects (optional — run occasionally)
         self._clean_orphaned_objects()
 
-        # Also prune old WAL entries (flushed, >72h)
         wal_pruned = self.wal_prune(older_than_hours=72)
 
         logger.info(
@@ -992,7 +915,6 @@ class SnapshotEngine:
 
     def _clean_orphaned_objects(self) -> int:
         """Remove objects not referenced by any snapshot. Returns count removed."""
-        # Collect all referenced hashes
         referenced: Set[str] = set()
         try:
             conn = sqlite3.connect(str(self.history_db))
@@ -1012,7 +934,6 @@ class SnapshotEngine:
                     if full_hash not in referenced:
                         obj_file.unlink(missing_ok=True)
                         removed += 1
-                        # Clean empty prefix dirs
                         try:
                             prefix_dir.rmdir()
                         except OSError:
@@ -1021,9 +942,6 @@ class SnapshotEngine:
         return removed
 
 
-# ---------------------------------------------------------------------------
-# Convenience functions (module-level, no engine instance needed)
-# ---------------------------------------------------------------------------
 
 _engine: Optional[SnapshotEngine] = None
 _engine_lock = threading.Lock()
@@ -1051,7 +969,6 @@ def auto_snapshot(
     """
     global _last_snapshot_time
 
-    # Select debounce window based on trigger
     if debounce_seconds is None:
         debounce_seconds = (
             _DEBOUNCE_MEMORY if trigger == "memory_write" else _DEBOUNCE_DEFAULT

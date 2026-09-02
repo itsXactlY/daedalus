@@ -18,9 +18,6 @@ from gateway.platforms.base import (
     get_document_cache_dir,
 )
 
-# ---------------------------------------------------------------------------
-# Fixture: redirect DOCUMENT_CACHE_DIR to a temp directory for every test
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
@@ -30,9 +27,6 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
-# ---------------------------------------------------------------------------
-# TestGetDocumentCacheDir
-# ---------------------------------------------------------------------------
 
 class TestGetDocumentCacheDir:
     def test_creates_directory(self, tmp_path):
@@ -47,9 +41,6 @@ class TestGetDocumentCacheDir:
         assert first.exists()
 
 
-# ---------------------------------------------------------------------------
-# TestCacheDocumentFromBytes
-# ---------------------------------------------------------------------------
 
 class TestCacheDocumentFromBytes:
     def test_basic_caching(self):
@@ -76,9 +67,7 @@ class TestCacheDocumentFromBytes:
         path = cache_document_from_bytes(b"data", "../../etc/passwd")
         basename = os.path.basename(path)
         assert "passwd" in basename
-        # Must NOT contain directory separators
         assert ".." not in basename
-        # File must reside inside the cache directory
         cache_dir = get_document_cache_dir()
         assert Path(path).resolve().is_relative_to(cache_dir.resolve())
 
@@ -99,16 +88,12 @@ class TestCacheDocumentFromBytes:
         assert "document" in os.path.basename(path)
 
 
-# ---------------------------------------------------------------------------
-# TestCleanupDocumentCache
-# ---------------------------------------------------------------------------
 
 class TestCleanupDocumentCache:
     def test_removes_old_files(self, tmp_path):
         cache_dir = get_document_cache_dir()
         old_file = cache_dir / "old.txt"
         old_file.write_text("old")
-        # Set modification time to 48 hours ago
         old_mtime = time.time() - 48 * 3600
         os.utime(old_file, (old_mtime, old_mtime))
 
@@ -139,9 +124,6 @@ class TestCleanupDocumentCache:
         assert cleanup_document_cache(max_age_hours=24) == 0
 
 
-# ---------------------------------------------------------------------------
-# TestSupportedDocumentTypes
-# ---------------------------------------------------------------------------
 
 class TestSupportedDocumentTypes:
     def test_all_extensions_have_mime_types(self):

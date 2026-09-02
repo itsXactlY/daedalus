@@ -27,7 +27,6 @@ def curses_checklist(
         The indices the user confirmed as checked.  On cancel (ESC/q),
         returns ``pre_selected`` unchanged.
     """
-    # Safety: return defaults when stdin is not a terminal.
     if not sys.stdin.isatty():
         return set(pre_selected)
 
@@ -43,7 +42,7 @@ def curses_checklist(
                 curses.use_default_colors()
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, 8, -1)  # dim gray
+                curses.init_pair(3, 8, -1)
             cursor = 0
             scroll_offset = 0
 
@@ -51,7 +50,6 @@ def curses_checklist(
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
-                # Header
                 try:
                     hattr = curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0)
                     stdscr.addnstr(0, 0, title, max_x - 1, hattr)
@@ -63,7 +61,6 @@ def curses_checklist(
                 except curses.error:
                     pass
 
-                # Scrollable item list
                 visible_rows = max_y - 3
                 if cursor < scroll_offset:
                     scroll_offset = cursor
@@ -110,9 +107,8 @@ def curses_checklist(
         return result[0] if result[0] is not None else set(pre_selected)
 
     except Exception:
-        pass  # fall through to numbered fallback
+        pass
 
-    # ── Numbered text fallback ────────────────────────────────────────────
     selected = set(pre_selected)
     print(color(f"\n  {title}", Colors.YELLOW))
     print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))

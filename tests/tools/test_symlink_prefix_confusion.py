@@ -44,7 +44,6 @@ class TestPrefixConfusionRegression:
         resolved = sibling_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # Bug: old check says the file is INSIDE the skill dir
         assert _old_check_escapes(resolved, skill_dir_resolved) is False
 
     def test_new_check_catches_sibling_with_shared_prefix(self, tmp_path):
@@ -58,7 +57,6 @@ class TestPrefixConfusionRegression:
         resolved = sibling_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # Fixed: new check correctly says it's OUTSIDE
         assert _new_check_escapes(resolved, skill_dir_resolved) is True
 
     def test_both_agree_on_real_subpath(self, tmp_path):
@@ -97,7 +95,6 @@ class TestPrefixConfusionRegression:
         resolved = skill_dir.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # Both should allow the dir itself
         assert _old_check_escapes(resolved, skill_dir_resolved) is False
         assert _new_check_escapes(resolved, skill_dir_resolved) is False
 
@@ -137,9 +134,7 @@ class TestSymlinkEscapeWithActualSymlinks:
         resolved = link.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # Old check would miss this (prefix confusion)
         assert _old_check_escapes(resolved, skill_dir_resolved) is False
-        # New check catches it
         assert _new_check_escapes(resolved, skill_dir_resolved) is True
 
     def test_symlink_within_skill_dir_allowed(self, tmp_path):

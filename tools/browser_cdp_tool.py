@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
 
 _CDP_PRIVATE_PAGE_ALLOWED_METHODS = {
-    # Browser/target inspection does not read the current page body, cookies,
-    # DOM, storage, or screenshots. Keep these working so the model can list
-    # tabs or navigate away from a blocked page.
     "Browser.getVersion",
     "Target.getTargets",
     "Target.attachToTarget",
@@ -56,9 +53,6 @@ def _redact_cdp_output(value: Any) -> Any:
         return {key: _redact_cdp_output(item) for key, item in value.items()}
     return value
 
-# ``websockets`` is a direct daedalus dependency because the browser CDP
-# supervisor and browser_dialog tool import it during tool discovery. Wrap the
-# import so a clean error surfaces if an environment is stale or incomplete.
 try:
     import websockets
     from websockets.exceptions import WebSocketException
@@ -70,9 +64,6 @@ except ImportError:
     _WS_AVAILABLE = False
 
 
-# ---------------------------------------------------------------------------
-# Async-from-sync bridge (matches the pattern in homeassistant_tool.py)
-# ---------------------------------------------------------------------------
 
 
 def _run_async(coro):
@@ -91,9 +82,6 @@ def _run_async(coro):
     return asyncio.run(coro)
 
 
-# ---------------------------------------------------------------------------
-# Endpoint resolution
-# ---------------------------------------------------------------------------
 
 
 def _resolve_cdp_endpoint() -> str:
@@ -174,15 +162,20 @@ def _browser_cdp_private_guard(
             if blocked_url:
                 return _private_page_guard_error(blocked_url, method)
     except Exception as exc:  # noqa: BLE001
-        # Match the existing browser guards' posture: guard probes are
-        # best-effort and should not break local/custom CDP workflows.
-        logger.debug("browser_cdp: private-page guard probe failed: %s", exc)
+        logger.error(
+            "browser_cdp: private-page guard could not run (%s) — refusing %s. "
+            "The guard's helpers in tools.browser_tool are missing; raw CDP is "
+            "not exposed without them.", exc, method,
+        )
+        return tool_error(
+            "Blocked: the browser private-address guard could not run, so raw "
+            f"CDP method {method!r} was refused rather than executed unguarded.",
+            method=method,
+            cdp_docs=CDP_DOCS_URL,
+        )
     return None
 
 
-# ---------------------------------------------------------------------------
-# Core CDP call
-# ---------------------------------------------------------------------------
 
 
 async def _cdp_call(
@@ -201,19 +194,18 @@ async def _cdp_call(
     works for ``Target.*``, ``Browser.*``, ``Storage.*`` and a few other
     globally-scoped domains.
     """
-    assert websockets is not None  # guarded by _WS_AVAILABLE at call-site
+    assert websockets is not None
 
     async with websockets.connect(
         ws_url,
-        max_size=None,  # CDP responses (e.g. DOM.getDocument) can be large
+        max_size=None,
         open_timeout=timeout,
         close_timeout=5,
-        ping_interval=None,  # CDP server doesn't expect pings
+        ping_interval=None,
     ) as ws:
         next_id = 1
         session_id: Optional[str] = None
 
-        # --- Step 1: attach to target if requested ---
         if target_id:
             attach_id = next_id
             next_id += 1
@@ -246,9 +238,7 @@ async def _cdp_call(
                             "Target.attachToTarget did not return a sessionId"
                         )
                     break
-                # Ignore events (messages without "id") while waiting
 
-        # --- Step 2: dispatch the real method ---
         call_id = next_id
         next_id += 1
         req: Dict[str, Any] = {
@@ -273,12 +263,8 @@ async def _cdp_call(
                 if "error" in msg:
                     raise RuntimeError(f"CDP error: {msg['error']}")
                 return msg.get("result", {})
-            # Ignore events / out-of-order responses
 
 
-# ---------------------------------------------------------------------------
-# Public tool function
-# ---------------------------------------------------------------------------
 
 
 def _browser_cdp_via_supervisor(
@@ -314,7 +300,6 @@ def _browser_cdp_via_supervisor(
         )
 
     snap = supervisor.snapshot()
-    # Search both the top frame and the children for the requested id.
     top = snap.frame_tree.get("top")
     frame_info: Optional[Dict[str, Any]] = None
     if top and top.get("frame_id") == frame_id:
@@ -325,7 +310,6 @@ def _browser_cdp_via_supervisor(
                 frame_info = child
                 break
     if frame_info is None:
-        # Check the raw frames dict too (frame_tree is capped at 30 entries)
         with supervisor._state_lock:  # type: ignore[attr-defined]
             raw = supervisor._frames.get(frame_id)  # type: ignore[attr-defined]
         if raw is not None:
@@ -339,9 +323,6 @@ def _browser_cdp_via_supervisor(
 
     child_sid = frame_info.get("session_id")
     if not child_sid:
-        # Not an OOPIF — fall back to top-level session (evaluating at page
-        # scope).  Same-origin iframes don't get their own sessionId; the
-        # agent can still use contentWindow/contentDocument from the parent.
         return tool_error(
             f"frame_id {frame_id!r} is not an out-of-process iframe (no "
             f"dedicated CDP session). For same-origin iframes, use "
@@ -350,7 +331,6 @@ def _browser_cdp_via_supervisor(
             f"at the top-level page instead."
         )
 
-    # Dispatch onto the supervisor's loop.
     loop = supervisor._loop  # type: ignore[attr-defined]
     if loop is None or not loop.is_running():
         return tool_error(
@@ -426,10 +406,7 @@ def browser_cdp(
     """
     effective_task_id = task_id or "default"
 
-    # --- Route iframe-scoped calls through the supervisor ---------------
     if frame_id:
-        # Same private-page/SSRF boundary as the stateless path below —
-        # frame_id routing must not become the sibling bypass for it.
         blocked = _browser_cdp_private_guard(
             task_id=effective_task_id,
             method=method,
@@ -531,9 +508,6 @@ def browser_cdp(
     return json.dumps(payload, ensure_ascii=False)
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 
 
 BROWSER_CDP_SCHEMA: Dict[str, Any] = {
@@ -661,9 +635,6 @@ def _browser_cdp_check() -> bool:
         return False
     if not check_browser_requirements():
         return False
-    # Raw (no-I/O) gate: check_fns run during tool-schema assembly at every
-    # startup; resolving the endpoint over HTTP here would block launch when
-    # the configured endpoint is stale/unreachable.
     return bool(_get_cdp_override_raw())
 
 

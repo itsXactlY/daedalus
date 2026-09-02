@@ -191,9 +191,8 @@ class TestCheckFnExceptionHandling:
             toolset="broken",
             schema=_make_schema(),
             handler=_dummy_handler,
-            check_fn=lambda: 1 / 0,  # ZeroDivisionError
+            check_fn=lambda: 1 / 0,
         )
-        # Should return False, not raise
         assert reg.is_toolset_available("broken") is False
 
     def test_check_toolset_requirements_survives_raising_check(self):

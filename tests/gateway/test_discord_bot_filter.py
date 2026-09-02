@@ -33,7 +33,6 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
         msg.channel.name = "test-channel"
         msg.channel.guild = MagicMock()
         msg.channel.guild.name = "TestServer"
-        # Make isinstance checks fail for DMChannel and Thread
         type(msg.channel).__name__ = "TextChannel"
     return msg
 
@@ -43,9 +42,8 @@ class TestDiscordBotFilter(unittest.TestCase):
 
     def _run_filter(self, message, allow_bots="none", client_user=None):
         """Simulate the on_message filter logic and return whether message was accepted."""
-        # Replicate the exact filter logic from discord.py on_message
         if message.author == client_user:
-            return False  # own messages always ignored
+            return False
 
         if getattr(message.author, "bot", False):
             allow = allow_bots.lower().strip()
@@ -54,9 +52,8 @@ class TestDiscordBotFilter(unittest.TestCase):
             elif allow == "mentions":
                 if not client_user or client_user not in message.mentions:
                     return False
-            # "all" falls through
         
-        return True  # message accepted
+        return True
 
     def test_own_messages_always_ignored(self):
         """Bot's own messages are always ignored regardless of allow_bots."""

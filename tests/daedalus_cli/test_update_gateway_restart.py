@@ -16,9 +16,6 @@ import daedalus_cli.gateway as gateway_cli
 from daedalus_cli.main import cmd_update
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_run_side_effect(
     branch="main",
@@ -34,20 +31,16 @@ def _make_run_side_effect(
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
 
-        # git rev-parse --abbrev-ref HEAD
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
 
-        # git rev-parse --verify origin/{branch}
         if "rev-parse" in joined and "--verify" in joined:
             rc = 0 if verify_ok else 128
             return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
 
-        # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
 
-        # systemctl list-units daedalus-gateway* — discover all gateway services
         if "systemctl" in joined and "list-units" in joined:
             if "--user" in joined and systemd_active:
                 return subprocess.CompletedProcess(
@@ -63,26 +56,22 @@ def _make_run_side_effect(
                 )
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        # systemctl is-active — distinguish --user from system scope
         if "systemctl" in joined and "is-active" in joined:
             if "--user" in joined:
                 if systemd_active:
                     return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
                 return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
             else:
-                # System-level check (no --user)
                 if system_service_active:
                     return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
                 return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
 
-        # systemctl restart — distinguish --user from system scope
         if "systemctl" in joined and "restart" in joined:
             if "--user" not in joined and system_service_active:
                 stderr = "" if system_restart_rc == 0 else "Failed to restart: Permission denied"
                 return subprocess.CompletedProcess(cmd, system_restart_rc, stdout="", stderr=stderr)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        # launchctl list ai.daedalus.gateway
         if "launchctl" in joined and "list" in joined:
             if launchctl_loaded:
                 return subprocess.CompletedProcess(cmd, 0, stdout="PID\tStatus\tLabel\n123\t0\tai.daedalus.gateway\n", stderr="")
@@ -98,9 +87,6 @@ def mock_args():
     return SimpleNamespace()
 
 
-# ---------------------------------------------------------------------------
-# Launchd plist includes --replace
-# ---------------------------------------------------------------------------
 
 
 class TestLaunchdPlistReplace:
@@ -115,7 +101,6 @@ class TestLaunchdPlistReplace:
         """--replace comes after 'run' in the ProgramArguments."""
         plist = gateway_cli.generate_launchd_plist()
         lines = [line.strip() for line in plist.splitlines()]
-        # Find 'run' and '--replace' in the string entries
         string_values = [
             line.replace("<string>", "").replace("</string>", "")
             for line in lines
@@ -191,9 +176,6 @@ class TestLaunchdPlistPath:
             raise AssertionError("PATH key not found in plist")
 
 
-# ---------------------------------------------------------------------------
-# cmd_update — macOS launchd detection
-# ---------------------------------------------------------------------------
 
 
 class TestLaunchdPlistRefresh:
@@ -216,9 +198,7 @@ class TestLaunchdPlistRefresh:
         result = gateway_cli.refresh_launchd_plist_if_needed()
 
         assert result is True
-        # Plist should now contain the generated content (which includes --replace)
         assert "--replace" in plist_path.read_text()
-        # Should have booted out then bootstrapped
         assert any("bootout" in str(c) for c in calls)
         assert any("bootstrap" in str(c) for c in calls)
 
@@ -226,7 +206,6 @@ class TestLaunchdPlistRefresh:
         plist_path = tmp_path / "ai.daedalus.gateway.plist"
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
-        # Write the current expected content
         plist_path.write_text(gateway_cli.generate_launchd_plist())
 
         calls = []
@@ -238,7 +217,7 @@ class TestLaunchdPlistRefresh:
         result = gateway_cli.refresh_launchd_plist_if_needed()
 
         assert result is False
-        assert len(calls) == 0  # No launchctl calls needed
+        assert len(calls) == 0
 
     def test_refresh_skips_when_no_plist(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "nonexistent.plist"
@@ -262,7 +241,6 @@ class TestLaunchdPlistRefresh:
 
         gateway_cli.launchd_start()
 
-        # First calls should be refresh (bootout/bootstrap), then kickstart
         cmd_strs = [" ".join(c) for c in calls]
         assert any("bootout" in s for s in cmd_strs)
         assert any("kickstart" in s for s in cmd_strs)
@@ -283,15 +261,12 @@ class TestLaunchdPlistRefresh:
 
         gateway_cli.launchd_start()
 
-        # Should have created the plist
         assert plist_path.exists()
         assert "--replace" in plist_path.read_text()
 
         cmd_strs = [" ".join(c) for c in calls]
-        # Should bootstrap the new plist, then kickstart
         assert any("bootstrap" in s for s in cmd_strs)
         assert any("kickstart" in s for s in cmd_strs)
-        # Should NOT call bootout (nothing to bootout)
         assert not any("bootout" in s for s in cmd_strs)
 
 
@@ -305,7 +280,6 @@ class TestCmdUpdateLaunchdRestart:
     ):
         """When launchd is running the gateway, update should print
         'auto-restart via launchd' instead of 'Restart it with: daedalus gateway run'."""
-        # Create a fake launchd plist so is_macos + plist.exists() passes
         plist_path = tmp_path / "ai.daedalus.gateway.plist"
         plist_path.write_text("<plist/>")
 
@@ -321,7 +295,6 @@ class TestCmdUpdateLaunchdRestart:
             launchctl_loaded=True,
         )
 
-        # Mock launchd_restart + find_gateway_pids (new code discovers all gateways)
         with patch.object(gateway_cli, "launchd_restart") as mock_launchd_restart, \
              patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
             cmd_update(mock_args)
@@ -341,7 +314,6 @@ class TestCmdUpdateLaunchdRestart:
             gateway_cli, "is_macos", lambda: True,
         )
         plist_path = tmp_path / "ai.daedalus.gateway.plist"
-        # plist does NOT exist — no launchd service
         monkeypatch.setattr(
             gateway_cli, "get_launchd_plist_path", lambda: plist_path,
         )
@@ -351,7 +323,6 @@ class TestCmdUpdateLaunchdRestart:
             launchctl_loaded=False,
         )
 
-        # Simulate a manual gateway process found by find_gateway_pids
         with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
              patch("os.kill"):
             cmd_update(mock_args)
@@ -379,7 +350,6 @@ class TestCmdUpdateLaunchdRestart:
 
         captured = capsys.readouterr().out
         assert "Restarted daedalus-gateway" in captured
-        # Verify systemctl restart was called
         restart_calls = [
             c for c in mock_run.call_args_list
             if "restart" in " ".join(str(a) for a in c.args[0])
@@ -411,9 +381,6 @@ class TestCmdUpdateLaunchdRestart:
         assert "Gateway restarted via launchd" not in captured
 
 
-# ---------------------------------------------------------------------------
-# cmd_update — system-level systemd service detection
-# ---------------------------------------------------------------------------
 
 
 class TestCmdUpdateSystemService:
@@ -439,7 +406,6 @@ class TestCmdUpdateSystemService:
 
         captured = capsys.readouterr().out
         assert "Restarted daedalus-gateway" in captured
-        # Verify systemctl restart (no --user) was called
         restart_calls = [
             c for c in mock_run.call_args_list
             if "restart" in " ".join(str(a) for a in c.args[0])
@@ -489,13 +455,9 @@ class TestCmdUpdateSystemService:
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
-        # Both scopes are discovered and restarted
         assert "Restarted daedalus-gateway" in captured
 
 
-# ---------------------------------------------------------------------------
-# Service PID exclusion — the core bug fix
-# ---------------------------------------------------------------------------
 
 
 class TestServicePidExclusion:
@@ -517,7 +479,6 @@ class TestServicePidExclusion:
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
 
-        # The service PID that launchd manages after restart
         SERVICE_PID = 42000
 
         mock_run.side_effect = _make_run_side_effect(
@@ -525,8 +486,6 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
-        # Simulate find_gateway_pids returning the service PID (the bug scenario)
-        # and _get_service_pids returning the same PID to exclude it
         with patch.object(
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
@@ -539,9 +498,7 @@ class TestServicePidExclusion:
             cmd_update(mock_args)
 
         captured = capsys.readouterr().out
-        # Service was restarted
         assert "Restarted" in captured
-        # The service PID should NOT have been killed by the manual sweep
         kill_calls = [
             c for c in mock_kill.call_args_list
             if c.args[0] == SERVICE_PID
@@ -550,7 +507,6 @@ class TestServicePidExclusion:
             f"Service PID {SERVICE_PID} was killed by the manual sweep — "
             f"this is the bug where update restarts then immediately kills the gateway"
         )
-        # Should NOT show manual restart message
         assert "Restart manually" not in captured
 
     @patch("shutil.which", return_value=None)
@@ -582,7 +538,6 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted daedalus-gateway" in captured
-        # Service PID must not be killed
         kill_calls = [
             c for c in mock_kill.call_args_list
             if c.args[0] == SERVICE_PID
@@ -625,13 +580,10 @@ class TestServicePidExclusion:
 
         captured = capsys.readouterr().out
         assert "Restarted" in captured
-        # Manual PID should be killed
         manual_kills = [c for c in mock_kill.call_args_list if c.args[0] == MANUAL_PID]
         assert len(manual_kills) == 1
-        # Service PID should NOT be killed
         service_kills = [c for c in mock_kill.call_args_list if c.args[0] == SERVICE_PID]
         assert len(service_kills) == 0
-        # Should show manual stop message since manual PID was killed
         assert "Stopped 1 manual gateway" in captured
 
 

@@ -135,6 +135,23 @@ function project(x, y, z) {
 }
 ```
 
+**PITFALL — z-unit mismatch (bites silently):** `FOV/(FOV+z)` assumes z is in
+normalized units (~[-1,1]). If your base positions are in PIXEL units (e.g. a
+cloud of radius ≈235px), z spans ±300 and the divide collapses far nodes to
+~0.01 scale — and any node with z < -FOV gets a NEGATIVE scale, so sprites
+draw with negative dimensions and vanish. No error is thrown; `drawImage`
+with NaN/negative dims silently no-ops. Fix: normalize before the divide and
+clamp outliers:
+
+```js
+const zn = clamp(z / CLOUD_RADIUS, -1, 1);       // px → unit
+const scale = FOV / (FOV + zn * FOV_DEPTH);      // now sc ∈ [~0.75, ~1.5]
+```
+
+Detection trick: instrument one frame and assert `mean(spriteRadius) > 0` and
+`min(scale) > 0`. A mean radius of ≈0 or negative means unit mismatch, not
+"too small art".
+
 ### 5. CSS-only effects (cheaper than canvas)
 
 Use CSS for overlay effects — they're composited by the browser and don't hit the animation loop:

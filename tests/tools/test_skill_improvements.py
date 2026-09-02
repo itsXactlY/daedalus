@@ -29,9 +29,6 @@ Step 3: Final step.
 """
 
 
-# ---------------------------------------------------------------------------
-# Fuzzy patching
-# ---------------------------------------------------------------------------
 
 
 class TestFuzzyPatchSkill:
@@ -64,7 +61,6 @@ description: Whitespace test
         print("hi")
 """
         _create_skill("ws-skill", skill)
-        # Agent sends patch with no leading whitespace (common LLM behaviour)
         result = _patch_skill("ws-skill", "def hello():\n    print(\"hi\")", "def hello():\n    print(\"hello world\")")
         assert result["success"] is True
         content = (self.skills_dir / "ws-skill" / "SKILL.md").read_text()
@@ -85,7 +81,6 @@ description: Indentation test
   3. Third step
 """
         _create_skill("indent-skill", skill)
-        # Agent sends with different indentation
         result = _patch_skill(
             "indent-skill",
             "1. First step\n2. Second step",
@@ -141,7 +136,6 @@ word word word
         _create_skill("test-skill", SKILL_CONTENT)
         ref_content = "    function hello() {\n        console.log('hi');\n    }"
         _write_file("test-skill", "references/code.js", ref_content)
-        # Patch with stripped indentation
         result = _patch_skill(
             "test-skill",
             "function hello() {\nconsole.log('hi');\n}",
@@ -155,7 +149,6 @@ word word word
     def test_patch_preserves_frontmatter_validation(self):
         """Fuzzy matching should still run frontmatter validation on SKILL.md."""
         _create_skill("test-skill", SKILL_CONTENT)
-        # Try to destroy the frontmatter via patch
         result = _patch_skill("test-skill", "---\nname: test-skill", "BROKEN")
         assert result["success"] is False
         assert "structure" in result["error"].lower() or "frontmatter" in result["error"].lower()
@@ -166,9 +159,8 @@ word word word
         raw = skill_manage(
             action="patch",
             name="test-skill",
-            old_string="  Step 1: Do the thing.",  # extra leading space
+            old_string="  Step 1: Do the thing.",
             new_string="Step 1: Updated.",
         )
         result = json.loads(raw)
-        # Should succeed via line-trimmed or indentation-flexible matching
         assert result["success"] is True

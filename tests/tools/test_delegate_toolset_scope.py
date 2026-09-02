@@ -19,7 +19,6 @@ class TestToolsetIntersection:
         """LLM requests toolsets parent doesn't have — extras are dropped."""
         parent = SimpleNamespace(enabled_toolsets=["terminal", "file"])
 
-        # Simulate the intersection logic from _build_child_agent
         parent_toolsets = set(parent.enabled_toolsets)
         requested = ["terminal", "file", "web", "browser", "rl"]
         scoped = [t for t in requested if t in parent_toolsets]

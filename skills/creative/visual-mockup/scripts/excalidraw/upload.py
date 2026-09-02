@@ -32,7 +32,6 @@ except ImportError:
     print("Install it with: pip install cryptography")
     sys.exit(1)
 
-# Excalidraw public upload endpoint (no auth needed)
 UPLOAD_URL = "https://json.excalidraw.com/api/v2/post/"
 
 
@@ -43,7 +42,7 @@ def concat_buffers(*buffers: bytes) -> bytes:
     Layout: [version=1 (4B big-endian)] then for each buffer:
             [length (4B big-endian)] [data bytes]
     """
-    parts = [struct.pack(">I", 1)]  # version = 1
+    parts = [struct.pack(">I", 1)]
     for buf in buffers:
         parts.append(struct.pack(">I", len(buf)))
         parts.append(buf)
@@ -60,31 +59,25 @@ def upload(excalidraw_json: str) -> str:
     Returns:
         Shareable URL string.
     """
-    # 1. Inner payload: concat_buffers(file_metadata, data)
     file_metadata = json.dumps({}).encode("utf-8")
     data_bytes = excalidraw_json.encode("utf-8")
     inner_payload = concat_buffers(file_metadata, data_bytes)
 
-    # 2. Compress with zlib
     compressed = zlib.compress(inner_payload)
 
-    # 3. AES-GCM 128-bit encrypt
-    raw_key = os.urandom(16)   # 128-bit key
-    iv = os.urandom(12)        # 12-byte nonce
+    raw_key = os.urandom(16)
+    iv = os.urandom(12)
     aesgcm = AESGCM(raw_key)
     encrypted = aesgcm.encrypt(iv, compressed, None)
 
-    # 4. Encoding metadata
     encoding_meta = json.dumps({
         "version": 2,
         "compression": "pako@1",
         "encryption": "AES-GCM",
     }).encode("utf-8")
 
-    # 5. Outer payload: concat_buffers(encoding_meta, iv, encrypted)
     payload = concat_buffers(encoding_meta, iv, encrypted)
 
-    # 6. Upload
     req = urllib.request.Request(UPLOAD_URL, data=payload, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
         if resp.status != 200:
@@ -95,7 +88,6 @@ def upload(excalidraw_json: str) -> str:
     if not file_id:
         raise RuntimeError(f"Upload returned no file ID. Response: {result}")
 
-    # 7. Key as base64url (JWK 'k' format, no padding)
     key_b64 = base64.urlsafe_b64encode(raw_key).rstrip(b"=").decode("ascii")
 
     return f"https://excalidraw.com/#json={file_id},{key_b64}"
@@ -115,7 +107,6 @@ def main():
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Basic validation: should be valid JSON with an "elements" key
     try:
         doc = json.loads(content)
     except json.JSONDecodeError as e:

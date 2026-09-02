@@ -10,7 +10,6 @@ import pytest
 
 from run_agent import AIAgent
 
-# staticmethod — class access gives the plain callable
 _window = AIAgent._window_messages_for_api
 
 
@@ -28,22 +27,21 @@ def _turns(n: int, with_tool_tail: bool = False):
 
 class TestWindowHelper:
     def test_windows_to_recent_plus_current(self):
-        msgs = _turns(10)  # 20 messages (10 user + 10 assistant)
-        cur = len(msgs) - 1  # index 19 = a9, the last assistant of the current turn
+        msgs = _turns(10)
+        cur = len(msgs) - 1
         w = _window(msgs, current_turn_user_idx=cur, window_turns=3)
-        # window_turns*2 prior messages + the current turn's tail = 7
         assert len(w) == 7
-        assert w[-1]["content"] == "a9"  # current turn's latest message kept
+        assert w[-1]["content"] == "a9"
         contents = [m["content"] for m in w]
         assert "u0" not in contents
-        assert "u7" in contents  # recent prior turn survives
+        assert "u7" in contents
 
     def test_full_soak_keeps_only_current_turn(self):
         """window_turns=0 is full soak: current turn only, history lives in pod."""
-        msgs = _turns(10)  # 20 messages
+        msgs = _turns(10)
         w = _window(msgs, current_turn_user_idx=len(msgs) - 1, window_turns=0)
         assert len(w) == 1
-        assert w[0]["content"] == "a9"  # only the current turn's latest message
+        assert w[0]["content"] == "a9"
 
     def test_soak_off_returns_full(self):
         """window_turns=-1 = soak disabled: full carry (default)."""
@@ -52,16 +50,16 @@ class TestWindowHelper:
         assert len(w) == len(msgs)
 
     def test_small_history_unchanged(self):
-        msgs = _turns(2)  # 4 messages
+        msgs = _turns(2)
         w = _window(msgs, current_turn_user_idx=len(msgs) - 1, window_turns=3)
         assert len(w) == len(msgs)
 
     def test_keeps_inflight_tool_results(self):
         msgs = _turns(5, with_tool_tail=True)
-        cur = 9  # the last user message before the tool tail
+        cur = 9
         w = _window(msgs, current_turn_user_idx=cur, window_turns=2)
         roles = [m["role"] for m in w]
-        assert "tool" in roles  # in-flight tool result survives the window
+        assert "tool" in roles
         assert w[-1]["role"] == "tool"
 
     def test_does_not_mutate_input(self):
@@ -83,7 +81,6 @@ class TestRemapCurrentTurnIndex:
     produced an empty windowed view — the model saw no user turn and answered
     "Keine Nachricht empfangen" (the 2026-08-10 resumed-session amnesia)."""
 
-    # staticmethod — access directly (class attribute aliasing would bind self)
     _remap = staticmethod(AIAgent._remap_current_turn_index)
 
     def test_index_in_range_unchanged(self):
@@ -91,21 +88,16 @@ class TestRemapCurrentTurnIndex:
         assert self._remap(msgs, 0, "u0") == 0
 
     def test_stale_index_remapped_by_content(self):
-        # Simulates: 637 messages compressed to 5, current-turn user msg kept
-        # in the protected tail at index 3; stale index was 636.
         msgs = [
             {"role": "system", "content": "compressed summary"},
             {"role": "user", "content": "old"},
             {"role": "assistant", "content": "old answer"},
-            {"role": "user", "content": "what did we work on?"},  # the current turn
+            {"role": "user", "content": "what did we work on?"},
             {"role": "system", "content": "[archived to mazemaker]"},
         ]
         assert self._remap(msgs, 636, "what did we work on?") == 3
 
     def test_stale_index_finds_last_match_when_tail_suffixed(self):
-        # Compression appends a system note / todo snapshot AFTER the current
-        # user turn, so the current message is not the last element — the
-        # backward scan must still find it.
         msgs = [
             {"role": "user", "content": "old"},
             {"role": "assistant", "content": "old answer"},
@@ -119,8 +111,6 @@ class TestRemapCurrentTurnIndex:
         assert self._remap(msgs, 500, "not present") == 500
 
     def test_window_view_not_empty_after_remap(self):
-        # The end-to-end symptom: after remap, windowing must still carry the
-        # current user turn.
         msgs = [
             {"role": "system", "content": "summary"},
             {"role": "user", "content": "u7"},

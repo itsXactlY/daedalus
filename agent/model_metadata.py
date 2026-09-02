@@ -19,16 +19,12 @@ from daedalus_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
 
-# Provider names that can appear as a "provider:" prefix before a model ID.
-# Only these are stripped — Ollama-style "model:tag" colons (e.g. "qwen3.5:27b")
-# are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "custom", "local",
-    # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
@@ -56,7 +52,6 @@ def _strip_provider_prefix(model: str) -> str:
     prefix, suffix = model.split(":", 1)
     prefix_lower = prefix.strip().lower()
     if prefix_lower in _PROVIDER_PREFIXES:
-        # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
         if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
             return model
         return suffix
@@ -68,16 +63,8 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
-# base_url -> id of the model the endpoint reports as currently loaded.
-# Single-slot local servers (Unsloth Studio, llama-server) serve whatever
-# is loaded no matter which model name the client asks for, so an
-# unrecognised name must resolve to the LOADED model's context, not to a
-# hardcoded default.
 _endpoint_loaded_model: Dict[str, str] = {}
 
-# Descending tiers for context length probing when the model is unknown.
-# We start at 128K (a safe default for most modern models) and step down
-# on context-length errors until one works.
 CONTEXT_PROBE_TIERS = [
     128_000,
     64_000,
@@ -86,42 +73,25 @@ CONTEXT_PROBE_TIERS = [
     8_000,
 ]
 
-# Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
-# Thin fallback defaults — only broad model family patterns.
-# These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
-# all miss. Replaced the previous 80+ entry dict.
-# For provider-specific context lengths, models.dev is the primary source.
 DEFAULT_CONTEXT_LENGTHS = {
-    # Anthropic Claude 4.6 (1M context) — bare IDs only to avoid
-    # fuzzy-match collisions (e.g. "anthropic/claude-sonnet-4" is a
-    # substring of "anthropic/claude-sonnet-4.6").
-    # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
     "claude-opus-4-6": 1000000,
     "claude-sonnet-4-6": 1000000,
     "claude-opus-4.6": 1000000,
     "claude-sonnet-4.6": 1000000,
-    # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
-    # OpenAI
     "gpt-4.1": 1047576,
     "gpt-5": 128000,
     "gpt-4": 128000,
-    # Google
     "gemini": 1048576,
-    # Gemma (open models served via AI Studio)
     "gemma-4-31b": 256000,
     "gemma-4-26b": 256000,
     "gemma-3": 131072,
-    "gemma": 8192,  # fallback for older gemma models
-    # DeepSeek
+    "gemma": 8192,
     "deepseek": 128000,
-    # Meta
     "llama": 131072,
-    # Qwen
     "qwen": 131072,
-    # MiniMax (lowercase — lookup lowercases model names at line 973)
     "minimax-m1-256k": 1000000,
     "minimax-m1-128k": 1000000,
     "minimax-m1-80k": 1000000,
@@ -130,13 +100,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "minimax-m2.5": 1048576,
     "minimax-m2.7": 1048576,
     "minimax": 1048576,
-    # GLM
     "glm": 202752,
-    # Kimi
     "kimi": 262144,
-    # Arcee
     "trinity": 262144,
-    # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072,
     "Qwen/Qwen3.5-35B-A3B": 131072,
     "deepseek-ai/DeepSeek-V3.2": 65536,
@@ -168,7 +134,6 @@ _MAX_COMPLETION_KEYS = (
     "max_tokens",
 )
 
-# Local server hostnames / address patterns
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
 
@@ -241,14 +206,12 @@ def is_local_endpoint(base_url: str) -> bool:
         return False
     if host in _LOCAL_HOSTS:
         return True
-    # RFC-1918 private ranges and link-local
     import ipaddress
     try:
         addr = ipaddress.ip_address(host)
         return addr.is_private or addr.is_loopback or addr.is_link_local
     except ValueError:
         pass
-    # Bare IP that looks like a private range (e.g. 172.26.x.x for WSL)
     parts = host.split(".")
     if len(parts) == 4:
         try:
@@ -278,16 +241,12 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
 
     try:
         with httpx.Client(timeout=2.0) as client:
-            # LM Studio exposes /api/v1/models — check first (most specific)
             try:
                 r = client.get(f"{server_url}/api/v1/models")
                 if r.status_code == 200:
                     return "lm-studio"
             except Exception:
                 pass
-            # Ollama exposes /api/tags and responds with {"models": [...]}
-            # LM Studio returns {"error": "Unexpected endpoint"} with status 200
-            # on this path, so we must verify the response contains "models".
             try:
                 r = client.get(f"{server_url}/api/tags")
                 if r.status_code == 200:
@@ -299,16 +258,14 @@ def detect_local_server_type(base_url: str) -> Optional[str]:
                         pass
             except Exception:
                 pass
-            # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
             try:
                 r = client.get(f"{server_url}/v1/props")
                 if r.status_code != 200:
-                    r = client.get(f"{server_url}/props")  # fallback for older builds
+                    r = client.get(f"{server_url}/props")
                 if r.status_code == 200 and "default_generation_settings" in r.text:
                     return "llamacpp"
             except Exception:
                 pass
-            # vLLM: /version
             try:
                 r = client.get(f"{server_url}/version")
                 if r.status_code == 200:
@@ -491,14 +448,12 @@ def fetch_endpoint_model_metadata(
                     _endpoint_loaded_model[normalized] = model_id
                 _add_model_aliases(cache, model_id, entry)
 
-            # If this is a llama.cpp server, query /props for actual allocated context
             is_llamacpp = any(
                 m.get("owned_by") == "llamacpp"
                 for m in payload.get("data", []) if isinstance(m, dict)
             )
             if is_llamacpp:
                 try:
-                    # Try /v1/props first (current llama.cpp); fall back to /props for older builds
                     base = candidate.rstrip("/").replace("/v1", "")
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
                     if not props_resp.ok:
@@ -555,7 +510,7 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
     if cache.get(key) == length:
-        return  # already stored
+        return
     cache[key] = length
     path = _get_context_cache_path()
     try:
@@ -592,19 +547,17 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
       - "model's max context length is 65536"
     """
     error_lower = error_msg.lower()
-    # Pattern: look for numbers near context-related keywords
     patterns = [
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
-        r'>\s*(\d{4,})\s*(?:max|limit|token)',  # "250000 tokens > 200000 maximum"
-        r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
+        r'>\s*(\d{4,})\s*(?:max|limit|token)',
+        r'(\d{4,})\s*(?:max(?:imum)?)\b',
     ]
     for pattern in patterns:
         match = re.search(pattern, error_lower)
         if match:
             limit = int(match.group(1))
-            # Sanity check: must be a reasonable context length
             if 1024 <= limit <= 10_000_000:
                 return limit
     return None
@@ -623,7 +576,6 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     """
     if candidate_id == lookup_model:
         return True
-    # Slug match: basename of candidate equals the lookup name
     if "/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model:
         return True
     return False
@@ -660,7 +612,6 @@ def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
                 return None
             data = resp.json()
 
-            # Prefer explicit num_ctx from Modelfile parameters (user override)
             params = data.get("parameters", "")
             if "num_ctx" in params:
                 for line in params.split("\n"):
@@ -672,7 +623,6 @@ def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
                             except ValueError:
                                 pass
 
-            # Fall back to GGUF model_info context_length (training max)
             model_info = data.get("model_info", {})
             for key, value in model_info.items():
                 if "context_length" in key and isinstance(value, (int, float)):
@@ -694,11 +644,8 @@ def _query_local_context_length(
     """
     import httpx
 
-    # Strip recognised provider prefix (e.g., "local:model-name" → "model-name").
-    # Ollama "model:tag" colons (e.g. "qwen3.5:27b") are intentionally preserved.
     model = _strip_provider_prefix(model)
 
-    # Strip /v1 suffix to get the server root
     server_url = base_url.rstrip("/")
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
@@ -712,10 +659,6 @@ def _query_local_context_length(
 
     try:
         with httpx.Client(timeout=3.0, headers=headers) as client:
-            # llama.cpp: /props reports the context ACTUALLY allocated for the
-            # running slot (the -c the server booted with), which is the only
-            # authoritative number once the model reloads with a different -c.
-            # Preferred over any model-list metadata for that reason.
             if server_type == "llamacpp":
                 for _props in ("/v1/props", "/props"):
                     try:
@@ -729,17 +672,14 @@ def _query_local_context_length(
                     if isinstance(n_ctx, (int, float)) and n_ctx > 0:
                         return int(n_ctx)
 
-            # Ollama: /api/show returns model details with context info
             if server_type == "ollama":
                 resp = client.post(f"{server_url}/api/show", json={"name": model})
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Check model_info for context length
                     model_info = data.get("model_info", {})
                     for key, value in model_info.items():
                         if "context_length" in key and isinstance(value, (int, float)):
                             return int(value)
-                    # Check parameters string for num_ctx
                     params = data.get("parameters", "")
                     if "num_ctx" in params:
                         for line in params.split("\n"):
@@ -751,39 +691,28 @@ def _query_local_context_length(
                                     except ValueError:
                                         pass
 
-            # LM Studio native API: /api/v1/models returns max_context_length.
-            # This is more reliable than the OpenAI-compat /v1/models which
-            # doesn't include context window information for LM Studio servers.
-            # Use _model_id_matches for fuzzy matching: LM Studio stores models as
-            # "publisher/slug" but users configure only "slug" after "local:" prefix.
             if server_type == "lm-studio":
                 resp = client.get(f"{server_url}/api/v1/models")
                 if resp.status_code == 200:
                     data = resp.json()
                     for m in data.get("models", []):
                         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
-                            # Prefer loaded instance context (actual runtime value)
                             for inst in m.get("loaded_instances", []):
                                 cfg = inst.get("config", {})
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
-                            # Fall back to max_context_length (theoretical model max)
                             ctx = m.get("max_context_length") or m.get("context_length")
                             if ctx and isinstance(ctx, (int, float)):
                                 return int(ctx)
 
-            # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")
             if resp.status_code == 200:
                 data = resp.json()
-                # vLLM returns max_model_len
                 ctx = data.get("max_model_len") or data.get("context_length") or data.get("max_tokens")
                 if ctx and isinstance(ctx, (int, float)):
                     return int(ctx)
 
-            # Try /v1/models and find the model in the list.
-            # Use _model_id_matches to handle "publisher/slug" vs bare "slug".
             resp = client.get(f"{server_url}/v1/models")
             if resp.status_code == 200:
                 data = resp.json()
@@ -816,7 +745,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     OAuth tokens (sk-ant-oat*) from Claude Code return 401.
     """
     if not api_key or api_key.startswith("sk-ant-oat"):
-        return None  # OAuth tokens can't access /v1/models
+        return None
     try:
         base = base_url.rstrip("/")
         if base.endswith("/v1"):
@@ -847,8 +776,7 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     prefixed IDs (e.g. 'anthropic/claude-opus-4.6'). Try suffix matching
     with version normalization (dot↔dash).
     """
-    metadata = fetch_model_metadata()  # OpenRouter cache
-    # Exact match first
+    metadata = fetch_model_metadata()
     if model in metadata:
         return metadata[model].get("context_length")
 
@@ -859,8 +787,6 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
         if bare.lower() == model.lower() or _normalize_model_version(bare).lower() == normalized:
             return entry.get("context_length")
 
-    # Partial prefix match for cases like gemini-3-flash → gemini-3-flash-preview
-    # Require match to be at a word boundary (followed by -, :, or end of string)
     model_lower = model.lower()
     for or_id, entry in metadata.items():
         bare = or_id.split("/", 1)[1] if "/" in or_id else or_id
@@ -894,43 +820,28 @@ def get_model_context_length(
     8. Thin hardcoded defaults (broad family patterns)
     9. Default fallback (128K)
     """
-    # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
-    # Normalise provider-prefixed model names (e.g. "local:model-name" →
-    # "model-name") so cache lookups and server queries use the bare ID that
-    # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
 
-    # 1. Check persistent cache (model+provider)
     if base_url:
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             return cached
 
-    # 2. Active endpoint metadata for truly custom/unknown endpoints.
-    # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their
-    # /models endpoint may report a provider-imposed limit (e.g. Copilot
-    # returns 128k) instead of the model's full context (400k).  models.dev
-    # has the correct per-provider values and is checked at step 5+.
     if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
         endpoint_metadata = fetch_endpoint_model_metadata(base_url, api_key=api_key)
         matched = endpoint_metadata.get(model)
         if not matched:
-            # Single-model servers: if only one model is loaded, use it
             if len(endpoint_metadata) == 1:
                 matched = next(iter(endpoint_metadata.values()))
             else:
-                # Fuzzy match: substring in either direction
                 for key, entry in endpoint_metadata.items():
                     if model in key or key in model:
                         matched = entry
                         break
                 if not matched:
-                    # Nothing matched by name. A single-slot local server still
-                    # answers with whatever model is loaded, so its context is
-                    # the real limit for THIS request.
                     _loaded = _endpoint_loaded_model.get(_normalize_base_url(base_url))
                     if _loaded:
                         matched = endpoint_metadata.get(_loaded)
@@ -939,7 +850,6 @@ def get_model_context_length(
             if isinstance(context_length, int):
                 return context_length
         if not _is_known_provider_base_url(base_url):
-            # 3. Try querying local server directly
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key)
                 if local_ctx and local_ctx > 0:
@@ -953,7 +863,6 @@ def get_model_context_length(
             )
             return DEFAULT_FALLBACK_CONTEXT
 
-    # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (
         base_url and "api.anthropic.com" in base_url
     ):
@@ -961,11 +870,6 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 5. Provider-aware lookups (before generic OpenRouter cache)
-    # These are provider-specific and take priority over the generic OR cache,
-    # since the same model can have different context limits per provider
-    # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
-    # If provider is generic (openrouter/custom/empty), try to infer from URL.
     effective_provider = provider
     if not effective_provider or effective_provider in ("openrouter", "custom"):
         if base_url:
@@ -983,15 +887,10 @@ def get_model_context_length(
         if ctx:
             return ctx
 
-    # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
         return metadata[model].get("context_length", 128000)
 
-    # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
-    # Only check `default_model in model` (is the key a substring of the input).
-    # The reverse (`model in default_model`) causes shorter names like
-    # "claude-sonnet-4" to incorrectly match "claude-sonnet-4-6" and return 1M.
     model_lower = model.lower()
     for default_model, length in sorted(
         DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
@@ -999,14 +898,12 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Query local server as last resort
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url, api_key)
         if local_ctx and local_ctx > 0:
             save_context_length(model, base_url, local_ctx)
             return local_ctx
 
-    # 10. Default fallback — 128K
     return DEFAULT_FALLBACK_CONTEXT
 
 

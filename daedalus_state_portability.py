@@ -21,8 +21,6 @@ from daedalus_state_common import (
     _sql_session_last_active,
 )
 
-# Moved methods logged under the "daedalus_state" logger before the split;
-# keep that logger identity so log filtering/capture behavior is unchanged.
 logger = logging.getLogger("daedalus_state")
 
 
@@ -94,10 +92,6 @@ class SessionPortabilityMixin:
         ``preview`` + ``last_active``) so callers can reuse it.
         """
         prefix = f"cron_{job_id}_"
-        # Half-open upper bound for an index range scan: increment the final
-        # byte of the prefix so the range covers exactly the ids that start
-        # with ``prefix`` and nothing else. ``prefix`` always ends in '_', but
-        # compute it generically rather than hardcoding the successor char.
         prefix_hi = prefix[:-1] + chr(ord(prefix[-1]) + 1)
 
         query = f"""
@@ -158,11 +152,6 @@ class SessionPortabilityMixin:
         ids = [sid for sid in session_ids if sid]
         if not ids:
             return {}
-        # Old SQLite builds cap bound variables at 999
-        # (SQLITE_MAX_VARIABLE_NUMBER); large pages (limit=10000 callers
-        # exist) could exceed it. Chunk the IN list so the helper is safe at
-        # any page size — this is the single choke point for the enriched
-        # multi-row fetch, so the bound lives here, not at call sites.
         _CHUNK = 900
         if len(ids) > _CHUNK:
             result: Dict[str, Dict[str, Any]] = {}
@@ -173,7 +162,6 @@ class SessionPortabilityMixin:
                     )
                 )
             return result
-        # Same read-your-writes guarantee as list_sessions_rich.
         self.flush_token_counts()
         _sel = self._compact_session_cols() if compact_rows else "s.*"
         placeholders = ",".join("?" for _ in ids)
@@ -695,9 +683,6 @@ class SessionPortabilityMixin:
                         (parent_id, session_id),
                     )
                 else:
-                    # Drop only the closing edge. Later entries can still attach
-                    # to this now-root session, preserving the acyclic portion
-                    # of a malformed imported lineage.
                     parent_by_child.pop(session_id, None)
                     detached += 1
 

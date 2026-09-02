@@ -43,7 +43,6 @@ class TestSkinConfig:
     def test_get_spinner_list_empty_for_default(self):
         from daedalus_cli.skin_engine import load_skin
         skin = load_skin("default")
-        # Default skin has no custom spinner config
         assert skin.get_spinner_list("waiting_faces") == []
         assert skin.get_spinner_list("thinking_verbs") == []
 
@@ -142,7 +141,6 @@ class TestSkinManagement:
 class TestUserSkins:
     def test_load_user_skin_from_yaml(self, tmp_path, monkeypatch):
         from daedalus_cli.skin_engine import load_skin, _skins_dir
-        # Create a user skin YAML
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
         skin_file = skins_dir / "custom.yaml"
@@ -156,7 +154,6 @@ class TestUserSkins:
         import yaml
         skin_file.write_text(yaml.dump(skin_data))
 
-        # Patch skins dir
         monkeypatch.setattr("daedalus_cli.skin_engine._skins_dir", lambda: skins_dir)
 
         skin = load_skin("custom")
@@ -164,8 +161,7 @@ class TestUserSkins:
         assert skin.get_color("banner_title") == "#FF0000"
         assert skin.get_branding("agent_name") == "Custom Agent"
         assert skin.tool_prefix == "▸"
-        # Should inherit defaults for unspecified colors
-        assert skin.get_color("banner_border") == "#CD7F32"  # from default
+        assert skin.get_color("banner_border") == "#CD7F32"
 
     def test_list_skins_includes_user_skins(self, tmp_path, monkeypatch):
         from daedalus_cli.skin_engine import list_skins
@@ -199,7 +195,6 @@ class TestDisplayIntegration:
     def test_get_skin_faces_default(self):
         from agent.display import get_skin_faces, KawaiiSpinner
         faces = get_skin_faces("waiting_faces", KawaiiSpinner.KAWAII_WAITING)
-        # Default skin has no custom faces, so should return the default list
         assert faces == KawaiiSpinner.KAWAII_WAITING
 
     def test_get_skin_faces_ares(self):

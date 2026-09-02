@@ -90,7 +90,7 @@ class TestFormatSessionInfo:
 
     def test_missing_config(self, runner, tmp_path):
         """No config.yaml should not crash."""
-        p1, p2, p3 = _patch_info(tmp_path, None,  # don't create config
+        p1, p2, p3 = _patch_info(tmp_path, None,
                                   "anthropic/claude-sonnet-4.6",
                                   {"provider": "openrouter", "base_url": "", "api_key": ""})
         with p1, p2, p3:

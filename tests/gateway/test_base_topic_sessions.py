@@ -165,11 +165,6 @@ class TestTelegramAutoTtsCaptionDelivery:
         adapter._keep_typing = self._hold_typing()
         adapter._should_auto_tts_for_chat = lambda _chat_id: True
         adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
-        # Markdown-heavy reply: over the 1024-char caption limit as written,
-        # but the normalized spoken script (markdown and URLs removed) is far
-        # below it. Caption eligibility must follow the ORIGINAL reply, so the
-        # full formatted text is still delivered as its own message instead of
-        # being swallowed into a lossy caption.
         long_reply = "\n".join(
             f"- **item {i}** [details](https://example.com/some/very/long/path/{i:04d})"
             for i in range(20)

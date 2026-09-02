@@ -68,8 +68,6 @@ def run_main_with_argparse(
                 default=default,
             )
         else:
-            # str (or None default → string positional). Never coerce — this
-            # is the whole point vs Fire.
             parser.add_argument(
                 f"--{dash_name}",
                 type=str,
@@ -175,8 +173,6 @@ def atomic_json_write(
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except BaseException:
-        # Intentionally catch BaseException so temp-file cleanup still runs for
-        # KeyboardInterrupt/SystemExit before re-raising the original signal.
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -223,8 +219,6 @@ def atomic_yaml_write(
             os.fsync(f.fileno())
         os.replace(tmp_path, path)
     except BaseException:
-        # Match atomic_json_write: cleanup must also happen for process-level
-        # interruptions before we re-raise them.
         try:
             os.unlink(tmp_path)
         except OSError:

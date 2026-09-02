@@ -40,9 +40,6 @@ FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 FAKE_BMP = b"BM" + b"\x00" * 100
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# Level 1: Clipboard module — platform dispatch + tool interactions
-# ═════════════════════════════════════════════════════════════════════════
 
 class TestSaveClipboardImage:
     def test_dispatches_to_macos_on_darwin(self, tmp_path):
@@ -78,7 +75,6 @@ class TestSaveClipboardImage:
         assert dest.parent.exists()
 
 
-# ── macOS ────────────────────────────────────────────────────────────────
 
 class TestMacosPngpaste:
     def test_success_writes_file(self, tmp_path):
@@ -200,11 +196,9 @@ class TestMacosOsascript:
             assert _macos_osascript(dest) is False
 
 
-# ── WSL detection ────────────────────────────────────────────────────────
 
 class TestIsWsl:
     def setup_method(self):
-        # Reset cached value before each test
         import daedalus_cli.clipboard as cb
         cb._wsl_detected = None
 
@@ -232,10 +226,9 @@ class TestIsWsl:
         with patch("builtins.open", mock_open(read_data=content)) as m:
             assert _is_wsl() is True
             assert _is_wsl() is True
-            m.assert_called_once()  # only read once
+            m.assert_called_once()
 
 
-# ── WSL (powershell.exe) ────────────────────────────────────────────────
 
 class TestWslHasImage:
     def test_clipboard_has_image(self):
@@ -298,7 +291,6 @@ class TestWslSave:
             assert _wsl_save(dest) is False
 
 
-# ── Wayland (wl-paste) ──────────────────────────────────────────────────
 
 class TestWaylandHasImage:
     def test_has_png(self):
@@ -335,7 +327,6 @@ class TestWaylandSave:
             calls.append(cmd)
             if "--list-types" in cmd:
                 return MagicMock(stdout="image/png\ntext/plain\n", returncode=0)
-            # Extract call — write fake data to stdout file
             if "stdout" in kw and hasattr(kw["stdout"], "write"):
                 kw["stdout"].write(FAKE_PNG)
             return MagicMock(returncode=0)
@@ -391,12 +382,10 @@ class TestWaylandSave:
             return MagicMock(returncode=0)
         with patch("daedalus_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _wayland_save(dest) is True
-        # Verify PNG was requested, not BMP
         extract_cmd = calls[1]
         assert "image/png" in extract_cmd
 
 
-# ── X11 (xclip) ─────────────────────────────────────────────────────────
 
 class TestXclipHasImage:
     def test_has_image(self):
@@ -456,7 +445,6 @@ class TestXclipSave:
             assert _xclip_save(tmp_path / "out.png") is False
 
 
-# ── Linux dispatch ──────────────────────────────────────────────────────
 
 class TestLinuxSave:
     """Test that _linux_save dispatches correctly to WSL → Wayland → X11."""
@@ -507,12 +495,11 @@ class TestLinuxSave:
                     m.assert_called_once_with(dest)
 
 
-# ── Native Windows (PowerShell) ─────────────────────────────────────────
 
 class TestWindowsHasImage:
     def setup_method(self):
         import daedalus_cli.clipboard as cb
-        cb._ps_exe = False  # reset cache
+        cb._ps_exe = False
 
     def test_clipboard_has_image(self):
         with patch("daedalus_cli.clipboard._get_ps_exe", return_value="powershell"):
@@ -546,7 +533,7 @@ class TestWindowsHasImage:
 class TestWindowsSave:
     def setup_method(self):
         import daedalus_cli.clipboard as cb
-        cb._ps_exe = False  # reset cache
+        cb._ps_exe = False
 
     def test_successful_extraction(self, tmp_path):
         dest = tmp_path / "out.png"
@@ -603,7 +590,6 @@ class TestHasClipboardImageWin32:
                 m.assert_called_once()
 
 
-# ── BMP conversion ──────────────────────────────────────────────────────
 
 class TestConvertToPng:
     def test_pillow_conversion(self, tmp_path):
@@ -612,7 +598,6 @@ class TestConvertToPng:
         mock_img_instance = MagicMock()
         mock_image_cls = MagicMock()
         mock_image_cls.open.return_value = mock_img_instance
-        # `from PIL import Image` fetches PIL.Image from the PIL module
         mock_pil_module = MagicMock()
         mock_pil_module.Image = mock_image_cls
         with patch.dict(sys.modules, {"PIL": mock_pil_module}):
@@ -624,18 +609,15 @@ class TestConvertToPng:
         dest.write_bytes(FAKE_BMP)
 
         def fake_run(cmd, **kw):
-            # Simulate ImageMagick converting
             dest.write_bytes(FAKE_PNG)
             return MagicMock(returncode=0)
 
         with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
             with patch("daedalus_cli.clipboard.subprocess.run", side_effect=fake_run):
-                # Force ImportError for Pillow
                 import daedalus_cli.clipboard as cb
                 original = cb._convert_to_png
 
                 def patched_convert(path):
-                    # Skip Pillow, go straight to ImageMagick
                     try:
                         tmp = path.with_suffix(".bmp")
                         path.rename(tmp)
@@ -649,18 +631,15 @@ class TestConvertToPng:
                     except Exception:
                         return False
 
-                # Just test that the fallback logic exists
                 assert dest.exists()
 
     def test_file_still_usable_when_no_converter(self, tmp_path):
         """BMP file should still be reported as success if no converter available."""
         dest = tmp_path / "img.png"
-        dest.write_bytes(FAKE_BMP)  # it's a BMP but named .png
-        # Both Pillow and ImageMagick unavailable
+        dest.write_bytes(FAKE_BMP)
         with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
             with patch("daedalus_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
                 result = _convert_to_png(dest)
-                # Raw BMP is better than nothing — function should return True
                 assert result is True
                 assert dest.exists() and dest.stat().st_size > 0
 
@@ -671,14 +650,12 @@ class TestConvertToPng:
         dest.write_bytes(original_data)
 
         def fake_run_fail(cmd, **kw):
-            # Simulate convert failing without producing output
             return MagicMock(returncode=1)
 
         with patch.dict(sys.modules, {"PIL": None, "PIL.Image": None}):
             with patch("daedalus_cli.clipboard.subprocess.run", side_effect=fake_run_fail):
                 _convert_to_png(dest)
 
-        # Original file must still exist with original content
         assert dest.exists(), "Original file was lost after failed conversion"
         assert dest.read_bytes() == original_data
 
@@ -710,7 +687,6 @@ class TestConvertToPng:
         assert dest.read_bytes() == original_data
 
 
-# ── has_clipboard_image dispatch ─────────────────────────────────────────
 
 class TestHasClipboardImage:
     def setup_method(self):
@@ -751,9 +727,6 @@ class TestHasClipboardImage:
                         m.assert_called_once()
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# Level 2: _preprocess_images_with_vision — image → text via vision tool
-# ═════════════════════════════════════════════════════════════════════════
 
 class TestPreprocessImagesWithVision:
     """Test vision-based image pre-processing for the CLI."""
@@ -777,7 +750,6 @@ class TestPreprocessImagesWithVision:
                 with patch("cli.CLI_CONFIG", mock_cfg.return_value):
                     from cli import DaedalusCLI
                     cli_obj = DaedalusCLI.__new__(DaedalusCLI)
-                    # Manually init just enough state
                     cli_obj._attached_images = []
                     cli_obj._image_counter = 0
                     return cli_obj
@@ -810,7 +782,7 @@ class TestPreprocessImagesWithVision:
         assert "A test image with colored pixels." in result
         assert "Describe this" in result
         assert str(img) in result
-        assert "base64," not in result  # no raw base64 image content
+        assert "base64," not in result
 
     def test_multiple_images(self, cli, tmp_path):
         imgs = [self._make_image(tmp_path, f"img{i}.png") for i in range(3)]
@@ -819,7 +791,6 @@ class TestPreprocessImagesWithVision:
 
         assert isinstance(result, str)
         assert "Compare" in result
-        # Each image path should be referenced
         for img in imgs:
             assert str(img) in result
 
@@ -834,7 +805,6 @@ class TestPreprocessImagesWithVision:
         missing = tmp_path / "gone.png"
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_success()):
             result = cli._preprocess_images_with_vision("test", [missing])
-        # No images analyzed, falls back to default
         assert result == "test"
 
     def test_mix_of_existing_and_missing(self, cli, tmp_path):
@@ -851,7 +821,7 @@ class TestPreprocessImagesWithVision:
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=self._mock_vision_failure()):
             result = cli._preprocess_images_with_vision("check this", [img])
         assert isinstance(result, str)
-        assert str(img) in result  # path still included for retry
+        assert str(img) in result
         assert "check this" in result
 
     def test_vision_exception_includes_path(self, cli, tmp_path):
@@ -861,12 +831,9 @@ class TestPreprocessImagesWithVision:
         with patch("tools.vision_tools.vision_analyze_tool", side_effect=_explode):
             result = cli._preprocess_images_with_vision("check this", [img])
         assert isinstance(result, str)
-        assert str(img) in result  # path still included for retry
+        assert str(img) in result
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# Level 3: _try_attach_clipboard_image — state management
-# ═════════════════════════════════════════════════════════════════════════
 
 class TestTryAttachClipboardImage:
     """Test the clipboard → state flow."""
@@ -891,7 +858,7 @@ class TestTryAttachClipboardImage:
             result = cli._try_attach_clipboard_image()
         assert result is False
         assert len(cli._attached_images) == 0
-        assert cli._image_counter == 0  # rolled back
+        assert cli._image_counter == 0
 
     def test_multiple_attaches_increment_counter(self, cli):
         with patch("daedalus_cli.clipboard.save_clipboard_image", return_value=True):
@@ -908,7 +875,7 @@ class TestTryAttachClipboardImage:
             cli._try_attach_clipboard_image()
             cli._try_attach_clipboard_image()
         assert len(cli._attached_images) == 2
-        assert cli._image_counter == 2  # 3 attempts, 1 rolled back
+        assert cli._image_counter == 2
 
     def test_image_path_follows_naming_convention(self, cli):
         with patch("daedalus_cli.clipboard.save_clipboard_image", return_value=True):
@@ -919,9 +886,6 @@ class TestTryAttachClipboardImage:
         assert path.suffix == ".png"
 
 
-# ═════════════════════════════════════════════════════════════════════════
-# Level 4: Queue routing — tuple unpacking in process_loop
-# ═════════════════════════════════════════════════════════════════════════
 
 class TestQueueRouting:
     """Test that (text, images) tuples are correctly unpacked and routed."""

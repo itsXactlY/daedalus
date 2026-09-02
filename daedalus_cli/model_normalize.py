@@ -26,14 +26,6 @@ from __future__ import annotations
 
 from typing import Optional
 
-# ---------------------------------------------------------------------------
-# Vendor prefix mapping
-# ---------------------------------------------------------------------------
-# Maps the first hyphen-delimited token of a bare model name to the vendor
-# slug used by aggregator APIs (OpenRouter, Nous, etc.).
-#
-# Example: "claude-sonnet-4.6" -> first token "claude" -> vendor "anthropic"
-#          -> aggregator slug: "anthropic/claude-sonnet-4.6"
 
 _VENDOR_PREFIXES: dict[str, str] = {
     "claude": "anthropic",
@@ -56,7 +48,6 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "trinity": "arcee-ai",
 }
 
-# Providers whose APIs consume vendor/model slugs.
 _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "openrouter",
     "nous",
@@ -64,19 +55,16 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
     "kilocode",
 })
 
-# Providers that want bare names with dots replaced by hyphens.
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
     "anthropic",
     "opencode-zen",
 })
 
-# Providers that want bare names with dots preserved.
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
 })
 
-# Providers whose own naming is authoritative -- pass through unchanged.
 _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
     "zai",
@@ -90,11 +78,6 @@ _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
     "custom",
 })
 
-# ---------------------------------------------------------------------------
-# DeepSeek special handling
-# ---------------------------------------------------------------------------
-# DeepSeek's API only recognises exactly two model identifiers.  We map
-# common aliases and patterns to the canonical names.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",
@@ -130,7 +113,6 @@ def _normalize_for_deepseek(model_name: str) -> str:
     if bare in _DEEPSEEK_CANONICAL_MODELS:
         return bare
 
-    # Check for reasoner-like keywords anywhere in the name
     for keyword in _DEEPSEEK_REASONER_KEYWORDS:
         if keyword in bare:
             return "deepseek-reasoner"
@@ -138,9 +120,6 @@ def _normalize_for_deepseek(model_name: str) -> str:
     return "deepseek-chat"
 
 
-# ---------------------------------------------------------------------------
-# Helper utilities
-# ---------------------------------------------------------------------------
 
 def _strip_vendor_prefix(model_name: str) -> str:
     """Remove a ``vendor/`` prefix if present.
@@ -198,19 +177,15 @@ def detect_vendor(model_name: str) -> Optional[str]:
     if not name:
         return None
 
-    # If there's already a vendor/ prefix, extract it
     if "/" in name:
         return name.split("/", 1)[0].lower() or None
 
     name_lower = name.lower()
 
-    # Try first hyphen-delimited token (exact match)
     first_token = name_lower.split("-")[0]
     if first_token in _VENDOR_PREFIXES:
         return _VENDOR_PREFIXES[first_token]
 
-    # Handle patterns where the first token includes version digits,
-    # e.g. "qwen3.5-plus" -> first token "qwen3.5", but prefix is "qwen"
     for prefix, vendor in _VENDOR_PREFIXES.items():
         if name_lower.startswith(prefix):
             return vendor
@@ -244,9 +219,6 @@ def _prepend_vendor(model_name: str) -> str:
     return model_name
 
 
-# ---------------------------------------------------------------------------
-# Main normalisation entry point
-# ---------------------------------------------------------------------------
 
 def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     """Translate a model name into the format the target provider's API expects.
@@ -307,30 +279,22 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     provider = (target_provider or "").strip().lower()
 
-    # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- Anthropic / OpenCode: strip vendor, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
         bare = _strip_vendor_prefix(name)
         return _dots_to_hyphens(bare)
 
-    # --- Copilot: strip vendor, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
         return _strip_vendor_prefix(name)
 
-    # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":
         return _normalize_for_deepseek(name)
 
-    # --- Custom & all others: pass through as-is ---
     return name
 
 
-# ---------------------------------------------------------------------------
-# Batch / convenience helpers
-# ---------------------------------------------------------------------------
 
 def model_display_name(model_id: str) -> str:
     """Return a short, human-readable display name for a model id.

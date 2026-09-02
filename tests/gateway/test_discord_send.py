@@ -138,11 +138,8 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
 
     assert result.success is True
     assert result.message_id == "1001"
-    # ids-only reference: the fetch is gone entirely — the retry happens
-    # on the send-side 10008, not a fetch failure
     assert channel.fetch_message.await_count == 0
     assert channel.send.await_count == 3
-    # the reference is constructed from ids, not fetched + to_reference()
     _discord_mod.MessageReference.assert_any_call(
         message_id=99, channel_id=None, guild_id=None,
         fail_if_not_exists=False)
@@ -151,9 +148,6 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
     assert send_calls[2]["reference"] is None
 
 
-# ---------------------------------------------------------------------------
-# Forum channel tests
-# ---------------------------------------------------------------------------
 
 import discord as _discord_mod  # noqa: E402 — imported after _ensure_discord_mock
 
@@ -167,16 +161,12 @@ class TestIsForumParent:
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
         forum_cls = getattr(_discord_mod, "ForumChannel", None)
         if forum_cls is None:
-            # Re-create a type for the mock
             forum_cls = type("ForumChannel", (), {})
             _discord_mod.ForumChannel = forum_cls
         ch = forum_cls()
         assert adapter._is_forum_parent(ch) is True
 
 
-# ---------------------------------------------------------------------------
-# Forum follow-up chunk failure reporting + media on forum paths
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -198,7 +188,6 @@ async def test_forum_post_file_creates_thread_with_attachment():
     forum_channel.name = "ideas"
     forum_channel.create_thread = AsyncMock(return_value=thread)
 
-    # discord.File is a real class; build a MagicMock that looks like one
     fake_file = SimpleNamespace(filename="photo.png")
 
     result = await adapter._forum_post_file(
@@ -213,7 +202,6 @@ async def test_forum_post_file_creates_thread_with_attachment():
     call_kwargs = forum_channel.create_thread.await_args.kwargs
     assert call_kwargs["file"] is fake_file
     assert call_kwargs["content"] == "here is a photo"
-    # Thread name derived from content's first line
     assert call_kwargs["name"] == "here is a photo"
 
 
@@ -243,9 +231,6 @@ async def test_forum_post_file_fails_when_starter_has_no_attachments():
     forum_channel.create_thread.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# Typing indicator task lifecycle
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -256,12 +241,10 @@ async def test_typing_restartable_after_error():
     adapter._client.http = MagicMock()
     adapter._typing_tasks = {}
 
-    # First call fails
     adapter._client.http.request = AsyncMock(side_effect=Exception("503"))
     await adapter.send_typing("12345")
     await asyncio.sleep(0.1)
 
-    # Second call should work
     adapter._client.http.request = AsyncMock()
     await adapter.send_typing("12345")
 
@@ -269,9 +252,6 @@ async def test_typing_restartable_after_error():
         "Should restart typing after previous failure"
 
 
-# ---------------------------------------------------------------------------
-# #66797 — outbound MEDIA video must reach channel.send as a real attachment
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -339,7 +319,6 @@ async def test_send_video_fails_loud_when_message_has_no_attachments(tmp_path, m
     )
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
-    # Message id present, but no attachments — the silent-drop failure mode.
     sent_msg = SimpleNamespace(id=99, attachments=[])
     channel = SimpleNamespace(send=AsyncMock(return_value=sent_msg), type=0)
     adapter._client = SimpleNamespace(

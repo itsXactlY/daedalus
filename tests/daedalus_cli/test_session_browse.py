@@ -15,7 +15,6 @@ import pytest
 from daedalus_cli.main import _session_browse_picker
 
 
-# ─── Sample session data ──────────────────────────────────────────────────────
 
 def _make_sessions(n=5):
     """Generate a list of fake rich-session dicts."""
@@ -38,7 +37,6 @@ def _make_sessions(n=5):
 SAMPLE_SESSIONS = _make_sessions(5)
 
 
-# ─── _session_browse_picker ──────────────────────────────────────────────────
 
 class TestSessionBrowsePicker:
     """Tests for the _session_browse_picker function."""
@@ -56,7 +54,6 @@ class TestSessionBrowsePicker:
         """When curses is unavailable, fallback numbered list should work."""
         sessions = _make_sessions(3)
 
-        # Mock curses import to fail, forcing fallback
         import builtins
         original_import = builtins.__import__
 
@@ -160,7 +157,6 @@ class TestSessionBrowsePicker:
                 _session_browse_picker(sessions)
 
         output = capsys.readouterr().out
-        # All 4 entries should be shown
         assert "1." in output
         assert "2." in output
         assert "3." in output
@@ -242,7 +238,6 @@ class TestSessionBrowsePicker:
         assert "test_003_fallback" in output
 
 
-# ─── Curses-based picker (mocked curses) ────────────────────────────────────
 
 class TestCursesBrowse:
     """Tests for the curses-based interactive picker via simulated key sequences."""
@@ -251,19 +246,16 @@ class TestCursesBrowse:
         """Simulate running the curses picker with a given key sequence."""
         import curses
 
-        # Build a mock stdscr that returns keys from the sequence
         mock_stdscr = MagicMock()
         mock_stdscr.getmaxyx.return_value = (30, 120)
         mock_stdscr.getch.side_effect = key_sequence
 
-        # Capture what curses.wrapper receives and call it with our mock
         with patch("curses.wrapper") as mock_wrapper:
-            # When wrapper is called, invoke the function with our mock stdscr
             def run_inner(func):
                 try:
                     func(mock_stdscr)
                 except StopIteration:
-                    pass  # key sequence exhausted
+                    pass
 
             mock_wrapper.side_effect = run_inner
             with patch("curses.curs_set"):
@@ -272,7 +264,7 @@ class TestCursesBrowse:
 
     def test_enter_selects_first_session(self):
         sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [10])  # Enter key
+        result = self._run_with_keys(sessions, [10])
         assert result == sessions[0]["id"]
 
     def test_down_then_enter_selects_second(self):
@@ -295,7 +287,7 @@ class TestCursesBrowse:
 
     def test_escape_cancels(self):
         sessions = _make_sessions(3)
-        result = self._run_with_keys(sessions, [27])  # Esc
+        result = self._run_with_keys(sessions, [27])
         assert result is None
 
     def test_q_cancels(self):
@@ -311,7 +303,6 @@ class TestCursesBrowse:
             {"id": "s2", "source": "cli", "title": "Beta project", "preview": "", "last_active": time.time()},
             {"id": "s3", "source": "cli", "title": "Gamma project", "preview": "", "last_active": time.time()},
         ]
-        # Type "Beta" then Enter — should select s2
         keys = [ord(c) for c in "Beta"] + [10]
         result = self._run_with_keys(sessions, keys)
         assert result == "s2"
@@ -330,7 +321,6 @@ class TestCursesBrowse:
             {"id": "s1", "source": "cli", "title": "Alpha", "preview": "", "last_active": time.time()},
             {"id": "s2", "source": "cli", "title": "Beta", "preview": "", "last_active": time.time()},
         ]
-        # Type "Bet", backspace, backspace, backspace (clears filter), then Enter (selects first)
         keys = [ord('B'), ord('e'), ord('t'), 127, 127, 127, 10]
         result = self._run_with_keys(sessions, keys)
         assert result == "s1"
@@ -339,7 +329,6 @@ class TestCursesBrowse:
         """First Esc clears the search text, second Esc exits."""
         import curses
         sessions = _make_sessions(3)
-        # Type "ab" then Esc (clears filter) then Enter (selects first)
         keys = [ord('a'), ord('b'), 27, 10]
         result = self._run_with_keys(sessions, keys)
         assert result == sessions[0]["id"]
@@ -376,15 +365,11 @@ class TestCursesBrowse:
             {"id": "s1", "source": "cli", "title": "the sequel", "preview": "", "last_active": time.time()},
             {"id": "s2", "source": "cli", "title": "other thing", "preview": "", "last_active": time.time()},
         ]
-        # Type "se" first (activates filter, matches "the sequel")
-        # Then type "q" — should add 'q' to filter (filter="seq"), NOT quit
-        # "seq" still matches "the sequel" → Enter selects it
         keys = [ord('s'), ord('e'), ord('q'), 10]
         result = self._run_with_keys(sessions, keys)
-        assert result == "s1"  # "the sequel" matches "seq"
+        assert result == "s1"
 
 
-# ─── Argument parser registration ──────────────────────────────────────────
 
 class TestSessionBrowseArgparse:
     """Verify the 'browse' subcommand is properly registered."""
@@ -393,25 +378,16 @@ class TestSessionBrowseArgparse:
         """daedalus sessions browse should be parseable."""
         from daedalus_cli.main import main as _main_entry
 
-        # We can't run main(), but we can import and test the parser setup
-        # by checking that argparse doesn't error on "sessions browse"
         import argparse
-        # Re-create the parser portion
-        # Instead, let's just verify the import works and the function exists
         from daedalus_cli.main import _session_browse_picker
         assert callable(_session_browse_picker)
 
     def test_browse_default_limit_is_50(self):
         """The default --limit for browse should be 50."""
-        # This test verifies at the argparse level
-        # We test by running the parse on "sessions browse" args
-        # Since we can't easily extract the subparser, verify via the
-        # _session_browse_picker accepting large lists
         sessions = _make_sessions(50)
         assert len(sessions) == 50
 
 
-# ─── Integration: cmd_sessions browse action ────────────────────────────────
 
 class TestCmdSessionsBrowse:
     """Integration tests for the 'browse' action in cmd_sessions."""
@@ -444,7 +420,6 @@ class TestCmdSessionsBrowse:
         assert result == "s1"
 
 
-# ─── Edge cases ──────────────────────────────────────────────────────────────
 
 class TestEdgeCases:
     """Edge case handling for the session browser."""
@@ -452,7 +427,7 @@ class TestEdgeCases:
     def test_sessions_with_missing_fields(self):
         """Sessions with missing optional fields should not crash."""
         sessions = [
-            {"id": "minimal_001", "source": "cli"},  # No title, preview, last_active
+            {"id": "minimal_001", "source": "cli"},
         ]
 
         import builtins
@@ -512,7 +487,6 @@ class TestEdgeCases:
                 _session_browse_picker(sessions)
 
         output = capsys.readouterr().out
-        # Title should be truncated to 50 chars with "..."
         assert "..." in output
 
     def test_relative_time_formatting(self, capsys):

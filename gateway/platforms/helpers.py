@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ─── Message Deduplication ────────────────────────────────────────────────────
 
 
 class MessageDeduplicator:
@@ -53,16 +52,12 @@ class MessageDeduplicator:
         if msg_id in self._seen:
             if now - self._seen[msg_id] < self._ttl:
                 return True
-            # Entry has expired — remove it and treat as new
             del self._seen[msg_id]
         self._seen[msg_id] = now
         if len(self._seen) > self._max_size:
             cutoff = now - self._ttl
             self._seen = {k: v for k, v in self._seen.items() if v > cutoff}
             if len(self._seen) > self._max_size:
-                # TTL pruning alone does not cap the cache when every entry is
-                # still fresh. Keep the newest entries so the helper's
-                # max_size bound is enforced under sustained traffic.
                 newest = sorted(
                     self._seen.items(),
                     key=lambda item: item[1],
@@ -91,7 +86,6 @@ class MessageDeduplicator:
         self._seen.clear()
 
 
-# ─── Text Batch Aggregation ──────────────────────────────────────────────────
 
 
 class TextBatchAggregator:
@@ -144,7 +138,6 @@ class TextBatchAggregator:
             existing.text = f"{existing.text}\n{event.text}"
             existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
 
-        # Cancel prior flush timer, start a new one
         prior = self._pending_tasks.get(key)
         if prior and not prior.done():
             prior.cancel()
@@ -156,7 +149,6 @@ class TextBatchAggregator:
         pending = self._pending.get(key)
         last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
 
-        # Use longer delay when the last chunk looks like a split message
         delay = self._split_delay if last_len >= self._split_threshold else self._batch_delay
         await asyncio.sleep(delay)
 
@@ -179,9 +171,7 @@ class TextBatchAggregator:
         self._pending.clear()
 
 
-# ─── Markdown Stripping ──────────────────────────────────────────────────────
 
-# Pre-compiled regexes for performance
 _RE_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _RE_ITALIC_STAR = re.compile(r"\*(.+?)\*", re.DOTALL)
 _RE_BOLD_UNDER = re.compile(r"\b__(?![\s_])(.+?)(?<![\s_])__\b", re.DOTALL)
@@ -211,7 +201,6 @@ def strip_markdown(text: str) -> str:
     return text.strip()
 
 
-# ─── Thread Participation Tracking ───────────────────────────────────────────
 
 
 class ThreadParticipationTracker:
@@ -278,7 +267,6 @@ class ThreadParticipationTracker:
         self._threads.clear()
 
 
-# ─── Phone Number Redaction ──────────────────────────────────────────────────
 
 
 def redact_phone(phone: str) -> str:
@@ -294,15 +282,8 @@ def redact_phone(phone: str) -> str:
     return phone[:4] + "****" + phone[-4:]
 
 
-# ─── GFM Markdown Table → Bullet Conversion ─────────────────────────────────
-# Shared by Discord and Telegram adapters.  Discord calls
-# convert_table_to_bullets() directly; Telegram imports the primitives
-# but keeps its own MarkdownV2-aware renderer.
 
 
-# Matches a GFM table delimiter row: optional outer pipes, cells of dashes
-# (with optional alignment colons) separated by '|'.
-# Requires at least one internal '|' so lone '---' rules are NOT matched.
 TABLE_SEPARATOR_RE = re.compile(
     r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
 )
@@ -422,7 +403,6 @@ def convert_table_to_bullets(text: str) -> str:
     return '\n'.join(out)
 
 
-# ─── Mention-pattern compilation ─────────────────────────────────────────────
 
 
 def compile_mention_patterns(
@@ -454,7 +434,6 @@ def compile_mention_patterns(
     log = logger_ or logger
 
     if platform_label is not None:
-        # Config-style (dingtalk/telegram) semantics.
         display = display_label or platform_label
         patterns = raw
         if patterns is None:
@@ -493,7 +472,6 @@ def compile_mention_patterns(
             )
         return compiled
 
-    # Wakeword-style (photon/bluebubbles) semantics.
     if raw is None:
         patterns = list(defaults or [])
     elif isinstance(raw, str):
@@ -524,21 +502,6 @@ def compile_mention_patterns(
     return compiled
 
 
-# ─── Fence-Aware Markdown Chunking ───────────────────────────────────────────
-# Shared core for the fence-aware markdown chunkers that previously lived as
-# near-duplicates in gateway/stream_consumer.py, gateway/platforms/yuanbao.py
-# (MarkdownProcessor — the richest version, which this core is derived from),
-# and gateway/platforms/weixin.py.  Each caller keeps its own knobs:
-#
-#   * stream_consumer: newline-preferred splitting + close/reopen fence
-#     balancing (``prefer_paragraphs=False, balance_fences=True``)
-#   * yuanbao: atomic-block extraction + paragraph-boundary splitting, fences
-#     kept intact as atoms (``prefer_paragraphs=True, balance_fences=False``)
-#   * weixin: keeps its own block splitter (anchored ``_FENCE_RE``, per-line
-#     rstrip semantics) but reuses ``greedy_pack_blocks`` for packing.
-#
-# The typing helpers below use ``Optional``/``Callable`` from ``typing`` to
-# match the module's existing import style.
 
 
 def text_has_unclosed_fence(text: str) -> bool:
@@ -606,24 +569,20 @@ def split_at_paragraph_boundary(text, max_chars, len_fn=None):
                 hi = mid - 1
         window = text[:lo]
 
-    # 1. Prefer the last blank line (\n\n) as paragraph boundary
     pos = window.rfind('\n\n')
     if pos > 0:
         return text[:pos + 2], text[pos + 2:]
 
-    # 2. Then the last newline following sentence-ending punctuation
     best_pos = -1
     for m in _SENTENCE_END_NEWLINE_RE.finditer(window):
         best_pos = m.end()
     if best_pos > 0:
         return text[:best_pos], text[best_pos:]
 
-    # 3. Fallback: last newline
     pos = window.rfind('\n')
     if pos > 0:
         return text[:pos + 1], text[pos + 1:]
 
-    # 4. No valid split point: force split at the window boundary
     cut = len(window)
     return text[:cut], text[cut:]
 
@@ -837,10 +796,8 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     if _len(text) <= max_chars:
         return [text]
 
-    # Phase 1: Extract atomic blocks
     atoms = split_markdown_atoms(text)
 
-    # Phase 2: Greedy merge
     chunks: "list[str]" = []
     indivisible_set: "set[int]" = set()
     current_parts: "list[str]" = []
@@ -873,7 +830,6 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
 
     _flush_parts()
 
-    # Phase 3: Split still-oversized chunks at paragraph boundaries
     result: "list[str]" = []
     for idx, chunk in enumerate(chunks):
         if _len(chunk) <= max_chars:
@@ -900,7 +856,6 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
         if remaining:
             result.append(remaining)
 
-    # Phase 4: Merge small trailing/leading chunks with neighbours
     if len(result) > 1:
         merged: "list[str]" = [result[0]]
         for chunk in result[1:]:
@@ -919,13 +874,9 @@ def _chunk_newline_preferred(text, limit, len_fn):
     """Stream-consumer-derived newline-preferred splitting (no balancing)."""
     if len_fn(text) <= limit:
         return [text]
-    # Reserve headroom for the close/reopen fence markers a balancing pass
-    # may add, so balanced chunks stay within the platform limit.
     split_limit = limit
     if "```" in text:
         split_limit = max(limit - 16, limit // 2, 1)
-    # Local import: gateway.platforms.base is heavyweight and pulls config;
-    # helpers must stay import-light for adapters that import it first.
     from gateway.platforms.base import _custom_unit_to_cp
 
     chunks: "list[str]" = []

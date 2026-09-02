@@ -49,9 +49,6 @@ def _make_runner():
     return runner
 
 
-# ---------------------------------------------------------------------------
-# _handle_background_command
-# ---------------------------------------------------------------------------
 
 
 class TestHandleBackgroundCommand:
@@ -87,12 +84,10 @@ class TestHandleBackgroundCommand:
         """Running /background with a prompt returns confirmation and starts task."""
         runner = _make_runner()
 
-        # Patch asyncio.create_task to capture the coroutine
         created_tasks = []
         original_create_task = asyncio.create_task
 
         def capture_task(coro, *args, **kwargs):
-            # Close the coroutine to avoid warnings
             coro.close()
             mock_task = MagicMock()
             created_tasks.append(mock_task)
@@ -104,9 +99,9 @@ class TestHandleBackgroundCommand:
 
         assert "🔄" in result
         assert "Background task started" in result
-        assert "bg_" in result  # task ID starts with bg_
+        assert "bg_" in result
         assert "Summarize the top HN stories" in result
-        assert len(created_tasks) == 1  # background task was created
+        assert len(created_tasks) == 1
 
     @pytest.mark.asyncio
     async def test_prompt_truncated_in_preview(self):
@@ -119,7 +114,6 @@ class TestHandleBackgroundCommand:
             result = await runner._handle_background_command(event)
 
         assert "..." in result
-        # Should not contain the full prompt
         assert long_prompt not in result
 
     @pytest.mark.asyncio
@@ -132,13 +126,12 @@ class TestHandleBackgroundCommand:
             for i in range(5):
                 event = _make_event(text=f"/background task {i}")
                 result = await runner._handle_background_command(event)
-                # Extract task ID from result (format: "Task ID: bg_HHMMSS_hex")
                 for line in result.split("\n"):
                     if "Task ID:" in line:
                         tid = line.split("Task ID:")[1].strip()
                         task_ids.add(tid)
 
-        assert len(task_ids) == 5  # all unique
+        assert len(task_ids) == 5
 
     @pytest.mark.asyncio
     async def test_works_across_platforms(self):
@@ -154,9 +147,6 @@ class TestHandleBackgroundCommand:
                 assert "Background task started" in result
 
 
-# ---------------------------------------------------------------------------
-# _run_background_task
-# ---------------------------------------------------------------------------
 
 
 class TestRunBackgroundTask:
@@ -172,7 +162,6 @@ class TestRunBackgroundTask:
             chat_id="67890",
             user_name="testuser",
         )
-        # No adapters set — should not raise
         await runner._run_background_task("test prompt", source, "bg_test")
 
     @pytest.mark.asyncio
@@ -193,7 +182,6 @@ class TestRunBackgroundTask:
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": None}):
             await runner._run_background_task("test prompt", source, "bg_test")
 
-        # Should have sent an error message
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         assert "failed" in call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "").lower()
@@ -225,7 +213,6 @@ class TestRunBackgroundTask:
 
             await runner._run_background_task("say hello", source, "bg_test")
 
-        # Should have sent the result
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
@@ -256,9 +243,6 @@ class TestRunBackgroundTask:
         assert "failed" in content.lower()
 
 
-# ---------------------------------------------------------------------------
-# /background in help and known_commands
-# ---------------------------------------------------------------------------
 
 
 class TestBackgroundInHelp:
@@ -283,9 +267,6 @@ class TestBackgroundInHelp:
         assert "bg" in GATEWAY_KNOWN_COMMANDS
 
 
-# ---------------------------------------------------------------------------
-# CLI /background command definition
-# ---------------------------------------------------------------------------
 
 
 class TestBackgroundInCLICommands:
@@ -312,12 +293,11 @@ class TestBackgroundInCLICommands:
         from prompt_toolkit.document import Document
 
         completer = SlashCommandCompleter()
-        doc = Document("backgro")  # Partial match
+        doc = Document("backgro")
         completions = list(completer.get_completions(doc, None))
-        # Text doesn't start with / so no completions
         assert len(completions) == 0
 
-        doc = Document("/backgro")  # With slash prefix
+        doc = Document("/backgro")
         completions = list(completer.get_completions(doc, None))
         cmd_displays = [str(c.display) for c in completions]
         assert any("/background" in d for d in cmd_displays)

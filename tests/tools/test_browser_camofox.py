@@ -24,9 +24,6 @@ from tools.browser_camofox import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Configuration detection
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxMode:
@@ -43,9 +40,6 @@ class TestCamofoxMode:
         assert check_camofox_available() is False
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _mock_response(status=200, json_data=None):
@@ -57,9 +51,6 @@ def _mock_response(status=200, json_data=None):
     return resp
 
 
-# ---------------------------------------------------------------------------
-# Navigate
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxNavigate:
@@ -75,11 +66,9 @@ class TestCamofoxNavigate:
     @patch("tools.browser_camofox.requests.post")
     def test_navigates_existing_tab(self, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        # First call creates tab
         mock_post.return_value = _mock_response(json_data={"tabId": "tab2", "url": "https://a.com"})
         camofox_navigate("https://a.com", task_id="t2")
 
-        # Second call navigates
         mock_post.return_value = _mock_response(json_data={"ok": True, "url": "https://b.com"})
         result = json.loads(camofox_navigate("https://b.com", task_id="t2"))
         assert result["success"] is True
@@ -92,9 +81,6 @@ class TestCamofoxNavigate:
         assert "Cannot connect" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Snapshot
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxSnapshot:
@@ -108,11 +94,9 @@ class TestCamofoxSnapshot:
     @patch("tools.browser_camofox.requests.get")
     def test_returns_snapshot(self, mock_get, mock_post, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        # Create session
         mock_post.return_value = _mock_response(json_data={"tabId": "tab3", "url": "https://x.com"})
         camofox_navigate("https://x.com", task_id="t3")
 
-        # Return snapshot
         mock_get.return_value = _mock_response(json_data={
             "snapshot": "- heading \"Test\" [e1]\n- button \"Submit\" [e2]",
             "refsCount": 2,
@@ -123,9 +107,6 @@ class TestCamofoxSnapshot:
         assert result["element_count"] == 2
 
 
-# ---------------------------------------------------------------------------
-# Click / Type / Scroll / Back / Press
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxInteractions:
@@ -184,9 +165,6 @@ class TestCamofoxInteractions:
         assert result["pressed"] == "Enter"
 
 
-# ---------------------------------------------------------------------------
-# Close
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxClose:
@@ -208,9 +186,6 @@ class TestCamofoxClose:
         assert result["success"] is True
 
 
-# ---------------------------------------------------------------------------
-# Console (limited support)
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxConsole:
@@ -222,9 +197,6 @@ class TestCamofoxConsole:
         assert "not available" in result["note"]
 
 
-# ---------------------------------------------------------------------------
-# Images
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxGetImages:
@@ -235,7 +207,6 @@ class TestCamofoxGetImages:
         mock_post.return_value = _mock_response(json_data={"tabId": "tab10", "url": "https://x.com"})
         camofox_navigate("https://x.com", task_id="t10")
 
-        # camofox_get_images parses images from the accessibility tree snapshot
         snapshot_text = (
             '- img "Logo"\n'
             '  /url: https://x.com/img.png\n'
@@ -249,9 +220,6 @@ class TestCamofoxGetImages:
         assert result["images"][0]["src"] == "https://x.com/img.png"
 
 
-# ---------------------------------------------------------------------------
-# Routing integration — verify browser_tool routes to camofox
-# ---------------------------------------------------------------------------
 
 
 class TestBrowserToolRouting:
@@ -263,7 +231,6 @@ class TestBrowserToolRouting:
         mock_post.return_value = _mock_response(json_data={"tabId": "tab_rt", "url": "https://example.com"})
 
         from tools.browser_tool import browser_navigate
-        # Bypass SSRF check for test URL
         with patch("tools.browser_tool._is_safe_url", return_value=True):
             result = json.loads(browser_navigate("https://example.com", task_id="t_route"))
         assert result["success"] is True
@@ -274,9 +241,6 @@ class TestBrowserToolRouting:
         assert check_browser_requirements() is True
 
 
-# ---------------------------------------------------------------------------
-# Cleanup helper
-# ---------------------------------------------------------------------------
 
 
 class TestCamofoxCleanup:
@@ -290,6 +254,5 @@ class TestCamofoxCleanup:
         mock_delete.return_value = _mock_response(json_data={"ok": True})
         cleanup_all_camofox_sessions()
 
-        # Session should be gone
         result = json.loads(camofox_snapshot(task_id="t_cleanup"))
         assert result["success"] is False

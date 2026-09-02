@@ -63,7 +63,6 @@ def test_read_codex_tokens_success(tmp_path, monkeypatch):
 def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     daedalus_home = tmp_path / "daedalus"
     daedalus_home.mkdir(parents=True, exist_ok=True)
-    # Empty auth store
     (daedalus_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
     monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
@@ -173,10 +172,8 @@ def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
 
     _save_codex_tokens({"access_token": "daedalus-at", "refresh_token": "daedalus-rt"})
 
-    # ~/.codex/auth.json should NOT exist
     assert not (codex_home / "auth.json").exists()
 
-    # Daedalus auth store should have the tokens
     data = _read_codex_tokens()
     assert data["tokens"]["access_token"] == "daedalus-at"
 

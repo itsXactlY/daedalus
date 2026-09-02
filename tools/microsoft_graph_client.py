@@ -198,8 +198,6 @@ class MicrosoftGraphClient:
                         headers=request_headers,
                     ) as response:
                         if response.status_code >= 400:
-                            # Materialize error body so we can surface a meaningful
-                            # message; error bodies are small.
                             await response.aread()
                             api_error = self._build_api_error("GET", url, response)
                             last_error = api_error

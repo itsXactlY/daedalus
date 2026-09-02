@@ -16,20 +16,14 @@ from typing import Any, Dict, List, Optional, Tuple
 class UIElement:
     """One interactable element on the current screen."""
 
-    index: int                       # 1-based SOM index
-    role: str                        # AX role (AXButton, AXTextField, ...)
-    label: str = ""                  # AXTitle / AXDescription / AXValue snippet
-    bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h (logical px)
-    app: str = ""                    # owning bundle ID or app name
-    pid: int = 0                     # owning process PID
-    window_id: int = 0               # SkyLight / CG window ID
+    index: int
+    role: str
+    label: str = ""
+    bounds: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    app: str = ""
+    pid: int = 0
+    window_id: int = 0
     attributes: Dict[str, Any] = field(default_factory=dict)
-    # Opaque per-snapshot element handle from cua-driver
-    # (trycua/cua#1961 — Surface 6 of NousResearch/daedalus#47072).
-    # When set, downstream calls can pass it alongside `index` for
-    # explicit stale-detection: a stale token returns an error from
-    # cua-driver rather than silently re-resolving to a different
-    # element. None for pre-#1961 drivers that didn't carry the field.
     element_token: Optional[str] = None
 
     def center(self) -> Tuple[int, int]:
@@ -50,20 +44,13 @@ class CaptureResult:
     """
 
     mode: str
-    width: int                      # screenshot width (logical px, pre-Anthropic-scale)
+    width: int
     height: int
     png_b64: Optional[str] = None
     elements: List[UIElement] = field(default_factory=list)
-    # Optional: the target app/window the elements were captured for.
     app: str = ""
     window_title: str = ""
-    # Raw bytes we sent to Anthropic, for token estimation.
     png_bytes_len: int = 0
-    # Explicit MIME type for `png_b64` when the backend supplied it
-    # (cua-driver-rs emits `mimeType` on every image part as of
-    # trycua/cua#1961 — Surface 7 of NousResearch/daedalus#47072).
-    # When None, downstream consumers fall back to base64-prefix
-    # sniffing for back-compat with older drivers.
     image_mime_type: Optional[str] = None
 
 
@@ -82,29 +69,15 @@ class ActionResult:
 
     ok: bool
     action: str
-    message: str = ""                # human-readable summary
-    # Optional trailing screenshot — set when the caller asked for a
-    # post-action capture or the backend always returns one.
+    message: str = ""
     capture: Optional[CaptureResult] = None
-    # Arbitrary extra fields for debugging / telemetry.
     meta: Dict[str, Any] = field(default_factory=dict)
-    # ── cua-driver structured verdict (additive; None on old drivers) ──
-    # AX read-back verification: True = driver read the effect back,
-    # False = ran but unconfirmed, None = tool doesn't carry the field.
     verified: Optional[bool] = None
-    # Confidence signal: "confirmed" | "unverifiable" | "suspected_noop".
     effect: Optional[str] = None
-    # Machine-readable next-rung hint: {"recommended": "px"|"foreground"|"page",
-    # "reason": str} — present only when the driver recommends climbing.
     escalation: Optional[Dict[str, Any]] = None
-    # Delivery rung that actually ran (e.g. "ax", "x11_pixel", "cgevent_fg").
     path: Optional[str] = None
-    # True when an AX walk found no actionable elements (act by px instead).
     degraded: Optional[bool] = None
-    # The delivery_mode the caller requested for this action, echoed back.
     delivery_mode: Optional[str] = None
-    # A structured refusal code (e.g. "background_unavailable",
-    # "foreground_unsupported", "desktop_scope_disabled") when present.
     code: Optional[str] = None
 
 
@@ -124,7 +97,6 @@ class ComputerUseBackend(ABC):
         Used by check_fn gating and by the post-setup wizard.
         """
 
-    # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
     def capture(
         self,
@@ -134,7 +106,6 @@ class ComputerUseBackend(ABC):
         window_id: Optional[int] = None,
     ) -> CaptureResult: ...
 
-    # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod
     def click(
         self,
@@ -142,10 +113,10 @@ class ComputerUseBackend(ABC):
         element: Optional[int] = None,
         x: Optional[int] = None,
         y: Optional[int] = None,
-        button: str = "left",           # left | right | middle
+        button: str = "left",
         click_count: int = 1,
         modifiers: Optional[List[str]] = None,
-        delivery_mode: Optional[str] = None,   # background (default) | foreground
+        delivery_mode: Optional[str] = None,
         bring_to_front: bool = False,
     ) -> ActionResult: ...
 
@@ -167,8 +138,8 @@ class ComputerUseBackend(ABC):
     def scroll(
         self,
         *,
-        direction: str,                 # up | down | left | right
-        amount: int = 3,                # wheel ticks
+        direction: str,
+        amount: int = 3,
         element: Optional[int] = None,
         x: Optional[int] = None,
         y: Optional[int] = None,
@@ -177,7 +148,6 @@ class ComputerUseBackend(ABC):
         bring_to_front: bool = False,
     ) -> ActionResult: ...
 
-    # ── Keyboard ────────────────────────────────────────────────────
     @abstractmethod
     def type_text(self, text: str, *, delivery_mode: Optional[str] = None,
                   bring_to_front: bool = False) -> ActionResult: ...
@@ -187,7 +157,6 @@ class ComputerUseBackend(ABC):
             bring_to_front: bool = False) -> ActionResult:
         """Send a key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return'."""
 
-    # ── Introspection ───────────────────────────────────────────────
     @abstractmethod
     def list_apps(self) -> List[Dict[str, Any]]:
         """Return running apps with bundle IDs, PIDs, window counts."""
@@ -204,7 +173,6 @@ class ComputerUseBackend(ABC):
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""
 
-    # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
         """Set a native value on an element (e.g. AXPopUpButton selection).
@@ -212,7 +180,6 @@ class ComputerUseBackend(ABC):
         `element` is the 1-based SOM index returned by a prior capture call.
         """
 
-    # ── Optional typed-browser adapter ──────────────────────────────
     @staticmethod
     def _typed_browser_unavailable() -> Dict[str, Any]:
         return {
@@ -241,7 +208,6 @@ class ComputerUseBackend(ABC):
         """Optional mutation hook; native-only backends fail closed."""
         return self._typed_browser_unavailable()
 
-    # ── Timing ──────────────────────────────────────────────────────
     def wait(self, seconds: float) -> ActionResult:
         """Default implementation: time.sleep."""
         import time

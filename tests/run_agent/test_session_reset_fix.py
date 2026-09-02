@@ -12,10 +12,8 @@ from pathlib import Path
 
 import pytest
 
-# Ensure repo root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-# Stub out optional heavy dependencies not installed in the test environment
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
@@ -31,9 +29,8 @@ def _make_minimal_agent() -> AIAgent:
     The object is never used to make API calls — only its attributes and
     reset_session_state() are exercised.
     """
-    agent = AIAgent.__new__(AIAgent)  # skip __init__ entirely
+    agent = AIAgent.__new__(AIAgent)
 
-    # Seed the exact attributes that reset_session_state() writes
     agent.session_total_tokens = 0
     agent.session_input_tokens = 0
     agent.session_output_tokens = 0
@@ -47,9 +44,8 @@ def _make_minimal_agent() -> AIAgent:
     agent.session_cost_status = "unknown"
     agent.session_cost_source = "none"
 
-    # The two fields under test
     agent._user_turn_count = 0
-    agent.context_compressor = None  # will be set per-test as needed
+    agent.context_compressor = None
 
     return agent
 
@@ -62,7 +58,6 @@ class TestResetSessionState:
         agent = _make_minimal_agent()
         compressor = ContextCompressor.__new__(ContextCompressor)
         compressor._previous_summary = "Old session summary about unrelated topic"
-        # Seed counter attributes that reset_session_state touches
         compressor.last_prompt_tokens = 100
         compressor.last_completion_tokens = 50
         compressor.last_total_tokens = 150
@@ -81,7 +76,7 @@ class TestResetSessionState:
     def test_user_turn_count_cleared_on_reset(self):
         """Turn counter must reset to 0 on new session."""
         agent = _make_minimal_agent()
-        agent._user_turn_count = 7  # simulates turns accumulated in previous session
+        agent._user_turn_count = 7
         agent.context_compressor = None
 
         agent.reset_session_state()
@@ -115,7 +110,6 @@ class TestResetSessionState:
         agent._user_turn_count = 2
         agent.context_compressor = None
 
-        # Must not raise
         agent.reset_session_state()
 
         assert agent._user_turn_count == 0

@@ -34,22 +34,19 @@ class LlamaToolCallParser(ToolCallParser):
 
     BOT_TOKEN = "<|python_tag|>"
 
-    # Regex to find the start of potential JSON objects
     JSON_START = re.compile(r"\{")
 
     def parse(self, text: str) -> ParseResult:
-        # Quick check: need either the bot token or a JSON brace
         if self.BOT_TOKEN not in text and "{" not in text:
             return text, None
 
         try:
             decoder = json.JSONDecoder()
             tool_calls: List[ChatCompletionMessageToolCall] = []
-            end_index = -1  # Track where the last parsed JSON ended
+            end_index = -1
 
             for match in self.JSON_START.finditer(text):
                 start = match.start()
-                # Skip if this brace is inside a previously parsed JSON object
                 if start <= end_index:
                     continue
 
@@ -57,14 +54,12 @@ class LlamaToolCallParser(ToolCallParser):
                     obj, json_end = decoder.raw_decode(text[start:])
                     end_index = start + json_end
 
-                    # Must have "name" and either "arguments" or "parameters"
                     name = obj.get("name")
                     args = obj.get("arguments", obj.get("parameters"))
 
                     if not name or args is None:
                         continue
 
-                    # Normalize arguments to JSON string
                     if isinstance(args, dict):
                         args = json.dumps(args, ensure_ascii=False)
                     elif not isinstance(args, str):
@@ -83,8 +78,6 @@ class LlamaToolCallParser(ToolCallParser):
             if not tool_calls:
                 return text, None
 
-            # Content is everything before the first tool call JSON
-            # Find where the first tool call starts in the text
             first_tc_start = text.find("{")
             if self.BOT_TOKEN in text:
                 first_tc_start = text.find(self.BOT_TOKEN)

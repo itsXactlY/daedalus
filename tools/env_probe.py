@@ -41,37 +41,15 @@ from daedalus_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
-# Module-level cache.  The probe result is deterministic for the
-# lifetime of the process — Python install state doesn't change
-# mid-session in any way that would matter for the system prompt.
-#
-# Concurrency model (#67964): the probe runs in exactly ONE background
-# worker thread; ``_PROBE_DONE`` signals completion.  Callers never
-# execute the probe themselves and never wait unboundedly — they block
-# at most ``_PROBE_WAIT_TIMEOUT`` seconds on the event and then fail
-# open with "".  This guarantees a stuck probe (e.g. a Windows pipe
-# wedged open by an orphaned pip descendant) can degrade at most the
-# probe line itself, never system-prompt construction.
 _CACHE_LOCK = threading.Lock()
-_CACHED_LINE: Optional[str] = None  # None = not probed yet; "" = probed, nothing to say.
+_CACHED_LINE: Optional[str] = None
 _PROBE_DONE = threading.Event()
 _PROBE_THREAD: Optional[threading.Thread] = None
-# Generation counter — bumped on every reset so a stale worker (started
-# before a test reset) can't publish its result into the fresh generation.
 _PROBE_GEN = 0
 
-# Upper bound a prompt build will wait for the probe.  Generous vs the
-# ~0.5s healthy runtime (6 subprocesses × 3s timeout ≈ 18s pathological
-# worst case), but finite: prompt construction must always proceed.
 _PROBE_WAIT_TIMEOUT = 10.0
-# Once one caller has burned the full wait and given up, later callers
-# stop paying it too — they just peek at the event.  If the stuck worker
-# ever finishes, the published line resumes appearing in new prompts.
 _WAIT_ALREADY_TIMED_OUT = False
 
-# Remote backends — keep in sync with agent/prompt_builder.py:_REMOTE_TERMINAL_BACKENDS.
-# Duplicated rather than imported to avoid a circular import (prompt_builder
-# imports nothing from tools).
 _REMOTE_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh", "managed_modal",
     "vercel_sandbox",
@@ -107,10 +85,6 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
                     timeout=timeout,
                     check=False,
                     stdin=subprocess.DEVNULL,
-                    # CREATE_NO_WINDOW (0 on POSIX): the probe runs in
-                    # windowless processes (pythonw gateway / kanban workers)
-                    # where a console child would otherwise flash a visible
-                    # window per probe — ~5 flashes at every worker startup.
                     creationflags=windows_hide_flags(),
                 )
             except subprocess.TimeoutExpired:
@@ -176,7 +150,6 @@ def _pip_python_version() -> Optional[str]:
     rc, out, _err = _run(["pip", "--version"])
     if rc != 0 or not out:
         return None
-    # Parse trailing "(python X.Y)".
     if "(python " in out and out.endswith(")"):
         try:
             tail = out.rsplit("(python ", 1)[1]
@@ -192,29 +165,17 @@ def _build_probe_line() -> str:
     Emit only when SOMETHING is off — the goal is to save the model from
     hitting an avoidable wall, not to narrate a healthy environment.
     """
-    # Bail out if a remote terminal backend is configured; the host's
-    # Python state isn't where the agent's tools run.
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
     if backend in _REMOTE_BACKENDS:
         return ""
 
     py3_ver = _python_version_of("python3")
-    py_ver = _python_version_of("python")  # for systems with a `python` alias
+    py_ver = _python_version_of("python")
     py3_has_pip = _has_pip_module("python3") if py3_ver else False
     pip_bound_to = _pip_python_version()
     py3_pep668 = _detect_pep668("python3") if py3_ver else False
-    # Bare which() is correct here, unlike Daedalus's own uv call sites: this
-    # reports the environment *the model will see* in the terminal tool, and
-    # what the model can type is exactly what is on that subshell's PATH.
-    # local.py puts the Daedalus-managed $DAEDALUS_HOME/bin there, so a managed-only
-    # install answers yes — without that, claiming uv the model cannot invoke
-    # would be worse than claiming none.
     has_uv = shutil.which("uv") is not None
 
-    # If python3 exists, has pip, has uv (or no PEP 668), and there's no
-    # version mismatch between `pip` and `python3` → environment is
-    # clean enough to stay silent.  The model can discover details by
-    # running commands if it cares.
     mismatch = bool(pip_bound_to and py3_ver and not py3_ver.startswith(pip_bound_to))
     silent_conditions = (
         py3_ver is not None
@@ -225,8 +186,6 @@ def _build_probe_line() -> str:
     if silent_conditions:
         return ""
 
-    # Build a compact factual summary.  Keep it ONE line so it doesn't
-    # dominate the prompt; the model is good at parsing dense info.
     bits: list[str] = []
     if py3_ver:
         py3_bit = f"python3={py3_ver}"
@@ -239,19 +198,14 @@ def _build_probe_line() -> str:
     if py_ver and py_ver != py3_ver:
         bits.append(f"python={py_ver}")
     elif not py_ver and py3_ver:
-        # Common on Debian/Ubuntu — call it out so the model doesn't
-        # type `python` and hit "command not found".
         bits.append("python=missing (use python3)")
 
     if pip_bound_to:
         if mismatch:
             bits.append(f"pip→python{pip_bound_to} (mismatch)")
         elif not py3_has_pip:
-            # pip exists but `python3 -m pip` doesn't — the script
-            # works but the module path doesn't.
             bits.append(f"pip→python{pip_bound_to}")
     elif py3_has_pip:
-        # `pip` not on PATH but `python3 -m pip` works.
         pass
     else:
         bits.append("pip=missing")
@@ -299,9 +253,6 @@ def get_environment_probe_line(*, force_refresh: bool = False) -> str:
     _ensure_probe_started()
     wait_timeout = 0.05 if _WAIT_ALREADY_TIMED_OUT else _PROBE_WAIT_TIMEOUT
     if not _PROBE_DONE.wait(timeout=wait_timeout):
-        # Probe stuck or pathologically slow.  The line is a nice-to-have;
-        # blocking prompt construction is an outage.  Fail open — if the
-        # worker eventually finishes, sessions started later get the line.
         if not _WAIT_ALREADY_TIMED_OUT:
             _WAIT_ALREADY_TIMED_OUT = True
             logger.warning(
@@ -318,12 +269,12 @@ def _probe_worker(gen: int) -> None:
     global _CACHED_LINE
     try:
         line = _build_probe_line()
-    except Exception as exc:  # never let probe failure propagate
+    except Exception as exc:
         logger.debug("env_probe failed: %s", exc)
         line = ""
     with _CACHE_LOCK:
         if gen != _PROBE_GEN:
-            return  # superseded by a reset (tests) — discard stale result
+            return
         _CACHED_LINE = line
         _PROBE_DONE.set()
 

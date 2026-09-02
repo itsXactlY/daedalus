@@ -33,13 +33,8 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Tokenization + scoring
-# ---------------------------------------------------------------------------
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
-# Subword stop-words that carry no routing signal. Keep tiny; the min-score
-# threshold already rejects most noise.
 _STOP = frozenset(
     {
         "the", "a", "an", "and", "or", "for", "with", "into", "from", "that",
@@ -59,7 +54,6 @@ def _tokens(text: str) -> List[str]:
     return [t for t in _TOKEN_RE.findall((text or "").lower()) if t not in _STOP and len(t) > 1]
 
 
-# Name matches are far stronger signals than description matches.
 _NAME_WEIGHT = 5.0
 _CATEGORY_WEIGHT = 1.0
 _DESC_WEIGHT = 1.0
@@ -96,9 +90,6 @@ def score_skill(query_tokens: List[str], entry: Dict[str, Any]) -> float:
     return min(hit / (len(query_tokens) * _NAME_WEIGHT), 1.0)
 
 
-# ---------------------------------------------------------------------------
-# Catalog loading (mirrors prompt_builder snapshot semantics)
-# ---------------------------------------------------------------------------
 
 def load_skill_catalog(
     available_tools: Optional[set] = None,
@@ -180,9 +171,6 @@ def load_skill_catalog(
     return entries
 
 
-# ---------------------------------------------------------------------------
-# Public routing API
-# ---------------------------------------------------------------------------
 
 _BUNDLE_LOADED_RE = re.compile(r"^Skills loaded: (.+)$", re.MULTILINE)
 _SKILL_INVOKED_RE = re.compile(r'invoked the "([^"]+)" skill')

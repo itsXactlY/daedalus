@@ -92,7 +92,6 @@ class TestReadLoopDetection(unittest.TestCase):
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
         self.assertIn("_warning", result)
         self.assertIn("3 times", result["_warning"])
-        # Warning still returns content
         self.assertIn("content", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -120,7 +119,6 @@ class TestReadLoopDetection(unittest.TestCase):
         """Reading a different region of the same file resets consecutive count."""
         read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
         read_file_tool("/tmp/test.py", offset=1, limit=500, task_id="t1")
-        # Now read a different region — this resets the consecutive counter
         result = json.loads(
             read_file_tool("/tmp/test.py", offset=501, limit=500, task_id="t1")
         )
@@ -168,9 +166,7 @@ class TestNotifyOtherToolCall(unittest.TestCase):
         """After another tool runs, re-reading the same file is NOT consecutive."""
         read_file_tool("/tmp/test.py", task_id="t1")
         read_file_tool("/tmp/test.py", task_id="t1")
-        # Simulate a different tool being called
         notify_other_tool_call("t1")
-        # This should be treated as a fresh read (consecutive reset)
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
         self.assertNotIn("_warning", result)
         self.assertIn("content", result)
@@ -181,7 +177,6 @@ class TestNotifyOtherToolCall(unittest.TestCase):
         for i in range(10):
             read_file_tool("/tmp/test.py", task_id="t1")
             notify_other_tool_call("t1")
-        # After 10 reads interleaved with other tools, still no warning
         result = json.loads(read_file_tool("/tmp/test.py", task_id="t1"))
         self.assertNotIn("_warning", result)
         self.assertNotIn("error", result)
@@ -190,7 +185,7 @@ class TestNotifyOtherToolCall(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_notify_on_unknown_task_is_safe(self, _mock_ops):
         """notify_other_tool_call on a task that hasn't read anything is a no-op."""
-        notify_other_tool_call("nonexistent_task")  # Should not raise
+        notify_other_tool_call("nonexistent_task")
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
     def test_history_survives_notify(self, _mock_ops):
@@ -329,7 +324,6 @@ class TestSearchLoopDetection(unittest.TestCase):
         result = json.loads(search_tool("def main", task_id="t1"))
         self.assertIn("_warning", result)
         self.assertIn("3 times", result["_warning"])
-        # Warning still returns results
         self.assertIn("matches", result)
 
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -381,7 +375,6 @@ class TestSearchLoopDetection(unittest.TestCase):
         """A read_file call between searches resets search consecutive counter."""
         search_tool("def main", task_id="t1")
         search_tool("def main", task_id="t1")
-        # A read changes the last_key, resetting consecutive for the search
         read_file_tool("/tmp/test.py", task_id="t1")
         result = json.loads(search_tool("def main", task_id="t1"))
         self.assertNotIn("_warning", result)

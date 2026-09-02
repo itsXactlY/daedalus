@@ -10,12 +10,6 @@ from daedalus_cli.auth import AuthError
 from daedalus_cli import main as daedalus_main
 
 
-# ---------------------------------------------------------------------------
-# Module isolation: _import_cli() wipes tools.* / cli / run_agent from
-# sys.modules so it can re-import cli fresh.  Without cleanup the wiped
-# modules leak into subsequent tests on the same xdist worker, breaking
-# mock patches that target "tools.file_tools._get_file_ops" etc.
-# ---------------------------------------------------------------------------
 
 def _reset_modules(prefixes: tuple[str, ...]):
     for name in list(sys.modules):
@@ -275,7 +269,6 @@ def test_codex_provider_replaces_incompatible_default_model(monkeypatch):
 
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    # Ensure local user config does not leak a model into the test
     monkeypatch.setitem(cli.CLI_CONFIG, "model", {
         "default": "",
         "base_url": "https://openrouter.ai/api/v1",
@@ -389,11 +382,9 @@ def test_codex_provider_uses_config_model(monkeypatch):
     Config.yaml is the single source of truth to avoid multi-agent conflicts."""
     cli = _import_cli()
 
-    # LLM_MODEL env var should be IGNORED (even if set)
     monkeypatch.setenv("LLM_MODEL", "should-be-ignored")
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
-    # Set model via config
     monkeypatch.setitem(cli.CLI_CONFIG, "model", {
         "default": "gpt-5.2-codex",
         "provider": "openai-codex",
@@ -411,7 +402,6 @@ def test_codex_provider_uses_config_model(monkeypatch):
 
     monkeypatch.setattr("daedalus_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("daedalus_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    # Prevent live API call from overriding the config model
     monkeypatch.setattr(
         "daedalus_cli.codex_models.get_codex_model_ids",
         lambda access_token=None: ["gpt-5.2-codex"],
@@ -421,9 +411,7 @@ def test_codex_provider_uses_config_model(monkeypatch):
 
     assert shell._ensure_runtime_credentials() is True
     assert shell.provider == "openai-codex"
-    # Model from config (may be normalized by codex provider logic)
     assert "codex" in shell.model.lower()
-    # LLM_MODEL env var is NOT used
     assert shell.model != "should-be-ignored"
 
 
@@ -436,7 +424,6 @@ def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
 
-    # User explicitly configured gpt-5.3-codex in config.yaml
     monkeypatch.setitem(cli.CLI_CONFIG, "model", {
         "default": "gpt-5.3-codex",
         "provider": "openai-codex",
@@ -454,7 +441,6 @@ def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
 
     monkeypatch.setattr("daedalus_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
     monkeypatch.setattr("daedalus_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
-    # API returns a DIFFERENT model than what the user configured
     monkeypatch.setattr(
         "daedalus_cli.codex_models.get_codex_model_ids",
         lambda access_token=None: ["gpt-5.4", "gpt-5.3-codex"],
@@ -462,11 +448,9 @@ def test_codex_config_model_not_replaced_by_normalization(monkeypatch):
 
     shell = cli.DaedalusCLI(compact=True, max_turns=1)
 
-    # Config model is NOT the global default — user made a deliberate choice
     assert shell._model_is_default is False
     assert shell._ensure_runtime_credentials() is True
     assert shell.provider == "openai-codex"
-    # Model must stay as user configured, not replaced by gpt-5.4
     assert shell.model == "gpt-5.3-codex"
 
 
@@ -575,8 +559,6 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     )
     monkeypatch.setattr("daedalus_cli.config.save_config", lambda cfg: None)
 
-    # After the probe detects a single model ("llm"), the flow asks
-    # "Use this model? [Y/n]:" — confirm with Enter, then context length.
     answers = iter(["http://localhost:8000", "local-key", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
@@ -586,7 +568,6 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
 
     assert "Saving the working base URL instead" in output
     assert "Detected model: llm" in output
-    # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
     assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"
 

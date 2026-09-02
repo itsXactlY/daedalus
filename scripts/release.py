@@ -33,17 +33,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "daedalus_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
-# ──────────────────────────────────────────────────────────────────────
-# Git email → GitHub username mapping
-# ──────────────────────────────────────────────────────────────────────
 
-# Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
-    # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
-    # contributors (from noreply pattern)
     "35742124+0xbyt4@users.noreply.github.com": "0xbyt4",
     "82637225+kshitijk4poor@users.noreply.github.com": "kshitijk4poor",
     "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",
@@ -62,7 +56,6 @@ AUTHOR_MAP = {
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
     "259807879+Bartok9@users.noreply.github.com": "Bartok9",
-    # contributors (manual mapping from git names)
     "dmayhem93@gmail.com": "dmahan93",
     "samherring99@gmail.com": "samherring99",
     "desaiaum08@gmail.com": "Aum08Desai",
@@ -188,7 +181,6 @@ def bump_version(current: str, part: str) -> str:
 
 def update_version_files(semver: str, calver_date: str):
     """Update version strings in source files."""
-    # Update __init__.py
     content = VERSION_FILE.read_text()
     content = re.sub(
         r'__version__\s*=\s*"[^"]+"',
@@ -202,7 +194,6 @@ def update_version_files(semver: str, calver_date: str):
     )
     VERSION_FILE.write_text(content)
 
-    # Update pyproject.toml
     pyproject = PYPROJECT_FILE.read_text()
     pyproject = re.sub(
         r'^version\s*=\s*"[^"]+"',
@@ -250,22 +241,18 @@ def build_release_artifacts(semver: str) -> list[Path]:
 
 def resolve_author(name: str, email: str) -> str:
     """Resolve a git author to a GitHub @mention."""
-    # Try email lookup first
     gh_user = AUTHOR_MAP.get(email)
     if gh_user:
         return f"@{gh_user}"
 
-    # Try noreply pattern
     noreply_match = re.match(r"(\d+)\+(.+)@users\.noreply\.github\.com", email)
     if noreply_match:
         return f"@{noreply_match.group(2)}"
 
-    # Try username@users.noreply.github.com
     noreply_match2 = re.match(r"(.+)@users\.noreply\.github\.com", email)
     if noreply_match2:
         return f"@{noreply_match2.group(1)}"
 
-    # Fallback to git name
     return name
 
 
@@ -273,7 +260,6 @@ def categorize_commit(subject: str) -> str:
     """Categorize a commit by its conventional commit prefix."""
     subject_lower = subject.lower()
 
-    # Match conventional commit patterns
     patterns = {
         "breaking": [r"^breaking[\s:(]", r"^!:", r"BREAKING CHANGE"],
         "features": [r"^feat[\s:(]", r"^feature[\s:(]", r"^add[\s:(]"],
@@ -292,7 +278,6 @@ def categorize_commit(subject: str) -> str:
             if re.match(regex, subject_lower):
                 return category
 
-    # Heuristic fallbacks
     if any(w in subject_lower for w in ["add ", "new ", "implement", "support "]):
         return "features"
     if any(w in subject_lower for w in ["fix ", "fixed ", "resolve", "patch "]):
@@ -305,11 +290,8 @@ def categorize_commit(subject: str) -> str:
 
 def clean_subject(subject: str) -> str:
     """Clean up a commit subject for display."""
-    # Remove conventional commit prefix
     cleaned = re.sub(r"^(feat|fix|docs|chore|refactor|test|perf|ci|build|improve|add|update|cleanup|hotfix|breaking|enhance|optimize|bugfix|bug|feature|tests|deps|bump)[\s:(!]+\s*", "", subject, flags=re.IGNORECASE)
-    # Remove trailing issue refs that are redundant with PR links
     cleaned = cleaned.strip()
-    # Capitalize first letter
     if cleaned:
         cleaned = cleaned[0].upper() + cleaned[1:]
     return cleaned
@@ -322,7 +304,6 @@ def get_commits(since_tag=None):
     else:
         range_spec = "HEAD"
 
-    # Format: hash|author_name|author_email|subject
     log = git(
         "log", range_spec,
         "--format=%H|%an|%ae|%s",
@@ -366,7 +347,6 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
     """Generate markdown changelog from categorized commits."""
     lines = []
 
-    # Header
     now = datetime.now()
     date_str = now.strftime("%B %d, %Y")
     lines.append(f"# Daedalus Agent v{semver} ({tag_name})")
@@ -379,7 +359,6 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         lines.append("> for Daedalus Agent. See below for everything included in this initial release.")
         lines.append("")
 
-    # Group commits by category
     categories = defaultdict(list)
     all_authors = set()
     teknium_aliases = {"@teknium1"}
@@ -390,7 +369,6 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         if author not in teknium_aliases:
             all_authors.add(author)
 
-    # Category display order and emoji
     category_order = [
         ("breaking", "⚠️ Breaking Changes"),
         ("features", "✨ Features"),
@@ -415,7 +393,6 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             pr_num = get_pr_number(commit["subject"])
             author = commit["github_author"]
 
-            # Build the line
             parts = [f"- {subject}"]
             if pr_num:
                 parts.append(f"([#{pr_num}]({repo_url}/pull/{pr_num}))")
@@ -429,9 +406,7 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
 
         lines.append("")
 
-    # Contributors section
     if all_authors:
-        # Sort contributors by commit count
         author_counts = defaultdict(int)
         for commit in commits:
             author = commit["github_author"]
@@ -449,7 +424,6 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             lines.append(f"- {author} ({count} {commit_word})")
         lines.append("")
 
-    # Full changelog link
     if prev_tag:
         lines.append(f"**Full Changelog**: [{prev_tag}...{tag_name}]({repo_url}/compare/{prev_tag}...{tag_name})")
     else:
@@ -473,7 +447,6 @@ def main():
                         help="Write changelog to file instead of stdout")
     args = parser.parse_args()
 
-    # Determine CalVer date
     if args.date:
         calver_date = args.date
     else:
@@ -485,21 +458,18 @@ def main():
     if tag_name != base_tag:
         print(f"Note: Tag {base_tag} already exists, using {tag_name}")
 
-    # Determine semver
     current_version = get_current_version()
     if args.bump:
         new_version = bump_version(current_version, args.bump)
     else:
         new_version = current_version
 
-    # Get previous tag
     prev_tag = get_last_tag()
     if not prev_tag and not args.first_release:
         print("No previous tags found. Use --first-release for the initial release.")
         print(f"Would create tag: {tag_name}")
         print(f"Would set version: {new_version}")
 
-    # Get commits
     commits = get_commits(since_tag=prev_tag)
     if not commits:
         print("No new commits since last tag.")
@@ -518,7 +488,6 @@ def main():
     print(f"{'='*60}")
     print()
 
-    # Generate changelog
     changelog = generate_changelog(
         commits, tag_name, new_version,
         prev_tag=prev_tag,
@@ -536,12 +505,10 @@ def main():
         print("  Publishing release...")
         print(f"{'='*60}")
 
-        # Update version files
         if args.bump:
             update_version_files(new_version, calver_date)
             print(f"  ✓ Updated version files to v{new_version} ({calver_date})")
 
-            # Commit version bump
             add_result = git_result("add", str(VERSION_FILE), str(PYPROJECT_FILE))
             if add_result.returncode != 0:
                 print(f"  ✗ Failed to stage version files: {add_result.stderr.strip()}")
@@ -555,7 +522,6 @@ def main():
                 return
             print(f"  ✓ Committed version bump")
 
-        # Create annotated tag
         tag_result = git_result(
             "tag", "-a", tag_name, "-m",
             f"Daedalus Agent v{new_version} ({calver_date})\n\nWeekly release"
@@ -565,7 +531,6 @@ def main():
             return
         print(f"  ✓ Created tag {tag_name}")
 
-        # Push
         push_result = git_result("push", "origin", "HEAD", "--tags")
         if push_result.returncode == 0:
             print(f"  ✓ Pushed to origin")
@@ -574,15 +539,12 @@ def main():
             print("    Continue manually after fixing access:")
             print("    git push origin HEAD --tags")
 
-        # Build semver-named Python artifacts so downstream packagers
-        # (e.g. Homebrew) can target them without relying on CalVer tag names.
         artifacts = build_release_artifacts(new_version)
         if artifacts:
             print("  ✓ Built release artifacts:")
             for artifact in artifacts:
                 print(f"    - {artifact.relative_to(REPO_ROOT)}")
 
-        # Create GitHub release
         changelog_file = REPO_ROOT / ".release_notes.md"
         changelog_file.write_text(changelog)
 

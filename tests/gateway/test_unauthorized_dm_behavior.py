@@ -215,7 +215,7 @@ async def test_rejection_message_records_rate_limit(monkeypatch):
         platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
     )
     runner, adapter = _make_runner(Platform.WHATSAPP, config)
-    runner.pairing_store.generate_code.return_value = None  # triggers rejection
+    runner.pairing_store.generate_code.return_value = None
 
     result = await runner._handle_message(
         _make_event(

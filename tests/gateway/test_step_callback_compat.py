@@ -51,14 +51,13 @@ class TestStepCallbackNormalization:
         """When prev_tools is list[dict], tool_names should be list[str]."""
         cb, events, loop = self._extract_step_callback()
 
-        # Simulate the enriched format from run_agent.py
         prev_tools = [
             {"name": "terminal", "result": '{"output": "hello"}'},
             {"name": "read_file", "result": '{"content": "..."}'},
         ]
 
         try:
-            loop.run_until_complete(asyncio.sleep(0))  # prime the loop
+            loop.run_until_complete(asyncio.sleep(0))
             import threading
             t = threading.Thread(target=cb, args=(1, prev_tools))
             t.start()
@@ -69,10 +68,8 @@ class TestStepCallbackNormalization:
 
         assert len(events) == 1
         _, data = events[0]
-        # tool_names must be strings for backward compat
         assert data["tool_names"] == ["terminal", "read_file"]
         assert all(isinstance(n, str) for n in data["tool_names"])
-        # tools should be the enriched dicts
         assert data["tools"] == prev_tools
 
     def test_string_prev_tools_still_work(self):
@@ -115,7 +112,6 @@ class TestStepCallbackNormalization:
 
     def test_joinable_for_hook_example(self):
         """The documented hook example: ', '.join(tool_names) should work."""
-        # This is the exact pattern from the docs
         prev_tools = [
             {"name": "terminal", "result": "ok"},
             {"name": "web_search", "result": None},
@@ -128,6 +124,5 @@ class TestStepCallbackNormalization:
             else:
                 _names.append(str(_t))
 
-        # This must not raise — documented hook pattern
         result = ", ".join(_names)
         assert result == "terminal, web_search"

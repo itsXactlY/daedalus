@@ -42,9 +42,7 @@ class TestMCPConfigWatch:
         import yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={"fs": {"command": "npx"}})
 
-        # Write same mcp_servers but touch the file
         cfg_file.write_text(yaml.dump({"mcp_servers": {"fs": {"command": "npx"}}}))
-        # Force mtime to appear changed
         obj._config_mtime = 0.0
 
         with patch("daedalus_cli.config.get_config_path", return_value=cfg_file):
@@ -57,9 +55,8 @@ class TestMCPConfigWatch:
         import yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
 
-        # Simulate user adding a new MCP server to config.yaml
         cfg_file.write_text(yaml.dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
-        obj._config_mtime = 0.0  # force stale mtime
+        obj._config_mtime = 0.0
 
         with patch("daedalus_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -71,7 +68,6 @@ class TestMCPConfigWatch:
         import yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={"github": {"url": "https://mcp.github.com"}})
 
-        # Simulate user removing the server
         cfg_file.write_text(yaml.dump({"mcp_servers": {}}))
         obj._config_mtime = 0.0
 
@@ -83,7 +79,7 @@ class TestMCPConfigWatch:
     def test_interval_throttle_skips_check(self, tmp_path):
         """If called within CONFIG_WATCH_INTERVAL, stat() is skipped."""
         obj, cfg_file = _make_cli(tmp_path)
-        obj._last_config_check = time.monotonic()  # just checked
+        obj._last_config_check = time.monotonic()
 
         with patch("daedalus_cli.config.get_config_path", return_value=cfg_file), \
              patch.object(Path, "stat") as mock_stat:
@@ -98,6 +94,6 @@ class TestMCPConfigWatch:
         missing = tmp_path / "nonexistent.yaml"
 
         with patch("daedalus_cli.config.get_config_path", return_value=missing):
-            obj._check_config_mcp_changes()  # should not raise
+            obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_not_called()

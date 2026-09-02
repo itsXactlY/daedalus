@@ -13,9 +13,6 @@ from tools.send_message_tool import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _make_aiohttp_resp(status, json_data=None, text_data=None):
@@ -43,9 +40,6 @@ def _make_aiohttp_session(resp):
     return session_ctx, session
 
 
-# ---------------------------------------------------------------------------
-# _send_mattermost
-# ---------------------------------------------------------------------------
 
 
 class TestSendMattermost:
@@ -99,9 +93,6 @@ class TestSendMattermost:
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer env-tok"
 
 
-# ---------------------------------------------------------------------------
-# _send_matrix
-# ---------------------------------------------------------------------------
 
 
 class TestSendMatrix:
@@ -194,9 +185,6 @@ class TestSendMatrix:
         assert txn_ids[0] != txn_ids[1]
 
 
-# ---------------------------------------------------------------------------
-# _send_homeassistant
-# ---------------------------------------------------------------------------
 
 
 class TestSendHomeAssistant:
@@ -250,9 +238,6 @@ class TestSendHomeAssistant:
         assert "hass.env.com" in url
 
 
-# ---------------------------------------------------------------------------
-# _send_dingtalk
-# ---------------------------------------------------------------------------
 
 
 class TestSendDingtalk:

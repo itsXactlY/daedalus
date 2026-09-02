@@ -172,7 +172,6 @@ async def test_status_command_bypasses_active_session_guard():
         handler_called_with.append(event)
         return "📊 **Daedalus Gateway Status**\n**Agent Running:** Yes ⚡"
 
-    # Concrete subclass to avoid abstract method errors
     class _ConcreteAdapter(BasePlatformAdapter):
         platform = Platform.TELEGRAM
 
@@ -192,7 +191,6 @@ async def test_status_command_bypasses_active_session_guard():
 
     adapter._send_with_retry = fake_send_with_retry
 
-    # Simulate an active session
     interrupt_event = asyncio.Event()
     adapter._active_sessions[session_key] = interrupt_event
 

@@ -32,8 +32,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from daedalus_cli._subprocess_compat import windows_hide_flags
 
 
-# Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver
-# integration test pins. If health_report widens its vocabulary, add here.
 _STATUS_GLYPH = {
     "pass": "✅",
     "fail": "❌",
@@ -123,7 +121,6 @@ def _read_cli_version(binary: str, *, timeout: float = 5.0) -> Optional[str]:
     text = (completed.stdout or completed.stderr or "").strip()
     if not text:
         return None
-    # First non-empty line only — keep the banner compact.
     return text.splitlines()[0].strip()
 
 
@@ -160,7 +157,6 @@ def _extract_health_report_from_result(result: Dict[str, Any]) -> Dict[str, Any]
     reasons (no content at all).
     """
     if result.get("isError") is True:
-        # Prefer the human text; fall back to a generic denial message.
         denial = "health_report returned isError=true"
         for item in result.get("content") or []:
             if isinstance(item, dict) and item.get("type") == "text":
@@ -174,7 +170,6 @@ def _extract_health_report_from_result(result: Dict[str, Any]) -> Dict[str, Any]
     if _is_valid_health_report(sc):
         return sc  # type: ignore[return-value]
 
-    # Older builds: JSON text block with schema_version.
     for item in result.get("content") or []:
         if not isinstance(item, dict) or item.get("type") != "text":
             continue
@@ -186,8 +181,6 @@ def _extract_health_report_from_result(result: Dict[str, Any]) -> Dict[str, Any]
         if _is_valid_health_report(parsed):
             return parsed
 
-    # structuredContent present but not a real report (the 0.10 unclassified
-    # path ships {"exit_code": 1}) — treat as unavailable, not fatal protocol.
     if isinstance(sc, dict):
         raise HealthReportUnavailable(
             "health_report structuredContent lacks schema_version/overall/checks "
@@ -202,11 +195,6 @@ def _extract_health_report_from_result(result: Dict[str, Any]) -> Dict[str, Any]
 
 def _open_mcp(binary: str) -> subprocess.Popen:
     """Spawn ``<binary> mcp`` with UTF-8 + sanitized env."""
-    # cua-driver emits UTF-8 (containing emoji in check messages on macOS
-    # and arbitrary file paths on Windows). The Python default
-    # text-mode encoding follows the system locale — `cp1252` on a
-    # default Windows install — which raises UnicodeDecodeError on the
-    # first non-ASCII byte. Pin the codec.
     return subprocess.Popen(
         [binary, "mcp"],
         stdin=subprocess.PIPE,
@@ -288,11 +276,9 @@ def _drive_health_report(
 
     proc = _open_mcp(binary)
     try:
-        # 1. initialize
         init_resp = _mcp_rpc(proc, 1, "initialize", {})
-        _ = init_resp  # handshake only
+        _ = init_resp
 
-        # 2. tools/call health_report
         call_resp = _mcp_rpc(
             proc,
             2,
@@ -327,7 +313,6 @@ def _cli_driver_version(binary: str, timeout: float = 5.0) -> Tuple[str, Optiona
     if completed.returncode != 0 and not text:
         return "fail", f"--version exited {completed.returncode}"
 
-    # Typical: "cua-driver 0.10.0"
     m = re.search(r"(\d+\.\d+\.\d+(?:[-+][\w.]+)?)", text)
     version = m.group(1) if m else (text.splitlines()[0] if text else "unknown")
     if completed.returncode != 0:
@@ -383,7 +368,6 @@ def _drive_fallback_probes(
         if isinstance(server_info, dict):
             out["init_version"] = server_info.get("version")
 
-        # check_permissions — primary TCC signal on 0.10
         try:
             perm_resp = _mcp_rpc(
                 proc, 2, "tools/call", {"name": "check_permissions", "arguments": {}}
@@ -404,7 +388,6 @@ def _drive_fallback_probes(
         except RuntimeError as e:
             out["permissions_error"] = str(e)
 
-        # list_apps — light AX capability probe
         try:
             apps_resp = _mcp_rpc(
                 proc, 3, "tools/call", {"name": "list_apps", "arguments": {}}
@@ -427,7 +410,6 @@ def _drive_fallback_probes(
                     out["list_apps_ok"] = True
                     out["list_apps_count"] = len(apps)
                 else:
-                    # text-only success still counts as AX working
                     out["list_apps_ok"] = True
                     out["list_apps_count"] = None
         except RuntimeError as e:
@@ -466,7 +448,6 @@ def _compose_fallback_report(
 
     ver_status, ver_value = _cli_driver_version(binary)
     driver_version = ver_value if ver_status == "pass" else (ver_value or "?")
-    # Prefer MCP initialize version when CLI parse is messy
     probes = _drive_fallback_probes(binary, timeout=timeout)
     if probes.get("init_version"):
         driver_version = str(probes["init_version"])
@@ -483,7 +464,6 @@ def _compose_fallback_report(
         "message": ver_msg,
     })
 
-    # platform_supported — doctor runs wherever the binary runs
     supported = plat in ("darwin", "linux", "windows")
     checks.append({
         "name": "platform_supported",
@@ -491,7 +471,6 @@ def _compose_fallback_report(
         "message": f"platform={plat}" + ("" if supported else " (unsupported)"),
     })
 
-    # session_active — we don't start a session in doctor; mark skip
     checks.append({
         "name": "session_active",
         "status": "skip",
@@ -561,7 +540,6 @@ def _compose_fallback_report(
                 "data": {"screen_recording": False},
             })
         else:
-            # Non-macOS or field absent
             if plat == "darwin":
                 checks.append({
                     "name": "tcc_screen_recording",
@@ -586,7 +564,6 @@ def _compose_fallback_report(
             "message": perm_err or "check_permissions unavailable",
         })
 
-    # ax_capability — infer from list_apps success or accessibility grant
     list_ok = probes.get("list_apps_ok")
     list_err = probes.get("list_apps_error")
     list_count = probes.get("list_apps_count")
@@ -624,7 +601,6 @@ def _compose_fallback_report(
             "message": "not probed",
         })
 
-    # Annotate that we used the fallback path
     reason_short = (reason or "health_report unavailable").strip()
     if len(reason_short) > 160:
         reason_short = reason_short[:157] + "..."
@@ -637,7 +613,6 @@ def _compose_fallback_report(
         ),
     })
 
-    # Optional CLI doctor text (best-effort)
     doctor_txt = _cli_doctor_snippet(binary)
     if doctor_txt:
         first = doctor_txt.splitlines()[0].strip()
@@ -649,12 +624,10 @@ def _compose_fallback_report(
             "data": {"snippet": doctor_txt[:2000]},
         })
 
-    # Normalize any accidental non-vocab status values
     for c in checks:
         if c.get("status") not in ("pass", "fail", "skip"):
             c["status"] = "fail"
 
-    # overall: ok if TCC+binary ok; degraded if partial; failed if binary missing/bad
     status_by_name = {c.get("name"): c.get("status") for c in checks}
     binary_ok = status_by_name.get("binary_version") == "pass"
     tcc_ax_status = status_by_name.get("tcc_accessibility")
@@ -666,11 +639,8 @@ def _compose_fallback_report(
     elif tcc_ok and fail_count == 0:
         overall = "ok"
     elif tcc_ok and fail_count > 0:
-        # Binary + accessibility fine, but something else failed (e.g. screen
-        # recording) → degraded rather than failed.
         overall = "degraded"
     else:
-        # Accessibility denied or broken — computer-use is partially/fully blocked.
         overall = "degraded"
 
     return {
@@ -722,14 +692,11 @@ def _print_text_report(
     identity = identity or {}
     cli_v = identity.get("cli_version") or ""
     mismatch = bool(identity.get("version_mismatch"))
-    # Prefer the binary's own --version when health_report is wrong/stale.
     header_v = cli_v or report_v
 
     header_glyph = _OVERALL_GLYPH.get(overall, "•")
 
     if color and overall in _OVERALL_GLYPH:
-        # No external color library — keep ANSI inline so the doctor
-        # command stays a single self-contained module.
         col_red = "\033[31m"
         col_yellow = "\033[33m"
         col_green = "\033[32m"
@@ -747,7 +714,6 @@ def _print_text_report(
     if identity.get("resolved_binary"):
         print(f"  {col_dim}binary: {identity['resolved_binary']}{col_reset}")
     if cli_v and report_v and str(report_v) not in str(cli_v) and str(cli_v) not in str(report_v):
-        # Only annotate when the free-form strings clearly differ.
         print(
             f"  {col_dim}--version: {cli_v}{col_reset}"
         )
@@ -755,7 +721,6 @@ def _print_text_report(
             f"  {col_dim}health_report.driver_version: {report_v}{col_reset}"
         )
     elif cli_v and not mismatch:
-        # Still show the resolved path; version already matches header.
         pass
     if mismatch:
         warn = col_yellow if color else ""
@@ -783,15 +748,12 @@ def _print_text_report(
         hint = check.get("hint")
         if hint:
             print(f"      → {col_dim}{hint}{col_reset}")
-        # `data` is the structured payload some checks attach (bundle id,
-        # AX permission state, version triple, etc.). Surface when present
-        # because users / support staff frequently need it.
         data = check.get("data")
         if isinstance(data, dict) and data:
             for key, value in data.items():
                 rendered = value if not isinstance(value, (dict, list)) else json.dumps(value)
                 print(f"      {col_dim}{key}={rendered}{col_reset}")
-    _ = schema  # acknowledge field for forward-compat readers
+    _ = schema
 
 
 def run_doctor(
@@ -812,12 +774,6 @@ def run_doctor(
     check_permissions / list_apps / CLI probes instead of printing
     ``• cua-driver ? on ? — ?``.
     """
-    # Windows ships stdout/stderr wrapped with the system ANSI codec
-    # (`cp1252` on a US locale, `cp936` on zh-CN, etc.). The check-matrix
-    # output below contains ✅ ❌ ⚠️ ⏭️ glyphs — none of them encodable
-    # in those codepages. Switch stdout to UTF-8 once, idempotently: every
-    # supported TextIOWrapper (Py3.7+) has `.reconfigure`, and a no-op
-    # re-encode is cheap if we were already UTF-8.
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
@@ -843,9 +799,6 @@ def run_doctor(
     identity = _build_identity(binary, report)
 
     if json_output:
-        # Additive envelope: preserve the upstream health_report keys and
-        # attach Daedalus identity under daedalus_identity so existing parsers
-        # that only read overall/checks keep working.
         payload = dict(report)
         payload["daedalus_identity"] = identity
         json.dump(payload, sys.stdout, indent=2, sort_keys=True)
@@ -859,6 +812,5 @@ def run_doctor(
     if overall in ("degraded", "failed"):
         return 1
     if overall != "ok":
-        # Unknown / missing overall after fallback should not look like success.
         return 1
     return 0

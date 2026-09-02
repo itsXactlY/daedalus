@@ -5,7 +5,6 @@ https://github.com/Synero/pixel-art-studio — see ATTRIBUTION.md.
 """
 
 PALETTES = {
-    # ── Hardware palettes ───────────────────────────────────────────────
     "NES": [
         (0, 0, 0), (124, 124, 124), (0, 0, 252), (0, 0, 188), (68, 40, 188),
         (148, 0, 132), (168, 0, 32), (168, 16, 0), (136, 20, 0), (0, 116, 0),
@@ -93,7 +92,6 @@ PALETTES = {
     "MONO_AMBER": [(40, 40, 40), (255, 176, 0)],
     "MONO_GREEN": [(40, 40, 40), (51, 255, 51)],
 
-    # ── Artistic palettes ───────────────────────────────────────────────
     "PASTEL_DREAM": [
         (255, 218, 233), (255, 229, 204), (255, 255, 204), (204, 255, 229),
         (204, 229, 255), (229, 204, 255), (255, 204, 229), (204, 255, 255),
@@ -159,7 +157,6 @@ def build_palette_image(palette_name):
     flat = []
     for (r, g, b) in PALETTES[palette_name]:
         flat.extend([r, g, b])
-    # Pad to 768 bytes (256 colors) as PIL requires
     while len(flat) < 768:
         flat.append(0)
     pal_img = Image.new("P", (1, 1))

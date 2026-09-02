@@ -20,14 +20,11 @@ def test_session_finalize_on_reset(mock_invoke_hook):
     cli.agent = MagicMock()
     cli.agent.session_id = "test-session-id"
 
-    # Simulate /new command which triggers on_session_finalize for the old session
     cli.new_session(silent=True)
 
-    # Check if on_session_finalize was called for the old session
     mock_invoke_hook.assert_any_call(
         "on_session_finalize", session_id="test-session-id", platform="cli"
     )
-    # Check if on_session_reset was called for the new session
     mock_invoke_hook.assert_any_call(
         "on_session_reset", session_id=cli.session_id, platform="cli"
     )
@@ -55,12 +52,10 @@ def test_hook_errors_are_caught(mock_invoke_hook):
     """Verify hook exceptions are caught and don't crash the agent."""
     mgr = PluginManager()
 
-    # Register a hook that raises
     def bad_callback(**kwargs):
         raise Exception("Hook failed")
 
     mgr._hooks["on_session_finalize"] = [bad_callback]
 
-    # This should not raise
     results = mgr.invoke_hook("on_session_finalize", session_id="test", platform="cli")
     assert results == []

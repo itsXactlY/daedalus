@@ -57,9 +57,6 @@ Step 1: Do the new thing.
 """
 
 
-# ---------------------------------------------------------------------------
-# _validate_name
-# ---------------------------------------------------------------------------
 
 
 class TestValidateName:
@@ -109,9 +106,6 @@ class TestValidateCategory:
         assert "Invalid category '/tmp/escape'" in err
 
 
-# ---------------------------------------------------------------------------
-# _validate_frontmatter
-# ---------------------------------------------------------------------------
 
 
 class TestValidateFrontmatter:
@@ -147,9 +141,6 @@ class TestValidateFrontmatter:
         assert "YAML frontmatter parse error" in _validate_frontmatter(content)
 
 
-# ---------------------------------------------------------------------------
-# _validate_file_path — path traversal prevention
-# ---------------------------------------------------------------------------
 
 
 class TestValidateFilePath:
@@ -182,9 +173,6 @@ class TestValidateFilePath:
         assert "'malicious.py'" in err
 
 
-# ---------------------------------------------------------------------------
-# CRUD operations
-# ---------------------------------------------------------------------------
 
 
 class TestCreateSkill:
@@ -264,7 +252,6 @@ class TestEditSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _edit_skill("my-skill", "no frontmatter")
         assert result["success"] is False
-        # Original content should be preserved
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
 
@@ -351,9 +338,6 @@ class TestDeleteSkill:
         assert not (tmp_path / "devops").exists()
 
 
-# ---------------------------------------------------------------------------
-# write_file / remove_file
-# ---------------------------------------------------------------------------
 
 
 class TestWriteFile:
@@ -392,9 +376,6 @@ class TestRemoveFile:
         assert result["success"] is False
 
 
-# ---------------------------------------------------------------------------
-# skill_manage dispatcher
-# ---------------------------------------------------------------------------
 
 
 class TestSkillManageDispatcher:

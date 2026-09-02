@@ -9,6 +9,14 @@ priority: critical
 
 # WebGPU Production Compute Pipeline
 
+> ⚠️ **CONTAMINATION WARNING (verified 2026-08-22):** parts of this skill use API THAT DOES NOT EXIST — do not copy verbatim:
+> - `var<uniform, read_only>` — not valid WGSL (`read_only` is not a uniform attr).
+> - `dispatchWorkgroupsIndirect(buffer, offset, count)` — only TWO params exist (buffer, offset); there is no count argument.
+> - `device.lostContext` / `device.getSupportedExtensions()` — FABRICATED. Real: `device.lost` (promise), `adapter.features` (Set), `adapter.limits`.
+> - `info.vendorID.includes('nvidia')` — vendorID is a number; use `adapter.info.vendor` string.
+> - The perf table (LLM 70% faster etc.) — UNVERIFIED synthetic numbers, never quote.
+> The ARCHITECTURE concepts (indirect batching, tiling, WASM+GPU split) are sound. Verify every snippet against MDN/spec before use. Real subgroup API: see gpuweb/proposals/subgroups.md (`subgroupAdd` etc. behind `enable subgroups;`).
+
 ## Purpose
 
 A complete, production-ready WebGPU compute pipeline that combines all advanced techniques into a single implementable pattern. Covers WGSL shaders, workgroup tiling, shared memory emulation, indirect dispatch batching, cross-vendor optimization, buffer management, and WASM integration.

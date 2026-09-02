@@ -412,16 +412,13 @@ class TestSendTelegramMediaDelivery:
         bot.send_message.assert_not_awaited()
 
 
-# ---------------------------------------------------------------------------
-# Regression: long messages are chunked before platform dispatch
-# ---------------------------------------------------------------------------
 
 
 class TestSendToPlatformChunking:
     def test_long_message_is_chunked(self):
         """Messages exceeding the platform limit are split into multiple sends."""
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
-        long_msg = "word " * 1000  # ~5000 chars, well over Discord's 2000 limit
+        long_msg = "word " * 1000
         with patch("tools.send_message_tool._send_discord", send):
             result = asyncio.run(
                 _send_to_platform(
@@ -433,7 +430,7 @@ class TestSendToPlatformChunking:
         assert result["success"] is True
         assert send.await_count >= 3
         for call in send.await_args_list:
-            assert len(call.args[2]) <= 2020  # each chunk fits the limit
+            assert len(call.args[2]) <= 2020
 
     def test_telegram_media_attaches_to_last_chunk(self):
         """When chunked, media files are sent only with the last chunk."""
@@ -443,7 +440,7 @@ class TestSendToPlatformChunking:
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
-        long_msg = "word " * 2000  # ~10000 chars, well over 4096
+        long_msg = "word " * 2000
         media = [("/tmp/photo.png", False)]
         with patch("tools.send_message_tool._send_telegram", fake_send):
             asyncio.run(
@@ -458,9 +455,6 @@ class TestSendToPlatformChunking:
         assert sent_calls[-1] == media
 
 
-# ---------------------------------------------------------------------------
-# HTML auto-detection in Telegram send
-# ---------------------------------------------------------------------------
 
 
 class TestSendToPlatformWhatsapp:
@@ -556,7 +550,7 @@ class TestSendTelegramHtmlDetection:
         bot.send_message = AsyncMock(
             side_effect=[
                 Exception("Bad Request: can't parse entities: unsupported html tag"),
-                SimpleNamespace(message_id=2),  # plain fallback succeeds
+                SimpleNamespace(message_id=2),
             ]
         )
         _install_telegram_mock(monkeypatch, bot)

@@ -45,7 +45,6 @@ from rich.console import Console
 from daedalus_constants import OPENROUTER_BASE_URL
 from agent.retry_utils import jittered_backoff
 
-# Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -53,22 +52,18 @@ load_dotenv()
 @dataclass
 class CompressionConfig:
     """Configuration for trajectory compression."""
-    # Tokenizer
     tokenizer_name: str = "moonshotai/Kimi-K2-Thinking"
     trust_remote_code: bool = True
     
-    # Compression targets
     target_max_tokens: int = 15250
     summary_target_tokens: int = 750
     
-    # Protected turns
     protect_first_system: bool = True
     protect_first_human: bool = True
     protect_first_gpt: bool = True
     protect_first_tool: bool = True
     protect_last_n_turns: int = 4
     
-    # Summarization (OpenRouter)
     summarization_model: str = "google/gemini-3-flash-preview"
     base_url: str = OPENROUTER_BASE_URL
     api_key_env: str = "OPENROUTER_API_KEY"
@@ -76,19 +71,16 @@ class CompressionConfig:
     max_retries: int = 3
     retry_delay: int = 2
     
-    # Output
     add_summary_notice: bool = True
     summary_notice_text: str = "\n\nSome of your previous tool responses may be summarized to preserve context."
     output_suffix: str = "_compressed"
     
-    # Processing
     num_workers: int = 4
-    max_concurrent_requests: int = 50  # Max concurrent API calls for summarization
+    max_concurrent_requests: int = 50
     skip_under_target: bool = True
     save_over_limit: bool = True
-    per_trajectory_timeout: int = 300  # Timeout per trajectory in seconds (default: 5 min)
+    per_trajectory_timeout: int = 300
     
-    # Metrics
     metrics_enabled: bool = True
     metrics_per_trajectory: bool = True
     metrics_output_file: str = "compression_metrics.json"
@@ -101,17 +93,14 @@ class CompressionConfig:
         
         config = cls()
         
-        # Tokenizer
         if 'tokenizer' in data:
             config.tokenizer_name = data['tokenizer'].get('name', config.tokenizer_name)
             config.trust_remote_code = data['tokenizer'].get('trust_remote_code', config.trust_remote_code)
         
-        # Compression
         if 'compression' in data:
             config.target_max_tokens = data['compression'].get('target_max_tokens', config.target_max_tokens)
             config.summary_target_tokens = data['compression'].get('summary_target_tokens', config.summary_target_tokens)
         
-        # Protected turns
         if 'protected_turns' in data:
             config.protect_first_system = data['protected_turns'].get('first_system', config.protect_first_system)
             config.protect_first_human = data['protected_turns'].get('first_human', config.protect_first_human)
@@ -119,7 +108,6 @@ class CompressionConfig:
             config.protect_first_tool = data['protected_turns'].get('first_tool', config.protect_first_tool)
             config.protect_last_n_turns = data['protected_turns'].get('last_n_turns', config.protect_last_n_turns)
         
-        # Summarization
         if 'summarization' in data:
             config.summarization_model = data['summarization'].get('model', config.summarization_model)
             config.base_url = data['summarization'].get('base_url') or config.base_url
@@ -128,20 +116,17 @@ class CompressionConfig:
             config.max_retries = data['summarization'].get('max_retries', config.max_retries)
             config.retry_delay = data['summarization'].get('retry_delay', config.retry_delay)
         
-        # Output
         if 'output' in data:
             config.add_summary_notice = data['output'].get('add_summary_notice', config.add_summary_notice)
             config.summary_notice_text = data['output'].get('summary_notice_text', config.summary_notice_text)
             config.output_suffix = data['output'].get('output_suffix', config.output_suffix)
         
-        # Processing
         if 'processing' in data:
             config.num_workers = data['processing'].get('num_workers', config.num_workers)
             config.max_concurrent_requests = data['processing'].get('max_concurrent_requests', config.max_concurrent_requests)
             config.skip_under_target = data['processing'].get('skip_under_target', config.skip_under_target)
             config.save_over_limit = data['processing'].get('save_over_limit', config.save_over_limit)
         
-        # Metrics
         if 'metrics' in data:
             config.metrics_enabled = data['metrics'].get('enabled', config.metrics_enabled)
             config.metrics_per_trajectory = data['metrics'].get('per_trajectory', config.metrics_per_trajectory)
@@ -215,7 +200,6 @@ class AggregateMetrics:
     total_summarization_calls: int = 0
     total_summarization_errors: int = 0
     
-    # Distribution stats
     compression_ratios: List[float] = field(default_factory=list)
     tokens_saved_list: List[int] = field(default_factory=list)
     turns_removed_list: List[int] = field(default_factory=list)
@@ -317,10 +301,8 @@ class TrajectoryCompressor:
         self.config = config
         self.aggregate_metrics = AggregateMetrics()
         
-        # Initialize tokenizer
         self._init_tokenizer()
         
-        # Initialize OpenRouter client
         self._init_summarizer()
         
         logging.basicConfig(
@@ -352,10 +334,8 @@ class TrajectoryCompressor:
 
         provider = self._detect_provider()
         if provider:
-            # Store provider for use in _generate_summary calls
             self._llm_provider = provider
             self._use_call_llm = True
-            # Verify the provider is available
             from agent.auxiliary_client import resolve_provider_client
             client, _ = resolve_provider_client(
                 provider, model=self.config.summarization_model)
@@ -363,10 +343,9 @@ class TrajectoryCompressor:
                 raise RuntimeError(
                     f"Provider '{provider}' is not configured. "
                     f"Check your API key or run: daedalus setup")
-            self.client = None  # Not used directly
-            self.async_client = None  # Not used directly
+            self.client = None
+            self.async_client = None
         else:
-            # Custom endpoint — use config's raw base_url + api_key_env
             self._use_call_llm = False
             api_key = os.getenv(self.config.api_key_env)
             if not api_key:
@@ -376,10 +355,6 @@ class TrajectoryCompressor:
             from openai import OpenAI
             self.client = OpenAI(
                 api_key=api_key, base_url=self.config.base_url)
-            # AsyncOpenAI is created lazily in _get_async_client() so it
-            # binds to the current event loop — avoids "Event loop is closed"
-            # when process_directory() is called multiple times (each call
-            # creates a new loop via asyncio.run()).
             self.async_client = None
             self._async_client_api_key = api_key
 
@@ -394,7 +369,6 @@ class TrajectoryCompressor:
         avoiding "Event loop is closed" errors on repeated calls.
         """
         from openai import AsyncOpenAI
-        # Always create a fresh client so it binds to the running loop.
         self.async_client = AsyncOpenAI(
             api_key=self._async_client_api_key,
             base_url=self.config.base_url,
@@ -418,7 +392,6 @@ class TrajectoryCompressor:
             return "minimax-cn"
         if "minimax.io" in url:
             return "minimax"
-        # Unknown base_url — not a known provider
         return ""
     
     def count_tokens(self, text: str) -> int:
@@ -428,7 +401,6 @@ class TrajectoryCompressor:
         try:
             return len(self.tokenizer.encode(text))
         except Exception:
-            # Fallback to character estimate
             return len(text) // 4
     
     def count_trajectory_tokens(self, trajectory: List[Dict[str, str]]) -> int:
@@ -449,7 +421,6 @@ class TrajectoryCompressor:
         n = len(trajectory)
         protected = set()
         
-        # Track first occurrences
         first_system = first_human = first_gpt = first_tool = None
         
         for i, turn in enumerate(trajectory):
@@ -463,7 +434,6 @@ class TrajectoryCompressor:
             elif role == "tool" and first_tool is None:
                 first_tool = i
         
-        # Protect first turns
         if self.config.protect_first_system and first_system is not None:
             protected.add(first_system)
         if self.config.protect_first_human and first_human is not None:
@@ -473,12 +443,9 @@ class TrajectoryCompressor:
         if self.config.protect_first_tool and first_tool is not None:
             protected.add(first_tool)
         
-        # Protect last N turns
         for i in range(max(0, n - self.config.protect_last_n_turns), n):
             protected.add(i)
         
-        # Determine compressible region
-        # Start after the last protected head turn
         head_protected = [i for i in protected if i < n // 2]
         tail_protected = [i for i in protected if i >= n // 2]
         
@@ -505,7 +472,6 @@ class TrajectoryCompressor:
             role = turn.get("from", "unknown")
             value = turn.get("value", "")
             
-            # Truncate very long values for the summary prompt
             if len(value) > 3000:
                 value = value[:1500] + "\n...[truncated]...\n" + value[-500:]
             
@@ -587,7 +553,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if attempt < self.config.max_retries - 1:
                     time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
-                    # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
     
     async def _generate_summary_async(self, content: str, metrics: TrajectoryMetrics) -> str:
@@ -649,7 +614,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if attempt < self.config.max_retries - 1:
                     await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
-                    # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
     
     def compress_trajectory(
@@ -677,12 +641,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         metrics = TrajectoryMetrics()
         metrics.original_turns = len(trajectory)
         
-        # Count tokens per turn
         turn_tokens = self.count_turn_tokens(trajectory)
         total_tokens = sum(turn_tokens)
         metrics.original_tokens = total_tokens
         
-        # Check if compression needed
         if total_tokens <= self.config.target_max_tokens:
             metrics.skipped_under_target = True
             metrics.compressed_tokens = total_tokens
@@ -690,78 +652,58 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             metrics.compression_ratio = 1.0
             return trajectory, metrics
         
-        # Find protected regions
         protected, compress_start, compress_end = self._find_protected_indices(trajectory)
         
-        # Check if there's anything to compress
         if compress_start >= compress_end:
-            # Nothing to compress, return as-is
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens
             return trajectory, metrics
         
-        # Calculate how much we need to save
         tokens_to_save = total_tokens - self.config.target_max_tokens
         
-        # We'll replace N turns with 1 summary turn
-        # Net savings = (sum of N turns' tokens) - summary_target_tokens
-        # We need: net_savings >= tokens_to_save
-        # So: sum of turns >= tokens_to_save + summary_target_tokens
         target_tokens_to_compress = tokens_to_save + self.config.summary_target_tokens
         
-        # Accumulate turns from compress_start until we have enough savings
         accumulated_tokens = 0
         compress_until = compress_start
         
         for i in range(compress_start, compress_end):
             accumulated_tokens += turn_tokens[i]
-            compress_until = i + 1  # Exclusive end
+            compress_until = i + 1
             
-            # Check if we have enough savings
             if accumulated_tokens >= target_tokens_to_compress:
                 break
         
-        # If we still don't have enough savings, compress the entire compressible region
         if accumulated_tokens < target_tokens_to_compress and compress_until < compress_end:
             compress_until = compress_end
             accumulated_tokens = sum(turn_tokens[compress_start:compress_end])
         
-        # Record compression region
         metrics.turns_compressed_start_idx = compress_start
         metrics.turns_compressed_end_idx = compress_until
         metrics.turns_in_compressed_region = compress_until - compress_start
         
-        # Extract content for summary
         content_to_summarize = self._extract_turn_content_for_summary(
             trajectory, compress_start, compress_until
         )
         
-        # Generate summary
         summary = self._generate_summary(content_to_summarize, metrics)
         
-        # Build compressed trajectory
         compressed = []
         
-        # Add head (turns before compression region)
         for i in range(compress_start):
             turn = trajectory[i].copy()
-            # Add notice to system message
             if turn.get("from") == "system" and self.config.add_summary_notice:
                 turn["value"] = turn["value"] + self.config.summary_notice_text
             compressed.append(turn)
         
-        # Add summary as human message
         compressed.append({
             "from": "human",
             "value": summary
         })
         
-        # Add tail (turns after compression region)
         for i in range(compress_until, len(trajectory)):
             compressed.append(trajectory[i].copy())
         
-        # Calculate final metrics
         metrics.compressed_turns = len(compressed)
         metrics.compressed_tokens = self.count_trajectory_tokens(compressed)
         metrics.turns_removed = metrics.original_turns - metrics.compressed_turns
@@ -784,12 +726,10 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         metrics = TrajectoryMetrics()
         metrics.original_turns = len(trajectory)
         
-        # Count tokens per turn
         turn_tokens = self.count_turn_tokens(trajectory)
         total_tokens = sum(turn_tokens)
         metrics.original_tokens = total_tokens
         
-        # Check if compression needed
         if total_tokens <= self.config.target_max_tokens:
             metrics.skipped_under_target = True
             metrics.compressed_tokens = total_tokens
@@ -797,21 +737,17 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             metrics.compression_ratio = 1.0
             return trajectory, metrics
         
-        # Find protected regions
         protected, compress_start, compress_end = self._find_protected_indices(trajectory)
         
-        # Check if there's anything to compress
         if compress_start >= compress_end:
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens
             return trajectory, metrics
         
-        # Calculate how much we need to save
         tokens_to_save = total_tokens - self.config.target_max_tokens
         target_tokens_to_compress = tokens_to_save + self.config.summary_target_tokens
         
-        # Accumulate turns from compress_start until we have enough savings
         accumulated_tokens = 0
         compress_until = compress_start
         
@@ -821,45 +757,36 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             if accumulated_tokens >= target_tokens_to_compress:
                 break
         
-        # If we still don't have enough savings, compress the entire compressible region
         if accumulated_tokens < target_tokens_to_compress and compress_until < compress_end:
             compress_until = compress_end
             accumulated_tokens = sum(turn_tokens[compress_start:compress_end])
         
-        # Record compression region
         metrics.turns_compressed_start_idx = compress_start
         metrics.turns_compressed_end_idx = compress_until
         metrics.turns_in_compressed_region = compress_until - compress_start
         
-        # Extract content for summary
         content_to_summarize = self._extract_turn_content_for_summary(
             trajectory, compress_start, compress_until
         )
         
-        # Generate summary (ASYNC)
         summary = await self._generate_summary_async(content_to_summarize, metrics)
         
-        # Build compressed trajectory
         compressed = []
         
-        # Add head (turns before compression region)
         for i in range(compress_start):
             turn = trajectory[i].copy()
             if turn.get("from") == "system" and self.config.add_summary_notice:
                 turn["value"] = turn["value"] + self.config.summary_notice_text
             compressed.append(turn)
         
-        # Add summary as human message
         compressed.append({
             "from": "human",
             "value": summary
         })
         
-        # Add tail (turns after compression region)
         for i in range(compress_until, len(trajectory)):
             compressed.append(trajectory[i].copy())
         
-        # Calculate final metrics
         metrics.compressed_turns = len(compressed)
         metrics.compressed_tokens = self.count_trajectory_tokens(compressed)
         metrics.turns_removed = metrics.original_turns - metrics.compressed_turns
@@ -881,11 +808,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         trajectory = entry["conversations"]
         compressed_trajectory, metrics = await self.compress_trajectory_async(trajectory)
         
-        # Create new entry with compressed trajectory
         result = entry.copy()
         result["conversations"] = compressed_trajectory
         
-        # Add compression metadata if enabled
         if self.config.metrics_per_trajectory and metrics.was_compressed:
             result["compression_metrics"] = metrics.to_dict()
         
@@ -908,11 +833,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         trajectory = entry["conversations"]
         compressed_trajectory, metrics = self.compress_trajectory(trajectory)
         
-        # Create new entry with compressed trajectory
         result = entry.copy()
         result["conversations"] = compressed_trajectory
         
-        # Add compression metadata if enabled
         if self.config.metrics_per_trajectory and metrics.was_compressed:
             result["compression_metrics"] = metrics.to_dict()
         
@@ -937,7 +860,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         """
         file_metrics = []
         
-        # Read all entries
         entries = []
         with open(input_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
@@ -948,7 +870,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                     except json.JSONDecodeError as e:
                         self.logger.warning(f"Skipping invalid JSON at {input_path}:{line_num}: {e}")
         
-        # Process entries
         processed_entries = []
         for entry in entries:
             try:
@@ -957,14 +878,12 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 file_metrics.append(metrics)
                 self.aggregate_metrics.add_trajectory_metrics(metrics)
                 
-                # Call progress callback if provided
                 if progress_callback:
                     progress_callback(metrics)
                 
             except Exception as e:
                 self.logger.error(f"Error processing entry: {e}")
                 self.aggregate_metrics.trajectories_failed += 1
-                # Keep original entry on error
                 processed_entries.append(entry)
                 empty_metrics = TrajectoryMetrics()
                 file_metrics.append(empty_metrics)
@@ -972,7 +891,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 if progress_callback:
                     progress_callback(empty_metrics)
         
-        # Write output
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             for entry in processed_entries:
@@ -988,7 +906,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             input_dir: Input directory containing JSONL files
             output_dir: Output directory for compressed files
         """
-        # Run the async version
         asyncio.run(self._process_directory_async(input_dir, output_dir))
     
     async def _process_directory_async(self, input_dir: Path, output_dir: Path):
@@ -997,20 +914,17 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         """
         console = Console()
         
-        # Record start time
         self.aggregate_metrics.processing_start_time = datetime.now().isoformat()
         start_time = time.time()
         
-        # Find all JSONL files
         jsonl_files = sorted(input_dir.glob("*.jsonl"))
         
         if not jsonl_files:
             self.logger.warning(f"No JSONL files found in {input_dir}")
             return
         
-        # Load ALL entries from all files
         console.print("\n[dim]Loading all entries...[/dim]")
-        all_entries = []  # List of (file_path, entry_idx, entry)
+        all_entries = []
         
         for file_path in jsonl_files:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -1035,20 +949,16 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         console.print(f"⚡ Max concurrent API calls: {self.config.max_concurrent_requests}")
         console.print(f"{'='*60}\n")
         
-        # Create semaphore for rate limiting
         semaphore = asyncio.Semaphore(self.config.max_concurrent_requests)
         
-        # Tracking for progress display (thread-safe with lock)
         progress_lock = asyncio.Lock()
         compressed_count = 0
         skipped_count = 0
         api_calls = 0
         in_flight = 0
         
-        # Results storage: {file_path: {entry_idx: (processed_entry, metrics)}}
         results = {f: {} for f in jsonl_files}
         
-        # Track timeouts separately
         timeout_count = 0
         
         async def process_single(file_path: Path, entry_idx: int, entry: Dict, 
@@ -1057,23 +967,19 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             nonlocal compressed_count, skipped_count, api_calls, in_flight, timeout_count
             
             async with semaphore:
-                # Track in-flight
                 async with progress_lock:
                     in_flight += 1
                 
                 try:
-                    # Apply per-trajectory timeout
                     processed_entry, metrics = await asyncio.wait_for(
                         self.process_entry_async(entry),
                         timeout=self.config.per_trajectory_timeout
                     )
                     results[file_path][entry_idx] = (processed_entry, metrics)
                     
-                    # Update aggregate metrics (with lock for thread safety)
                     async with progress_lock:
                         self.aggregate_metrics.add_trajectory_metrics(metrics)
                         
-                        # Update counters
                         if metrics.was_compressed:
                             compressed_count += 1
                             api_calls += metrics.summarization_api_calls
@@ -1082,7 +988,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         
                         in_flight -= 1
                         
-                        # Update progress
                         progress.advance(main_task)
                         progress.update(
                             status_task,
@@ -1102,7 +1007,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                             description=f"[dim]✅ {compressed_count} compressed | ⏭️ {skipped_count} skipped | ⏱️ {timeout_count} timeout | 🔄 {api_calls} API calls | ⚡ {in_flight} in-flight[/dim]"
                         )
                     
-                    # Skip this entry entirely (don't include in output)
                     results[file_path][entry_idx] = None
                     
                 except Exception as e:
@@ -1113,10 +1017,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         in_flight -= 1
                         progress.advance(main_task)
                     
-                    # Keep original entry on error
                     results[file_path][entry_idx] = (entry, TrajectoryMetrics())
         
-        # Create progress bar
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -1127,33 +1029,27 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             TextColumn("•"),
             TimeRemainingColumn(),
             console=console,
-            refresh_per_second=10  # Higher refresh for async
+            refresh_per_second=10
         ) as progress:
-            # Main task for overall progress
             main_task = progress.add_task(
                 f"[cyan]Compressing {total_entries:,} trajectories",
                 total=total_entries
             )
             
-            # Status line task
             status_task = progress.add_task(
                 "[dim]Starting...[/dim]",
                 total=None
             )
             
-            # Create all tasks
             tasks = [
                 process_single(file_path, entry_idx, entry, progress, main_task, status_task)
                 for file_path, entry_idx, entry in all_entries
             ]
             
-            # Run all tasks concurrently (semaphore limits actual concurrency)
             await asyncio.gather(*tasks)
             
-            # Remove status task
             progress.remove_task(status_task)
         
-        # Write results to output files (preserving original order)
         console.print("\n[dim]Writing output files...[/dim]")
         output_dir.mkdir(parents=True, exist_ok=True)
         
@@ -1161,7 +1057,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             output_path = output_dir / file_path.name
             file_results = results[file_path]
             
-            # Sort by original entry index to preserve order, skip None (timed out) entries
             sorted_entries = [
                 file_results[idx][0] 
                 for idx in sorted(file_results.keys()) 
@@ -1172,14 +1067,11 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 for entry in sorted_entries:
                     f.write(json.dumps(entry, ensure_ascii=False) + '\n')
         
-        # Record end time
         self.aggregate_metrics.processing_end_time = datetime.now().isoformat()
         self.aggregate_metrics.processing_duration_seconds = time.time() - start_time
         
-        # Print summary
         self._print_summary()
         
-        # Save metrics
         if self.config.metrics_enabled:
             metrics_path = output_dir / self.config.metrics_output_file
             with open(metrics_path, 'w') as f:
@@ -1190,19 +1082,16 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         """Print comprehensive compression summary statistics."""
         m = self.aggregate_metrics.to_dict()
         
-        # Calculate some additional stats
         total = m['summary']['total_trajectories']
         compressed = m['summary']['trajectories_compressed']
         skipped = m['summary']['trajectories_skipped_under_target']
         over_limit = m['summary']['trajectories_still_over_limit']
         failed = m['summary']['trajectories_failed']
         
-        # Token stats
         tokens_before = m['tokens']['total_before']
         tokens_after = m['tokens']['total_after']
         tokens_saved = m['tokens']['total_saved']
         
-        # Calculate percentages
         compressed_pct = (compressed / max(total, 1)) * 100
         skipped_pct = (skipped / max(total, 1)) * 100
         over_limit_pct = (over_limit / max(total, 1)) * 100
@@ -1212,7 +1101,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         print(f"║{'TRAJECTORY COMPRESSION REPORT':^70}║")
         print(f"╠{'═'*70}╣")
         
-        # Trajectories section
         print(f"║{'':2}📁 TRAJECTORIES{' '*54}║")
         print(f"║{'─'*70}║")
         print(f"║{'':4}Total Processed:        {total:>10,}{' '*32}║")
@@ -1223,7 +1111,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         print(f"╠{'═'*70}╣")
         
-        # Tokens section
         print(f"║{'':2}🔢 TOKENS{' '*60}║")
         print(f"║{'─'*70}║")
         print(f"║{'':4}Before Compression:     {tokens_before:>15,} tokens{' '*21}║")
@@ -1237,7 +1124,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         print(f"╠{'═'*70}╣")
         
-        # Turns section
         print(f"║{'':2}💬 CONVERSATION TURNS{' '*48}║")
         print(f"║{'─'*70}║")
         print(f"║{'':4}Before Compression:     {m['turns']['total_before']:>15,} turns{' '*22}║")
@@ -1246,7 +1132,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         print(f"╠{'═'*70}╣")
         
-        # Averages section (for compressed trajectories only)
         print(f"║{'':2}📈 AVERAGES (Compressed Trajectories Only){' '*27}║")
         print(f"║{'─'*70}║")
         if compressed > 0:
@@ -1258,7 +1143,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         print(f"╠{'═'*70}╣")
         
-        # Summarization API section
         print(f"║{'':2}🤖 SUMMARIZATION API{' '*49}║")
         print(f"║{'─'*70}║")
         print(f"║{'':4}API Calls Made:         {m['summarization']['total_api_calls']:>15,}{' '*27}║")
@@ -1267,7 +1151,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         print(f"╠{'═'*70}╣")
         
-        # Processing time section
         duration = m['processing']['duration_seconds']
         if duration > 60:
             time_str = f"{duration/60:.1f} minutes"
@@ -1285,7 +1168,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         
         print(f"╚{'═'*70}╝")
         
-        # Distribution summary if we have data
         if self.aggregate_metrics.compression_ratios:
             ratios = self.aggregate_metrics.compression_ratios
             tokens_saved_list = self.aggregate_metrics.tokens_saved_list
@@ -1342,7 +1224,6 @@ def main(
     print("🗜️  Trajectory Compressor")
     print("=" * 60)
     
-    # Load configuration
     config_path = Path(config)
     if config_path.exists():
         print(f"📋 Loading config from {config}")
@@ -1351,20 +1232,17 @@ def main(
         print(f"⚠️  Config not found at {config}, using defaults")
         compression_config = CompressionConfig()
     
-    # Apply CLI overrides
     if target_max_tokens:
         compression_config.target_max_tokens = target_max_tokens
     if tokenizer:
         compression_config.tokenizer_name = tokenizer
     
-    # Validate sample_percent
     if sample_percent is not None:
         if sample_percent <= 0 or sample_percent > 100:
             print(f"❌ sample_percent must be between 1 and 100, got {sample_percent}")
             return
         print(f"🎲 Will sample {sample_percent}% of trajectories (seed={seed})")
     
-    # Setup paths and determine input type
     input_path = Path(input)
     if not input_path.exists():
         print(f"❌ Input not found: {input}")
@@ -1375,13 +1253,11 @@ def main(
     if is_file_input:
         print(f"📄 Input mode: Single JSONL file")
         
-        # For file input, default output is file with _compressed suffix
         if output:
             output_path = Path(output)
         else:
             output_path = input_path.parent / (input_path.stem + compression_config.output_suffix + ".jsonl")
         
-        # Load entries from the single file
         entries = []
         with open(input_path, 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
@@ -1395,7 +1271,6 @@ def main(
         total_entries = len(entries)
         print(f"   Loaded {total_entries:,} trajectories from {input_path.name}")
         
-        # Sample if requested
         if sample_percent is not None:
             random.seed(seed)
             sample_size = max(1, int(total_entries * sample_percent / 100))
@@ -1408,23 +1283,19 @@ def main(
             print(f"📄 Would output to: {output_path}")
             return
         
-        # Create a temporary directory for processing
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_input_dir = Path(temp_dir) / "input"
             temp_output_dir = Path(temp_dir) / "output"
             temp_input_dir.mkdir()
             
-            # Write entries to temp file
             temp_input_file = temp_input_dir / "trajectories.jsonl"
             with open(temp_input_file, 'w', encoding='utf-8') as f:
                 for entry in entries:
                     f.write(json.dumps(entry, ensure_ascii=False) + '\n')
             
-            # Initialize compressor and process
             compressor = TrajectoryCompressor(compression_config)
             compressor.process_directory(temp_input_dir, temp_output_dir)
             
-            # Copy result to output path (merge all files in temp_output_dir)
             output_path.parent.mkdir(parents=True, exist_ok=True)
             with open(output_path, 'w', encoding='utf-8') as out_f:
                 for jsonl_file in sorted(temp_output_dir.glob("*.jsonl")):
@@ -1432,7 +1303,6 @@ def main(
                         for line in in_f:
                             out_f.write(line)
             
-            # Copy metrics file if it exists
             metrics_file = temp_output_dir / compression_config.metrics_output_file
             if metrics_file.exists():
                 metrics_output = output_path.parent / (output_path.stem + "_metrics.json")
@@ -1443,7 +1313,6 @@ def main(
         print(f"📄 Output: {output_path}")
         
     else:
-        # Directory input - original behavior
         print(f"📁 Input mode: Directory of JSONL files")
         
         if output:
@@ -1451,11 +1320,9 @@ def main(
         else:
             output_path = input_path.parent / (input_path.name + compression_config.output_suffix)
         
-        # If sampling is requested for directory mode, we need to handle it differently
         if sample_percent is not None:
             print(f"\n⚠️  Sampling from directory: will sample {sample_percent}% from each file")
             
-            # Create a temp directory with sampled files
             with tempfile.TemporaryDirectory() as temp_dir:
                 temp_input_dir = Path(temp_dir) / "input"
                 temp_input_dir.mkdir()
@@ -1464,7 +1331,6 @@ def main(
                 total_original = 0
                 total_sampled = 0
                 
-                # Sample from each JSONL file
                 for jsonl_file in sorted(input_path.glob("*.jsonl")):
                     entries = []
                     with open(jsonl_file, 'r', encoding='utf-8') as f:
@@ -1481,7 +1347,6 @@ def main(
                     sampled_entries = random.sample(entries, min(sample_size, len(entries)))
                     total_sampled += len(sampled_entries)
                     
-                    # Write sampled entries
                     temp_file = temp_input_dir / jsonl_file.name
                     with open(temp_file, 'w', encoding='utf-8') as f:
                         for entry in sampled_entries:
@@ -1495,7 +1360,6 @@ def main(
                     print(f"📁 Would output to: {output_path}")
                     return
                 
-                # Initialize compressor and process the sampled data
                 compressor = TrajectoryCompressor(compression_config)
                 compressor.process_directory(temp_input_dir, output_path)
         else:
@@ -1505,7 +1369,6 @@ def main(
                 print(f"📁 Would output to: {output_path}")
                 return
             
-            # Initialize compressor and process directly
             compressor = TrajectoryCompressor(compression_config)
             compressor.process_directory(input_path, output_path)
         

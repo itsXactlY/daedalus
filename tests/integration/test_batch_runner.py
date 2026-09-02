@@ -45,24 +45,20 @@ def verify_output(run_name):
     """Verify that output files were created correctly."""
     output_dir = Path("data") / run_name
     
-    # Check directory exists
     if not output_dir.exists():
         print(f"❌ Output directory not found: {output_dir}")
         return False
     
-    # Check for checkpoint
     checkpoint_file = output_dir / "checkpoint.json"
     if not checkpoint_file.exists():
         print(f"❌ Checkpoint file not found: {checkpoint_file}")
         return False
     
-    # Check for statistics
     stats_file = output_dir / "statistics.json"
     if not stats_file.exists():
         print(f"❌ Statistics file not found: {stats_file}")
         return False
     
-    # Check for batch files
     batch_files = list(output_dir.glob("batch_*.jsonl"))
     if not batch_files:
         print(f"❌ No batch files found in: {output_dir}")
@@ -73,7 +69,6 @@ def verify_output(run_name):
     print(f"   - Statistics: {stats_file}")
     print(f"   - Batch files: {len(batch_files)}")
     
-    # Load and display statistics
     with open(stats_file) as f:
         stats = json.load(f)
     
@@ -97,10 +92,8 @@ def main():
     
     run_name = "test_run"
     
-    # Clean up any previous test run
     cleanup_test_run(run_name)
     
-    # Create test dataset
     test_file = create_test_dataset()
     
     print(f"\n📝 To run the test manually:")
@@ -117,8 +110,6 @@ def main():
     print(f"\n🔍 After running, you can verify output with:")
     print(f"   python tests/test_batch_runner.py --verify")
     
-    # Note: We don't actually run the batch runner here to avoid API calls during testing
-    # Users should run it manually with their API keys configured
 
 
 if __name__ == "__main__":

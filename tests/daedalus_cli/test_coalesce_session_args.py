@@ -7,7 +7,6 @@ from daedalus_cli.main import _coalesce_session_name_args
 class TestCoalesceSessionNameArgs:
     """Ensure unquoted multi-word session names are merged into one token."""
 
-    # ── -c / --continue ──────────────────────────────────────────────────
 
     def test_continue_multiword_unquoted(self):
         """daedalus -c Pokemon Agent Dev → -c 'Pokemon Agent Dev'"""
@@ -54,7 +53,6 @@ class TestCoalesceSessionNameArgs:
             ["-c", "my", "project", "chat", "-q", "hello"]
         ) == ["-c", "my project", "chat", "-q", "hello"]
 
-    # ── -r / --resume ────────────────────────────────────────────────────
 
     def test_resume_multiword(self):
         """daedalus -r My Session Name"""
@@ -74,7 +72,6 @@ class TestCoalesceSessionNameArgs:
             ["-r", "My", "Session", "-w"]
         ) == ["-r", "My Session", "-w"]
 
-    # ── combined flags ───────────────────────────────────────────────────
 
     def test_worktree_and_continue_multiword(self):
         """daedalus -w -c Pokemon Agent Dev (the original failing case)"""
@@ -88,7 +85,6 @@ class TestCoalesceSessionNameArgs:
             ["-c", "Pokemon", "Agent", "Dev", "-w"]
         ) == ["-c", "Pokemon Agent Dev", "-w"]
 
-    # ── passthrough (no session flags) ───────────────────────────────────
 
     def test_no_session_flags_passthrough(self):
         """daedalus -w chat -q hello (nothing to merge)"""
@@ -98,7 +94,6 @@ class TestCoalesceSessionNameArgs:
     def test_empty_argv(self):
         assert _coalesce_session_name_args([]) == []
 
-    # ── subcommand boundary ──────────────────────────────────────────────
 
     def test_stops_at_sessions_subcommand(self):
         """daedalus -c my project sessions list → stops before 'sessions'"""

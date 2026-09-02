@@ -6,7 +6,6 @@ class TestMinimaxContextLengths:
 
     def test_m1_variants_have_1m_context(self):
         from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-        # Keys are lowercase because the lookup lowercases model names
         for model in ("minimax-m1", "minimax-m1-40k", "minimax-m1-80k",
                        "minimax-m1-128k", "minimax-m1-256k"):
             assert model in DEFAULT_CONTEXT_LENGTHS, f"{model} missing from context lengths"
@@ -14,14 +13,12 @@ class TestMinimaxContextLengths:
 
     def test_m2_variants_have_1m_context(self):
         from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-        # Keys are lowercase because the lookup lowercases model names
         for model in ("minimax-m2.5", "minimax-m2.7"):
             assert model in DEFAULT_CONTEXT_LENGTHS, f"{model} missing from context lengths"
             assert DEFAULT_CONTEXT_LENGTHS[model] == 1_048_576, f"{model} expected 1048576"
 
     def test_minimax_prefix_fallback(self):
         from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-        # The generic "minimax" prefix entry should be 1M for unknown models
         assert DEFAULT_CONTEXT_LENGTHS["minimax"] == 1_048_576
 
 

@@ -23,9 +23,6 @@ def _reset_logging_state():
     """
     daedalus_logging._logging_initialized = False
     root = logging.getLogger()
-    # Strip ALL RotatingFileHandlers — not just the ones we added — so that
-    # handlers leaked from other test modules in the same xdist worker don't
-    # pollute our counts.
     pre_existing = []
     for h in list(root.handlers):
         if isinstance(h, RotatingFileHandler):
@@ -34,7 +31,6 @@ def _reset_logging_state():
         else:
             pre_existing.append(h)
     yield
-    # Restore — remove any handlers added during the test.
     for h in list(root.handlers):
         if h not in pre_existing:
             root.removeHandler(h)
@@ -87,7 +83,7 @@ class TestSetupLogging:
 
     def test_idempotent_no_duplicate_handlers(self, daedalus_home):
         daedalus_logging.setup_logging(daedalus_home=daedalus_home)
-        daedalus_logging.setup_logging(daedalus_home=daedalus_home)  # second call — should be no-op
+        daedalus_logging.setup_logging(daedalus_home=daedalus_home)
 
         root = logging.getLogger()
         agent_handlers = [
@@ -99,8 +95,6 @@ class TestSetupLogging:
 
     def test_force_reinitializes(self, daedalus_home):
         daedalus_logging.setup_logging(daedalus_home=daedalus_home)
-        # Force still won't add duplicate handlers because _add_rotating_handler
-        # checks by resolved path.
         daedalus_logging.setup_logging(daedalus_home=daedalus_home, force=True)
 
         root = logging.getLogger()
@@ -149,7 +143,6 @@ class TestSetupLogging:
         test_logger = logging.getLogger("test_daedalus_logging.write_test")
         test_logger.info("test message for agent.log")
 
-        # Flush handlers
         for h in logging.getLogger().handlers:
             h.flush()
 
@@ -240,7 +233,7 @@ class TestSetupVerboseLogging:
     def test_idempotent(self, daedalus_home):
         daedalus_logging.setup_logging(daedalus_home=daedalus_home)
         daedalus_logging.setup_verbose_logging()
-        daedalus_logging.setup_verbose_logging()  # second call
+        daedalus_logging.setup_verbose_logging()
 
         root = logging.getLogger()
         verbose_handlers = [
@@ -267,7 +260,6 @@ class TestAddRotatingHandler:
         )
 
         assert log_path.parent.is_dir()
-        # Clean up
         for h in list(logger.handlers):
             if isinstance(h, RotatingFileHandler):
                 logger.removeHandler(h)
@@ -294,7 +286,6 @@ class TestAddRotatingHandler:
             if isinstance(h, RotatingFileHandler)
         ]
         assert len(rotating_handlers) == 1
-        # Clean up
         for h in list(logger.handlers):
             if isinstance(h, RotatingFileHandler):
                 logger.removeHandler(h)

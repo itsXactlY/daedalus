@@ -21,9 +21,6 @@ from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter, cors_middleware
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 SAMPLE_JOB = {
     "id": "aabbccddeeff",
@@ -50,7 +47,6 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app with jobs routes registered."""
     app = web.Application(middlewares=[cors_middleware])
     app["api_server_adapter"] = adapter
-    # Register only job routes (plus health for sanity)
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/api/jobs", adapter._handle_list_jobs)
     app.router.add_post("/api/jobs", adapter._handle_create_job)
@@ -73,9 +69,6 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
-# ---------------------------------------------------------------------------
-# 1. test_list_jobs
-# ---------------------------------------------------------------------------
 
 class TestListJobs:
     @pytest.mark.asyncio
@@ -94,9 +87,6 @@ class TestListJobs:
                 assert "jobs" in data
                 assert data["jobs"] == [SAMPLE_JOB]
 
-    # -------------------------------------------------------------------
-    # 2. test_list_jobs_include_disabled
-    # -------------------------------------------------------------------
 
     @pytest.mark.asyncio
     async def test_list_jobs_include_disabled(self, adapter):
@@ -129,9 +119,6 @@ class TestListJobs:
                 mock_list.assert_called_once_with(include_disabled=False)
 
 
-# ---------------------------------------------------------------------------
-# 3-7. test_create_job and validation
-# ---------------------------------------------------------------------------
 
 class TestCreateJob:
     @pytest.mark.asyncio
@@ -231,9 +218,6 @@ class TestCreateJob:
                 assert "schedule" in data["error"].lower() or "Schedule" in data["error"]
 
 
-# ---------------------------------------------------------------------------
-# 8-10. test_get_job
-# ---------------------------------------------------------------------------
 
 class TestGetJob:
     @pytest.mark.asyncio
@@ -279,9 +263,6 @@ class TestGetJob:
                 assert "Invalid" in data["error"]
 
 
-# ---------------------------------------------------------------------------
-# 11-12. test_update_job
-# ---------------------------------------------------------------------------
 
 class TestUpdateJob:
     @pytest.mark.asyncio
@@ -352,9 +333,6 @@ class TestUpdateJob:
                 assert "No valid fields" in data["error"]
 
 
-# ---------------------------------------------------------------------------
-# 13. test_delete_job
-# ---------------------------------------------------------------------------
 
 class TestDeleteJob:
     @pytest.mark.asyncio
@@ -389,9 +367,6 @@ class TestDeleteJob:
                 assert resp.status == 404
 
 
-# ---------------------------------------------------------------------------
-# 14. test_pause_job
-# ---------------------------------------------------------------------------
 
 class TestPauseJob:
     @pytest.mark.asyncio
@@ -414,9 +389,6 @@ class TestPauseJob:
                 mock_pause.assert_called_once_with(VALID_JOB_ID)
 
 
-# ---------------------------------------------------------------------------
-# 15. test_resume_job
-# ---------------------------------------------------------------------------
 
 class TestResumeJob:
     @pytest.mark.asyncio
@@ -439,9 +411,6 @@ class TestResumeJob:
                 mock_resume.assert_called_once_with(VALID_JOB_ID)
 
 
-# ---------------------------------------------------------------------------
-# 16. test_run_job
-# ---------------------------------------------------------------------------
 
 class TestRunJob:
     @pytest.mark.asyncio
@@ -463,9 +432,6 @@ class TestRunJob:
                 mock_trigger.assert_called_once_with(VALID_JOB_ID)
 
 
-# ---------------------------------------------------------------------------
-# 17. test_auth_required
-# ---------------------------------------------------------------------------
 
 class TestAuthRequired:
     @pytest.mark.asyncio
@@ -524,9 +490,6 @@ class TestAuthRequired:
                 assert resp.status == 200
 
 
-# ---------------------------------------------------------------------------
-# 18. test_cron_unavailable
-# ---------------------------------------------------------------------------
 
 class TestCronUnavailable:
     @pytest.mark.asyncio

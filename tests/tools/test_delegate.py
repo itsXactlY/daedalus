@@ -169,7 +169,6 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         tasks = [{"goal": f"Task {i}"} for i in range(5)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should only run 3 tasks (MAX_CONCURRENT_CHILDREN)
         self.assertEqual(mock_run.call_count, 3)
 
     @patch("tools.delegate_tool._run_single_child")
@@ -185,7 +184,6 @@ class TestDelegateTask(unittest.TestCase):
             tasks=[{"goal": "Actual task"}],
             parent_agent=parent,
         ))
-        # The mock was called with the tasks array item, not the top-level goal
         call_args = mock_run.call_args
         self.assertEqual(call_args.kwargs.get("goal") or call_args[1].get("goal", call_args[0][1] if len(call_args[0]) > 1 else None), "Actual task")
 
@@ -423,13 +421,11 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test observability", parent_agent=parent))
             entry = result["results"][0]
 
-            # Core observability fields
             self.assertEqual(entry["model"], "claude-sonnet-4-6")
             self.assertEqual(entry["exit_reason"], "completed")
             self.assertEqual(entry["tokens"]["input"], 5000)
             self.assertEqual(entry["tokens"]["output"], 1200)
 
-            # Tool trace
             self.assertEqual(len(entry["tool_trace"]), 1)
             self.assertEqual(entry["tool_trace"][0]["tool"], "web_search")
             self.assertIn("args_bytes", entry["tool_trace"][0])
@@ -494,20 +490,16 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test parallel", parent_agent=parent))
             trace = result["results"][0]["tool_trace"]
 
-            # All three tool calls should have results
             self.assertEqual(len(trace), 3)
 
-            # First: web_search → ok
             self.assertEqual(trace[0]["tool"], "web_search")
             self.assertEqual(trace[0]["status"], "ok")
             self.assertIn("result_bytes", trace[0])
 
-            # Second: web_search → error
             self.assertEqual(trace[1]["tool"], "web_search")
             self.assertEqual(trace[1]["status"], "error")
             self.assertIn("result_bytes", trace[1])
 
-            # Third: terminal → ok
             self.assertEqual(trace[2]["tool"], "terminal")
             self.assertEqual(trace[2]["status"], "ok")
             self.assertIn("result_bytes", trace[2])
@@ -772,7 +764,6 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             delegate_task(goal="Cross-provider test", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
-            # Child should use OpenRouter, NOT Nous
             self.assertEqual(kwargs["provider"], "openrouter")
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-key")
@@ -874,8 +865,6 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        # Patch _build_child_agent since credentials are now passed there
-        # (agents are built in the main thread before being handed to workers)
         with patch("tools.delegate_tool._build_child_agent") as mock_build, \
              patch("tools.delegate_tool._run_single_child") as mock_run:
             mock_child = MagicMock()
@@ -924,9 +913,7 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             delegate_task(goal="Model only test", parent_agent=parent)
 
             _, kwargs = MockAgent.call_args
-            # Model should be overridden
             self.assertEqual(kwargs["model"], "google/gemini-3-flash-preview")
-            # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
 

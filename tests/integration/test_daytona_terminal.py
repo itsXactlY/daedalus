@@ -13,11 +13,9 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-# Skip entire module if no API key
 if not os.getenv("DAYTONA_API_KEY"):
     pytest.skip("DAYTONA_API_KEY not set", allow_module_level=True)
 
-# Import terminal_tool via importlib to avoid tools/__init__.py side effects
 import importlib.util
 
 parent_dir = Path(__file__).parent.parent.parent
@@ -93,19 +91,15 @@ class TestDaytonaPersistence:
         """Write a file, stop the sandbox, resume it, assert the file persists."""
         task = "daytona_test_persist"
         try:
-            # Enable persistence for this test
             os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "true"
 
-            # Write a marker file and stop the sandbox
             _run("echo 'survive' > /tmp/persist_test.txt", task)
-            cleanup_vm(task)  # stops (not deletes) because persistent=true
+            cleanup_vm(task)
 
-            # Resume with the same task_id — file should still exist
             r = _run("cat /tmp/persist_test.txt", task)
             assert r["exit_code"] == 0
             assert "survive" in r["output"]
         finally:
-            # Force-delete so the sandbox doesn't leak
             os.environ["TERMINAL_CONTAINER_PERSISTENT"] = "false"
             cleanup_vm(task)
 

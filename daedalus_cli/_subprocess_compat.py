@@ -27,9 +27,6 @@ __all__ = ["IS_WINDOWS", "windows_hide_flags"]
 IS_WINDOWS = sys.platform == "win32"
 
 
-# Win32 CreationFlag — defined here rather than imported from subprocess
-# because CREATE_NO_WINDOW isn't guaranteed to be present on stdlib
-# subprocess on older Pythons or non-Windows builds.
 _CREATE_NO_WINDOW = 0x08000000
 
 

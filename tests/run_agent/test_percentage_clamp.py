@@ -18,7 +18,7 @@ class TestContextCompressorUsagePercent:
         from agent.context_compressor import ContextCompressor
 
         comp = ContextCompressor.__new__(ContextCompressor)
-        comp.last_prompt_tokens = 210_000  # exceeds context_length
+        comp.last_prompt_tokens = 210_000
         comp.context_length = 200_000
         comp.threshold_tokens = 160_000
         comp.compression_count = 0
@@ -58,7 +58,6 @@ class TestMemoryToolPercentClamp:
 
     def test_over_limit_clamped_at_100(self):
         """Percentage should be capped at 100 even if current > limit."""
-        # Simulate the calculation directly
         current = 5500
         limit = 5000
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
@@ -134,7 +133,6 @@ class TestSourceLinesAreClamped:
 
     def test_gateway_run_clamped(self):
         src = self._read_file("gateway/run.py")
-        # Check that the stats handler has min(100, ...)
         assert "min(100, ctx.last_prompt_tokens" in src, (
             "gateway/run.py stats pct is not clamped with min(100, ...)"
         )
@@ -147,7 +145,6 @@ class TestSourceLinesAreClamped:
 
     def test_memory_tool_clamped(self):
         src = self._read_file("tools/memory_tool.py")
-        # Both _success_response and _render_block should have min(100, ...)
         count = src.count("min(100, int((current / limit)")
         assert count >= 2, (
             f"memory_tool.py has only {count} clamped pct lines, expected >= 2"

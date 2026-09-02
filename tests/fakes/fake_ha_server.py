@@ -26,7 +26,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestServer
 
 
-# -- Sample entity data -------------------------------------------------------
 
 ENTITY_STATES: List[Dict[str, Any]] = [
     {
@@ -86,25 +85,19 @@ class FakeHAServer:
     def __init__(self, token: str = "test-token-123"):
         self.token = token
 
-        # Observability -- tests inspect these after exercising the adapter.
         self.received_service_calls: List[Dict[str, Any]] = []
         self.received_notifications: List[Dict[str, Any]] = []
 
-        # Control -- tests push events, server forwards them over WS.
         self._event_queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
 
-        # Flag to simulate auth rejection.
         self.reject_auth = False
 
-        # Flag to simulate server errors.
         self.force_500 = False
 
-        # Internal bookkeeping.
         self._app: Optional[web.Application] = None
         self._server: Optional[TestServer] = None
         self._ws_connections: List[web.WebSocketResponse] = []
 
-    # -- Public helpers --------------------------------------------------------
 
     @property
     def url(self) -> str:
@@ -118,7 +111,6 @@ class FakeHAServer:
         """Enqueue a state_changed event for delivery over WebSocket."""
         await self._event_queue.put(event_data)
 
-    # -- Lifecycle -------------------------------------------------------------
 
     async def start(self) -> None:
         self._app = self._build_app()
@@ -126,7 +118,6 @@ class FakeHAServer:
         await self._server.start_server()
 
     async def stop(self) -> None:
-        # Close any remaining WS connections.
         for ws in self._ws_connections:
             if not ws.closed:
                 await ws.close()
@@ -141,15 +132,12 @@ class FakeHAServer:
     async def __aexit__(self, *exc) -> None:
         await self.stop()
 
-    # -- Application construction ----------------------------------------------
 
     def _build_app(self) -> web.Application:
         app = web.Application()
         app.router.add_get("/api/websocket", self._handle_ws)
         app.router.add_get("/api/states", self._handle_get_states)
         app.router.add_get("/api/states/{entity_id}", self._handle_get_state)
-        # Notification endpoint must be registered before the generic service
-        # route so that it takes priority.
         app.router.add_post(
             "/api/services/persistent_notification/create",
             self._handle_notification,
@@ -160,7 +148,6 @@ class FakeHAServer:
         )
         return app
 
-    # -- Auth helper -----------------------------------------------------------
 
     def _check_rest_auth(self, request: web.Request) -> Optional[web.Response]:
         """Return a 401 response if the Bearer token is wrong, else None."""
@@ -171,24 +158,20 @@ class FakeHAServer:
             return web.Response(status=500, text="Internal Server Error")
         return None
 
-    # -- WebSocket handler -----------------------------------------------------
 
     async def _handle_ws(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         self._ws_connections.append(ws)
 
-        # Step 1: auth_required
         await ws.send_json({"type": "auth_required", "ha_version": "2025.1.0"})
 
-        # Step 2: receive auth
         msg = await ws.receive()
         if msg.type != aiohttp.WSMsgType.TEXT:
             await ws.close()
             return ws
         auth_msg = json.loads(msg.data)
 
-        # Step 3: validate
         if self.reject_auth or auth_msg.get("access_token") != self.token:
             await ws.send_json({"type": "auth_invalid", "message": "Invalid token"})
             await ws.close()
@@ -196,7 +179,6 @@ class FakeHAServer:
 
         await ws.send_json({"type": "auth_ok", "ha_version": "2025.1.0"})
 
-        # Step 4: subscribe_events
         msg = await ws.receive()
         if msg.type != aiohttp.WSMsgType.TEXT:
             await ws.close()
@@ -204,7 +186,6 @@ class FakeHAServer:
         sub_msg = json.loads(msg.data)
         sub_id = sub_msg.get("id", 1)
 
-        # Step 5: ACK
         await ws.send_json({
             "id": sub_id,
             "type": "result",
@@ -212,7 +193,6 @@ class FakeHAServer:
             "result": None,
         })
 
-        # Step 6: push events from queue until closed
         try:
             while not ws.closed:
                 try:
@@ -231,7 +211,6 @@ class FakeHAServer:
 
         return ws
 
-    # -- REST handlers ---------------------------------------------------------
 
     async def _handle_get_states(self, request: web.Request) -> web.Response:
         err = self._check_rest_auth(request)
@@ -271,7 +250,6 @@ class FakeHAServer:
             "data": body,
         })
 
-        # Return affected entities (mimics real HA behaviour for light/switch).
         affected = []
         entity_id = body.get("entity_id")
         if entity_id:
@@ -283,10 +261,8 @@ class FakeHAServer:
                         s["state"] = "off"
                     elif service == "set_temperature" and "temperature" in body:
                         s["attributes"]["temperature"] = body["temperature"]
-                        # Keep current state or set to heat if off
                         if s["state"] == "off":
                             s["state"] = "heat"
-                        # Simulate temperature sensor approaching the target
                         for ts in ENTITY_STATES:
                             if ts["entity_id"] == "sensor.temperature":
                                 ts["state"] = str(body["temperature"] - 0.5)

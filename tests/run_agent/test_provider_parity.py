@@ -20,7 +20,6 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 from run_agent import AIAgent
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _tool_defs(*names):
     return [
@@ -60,7 +59,6 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     )
 
 
-# ── _build_api_kwargs tests ─────────────────────────────────────────────────
 
 class TestBuildApiKwargsOpenRouter:
     def test_uses_chat_completions_format(self, monkeypatch):
@@ -132,24 +130,20 @@ class TestBuildApiKwargsOpenRouter:
         assert "call_id" not in tool_call
         assert "response_item_id" not in tool_call
 
-        # Original stored history must remain unchanged for Responses replay mode.
         assert messages[1]["tool_calls"][0]["call_id"] == "call_123"
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
         assert "codex_reasoning_items" in messages[1]
 
     def test_should_sanitize_tool_calls_codex_vs_chat(self, monkeypatch):
         """Codex API should NOT sanitize, all other APIs should sanitize."""
-        # Codex mode should NOT need sanitization
         codex_agent = _make_agent(monkeypatch, "openrouter")
         codex_agent.api_mode = "codex_responses"
         assert codex_agent._should_sanitize_tool_calls() is False
 
-        # Chat completions mode should need sanitization
         chat_agent = _make_agent(monkeypatch, "openrouter")
         chat_agent.api_mode = "chat_completions"
         assert chat_agent._should_sanitize_tool_calls() is True
 
-        # Anthropic mode should need sanitization
         anthropic_agent = _make_agent(monkeypatch, "openrouter")
         anthropic_agent.api_mode = "anthropic_messages"
         assert anthropic_agent._should_sanitize_tool_calls() is True
@@ -211,7 +205,6 @@ class TestDeveloperRoleSwap:
             {"role": "user", "content": "hi"},
         ]
         agent._build_api_kwargs(messages)
-        # Original messages must be untouched (internal representation stays "system")
         assert messages[0]["role"] == "system"
 
     def test_developer_role_via_nous_portal(self, monkeypatch):
@@ -370,12 +363,10 @@ class TestBuildApiKwargsCodex:
         kwargs = agent._build_api_kwargs(messages)
         tools = kwargs.get("tools", [])
         assert len(tools) > 0
-        # Responses format has "name" at top level, not nested under "function"
         assert "name" in tools[0]
         assert "function" not in tools[0]
 
 
-# ── Message conversion tests ────────────────────────────────────────────────
 
 class TestChatMessagesToResponsesInput:
     """Verify _chat_messages_to_responses_input for Codex mode."""
@@ -458,7 +449,6 @@ class TestChatMessagesToResponsesInput:
         assert len(reasoning_items) == 0
 
 
-# ── Response normalization tests ─────────────────────────────────────────────
 
 class TestNormalizeCodexResponse:
     """Verify _normalize_codex_response extracts all fields correctly."""
@@ -549,7 +539,6 @@ class TestNormalizeCodexResponse:
         assert msg.tool_calls[0].function.name == "web_search"
 
 
-# ── Chat completions response handling (OpenRouter/Nous) ─────────────────────
 
 class TestBuildAssistantMessage:
     """Verify _build_assistant_message works for all provider response formats."""
@@ -588,7 +577,6 @@ class TestBuildAssistantMessage:
         )
         result = agent._build_assistant_message(msg, "stop")
         stored = result["reasoning_details"][0]
-        # ALL fields must survive, not just type/text/signature
         assert stored["signature"] == "sig123_opaque_blob"
         assert stored["encrypted_content"] == "some_provider_blob"
         assert stored["extra_field"] == "should_not_be_dropped"
@@ -625,7 +613,6 @@ class TestBuildAssistantMessage:
         assert "codex_reasoning_items" not in result
 
 
-# ── Auxiliary client provider resolution ─────────────────────────────────────
 
 class TestAuxiliaryClientProviderPriority:
     """Verify auxiliary client resolution doesn't break for any provider."""
@@ -676,7 +663,6 @@ class TestAuxiliaryClientProviderPriority:
         assert isinstance(client, CodexAuxiliaryClient)
 
 
-# ── Provider routing tests ───────────────────────────────────────────────────
 
 class TestProviderRouting:
     """Verify provider_routing config flows into extra_body.provider."""
@@ -745,7 +731,6 @@ class TestProviderRouting:
         assert "provider" not in kwargs or kwargs.get("provider") is None
 
 
-# ── Codex reasoning items preflight tests ────────────────────────────────────
 
 class TestCodexReasoningPreflight:
     """Verify reasoning items pass through preflight normalization."""
@@ -775,7 +760,7 @@ class TestCodexReasoningPreflight:
         normalized = agent._preflight_codex_input_items(raw_input)
         assert len(normalized) == 1
         assert "id" not in normalized[0]
-        assert normalized[0]["summary"] == []  # default empty summary
+        assert normalized[0]["summary"] == []
 
     def test_reasoning_item_empty_encrypted_skipped(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
@@ -809,7 +794,6 @@ class TestCodexReasoningPreflight:
         assert reasoning_items[0]["encrypted_content"] == "enc123"
 
 
-# ── Reasoning effort consistency tests ───────────────────────────────────────
 
 class TestReasoningEffortDefaults:
     """Verify reasoning effort defaults to medium across all provider paths."""

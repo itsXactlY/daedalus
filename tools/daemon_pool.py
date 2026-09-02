@@ -38,16 +38,6 @@ class DaemonThreadPoolExecutor(ThreadPoolExecutor):
     """ThreadPoolExecutor variant whose workers do not block process exit."""
 
     def _adjust_thread_count(self) -> None:
-        # Mirrors CPython's implementation (3.8-3.13) with two changes:
-        # daemon=True and no _threads_queues registration. CPython 3.14
-        # restructured ThreadPoolExecutor internals (initializer/initargs
-        # moved off self, _worker's signature changed) so this mirror no
-        # longer applies there — fall back to the stdlib implementation.
-        # That loses the "skip atexit's non-daemon join" optimization on
-        # 3.14+ (a wedged worker can again delay interpreter exit), but the
-        # pool stays functionally correct rather than crashing outright.
-        # Ported from nousresearch/main (0.20.0), which only ever ran on
-        # 3.8-3.13 — this fallback is fork-local, not upstream's problem yet.
         if not hasattr(self, "_initializer"):
             super()._adjust_thread_count()
             return

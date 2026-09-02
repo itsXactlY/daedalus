@@ -113,9 +113,6 @@ def get_active_provider() -> Optional[ImageGenProvider]:
             logger.debug("image_gen provider %s.is_available() raised %s", p.name, exc)
             return False
 
-    # 1. Explicit config wins — return regardless of is_available() so the
-    #    user gets a precise downstream error message rather than a silent
-    #    backend switch.
     if configured:
         provider = snapshot.get(configured)
         if provider is not None:
@@ -125,13 +122,10 @@ def get_active_provider() -> Optional[ImageGenProvider]:
             configured,
         )
 
-    # 2. Fallback: single registered provider — but only if it's actually
-    #    available (no credentials = don't surface it as "active").
     available = [p for p in snapshot.values() if _is_available_safe(p)]
     if len(available) == 1:
         return available[0]
 
-    # 3. Fallback: prefer legacy FAL for backward compat, when available.
     fal = snapshot.get("fal")
     if fal is not None and _is_available_safe(fal):
         return fal

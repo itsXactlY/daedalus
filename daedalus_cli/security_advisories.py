@@ -43,24 +43,6 @@ from typing import Iterable, Optional
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Advisory catalog
-#
-# Each advisory is a community-facing security warning about one or more
-# specific package versions that are known to be compromised. To add a new
-# advisory:
-#
-#   1. Append a new ``Advisory`` to ``ADVISORIES`` below
-#   2. Set ``compromised`` to a tuple of ``(pkg_name, frozenset_of_versions)``
-#      — version strings must match what ``importlib.metadata.version()``
-#      returns. Use an empty frozenset to flag *any installed version*
-#      (rare; only when the maintainer namespace itself is compromised).
-#   3. Write 2-4 short ``remediation`` lines a non-expert can copy/paste.
-#
-# Do NOT remove old advisories. Once an advisory ships, leave it in place so
-# users running an older release with the compromised package still get
-# warned. Mark superseded ones via ``superseded_by`` if needed.
-# =============================================================================
 
 
 @dataclass(frozen=True)
@@ -89,7 +71,7 @@ class Advisory:
     compromised: tuple[tuple[str, frozenset[str]], ...]
     remediation: tuple[str, ...]
     published: str = ""
-    severity: str = "high"  # low / medium / high / critical
+    severity: str = "high"
 
 
 ADVISORIES: tuple[Advisory, ...] = (
@@ -129,9 +111,6 @@ ADVISORIES: tuple[Advisory, ...] = (
 )
 
 
-# =============================================================================
-# Detection
-# =============================================================================
 
 
 @dataclass(frozen=True)
@@ -151,15 +130,13 @@ def _installed_version(pkg_name: str) -> Optional[str]:
     """
     try:
         from importlib.metadata import PackageNotFoundError, version
-    except ImportError:  # py<3.8 — Daedalus requires 3.10+ but defensive.
+    except ImportError:
         return None
     try:
         return version(pkg_name)
     except PackageNotFoundError:
         return None
     except Exception:
-        # Some metadata corruption modes raise ValueError or OSError. Don't
-        # let advisory checking crash the CLI startup path.
         logger.debug("importlib.metadata.version(%s) raised", pkg_name, exc_info=True)
         return None
 
@@ -188,15 +165,6 @@ def detect_compromised(
     return hits
 
 
-# =============================================================================
-# Acknowledgement persistence
-#
-# Acks live under ``security.acked_advisories`` in config.yaml as a list of
-# advisory IDs. The list is the only state — no per-host data, no
-# timestamps, no fingerprints. Users sharing a config.yaml across machines
-# (rare but possible) get the same dismissal everywhere, which is the
-# correct behavior for a global advisory.
-# =============================================================================
 
 
 def get_acked_ids() -> set[str]:
@@ -256,9 +224,6 @@ def filter_unacked(hits: list[AdvisoryHit]) -> list[AdvisoryHit]:
     return [h for h in hits if h.advisory.id not in acked]
 
 
-# =============================================================================
-# Rendering helpers
-# =============================================================================
 
 
 def _term_supports_color() -> bool:
@@ -307,17 +272,6 @@ def full_remediation_text(hit: AdvisoryHit) -> list[str]:
     return lines
 
 
-# =============================================================================
-# Startup-banner gating
-#
-# We do NOT want to hammer the user with the banner on every command. Once
-# they've seen it inside a 24h window we cache that fact in
-# ``~/.daedalus/cache/advisory_banner_seen`` (a single line per advisory ID:
-# ``<id> <iso8601_timestamp>``).
-#
-# Acked advisories never re-banner. Cached-but-not-acked advisories
-# re-banner after 24h so the user doesn't fully forget.
-# =============================================================================
 
 
 _BANNER_CACHE_FILE = "advisory_banner_seen"
@@ -398,9 +352,6 @@ def hits_due_for_banner(
     return due
 
 
-# =============================================================================
-# Public entry points used by doctor / CLI / gateway
-# =============================================================================
 
 
 def render_doctor_section(hits: list[AdvisoryHit]) -> tuple[bool, list[str]]:

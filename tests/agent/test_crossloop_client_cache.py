@@ -17,9 +17,6 @@ from types import SimpleNamespace
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Minimal stubs so we can import _get_cached_client without the full tree
-# ---------------------------------------------------------------------------
 
 def _stub_resolve_provider_client(provider, model, async_mode, **kw):
     """Return a unique mock client each time, simulating AsyncOpenAI creation."""
@@ -33,10 +30,8 @@ def _stub_resolve_provider_client(provider, model, async_mode, **kw):
 def _clean_client_cache():
     """Clear the client cache before each test."""
     import importlib
-    # We need to patch before importing
     with patch.dict("sys.modules", {}):
         pass
-    # Import and clear
     import agent.auxiliary_client as ac
     ac._client_cache.clear()
     yield
@@ -79,7 +74,6 @@ class TestCrossLoopCacheIsolation:
                 client, _ = _get_cached_client("custom", "m1", async_mode=True,
                                                  base_url="http://localhost:8081/v1")
             results[name] = (id(client), id(loop))
-            # Don't close loop — simulates real usage where loops persist
 
         t1 = threading.Thread(target=_get_client_on_new_loop, args=("a",))
         t2 = threading.Thread(target=_get_client_on_new_loop, args=("b",))
@@ -126,7 +120,6 @@ class TestCrossLoopCacheIsolation:
         not reused from a different one."""
         from agent.auxiliary_client import _get_cached_client
 
-        # Simulate: first call on "gateway loop"
         gateway_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(gateway_loop)
 
@@ -135,7 +128,6 @@ class TestCrossLoopCacheIsolation:
             gateway_client, _ = _get_cached_client("custom", "m1", async_mode=True,
                                                      base_url="http://localhost:8081/v1")
 
-        # Simulate: _run_async spawns a thread with asyncio.run()
         worker_client_id = [None]
         def _worker():
             async def _inner():
@@ -171,7 +163,6 @@ class TestCrossLoopCacheIsolation:
 
         loop1.close()
 
-        # New loop on same thread
         loop2 = asyncio.new_event_loop()
         asyncio.set_event_loop(loop2)
 

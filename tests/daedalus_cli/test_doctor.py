@@ -95,8 +95,8 @@ def _write_sqlite_header(path, format_version: int) -> None:
     """Write a minimal valid SQLite file header with the given format-version byte."""
     header = bytearray(100)
     header[0:16] = b"SQLite format 3\x00"
-    header[18] = format_version  # write version: 1=rollback, 2=WAL
-    header[19] = format_version  # read version
+    header[18] = format_version
+    header[19] = format_version
     path.write_bytes(bytes(header))
 
 
@@ -124,8 +124,6 @@ def test_read_journal_mode_missing_file(tmp_path):
 
 def test_report_database_journal_modes_warns_when_wal_and_vulnerable(tmp_path, capsys):
     _write_sqlite_header(tmp_path / "state.db", 2)
-    # (0, 0, 0) sorts below every fixed version -- always vulnerable per
-    # is_sqlite_wal_reset_vulnerable's own version comparison.
     doctor._report_database_journal_modes(tmp_path, version_info=(3, 45, 0))
     out = capsys.readouterr().out
     assert "state.db is in WAL mode" in out
@@ -164,7 +162,6 @@ def test_check_certificates_broken_no_fix_appends_issue(monkeypatch, capsys):
     assert "daedalus doctor --fix" in issues[0]
 
 
-# ── Memory provider section (doctor should only check the *active* provider) ──
 
 
 class TestDoctorMemoryProviderSection:
@@ -187,14 +184,12 @@ class TestDoctorMemoryProviderSection:
         monkeypatch.setattr(doctor_mod, "_DHH", str(home))
         (tmp_path / "project").mkdir(exist_ok=True)
 
-        # Stub tool availability (returns empty) so doctor runs past it
         fake_model_tools = types.SimpleNamespace(
             check_tool_availability=lambda *a, **kw: ([], []),
             TOOLSET_REQUIREMENTS={},
         )
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
 
-        # Stub auth checks to avoid real API calls
         try:
             from daedalus_cli import auth as _auth_mod
             monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
@@ -212,7 +207,6 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
         assert "Memory Provider" in out
         assert "Built-in memory active" in out
-        # Should NOT mention Honcho or Mem0 errors
         assert "Honcho API key" not in out
         assert "Mem0" not in out
 

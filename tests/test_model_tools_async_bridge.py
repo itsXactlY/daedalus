@@ -19,9 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 async def _get_current_loop():
     """Return the running event loop from inside a coroutine."""
@@ -40,9 +37,6 @@ async def _create_and_return_transport():
     return loop, fut
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestRunAsyncLoopLifecycle:
     """Verify _run_async() keeps the event loop alive after returning."""
@@ -136,8 +130,6 @@ class TestRunAsyncWorkerThread:
         barrier = threading.Barrier(3, timeout=5)
 
         def _get_loop_id():
-            # Use a barrier to force all 3 threads to be alive simultaneously,
-            # ensuring the ThreadPoolExecutor actually uses 3 distinct threads.
             loop = _run_async(_get_current_loop())
             barrier.wait()
             return id(loop), not loop.is_closed(), threading.current_thread().ident
@@ -151,9 +143,7 @@ class TestRunAsyncWorkerThread:
         all_open = all(r[1] for r in results)
 
         assert all_open, "At least one worker thread's loop was closed"
-        # The barrier guarantees 3 distinct threads were used
         assert len(thread_ids) == 3, f"Expected 3 threads, got {len(thread_ids)}"
-        # Each thread should have its own loop
         assert len(loop_ids) == 3, (
             f"Expected 3 distinct loops for 3 parallel workers, "
             f"got {len(loop_ids)} — workers may be contending on a shared loop"
@@ -198,9 +188,6 @@ class TestRunAsyncWithRunningLoop:
         assert result == 42
 
 
-# ---------------------------------------------------------------------------
-# Integration: full vision_analyze dispatch chain
-# ---------------------------------------------------------------------------
 
 def _mock_vision_response():
     """Build a fake LLM response matching async_call_llm's return shape."""

@@ -19,11 +19,7 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
-# Kept for backward compatibility (e.g. test monkeypatching); prefer _get_config().
 _HASS_URL: str = ""
 _HASS_TOKEN: str = ""
 
@@ -35,19 +31,15 @@ def _get_config():
         _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
     )
 
-# Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 
-# Service domains blocked for security -- these allow arbitrary code/command
-# execution on the HA host or enable SSRF attacks on the local network.
-# HA provides zero service-level access control; all safety must be in our layer.
 _BLOCKED_DOMAINS = frozenset({
-    "shell_command",    # arbitrary shell commands as root in HA container
-    "command_line",     # sensors/switches that execute shell commands
-    "python_script",    # sandboxed but can escalate via hass.services.call()
-    "pyscript",         # scripting integration with broader access
-    "hassio",           # addon control, host shutdown/reboot, stdin to containers
-    "rest_command",     # HTTP requests from HA server (SSRF vector)
+    "shell_command",
+    "command_line",
+    "python_script",
+    "pyscript",
+    "hassio",
+    "rest_command",
 })
 
 
@@ -61,9 +53,6 @@ def _get_headers(token: str = "") -> Dict[str, str]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Async helpers (called from sync handlers via run_until_complete)
-# ---------------------------------------------------------------------------
 
 def _filter_and_summarize(
     states: list,
@@ -138,7 +127,6 @@ def _build_service_payload(
     payload: Dict[str, Any] = {}
     if data:
         payload.update(data)
-    # entity_id parameter takes precedence over data["entity_id"]
     if entity_id:
         payload["entity_id"] = entity_id
     return payload
@@ -191,9 +179,6 @@ async def _async_call_service(
     return _parse_service_response(domain, service, result)
 
 
-# ---------------------------------------------------------------------------
-# Sync wrappers (handler signature: (args, **kw) -> str)
-# ---------------------------------------------------------------------------
 
 def _run_async(coro):
     """Run an async coroutine from a sync handler."""
@@ -203,7 +188,6 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
-        # Already inside an event loop -- create a new thread
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
@@ -265,9 +249,6 @@ def _handle_call_service(args: dict, **kw) -> str:
         return tool_error(f"Failed to call {domain}.{service}: {e}")
 
 
-# ---------------------------------------------------------------------------
-# List services
-# ---------------------------------------------------------------------------
 
 async def _async_list_services(domain: Optional[str] = None) -> Dict[str, Any]:
     """Fetch available services from HA and optionally filter by domain."""
@@ -284,7 +265,6 @@ async def _async_list_services(domain: Optional[str] = None) -> Dict[str, Any]:
     if domain:
         services = [s for s in services if s.get("domain") == domain]
 
-    # Compact the output for context efficiency
     result = []
     for svc_domain in services:
         d = svc_domain.get("domain", "")
@@ -314,18 +294,12 @@ def _handle_list_services(args: dict, **kw) -> str:
         return tool_error(f"Failed to list services: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Availability check
-# ---------------------------------------------------------------------------
 
 def _check_ha_available() -> bool:
     """Tool is only available when HASS_TOKEN is set."""
     return bool(os.getenv("HASS_TOKEN"))
 
 
-# ---------------------------------------------------------------------------
-# Tool schemas
-# ---------------------------------------------------------------------------
 
 HA_LIST_ENTITIES_SCHEMA = {
     "name": "ha_list_entities",
@@ -447,9 +421,6 @@ HA_CALL_SERVICE_SCHEMA = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
 
 from tools.registry import registry, tool_error
 

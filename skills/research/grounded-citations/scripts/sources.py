@@ -45,21 +45,14 @@ from _daedalus_home import get_daedalus_home  # noqa: E402
 
 SCHEMA_VERSION = 1
 
-# A citation marker in prose: [12].  Markdown links ([text](url)) and
-# reference-style labels are excluded by requiring digits only and no
-# following "(" or ":".
 _CITE_RE = re.compile(r"\[(\d{1,4})\](?![(:])")
 _SOURCES_HEADER_RE = re.compile(r"^\s*(?:#{1,6}\s*)?(?:\*\*)?sources:?(?:\*\*)?\s*$", re.IGNORECASE)
 _SOURCE_LINE_RE = re.compile(r"^\s*\[(\d{1,4})\]\s*[-–:]?\s*(\S+)")
 _URL_IN_TEXT_RE = re.compile(r"https?://[^\s\"'<>)\]}]+")
 _FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
-# Explicit declaration that a claim comes from model knowledge, not a source.
 _UNVERIFIED_RE = re.compile(r"\[unverified\]", re.IGNORECASE)
 
 
-# ---------------------------------------------------------------------------
-# Ledger I/O
-# ---------------------------------------------------------------------------
 
 
 def resolve_ledger_path(explicit: str | None = None) -> Path:
@@ -127,7 +120,6 @@ class _LedgerLock:
                 return self
             except FileExistsError:
                 if time.monotonic() >= deadline:
-                    # Assume a stale lock from a crashed run.
                     try:
                         self.lock_path.unlink()
                     except OSError:
@@ -147,9 +139,6 @@ class _LedgerLock:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Core operations
-# ---------------------------------------------------------------------------
 
 
 def _by_url(sources: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -224,9 +213,6 @@ def urls_from_json(payload: Any) -> list[tuple[str, str]]:
     return found
 
 
-# ---------------------------------------------------------------------------
-# Evidence quotes (fact-checking)
-# ---------------------------------------------------------------------------
 
 
 def _normalize_ws(text: str) -> str:
@@ -234,12 +220,6 @@ def _normalize_ws(text: str) -> str:
     return " ".join((text or "").split())
 
 
-# Markdown artifacts that retrieval tools inject into otherwise-identical prose.
-# ``web_extract`` returns markdown, so the most citation-worthy sentences are
-# exactly the ones carrying inline links and emphasis around terms:
-#   "including _[ERAP1](https://…/erap1/)_, _[IL1A](…)_, have also been…"
-# reads identically to the page a human sees.  Matching has to see through that
-# markup, or the skill pushes the agent toward weaker evidence fragments.
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((?:[^()\s]|\([^()]*\))*\)")
 _MD_NOISE_RE = re.compile(r"[*_`~]|\\(?=[^\w\s])")
 
@@ -328,9 +308,6 @@ def render_sources(
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Verification
-# ---------------------------------------------------------------------------
 
 
 def _split_draft(text: str) -> tuple[str, dict[int, str]]:
@@ -497,9 +474,6 @@ def verify_draft(
     return code, errors, warnings
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 
 def _parse_only(spec: str | None) -> set[int] | None:

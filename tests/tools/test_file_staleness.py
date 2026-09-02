@@ -24,9 +24,6 @@ from tools.file_tools import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 class _FakeReadResult:
     def __init__(self, content="line1\nline2\n", total_lines=2, file_size=100):
@@ -68,9 +65,6 @@ def _make_fake_ops(read_content="hello\n", file_size=6):
     return fake
 
 
-# ---------------------------------------------------------------------------
-# Core staleness check
-# ---------------------------------------------------------------------------
 
 class TestStalenessCheck(unittest.TestCase):
 
@@ -104,7 +98,6 @@ class TestStalenessCheck(unittest.TestCase):
         mock_ops.return_value = _make_fake_ops("original content\n", 18)
         read_file_tool(self._tmpfile, task_id="t1")
 
-        # Simulate external modification
         time.sleep(0.05)
         with open(self._tmpfile, "w") as f:
             f.write("someone else changed this\n")
@@ -146,9 +139,6 @@ class TestStalenessCheck(unittest.TestCase):
         self.assertNotIn("_warning", result)
 
 
-# ---------------------------------------------------------------------------
-# Staleness in patch
-# ---------------------------------------------------------------------------
 
 class TestPatchStaleness(unittest.TestCase):
 
@@ -199,9 +189,6 @@ class TestPatchStaleness(unittest.TestCase):
         self.assertNotIn("_warning", result)
 
 
-# ---------------------------------------------------------------------------
-# Unit test for the helper
-# ---------------------------------------------------------------------------
 
 class TestCheckFileStalenessHelper(unittest.TestCase):
 
@@ -215,7 +202,6 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
         self.assertIsNone(_check_file_staleness("/tmp/x.py", "nonexistent"))
 
     def test_returns_none_for_unread_file(self):
-        # Populate tracker with a different file
         from tools.file_tools import _read_tracker, _read_tracker_lock
         with _read_tracker_lock:
             _read_tracker["t1"] = {
@@ -233,7 +219,6 @@ class TestCheckFileStalenessHelper(unittest.TestCase):
                 "read_history": set(), "dedup": {},
                 "read_timestamps": {"/nonexistent/path": 99999.0},
             }
-        # File doesn't exist → stat fails → returns None (let write handle it)
         self.assertIsNone(_check_file_staleness("/nonexistent/path", "t1"))
 
 

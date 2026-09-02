@@ -35,12 +35,9 @@ class TestYoloMode:
         monkeypatch.delenv("DAEDALUS_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("DAEDALUS_EXEC_ASK", raising=False)
 
-        # Verify the command IS detected as dangerous
         is_dangerous, _, _ = detect_dangerous_command("rm -rf /tmp/stuff")
         assert is_dangerous
 
-        # In interactive mode without yolo, it would prompt (we can't test
-        # the interactive prompt here, but we can verify detection works)
         result = check_dangerous_command("rm -rf /tmp/stuff", "local",
                                          approval_callback=lambda *a: "deny")
         assert not result["approved"]
@@ -93,9 +90,7 @@ class TestYoloMode:
 
     def test_yolo_mode_not_set_by_default(self):
         """DAEDALUS_YOLO_MODE should not be set by default."""
-        # Clean env check — if it happens to be set in test env, that's fine,
-        # we just verify the mechanism exists
-        assert os.getenv("DAEDALUS_YOLO_MODE") is None or True  # no-op, documents intent
+        assert os.getenv("DAEDALUS_YOLO_MODE") is None or True
 
     def test_yolo_mode_empty_string_does_not_bypass(self, monkeypatch):
         """Empty string for DAEDALUS_YOLO_MODE should not trigger bypass."""
@@ -103,8 +98,6 @@ class TestYoloMode:
         monkeypatch.setenv("DAEDALUS_INTERACTIVE", "1")
         monkeypatch.setenv("DAEDALUS_SESSION_KEY", "test-session")
 
-        # Empty string is falsy in Python, so getenv("DAEDALUS_YOLO_MODE") returns ""
-        # which is falsy — bypass should NOT activate
         result = check_dangerous_command("rm -rf /", "local",
                                          approval_callback=lambda *a: "deny")
         assert not result["approved"]

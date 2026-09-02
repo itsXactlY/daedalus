@@ -32,12 +32,10 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Suppress startup messages for clean CLI experience
-os.environ["DAEDALUS_QUIET"] = "1"  # Our own modules
+os.environ["DAEDALUS_QUIET"] = "1"
 
 import yaml
 
-# prompt_toolkit for fixed input area TUI
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -53,7 +51,7 @@ from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
 try:
     from prompt_toolkit.cursor_shapes import CursorShape
-    _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
+    _STEADY_CURSOR = CursorShape.BLOCK
 except (ImportError, AttributeError):
     _STEADY_CURSOR = None
 import threading
@@ -70,8 +68,6 @@ from daedalus_cli.banner import _format_context_length, format_banner_version_la
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
-# Load .env from ~/.daedalus/.env first, then project root as dev fallback.
-# User-managed env files should override stale shell exports on restart.
 from daedalus_constants import get_daedalus_home, display_daedalus_home
 from daedalus_cli.env_loader import load_daedalus_dotenv
 
@@ -80,9 +76,6 @@ _project_env = Path(__file__).parent / '.env'
 load_daedalus_dotenv(daedalus_home=_daedalus_home, project_env=_project_env)
 
 
-# =============================================================================
-# Configuration Loading
-# =============================================================================
 
 def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
     """Load ephemeral prefill messages from a JSON file.
@@ -190,17 +183,14 @@ def load_cli_config() -> Dict[str, Any]:
     Environment variables take precedence over config file values.
     Returns default values if no config file exists.
     """
-    # Check user config first ({DAEDALUS_HOME}/config.yaml)
     user_config_path = _daedalus_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
 
-    # Use user config if it exists, otherwise project config
     if user_config_path.exists():
         config_path = user_config_path
     else:
         config_path = project_config_path
 
-    # Default configuration
     defaults = {
         "model": {
             "default": "",
@@ -209,7 +199,7 @@ def load_cli_config() -> Dict[str, Any]:
         },
         "terminal": {
             "env_type": "local",
-            "cwd": ".",  # "." is resolved to os.getcwd() at runtime
+            "cwd": ".",
             "timeout": 60,
             "lifetime_seconds": 300,
             "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
@@ -217,13 +207,13 @@ def load_cli_config() -> Dict[str, Any]:
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         },
         "browser": {
-            "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
-            "record_sessions": False,  # Auto-record browser sessions as WebM videos
+            "inactivity_timeout": 120,
+            "record_sessions": False,
         },
         "compression": {
-            "enabled": True,      # Auto-compress when approaching context limit
-            "threshold": 0.50,    # Compress at 50% of model's context limit
-            "summary_model": "",  # Model for summaries (empty = use main model)
+            "enabled": True,
+            "threshold": 0.50,
+            "summary_model": "",
         },
         "smart_model_routing": {
             "enabled": False,
@@ -232,7 +222,7 @@ def load_cli_config() -> Dict[str, Any]:
             "cheap_model": {},
         },
         "agent": {
-            "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
+            "max_turns": 90,
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -265,11 +255,11 @@ def load_cli_config() -> Dict[str, Any]:
             "skin": "default",
         },
         "clarify": {
-            "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
+            "timeout": 120,
         },
         "code_execution": {
-            "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
-            "max_tool_calls": 50,  # Max RPC tool calls per execution
+            "timeout": 300,
+            "max_tool_calls": 50,
         },
         "auxiliary": {
             "vision": {
@@ -286,22 +276,17 @@ def load_cli_config() -> Dict[str, Any]:
             },
         },
         "delegation": {
-            "max_iterations": 45,  # Max tool-calling turns per child agent
-            "default_toolsets": ["terminal", "file", "web"],  # Default toolsets for subagents
-            "model": "",       # Subagent model override (empty = inherit parent model)
-            "provider": "",    # Subagent provider override (empty = inherit parent provider)
-            "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
-            "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+            "max_iterations": 45,
+            "default_toolsets": ["terminal", "file", "web"],
+            "model": "",
+            "provider": "",
+            "base_url": "",
+            "api_key": "",
         },
     }
     
-    # Track whether the config file explicitly set terminal config.
-    # When using defaults (no config file / no terminal section), we should NOT
-    # overwrite env vars that were already set by .env -- only a user's config
-    # file should be authoritative.
     _file_has_terminal_config = False
 
-    # Load from file if exists
     if config_path.exists():
         try:
             with open(config_path, "r") as f:
@@ -309,29 +294,14 @@ def load_cli_config() -> Dict[str, Any]:
             
             _file_has_terminal_config = "terminal" in file_config
 
-            # Handle model config - can be string (new format) or dict (old format)
             if "model" in file_config:
                 if isinstance(file_config["model"], str):
-                    # New format: model is just a string, convert to dict structure
                     defaults["model"]["default"] = file_config["model"]
                 elif isinstance(file_config["model"], dict):
-                    # Old format: model is a dict with default/base_url
                     defaults["model"].update(file_config["model"])
-                    # If the user config sets model.model but not model.default,
-                    # promote model.model to model.default so the user's explicit
-                    # choice isn't shadowed by the hardcoded default.  Without this,
-                    # profile configs that only set "model:" (not "default:") silently
-                    # fall back to claude-opus because the merge preserves the
-                    # hardcoded default and DaedalusCLI.__init__ checks "default" first.
                     if "model" in file_config["model"] and "default" not in file_config["model"]:
                         defaults["model"]["default"] = file_config["model"]["model"]
 
-            # Legacy root-level provider/base_url fallback.
-            # Some users (or old code) put provider: / base_url: at the
-            # config root instead of inside the model: section.  These are
-            # only used as a FALLBACK when model.provider / model.base_url
-            # is not already set — never as an override.  The canonical
-            # location is model.provider (written by `daedalus model`).
             if not defaults["model"].get("provider"):
                 root_provider = file_config.get("provider")
                 if root_provider:
@@ -341,25 +311,19 @@ def load_cli_config() -> Dict[str, Any]:
                 if root_base_url:
                     defaults["model"]["base_url"] = root_base_url
             
-            # Deep merge file_config into defaults.
-            # First: merge keys that exist in both (deep-merge dicts, overwrite scalars)
             for key in defaults:
                 if key == "model":
-                    continue  # Already handled above
+                    continue
                 if key in file_config:
                     if isinstance(defaults[key], dict) and isinstance(file_config[key], dict):
                         defaults[key].update(file_config[key])
                     else:
                         defaults[key] = file_config[key]
             
-            # Second: carry over keys from file_config that aren't in defaults
-            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
             for key in file_config:
                 if key not in defaults and key != "model":
                     defaults[key] = file_config[key]
             
-            # Handle legacy root-level max_turns (backwards compat) - copy to
-            # agent.max_turns whenever the nested key is missing.
             agent_file_config = file_config.get("agent")
             if "max_turns" in file_config and not (
                 isinstance(agent_file_config, dict)
@@ -369,31 +333,20 @@ def load_cli_config() -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
-    # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from daedalus_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
 
-    # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
     
-    # Normalize config key: the new config system (daedalus_cli/config.py) and all
-    # documentation use "backend", the legacy cli-config.yaml uses "env_type".
-    # Accept both, with "backend" taking precedence (it's the documented key).
     if "backend" in terminal_config:
         terminal_config["env_type"] = terminal_config["backend"]
     
-    # Handle special cwd values: "." or "auto" means use current working directory.
-    # Only resolve to the host's CWD for the local backend where the host
-    # filesystem is directly accessible.  For ALL remote/container backends
-    # (ssh, docker, modal, singularity), the host path doesn't exist on the
-    # target -- remove the key so terminal_tool.py uses its per-backend default.
     if terminal_config.get("cwd") in (".", "auto", "cwd"):
         effective_backend = terminal_config.get("env_type", "local")
         if effective_backend == "local":
             terminal_config["cwd"] = os.getcwd()
             defaults["terminal"]["cwd"] = terminal_config["cwd"]
         else:
-            # Remove so TERMINAL_CWD stays unset → tool picks backend default
             terminal_config.pop("cwd", None)
     
     env_mappings = {
@@ -404,28 +357,19 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-        # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
-        # Container resource config (singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",
         "container_disk": "TERMINAL_CONTAINER_DISK",
         "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-        # Persistent shell (non-local backends)
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-        # Sudo support (works with all backends)
         "sudo_password": "SUDO_PASSWORD",
     }
     
-    # Apply config values to env vars so terminal_tool picks them up.
-    # If the config file explicitly has a [terminal] section, those values are
-    # authoritative and override any .env settings.  When using defaults only
-    # (no config file or no terminal section), don't overwrite env vars that
-    # were already set by .env -- the user's .env is the fallback source.
     for config_key, env_var in env_mappings.items():
         if config_key in terminal_config:
             if _file_has_terminal_config or env_var not in os.environ:
@@ -436,7 +380,6 @@ def load_cli_config() -> Dict[str, Any]:
                 else:
                     os.environ[env_var] = str(val)
     
-    # Apply browser config to environment variables
     browser_config = defaults.get("browser", {})
     browser_env_mappings = {
         "inactivity_timeout": "BROWSER_INACTIVITY_TIMEOUT",
@@ -446,15 +389,8 @@ def load_cli_config() -> Dict[str, Any]:
         if config_key in browser_config:
             os.environ[env_var] = str(browser_config[config_key])
     
-    # Apply auxiliary model/direct-endpoint overrides to environment variables.
-    # Vision and web_extract each have their own provider/model/base_url/api_key tuple.
-    # Compression config is read directly from config.yaml by run_agent.py and
-    # auxiliary_client.py — no env var bridging needed.
-    # Only set env vars for non-empty / non-default values so auto-detection
-    # still works.
     auxiliary_config = defaults.get("auxiliary", {})
     auxiliary_task_env = {
-        # config key → env var mapping
         "vision": {
             "provider": "AUXILIARY_VISION_PROVIDER",
             "model": "AUXILIARY_VISION_MODEL",
@@ -492,7 +428,6 @@ def load_cli_config() -> Dict[str, Any]:
         if api_key:
             os.environ[env_map["api_key"]] = api_key
     
-    # Security settings
     security_config = defaults.get("security", {})
     if isinstance(security_config, dict):
         redact = security_config.get("redact_secrets")
@@ -501,32 +436,26 @@ def load_cli_config() -> Dict[str, Any]:
 
     return defaults
 
-# Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
-# Initialize centralized logging early — agent.log + errors.log in ~/.daedalus/logs/.
-# This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
 try:
     from daedalus_logging import setup_logging
     setup_logging(mode="cli")
 except Exception:
-    pass  # Logging setup is best-effort — don't crash the CLI
+    pass
 
-# Validate config structure early — print warnings before user hits cryptic errors
 try:
     from daedalus_cli.config import print_config_warnings
     print_config_warnings()
 except Exception:
     pass
 
-# Initialize the skin engine from config
 try:
     from daedalus_cli.skin_engine import init_skin_from_config
     init_skin_from_config(CLI_CONFIG)
 except Exception:
-    pass  # Skin engine is optional — default skin used if unavailable
+    pass
 
-# Initialize tool preview length from config
 try:
     from agent.display import set_tool_preview_max_len
     _tpl = CLI_CONFIG.get("display", {}).get("tool_preview_length", 0)
@@ -534,18 +463,12 @@ try:
 except Exception:
     pass
 
-# Initialize friendly tool labels from config (0.20 skin: display.friendly_tool_labels)
 try:
     from agent.display import set_friendly_tool_labels
     set_friendly_tool_labels(bool(CLI_CONFIG.get("display", {}).get("friendly_tool_labels", True)))
 except Exception:
     pass
 
-# Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
-# created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
-# which, during CLI idle time, finds prompt_toolkit's event loop and tries to
-# close TCP transports bound to dead worker loops — producing
-# "Event loop is closed" / "Press ENTER to continue..." errors.
 try:
     from agent.auxiliary_client import neuter_async_httpx_del
     neuter_async_httpx_del()
@@ -558,28 +481,22 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
 
-# Import the agent and tool systems
 from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_toolset_for_tool
 
-# Extracted CLI modules (Phase 3)
 from daedalus_cli.banner import build_welcome_banner
 from daedalus_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
 from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 
-# Cron job system for scheduled tasks (execution is handled by the gateway)
 from cron import get_job
 
-# Resource cleanup imports for safe shutdown (terminal VMs, browser sessions)
 from tools.terminal_tool import cleanup_all_environments as _cleanup_all_terminals
 from tools.terminal_tool import set_sudo_password_callback, set_approval_callback
 from tools.skills_tool import set_secret_capture_callback
 from daedalus_cli.callbacks import prompt_for_secret
 from tools.browser_tool import _emergency_cleanup_all_sessions as _cleanup_all_browsers
 
-# Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
-# Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 
 def _run_cleanup():
@@ -601,16 +518,11 @@ def _run_cleanup():
         shutdown_mcp_servers()
     except Exception:
         pass
-    # Close cached auxiliary LLM clients (sync + async) so that
-    # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
-    # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
     except Exception:
         pass
-    # Shut down memory provider (on_session_end + shutdown_all) at actual
-    # session boundary — NOT per-turn inside run_conversation().
     try:
         from daedalus_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
@@ -625,11 +537,7 @@ def _run_cleanup():
         pass
 
 
-# =============================================================================
-# Git Worktree Isolation (#652)
-# =============================================================================
 
-# Tracks the active worktree for cleanup on exit
 _active_worktree: Optional[Dict[str, str]] = None
 
 
@@ -680,7 +588,6 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
 
     wt_path = worktrees_dir / wt_name
 
-    # Ensure .worktrees/ is in .gitignore
     gitignore = Path(repo_root) / ".gitignore"
     _ignore_entry = ".worktrees/"
     try:
@@ -693,7 +600,6 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     except Exception as e:
         logger.debug("Could not update .gitignore: %s", e)
 
-    # Create the worktree
     try:
         result = subprocess.run(
             ["git", "worktree", "add", str(wt_path), "-b", branch_name, "HEAD"],
@@ -706,7 +612,6 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
         print(f"\033[31m✗ Failed to create worktree: {e}\033[0m")
         return None
 
-    # Copy files listed in .worktreeinclude (gitignored files the agent needs)
     include_file = Path(repo_root) / ".worktreeinclude"
     if include_file.exists():
         try:
@@ -718,9 +623,6 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
                     continue
                 src = Path(repo_root) / entry
                 dst = wt_path / entry
-                # Prevent path traversal and symlink escapes: both the resolved
-                # source and the resolved destination must stay inside their
-                # expected roots before any file or symlink operation happens.
                 try:
                     src_resolved = src.resolve(strict=False)
                     dst_resolved = dst.resolve(strict=False)
@@ -737,7 +639,6 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(str(src), str(dst))
                 elif src.is_dir():
-                    # Symlink directories (faster, saves disk)
                     if not dst.exists():
                         dst.parent.mkdir(parents=True, exist_ok=True)
                         os.symlink(str(src_resolved), str(dst))
@@ -778,9 +679,6 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     if not Path(wt_path).exists():
         return
 
-    # Check for unpushed commits — commits reachable from HEAD but not
-    # from any remote branch.  These represent real work the agent did
-    # but didn't push.
     has_unpushed = False
     try:
         result = subprocess.run(
@@ -789,7 +687,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         )
         has_unpushed = bool(result.stdout.strip())
     except Exception:
-        has_unpushed = True  # Assume unpushed on error — don't delete
+        has_unpushed = True
 
     if has_unpushed:
         print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
@@ -797,8 +695,6 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
         _active_worktree = None
         return
 
-    # Remove worktree (even if working tree is dirty — uncommitted
-    # changes without unpushed commits are just artifacts)
     try:
         subprocess.run(
             ["git", "worktree", "remove", wt_path, "--force"],
@@ -807,7 +703,6 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     except Exception as e:
         logger.debug("Failed to remove worktree: %s", e)
 
-    # Delete the branch
     try:
         subprocess.run(
             ["git", "branch", "-D", branch],
@@ -840,36 +735,33 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         return
 
     now = time.time()
-    soft_cutoff = now - (max_age_hours * 3600)       # 24h default
-    hard_cutoff = now - (max_age_hours * 3 * 3600)   # 72h default
+    soft_cutoff = now - (max_age_hours * 3600)
+    hard_cutoff = now - (max_age_hours * 3 * 3600)
 
     for entry in worktrees_dir.iterdir():
         if not entry.is_dir() or not entry.name.startswith("daedalus-"):
             continue
 
-        # Check age
         try:
             mtime = entry.stat().st_mtime
             if mtime > soft_cutoff:
-                continue  # Too recent — skip
+                continue
         except Exception:
             continue
 
-        force = mtime <= hard_cutoff  # Over 72h — force remove
+        force = mtime <= hard_cutoff
 
         if not force:
-            # 24h–72h tier: only remove if no unpushed commits
             try:
                 result = subprocess.run(
                     ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
                     capture_output=True, text=True, timeout=5, cwd=str(entry),
                 )
                 if result.stdout.strip():
-                    continue  # Has unpushed commits — skip
+                    continue
             except Exception:
-                continue  # Can't check — skip
+                continue
 
-        # Safe to remove
         try:
             branch_result = subprocess.run(
                 ["git", "branch", "--show-current"],
@@ -913,7 +805,6 @@ def _prune_orphaned_branches(repo_root: str) -> None:
     except Exception:
         return
 
-    # Collect branches that are actively checked out in a worktree
     active_branches: set = set()
     try:
         wt_result = subprocess.run(
@@ -924,9 +815,8 @@ def _prune_orphaned_branches(repo_root: str) -> None:
             if line.startswith("branch refs/heads/"):
                 active_branches.add(line.split("branch refs/heads/", 1)[-1].strip())
     except Exception:
-        return  # Can't determine active branches — bail
+        return
 
-    # Also protect the currently checked-out branch and main
     try:
         head_result = subprocess.run(
             ["git", "branch", "--show-current"],
@@ -948,7 +838,6 @@ def _prune_orphaned_branches(repo_root: str) -> None:
     if not orphaned:
         return
 
-    # Delete in batches
     for i in range(0, len(orphaned), 50):
         batch = orphaned[i:i + 50]
         try:
@@ -961,19 +850,9 @@ def _prune_orphaned_branches(repo_root: str) -> None:
 
     logger.debug("Pruned %d orphaned branches", len(orphaned))
 
-# ============================================================================
-# ASCII Art & Branding
-# ============================================================================
 
-# Color palette (hex colors for Rich markup):
-# - Gold: #FFD700 (headers, highlights)
-# - Amber: #FFBF00 (secondary highlights)
-# - Bronze: #CD7F32 (tertiary elements)
-# - Light: #FFF8DC (text)
-# - Dim: #B8860B (muted text)
 
-# ANSI building blocks for conversation display
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — matches Rich Panel gold
+_GOLD = "\033[1;38;2;255;215;0m"
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -1006,9 +885,6 @@ def _cprint(text: str):
     _pt_print(_PT_ANSI(text))
 
 
-# ---------------------------------------------------------------------------
-# File-drop detection — extracted as a pure function for testability.
-# ---------------------------------------------------------------------------
 
 _IMAGE_EXTENSIONS = frozenset({
     '.png', '.jpg', '.jpeg', '.gif', '.webp',
@@ -1036,13 +912,12 @@ def _detect_file_drop(user_input: str) -> "dict | None":
     if not isinstance(user_input, str) or not user_input.startswith("/"):
         return None
 
-    # Walk the string absorbing backslash-escaped spaces ("\ ").
     raw = user_input
     pos = 0
     while pos < len(raw):
         ch = raw[pos]
         if ch == '\\' and pos + 1 < len(raw) and raw[pos + 1] == ' ':
-            pos += 2  # skip escaped space
+            pos += 2
         elif ch == ' ':
             break
         else:
@@ -1085,14 +960,12 @@ class ChatConsole:
     def print(self, *args, **kwargs):
         self._buffer.seek(0)
         self._buffer.truncate()
-        # Read terminal width at render time so panels adapt to current size
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
-# ASCII Art - DAEDALUS-AGENT logo (full width, single line - requires ~95 char terminal)
 DAEDALUS_LOGO = """[bold #FFD700]██████╗ ██████╗  ██████╗      █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [#FFBF00]██╔═══██╗██╔══██╗██╔═══██╗    ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
 [#FFBF00]██║   ██║██████╔╝██║   ██║    ███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
@@ -1100,7 +973,6 @@ DAEDALUS_LOGO = """[bold #FFD700]██████╗ ██████╗  �
 [#CD7F32]╚█████╔╝██║  ██║╚█████╔╝    ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
 [bold #FFD700] ╚════╝ ╚═╝  ╚═╝ ╚════╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
 
-# ASCII Art - Daedalus Caduceus (compact, fits in left panel)
 DAEDALUS_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#CD7F32]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
 [#FFBF00]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
@@ -1117,8 +989,6 @@ DAEDALUS_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
-# Compact banner for smaller terminals (fallback)
-# Note: built dynamically by _build_compact_banner() to fit terminal width
 COMPACT_BANNER = """
 [bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
 [bold #FFD700]║[/]  [#FFBF00]⚕ NOUS DAEDALUS[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
@@ -1160,11 +1030,10 @@ def _build_compact_banner() -> str:
     if w < 30:
         return f"\n[{title_color}]{tiny_line}[/] [dim {dim_color}]- Nous Research[/]\n"
 
-    inner = w - 2  # inside the box border
+    inner = w - 2
     bar = "═" * w
     content_width = inner - 2
 
-    # Truncate and pad to fit
     line1 = line1[:content_width].ljust(content_width)
     line2 = version_line[:content_width].ljust(content_width)
 
@@ -1177,9 +1046,6 @@ def _build_compact_banner() -> str:
 
 
 
-# ============================================================================
-# Slash-command detection helper
-# ============================================================================
 
 def _looks_like_slash_command(text: str) -> bool:
     """Return True if *text* looks like a slash command, not a file path.
@@ -1194,14 +1060,9 @@ def _looks_like_slash_command(text: str) -> bool:
     if not text or not text.startswith("/"):
         return False
     first_word = text.split()[0]
-    # After stripping the leading /, a command name has no slashes.
-    # A path like /Users/foo/bar.md always does.
     return "/" not in first_word[1:]
 
 
-# ============================================================================
-# Skill Slash Commands — dynamic commands generated from installed skills
-# ============================================================================
 
 from agent.skill_commands import (
     scan_skill_commands,
@@ -1221,7 +1082,7 @@ def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
         from daedalus_cli.plugins import discover_plugins, get_plugin_manager
-        discover_plugins()  # idempotent — ensures plugins loaded before dispatch
+        discover_plugins()
         return set(get_plugin_manager()._plugin_commands.keys())
     except Exception:
         return set()
@@ -1266,23 +1127,19 @@ def save_config_value(key_path: str, value: any) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    # Use the same precedence as load_cli_config: user config first, then project config
     user_config_path = _daedalus_home / 'config.yaml'
     project_config_path = Path(__file__).parent / 'cli-config.yaml'
     config_path = user_config_path if user_config_path.exists() else project_config_path
     
     try:
-        # Ensure parent directory exists (for ~/.daedalus/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Load existing config
         if config_path.exists():
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f) or {}
         else:
             config = {}
         
-        # Navigate to the key and set value
         keys = key_path.split('.')
         current = config
         for key in keys[:-1]:
@@ -1291,12 +1148,9 @@ def save_config_value(key_path: str, value: any) -> bool:
             current = current[key]
         current[keys[-1]] = value
         
-        # Save back atomically — write to temp file + fsync + os.replace
-        # so an interrupt never leaves config.yaml truncated or empty.
         from utils import atomic_yaml_write
         atomic_yaml_write(config_path, config)
         
-        # Enforce owner-only permissions on config files (contain API keys)
         try:
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
@@ -1310,13 +1164,7 @@ def save_config_value(key_path: str, value: any) -> bool:
 
 
 
-# ============================================================================
-# Module-level helpers used by the CLI mixins (port from origin 0.20).
-# These names are imported lazily inside daedalus_cli/cli_*_mixin.py method
-# bodies via ``from cli import ...``, so they must exist here at module level.
-# ============================================================================
 
-# --- reasoning/thinking tag stripping --------------------------------------
 _REASONING_TAGS = (
     "REASONING_SCRATCHPAD",
     "think",
@@ -1340,28 +1188,24 @@ def _strip_reasoning_tags(text: str) -> str:
         return ""
     cleaned = text
     for tag in _REASONING_TAGS:
-        # Closed pair — case-insensitive so <THINK>…</THINK> is handled too.
         cleaned = re.sub(
             rf"<{tag}>.*?</{tag}>\s*",
             "",
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
         )
-        # Unterminated open tag — strip from the tag to end of text.
         cleaned = re.sub(
             rf"<{tag}>.*$",
             "",
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
         )
-        # Stray orphan close tag left behind by partial dumps.
         cleaned = re.sub(
             rf"</{tag}>\s*",
             "",
             cleaned,
             flags=re.IGNORECASE,
         )
-    # Tool-call XML blocks some open models leak into visible content.
     for tc_tag in ("tool_call", "tool_calls", "tool_result",
                    "function_call", "function_calls"):
         cleaned = re.sub(
@@ -1370,7 +1214,6 @@ def _strip_reasoning_tags(text: str) -> str:
             cleaned,
             flags=re.DOTALL | re.IGNORECASE,
         )
-    # <function name="..."> — boundary + attribute gated to avoid prose FPs.
     cleaned = re.sub(
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
         r'<function\b[^>]*\bname\s*=[^>]*>'
@@ -1379,7 +1222,6 @@ def _strip_reasoning_tags(text: str) -> str:
         cleaned,
         flags=re.DOTALL | re.IGNORECASE,
     )
-    # Stray tool-call close tags.
     cleaned = re.sub(
         r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
         '',
@@ -1408,7 +1250,6 @@ def _assistant_copy_text(content: Any) -> str:
     return _strip_reasoning_tags(_assistant_content_as_text(content))
 
 
-# --- process-local session-id sync -----------------------------------------
 def _sync_process_session_id(session_id: str) -> None:
     """Keep process-local session-id consumers aligned after CLI switches."""
     try:
@@ -1419,7 +1260,6 @@ def _sync_process_session_id(session_id: str) -> None:
         pass
 
 
-# --- deferred (Termux) agent startup ---------------------------------------
 _deferred_agent_startup_done = False
 
 
@@ -1477,7 +1317,6 @@ def _prepare_deferred_agent_startup() -> None:
         )
 
 
-# --- ANSI building blocks used by the billing/commands mixins --------------
 def _b(s: str) -> str:
     """Bold if stdout is a real TTY; plain text otherwise (slash-worker safe)."""
     import sys as _sys
@@ -1496,12 +1335,11 @@ def _d(s: str) -> str:
         return str(s)
 
 
-# --- light/dark terminal detection + skin-aware accent ---------------------
 _LIGHT_MODE_CACHE: bool | None = None
 _TRUE_RE = re.compile(r"^(1|true|on|yes|y)$")
 _FALSE_RE = re.compile(r"^(0|false|off|no|n)$")
-_LIGHT_DEFAULT_TERM_PROGRAMS = frozenset()  # Apple_Terminal doesn't reliably indicate; require explicit
-_ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — fallback
+_LIGHT_DEFAULT_TERM_PROGRAMS = frozenset()
+_ACCENT_ANSI_DEFAULT = "\033[1;38;2;255;215;0m"
 
 
 def _luminance_from_hex(hex_str: str) -> float | None:
@@ -1514,7 +1352,6 @@ def _luminance_from_hex(hex_str: str) -> float | None:
         r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
     except ValueError:
         return None
-    # Rec.709 luma
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
 
 
@@ -1581,7 +1418,6 @@ def _detect_light_mode() -> bool:
         return _LIGHT_MODE_CACHE
     result = False
     try:
-        # 1. Explicit env override
         for var in ("DAEDALUS_LIGHT", "DAEDALUS_TUI_LIGHT"):
             v = (os.environ.get(var) or "").strip().lower()
             if _TRUE_RE.match(v):
@@ -1591,7 +1427,6 @@ def _detect_light_mode() -> bool:
             if _FALSE_RE.match(v):
                 _LIGHT_MODE_CACHE = result
                 return result
-        # 2. Theme hint
         theme = (os.environ.get("DAEDALUS_TUI_THEME") or "").strip().lower()
         if theme == "light":
             result = True
@@ -1600,14 +1435,12 @@ def _detect_light_mode() -> bool:
         if theme == "dark":
             _LIGHT_MODE_CACHE = result
             return result
-        # 3. Explicit bg hex
         bg_hint = os.environ.get("DAEDALUS_TUI_BACKGROUND") or ""
         bg_lum = _luminance_from_hex(bg_hint)
         if bg_lum is not None:
             result = bg_lum >= 0.5
             _LIGHT_MODE_CACHE = result
             return result
-        # 4. COLORFGBG (xterm/Konsole/urxvt)
         cfgbg = (os.environ.get("COLORFGBG") or "").strip()
         if cfgbg:
             last = cfgbg.split(";")[-1] if ";" in cfgbg else cfgbg
@@ -1620,7 +1453,6 @@ def _detect_light_mode() -> bool:
                 if 0 <= bg < 16:
                     _LIGHT_MODE_CACHE = result
                     return result
-        # 5. OSC 11 query (best-effort, only when stdin/stdout are TTY)
         bg_color = _query_osc11_background()
         if bg_color:
             lum = _luminance_from_hex(bg_color)
@@ -1628,7 +1460,6 @@ def _detect_light_mode() -> bool:
                 result = lum >= 0.5
                 _LIGHT_MODE_CACHE = result
                 return result
-        # 6. TERM_PROGRAM allow-list (currently empty)
         tp = (os.environ.get("TERM_PROGRAM") or "").strip()
         if tp in _LIGHT_DEFAULT_TERM_PROGRAMS:
             result = True
@@ -1639,18 +1470,17 @@ def _detect_light_mode() -> bool:
 
 
 _LIGHT_MODE_REMAP: dict[str, str] = {
-    # Original (dark-mode) -> Light-mode replacement (darker, readable)
-    "#FFF8DC": "#1A1A1A",   # cornsilk -> near-black
-    "#FFD700": "#9A6B00",   # gold -> dark goldenrod (readable on cream)
-    "#FFBF00": "#8A5A00",   # amber -> dark amber
-    "#B8860B": "#5C4500",   # dark goldenrod -> deeper brown (more contrast)
-    "#DAA520": "#6B4F00",   # goldenrod -> dark olive
-    "#F1E6CF": "#1A1A1A",   # cream -> near-black
-    "#c9d1d9": "#24292F",   # github-light fg
-    "#EAF7FF": "#0F1B26",   # ice
+    "#FFF8DC": "#1A1A1A",
+    "#FFD700": "#9A6B00",
+    "#FFBF00": "#8A5A00",
+    "#B8860B": "#5C4500",
+    "#DAA520": "#6B4F00",
+    "#F1E6CF": "#1A1A1A",
+    "#c9d1d9": "#24292F",
+    "#EAF7FF": "#0F1B26",
     "#F5F5F5": "#1A1A1A",
     "#FFF0D4": "#1A1A1A",
-    "#CD7F32": "#8A4F1A",   # bronze -> darker bronze
+    "#CD7F32": "#8A4F1A",
     "#FFEFB5": "#3A2A00",
 }
 
@@ -1666,7 +1496,6 @@ def _maybe_remap_for_light_mode(hex_color: str) -> str:
     return _LIGHT_MODE_REMAP_UPPER.get(upper, hex_color)
 
 
-# Pre-uppercased lookup table for case-insensitive remapping
 _LIGHT_MODE_REMAP_UPPER = {k.upper(): v for k, v in _LIGHT_MODE_REMAP.items()}
 
 
@@ -1722,7 +1551,6 @@ class _SkinAwareAnsi:
 _ACCENT = _SkinAwareAnsi("response_border", "#FFD700", bold=True)
 
 
-# --- file-drop / attachment helpers ----------------------------------------
 def _termux_example_image_path(filename: str = "cat.png") -> str:
     """Return a realistic example media path for the current Termux setup."""
     candidates = [
@@ -1832,7 +1660,6 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     return resolved
 
 
-# --- markdown helpers for final-content rendering --------------------------
 def realign_markdown_tables(*args, **kwargs):
     """CJK-aware table realignment (defensive wrapper; no-op when absent)."""
     try:
@@ -1882,6 +1709,42 @@ def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
 
 
+def _collapse_blank_line_floods(text: str) -> str:
+    """Trim runaway blank lines from model output before it is rendered.
+
+    Some models end a reply with dozens of empty lines. The renderer reproduced
+    them inside the panel, scrolling the real answer off screen. Trailing blanks
+    carry no meaning in any render mode, so they always go; interior runs
+    collapse to one, except inside fenced code blocks where blank lines are
+    content and rewriting them would corrupt what the model wrote.
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    in_fence = False
+    blanks = 0
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            in_fence = not in_fence
+            blanks = 0
+            out.append(line)
+            continue
+        if in_fence:
+            out.append(line)
+            continue
+        if not line.strip():
+            blanks += 1
+            if blanks <= 1:
+                out.append("")
+            continue
+        blanks = 0
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -1892,6 +1755,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
         cols = 80
     panel_width = max(20, cols - 4)
 
+    text = _collapse_blank_line_floods(text or "")
     normalized_mode = str(mode or "render").strip().lower()
     if normalized_mode == "strip":
         return _RichText(
@@ -1906,7 +1770,6 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     return Markdown(plain)
 
 
-# --- CLI output history (resize-replay) ------------------------------------
 _OUTPUT_HISTORY_ENABLED = True
 _OUTPUT_HISTORY_REPLAYING = False
 _OUTPUT_HISTORY_SUPPRESSED = False
@@ -1987,13 +1850,7 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
-# ============================================================================
-# DaedalusCLI Class
-# ============================================================================
 
-# The CLI's command/setup/billing handlers are split across mixins (ported
-# from origin 0.20).  The mixins import cli.py-internal helpers LAZILY inside
-# their method bodies, so importing them here at module level is cycle-free.
 from daedalus_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
 from daedalus_cli.cli_commands_mixin import CLICommandsMixin
 from daedalus_cli.cli_billing_mixin import CLIBillingMixin
@@ -2036,55 +1893,34 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
         """
-        # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
-        # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
-        # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
-        # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
-        # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
-        # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
-        # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
 
-        # self.verbose ONLY controls global DEBUG logging (root logger level).
-        # display.tool_progress="verbose" controls tool-call rendering (full args,
-        # results, think blocks) and is independent — see _apply_logging_levels.
-        # Coupling the two caused all module DEBUG logs to spew to console whenever
-        # a user set tool_progress: verbose in config (the operator's startup noise).
         self.verbose = bool(verbose) if verbose is not None else False
 
-        # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
 
-        # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
-        # Streaming display state
-        self._stream_buf = ""        # Partial line buffer for line-buffered rendering
-        self._stream_started = False  # True once first delta arrives
-        self._stream_box_opened = False  # True once the response box header is printed
-        self._reasoning_stream_started = False  # True once live reasoning starts streaming
-        self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
+        self._stream_buf = ""
+        self._stream_started = False
+        self._stream_box_opened = False
+        self._reasoning_stream_started = False
+        self._reasoning_preview_buf = ""
         self._pending_edit_snapshots = {}
         
-        # Configuration - priority: CLI args > env vars > config file
-        # Model comes from: CLI arg or config.yaml (single source of truth).
-        # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
-        # authoritative.  This avoids conflicts in multi-agent setups where
-        # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
         _DEFAULT_CONFIG_MODEL = ""
         self.model = model or _config_model or _DEFAULT_CONFIG_MODEL
-        # Auto-detect model from local server if still on default
         if self.model == _DEFAULT_CONFIG_MODEL:
             _base_url = (_model_config.get("base_url") or "") if isinstance(_model_config, dict) else ""
             if "localhost" in _base_url or "127.0.0.1" in _base_url:
@@ -2092,12 +1928,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _detected = _auto_detect_local_model(_base_url)
                 if _detected:
                     self.model = _detected
-        # Track whether model was explicitly chosen by the user or fell back
-        # to the global default.  Provider-specific normalisation may override
-        # the default silently but should warn when overriding an explicit choice.
-        # A config model that matches the global fallback is NOT considered an
-        # explicit choice — the user just never changed it.  But a config model
-        # like "gpt-5.3-codex" IS explicit and must be preserved.
         self._model_is_default = not model and (
             not _config_model or _config_model == _DEFAULT_CONFIG_MODEL
         )
@@ -2105,7 +1935,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
 
-        # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (
             provider
             or CLI_CONFIG["model"].get("provider")
@@ -2122,39 +1951,30 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             or CLI_CONFIG["model"].get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None
-        # Match key to resolved base_url: OpenRouter URL → prefer OPENROUTER_API_KEY,
-        # custom endpoint → prefer OPENAI_API_KEY (issue #560).
-        # Note: _ensure_runtime_credentials() re-resolves this before first use.
         if self.base_url and "openrouter.ai" in self.base_url:
             self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         self._nous_key_expires_at: Optional[str] = None
         self._nous_key_source: Optional[str] = None
-        # Max turns priority: CLI arg > config file > env var > default
-        if max_turns is not None:  # CLI arg was explicitly set
+        if max_turns is not None:
             self.max_turns = max_turns
         elif CLI_CONFIG["agent"].get("max_turns"):
             self.max_turns = CLI_CONFIG["agent"]["max_turns"]
-        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
+        elif CLI_CONFIG.get("max_turns"):
             self.max_turns = CLI_CONFIG["max_turns"]
         elif os.getenv("DAEDALUS_MAX_ITERATIONS"):
             self.max_turns = int(os.getenv("DAEDALUS_MAX_ITERATIONS"))
         else:
             self.max_turns = 90
         
-        # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         if toolsets and "all" not in toolsets and "*" not in toolsets:
-            # Validate each toolset — MCP server names are added by
-            # _get_platform_tools() but aren't registered in TOOLSETS yet
-            # (that happens later in _sync_mcp_toolsets), so exclude them.
             mcp_names = set((CLI_CONFIG.get("mcp_servers") or {}).keys())
             invalid = [t for t in toolsets if not validate_toolset(t) and t not in mcp_names]
             if invalid:
                 self.console.print(f"[bold red]Warning: Unknown toolsets: {', '.join(invalid)}[/]")
         
-        # Filesystem checkpoints: CLI flag > config
         cp_cfg = CLI_CONFIG.get("checkpoints", {})
         if isinstance(cp_cfg, bool):
             cp_cfg = {"enabled": cp_cfg}
@@ -2162,27 +1982,22 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         self.pass_session_id = pass_session_id
         
-        # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
             os.getenv("DAEDALUS_EPHEMERAL_SYSTEM_PROMPT", "")
             or CLI_CONFIG["agent"].get("system_prompt", "")
         )
         self.personalities = CLI_CONFIG["agent"].get("personalities", {})
         
-        # Ephemeral prefill messages (few-shot priming, never persisted)
         self.prefill_messages = _load_prefill_messages(
             CLI_CONFIG["agent"].get("prefill_messages_file", "")
         )
         
-        # Reasoning config (OpenRouter reasoning effort level)
         self.reasoning_config = _parse_reasoning_config(
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
-        # Task-intensity gauge (fork: context-budget-manager)
         self.reasoning_auto = bool(CLI_CONFIG["agent"].get("reasoning_auto", False))
         self.reasoning_floor = CLI_CONFIG["agent"].get("reasoning_floor", "low")
         
-        # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")
         self._providers_only = pr.get("only")
@@ -2191,27 +2006,20 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._provider_require_params = pr.get("require_parameters", False)
         self._provider_data_collection = pr.get("data_collection")
         
-        # Fallback provider chain — tried in order when primary fails after retries.
-        # Supports new list format (fallback_providers) and legacy single-dict (fallback_model).
         fb = CLI_CONFIG.get("fallback_providers") or CLI_CONFIG.get("fallback_model") or []
-        # Normalize legacy single-dict to a one-element list
         if isinstance(fb, dict):
             fb = [fb] if fb.get("provider") and fb.get("model") else []
         self._fallback_model = fb
 
-        # Optional cheap-vs-strong routing for simple turns
         self._smart_model_routing = CLI_CONFIG.get("smart_model_routing", {}) or {}
         self._active_agent_route_signature = None
 
-        # Agent will be initialized on first use
         self.agent: Optional[AIAgent] = None
-        self._app = None  # prompt_toolkit Application (set in run())
+        self._app = None
         
-        # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
         self._resumed = False
-        # Initialize SQLite session store early so /title works before first message
         self._session_db = None
         try:
             from daedalus_state import SessionDB
@@ -2219,10 +2027,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception as e:
             logger.warning("Failed to initialize SessionDB — session will NOT be indexed for search: %s", e)
         
-        # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
         
-        # Session ID: reuse existing one when resuming, otherwise generate fresh
         if resume:
             self.session_id = resume
             self._resumed = True
@@ -2231,14 +2037,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
-        # History file for persistent input recall across sessions
         self._history_file = _daedalus_home / ".daedalus_history"
-        self._last_invalidate: float = 0.0  # throttle UI repaints
+        self._last_invalidate: float = 0.0
         self._app = None
 
-        # State shared by interactive run() and single-query chat mode.
-        # These must exist before any direct chat() call because single-query
-        # mode does not go through run().
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
@@ -2254,7 +2056,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._approval_lock = threading.Lock()
         self._secret_state = None
         self._secret_deadline = 0
-        self._spinner_text: str = ""  # thinking spinner text for TUI
+        self._spinner_text: str = ""
         self._command_running = False
         self._command_status = ""
         self._attached_images: list[Path] = []
@@ -2262,7 +2064,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
 
-        # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
         self._voice_mode = False
         self._voice_tts = False
@@ -2273,10 +2074,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
 
-        # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
 
-        # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
@@ -2361,9 +2160,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "active_background_subagents": 0,
         }
 
-        # Count live /background tasks. The dict entry is removed in the
-        # task thread's finally block, so len() reflects truly-running tasks.
-        # len() on a CPython dict is atomic; safe to read without a lock.
         try:
             bg_tasks = getattr(self, "_background_tasks", None)
             if bg_tasks:
@@ -2371,16 +2167,12 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
 
-        # Count live background terminal processes (terminal tool background
-        # sessions tracked by tools.process_registry). Cheap O(1) read.
         try:
             from tools.process_registry import process_registry
             snapshot["active_background_processes"] = process_registry.count_running()
         except Exception:
             pass
 
-        # Count live background/async subagents (delegate_task batches and
-        # background single delegations tracked by tools.async_delegation).
         try:
             from tools.async_delegation import active_count as _async_active_count
             snapshot["active_background_subagents"] = _async_active_count()
@@ -2512,11 +2304,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
-            # Use prompt_toolkit's own terminal width when running inside the
-            # TUI — shutil.get_terminal_size() can return stale or fallback
-            # values (especially on SSH) that differ from what prompt_toolkit
-            # actually renders, causing the fragments to overflow to a second
-            # line and produce duplicated status bar rows over long sessions.
             try:
                 from prompt_toolkit.application import get_app
                 width = get_app().output.get_size().columns
@@ -2629,7 +2416,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if resolved_provider != "openai-codex":
             return False
 
-        # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
         if "/" in current_model:
             slug = current_model.split("/", 1)[1]
             if not self._model_is_default:
@@ -2641,7 +2427,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             current_model = slug
             changed = True
 
-        # 2. Replace untouched default with a Codex model
         if self._model_is_default:
             fallback_model = "gpt-5.3-codex"
             try:
@@ -2668,7 +2453,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._spinner_text = text or ""
         self._invalidate()
 
-    # ── Streaming display ────────────────────────────────────────────────
 
     def _current_reasoning_callback(self):
         """Return the active reasoning display callback for the current mode."""
@@ -2783,7 +2567,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if getattr(self, "_stream_box_opened", False):
             return
 
-        # Open reasoning box on first reasoning token
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
             w = shutil.get_terminal_size().columns
@@ -2793,8 +2576,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
-        # Emit complete lines, and force-flush long partial lines so
-        # reasoning is visible in real-time even without newlines.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
             _cprint(f"{_DIM}{line}{_RST}")
@@ -2805,7 +2586,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""
         if getattr(self, "_reasoning_box_opened", False):
-            # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
                 _cprint(f"{_DIM}{buf}{_RST}")
@@ -2814,7 +2594,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
 
-            # Flush any content that was deferred while reasoning was rendering.
             deferred = getattr(self, "_deferred_content", "")
             if deferred:
                 self._deferred_content = ""
@@ -2844,25 +2623,15 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         self._stream_started = True
 
-        # ── Tag-based reasoning suppression ──
-        # Track whether we're inside a reasoning/thinking block.
-        # These tags are model-generated (system prompt tells the model
-        # to use them) and get stripped from final_response. We must
-        # suppress them during streaming too — unless show_reasoning is
-        # enabled, in which case we route the inner content to the
-        # reasoning display box instead of discarding it.
         _OPEN_TAGS = ("<REASONING_SCRATCHPAD>", "<think>", "<reasoning>", "<THINKING>", "<thinking>")
         _CLOSE_TAGS = ("</REASONING_SCRATCHPAD>", "</think>", "</reasoning>", "</THINKING>", "</thinking>")
 
-        # Append to a pre-filter buffer first
         self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text
 
-        # Check if we're entering a reasoning block
         if not getattr(self, "_in_reasoning_block", False):
             for tag in _OPEN_TAGS:
                 idx = self._stream_prefilt.find(tag)
                 if idx != -1:
-                    # Emit everything before the tag
                     before = self._stream_prefilt[:idx]
                     if before:
                         self._emit_stream_text(before)
@@ -2870,9 +2639,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
                     break
 
-            # Could also be a partial open tag at the end — hold it back
             if not getattr(self, "_in_reasoning_block", False):
-                # Check for partial tag match at the end
                 safe = self._stream_prefilt
                 for tag in _OPEN_TAGS:
                     for i in range(1, len(tag)):
@@ -2884,34 +2651,23 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._stream_prefilt = self._stream_prefilt[len(safe):]
                 return
 
-        # Inside a reasoning block — look for close tag.
-        # Keep accumulating _stream_prefilt because close tags can arrive
-        # split across multiple tokens (e.g. "</REASONING_SCRATCH" + "PAD>...").
         if getattr(self, "_in_reasoning_block", False):
             for tag in _CLOSE_TAGS:
                 idx = self._stream_prefilt.find(tag)
                 if idx != -1:
                     self._in_reasoning_block = False
-                    # When show_reasoning is on, route inner content to
-                    # the reasoning display box instead of discarding.
                     if self.show_reasoning:
                         inner = self._stream_prefilt[:idx]
                         if inner:
                             self._stream_reasoning_delta(inner)
                     after = self._stream_prefilt[idx + len(tag):]
                     self._stream_prefilt = ""
-                    # Process remaining text after close tag through full
-                    # filtering (it could contain another open tag)
                     if after:
                         self._stream_delta(after)
                     return
-            # When show_reasoning is on, stream reasoning content live
-            # instead of silently accumulating. Keep only the tail that
-            # could be a partial close tag prefix.
             max_tag_len = max(len(t) for t in _CLOSE_TAGS)
             if len(self._stream_prefilt) > max_tag_len:
                 if self.show_reasoning:
-                    # Route the safe prefix to reasoning display
                     safe_reasoning = self._stream_prefilt[:-max_tag_len]
                     self._stream_reasoning_delta(safe_reasoning)
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
@@ -2922,13 +2678,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not text:
             return
 
-        # When show_reasoning is on and reasoning is still rendering,
-        # defer content until the reasoning box closes.  This ensures the
-        # reasoning block always appears BEFORE the response in the terminal.
-        # Bypassed in full-diagnostics mode (tool_progress == "verbose"):
-        # /verbose VERBOSE means stream everything as it arrives, ordering
-        # included — deferral exists for readability, which is exactly what
-        # verbose mode is opting out of.
         if (
             self.show_reasoning
             and getattr(self, "_reasoning_box_opened", False)
@@ -2937,12 +2686,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._deferred_content = getattr(self, "_deferred_content", "") + text
             return
 
-        # Close the live reasoning box before opening the response box
         self._close_reasoning_box()
 
-        # Open the response box header on the very first visible text
         if not self._stream_box_opened:
-            # Strip leading whitespace/newlines before first visible content
             text = text.lstrip("\n")
             if not text:
                 return
@@ -2955,8 +2701,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 label = "⚕ Daedalus"
                 _text_hex = "#FFF8DC"
-            # Build a true-color ANSI escape for the response text color
-            # so streamed content matches the Rich Panel appearance.
             try:
                 _r = int(_text_hex[1:3], 16)
                 _g = int(_text_hex[3:5], 16)
@@ -2970,7 +2714,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         self._stream_buf += text
 
-        # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
@@ -2978,7 +2721,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
-        # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
         if self._stream_buf:
@@ -2986,7 +2728,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
             self._stream_buf = ""
 
-        # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
             _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
@@ -3078,7 +2819,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not self._ensure_runtime_credentials():
             return False
 
-        # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
             try:
                 from daedalus_state import SessionDB
@@ -3086,10 +2826,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         
-        # If resuming, validate the session exists and load its history.
-        # _preload_resumed_session() may have already loaded it (called from
-        # run() for immediate display).  In that case, conversation_history
-        # is non-empty and we skip the DB round-trip.
         if self._resumed and self._session_db and not self.conversation_history:
             session_meta = self._session_db.get_session(self.session_id)
             if not session_meta:
@@ -3114,7 +2850,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ChatConsole().print(
                     f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
                 )
-            # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
                     "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
@@ -3175,23 +2910,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
-                # Skip the project-context chain (AGENTS.md/.daedalus.md/etc.):
-                # the daedalus install's own AGENTS.md is a ~5k-token repo
-                # dev-guide picked up via cwd that inflated every CLI chat.
-                # SOUL.md identity is still loaded (kept separate from
-                # project context). MEMORY.md/USER.md load via _memory_store.
                 skip_project_context=True,
             )
-            # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent
-            # Route agent status output through prompt_toolkit so ANSI escape
-            # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
-            # VERBOSE tier (display.tool_progress: verbose) = stream
-            # everything unbuffered from the start, not just after a
-            # manual /verbose toggle — see _toggle_verbose for the
-            # live-toggle counterpart.
             self.agent.stream_verbose_mode = self.tool_progress_mode == "verbose"
             self._active_agent_route_signature = (
                 effective_model,
@@ -3219,14 +2942,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
 
-        # Get context length for display before branching so it remains
-        # available to the low-context warning logic in compact mode too.
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
         
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
         term_width = shutil.get_terminal_size().columns
         use_compact = self.compact or term_width < 80
         
@@ -3234,13 +2953,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.console.print(_build_compact_banner())
             self._show_status()
         else:
-            # Get tools for display
             tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
             
-            # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
             
-            # Build and display the banner
             build_welcome_banner(
                 console=self.console,
                 model=self.model,
@@ -3252,13 +2968,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 provider=self.provider,
             )
 
-        # Tool discovery is intentionally deferred on the bare prompt path;
-        # availability warnings are shown once tools are initialized.
         if os.environ.get("DAEDALUS_DEFER_AGENT_STARTUP") != "1":
-            # Show tool availability warnings if any tools are disabled
             self._show_tool_availability_warnings()
 
-        # Warn about very low context lengths (common with local servers)
         if ctx_len and ctx_len <= 8192:
             self.console.print()
             self.console.print(
@@ -3282,7 +2994,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     "[dim]   Fix: Set model.context_length in config.yaml, or increase your server's context setting[/]"
                 )
 
-        # Warn if the configured model is a Nous Daedalus LLM (not agentic)
         model_name = getattr(self, "model", "") or ""
         if "daedalus" in model_name.lower():
             self.console.print()
@@ -3346,7 +3057,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
             return False
 
-        # Re-open the session (clear ended_at so it's active again)
         try:
             self._session_db._conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
@@ -3389,14 +3099,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not self.conversation_history:
             return
 
-        # Check config: resume_display setting
         if self.resume_display == "minimal":
             return
 
-        MAX_DISPLAY_EXCHANGES = 10   # max user+assistant pairs to show
-        MAX_USER_LEN = 300           # truncate user messages
-        MAX_ASST_LEN = 200           # truncate assistant text
-        MAX_ASST_LINES = 3           # max lines of assistant text
+        MAX_DISPLAY_EXCHANGES = 10
+        MAX_USER_LEN = 300
+        MAX_ASST_LEN = 200
+        MAX_ASST_LINES = 3
 
         def _strip_reasoning(text: str) -> str:
             """Remove <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD> blocks
@@ -3406,15 +3115,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
                 "", text, flags=re.DOTALL,
             )
-            # Also strip unclosed reasoning tags at the end
             cleaned = re.sub(
                 r"<REASONING_SCRATCHPAD>.*$",
                 "", cleaned, flags=re.DOTALL,
             )
             return cleaned.strip()
 
-        # Collect displayable entries (skip system, tool-result messages)
-        entries = []  # list of (role, display_text)
+        entries = []
         for msg in self.conversation_history:
             role = msg.get("role", "")
             content = msg.get("content")
@@ -3427,7 +3134,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             if role == "user":
                 text = "" if content is None else str(content)
-                # Handle multimodal content (list of dicts)
                 if isinstance(content, list):
                     parts = []
                     for part in content:
@@ -3453,7 +3159,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     parts.append(text)
                 if tool_calls:
                     tc_count = len(tool_calls)
-                    # Extract tool names
                     names = []
                     for tc in tool_calls:
                         fn = tc.get("function", {})
@@ -3466,20 +3171,17 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     noun = "call" if tc_count == 1 else "calls"
                     parts.append(f"[{tc_count} tool {noun}: {names_str}]")
                 if not parts:
-                    # Skip pure-reasoning messages that have no visible output
                     continue
                 entries.append(("assistant", " ".join(parts)))
 
         if not entries:
             return
 
-        # Determine if we need to truncate
         skipped = 0
         if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
             skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
             entries = entries[skipped:]
 
-        # Build the display using Rich
         from rich.panel import Panel
         from rich.text import Text
 
@@ -3506,7 +3208,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         for i, (role, text) in enumerate(entries):
             if role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
-                # Show first line inline, indent rest
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
@@ -3518,7 +3219,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="dim")
             if i < len(entries) - 1:
-                lines.append("")  # small gap
+                lines.append("")
 
         panel = Panel(
             lines,
@@ -3556,12 +3257,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         args = parts[1:] if len(parts) > 1 else []
 
         if not args:
-            # List checkpoints
             checkpoints = mgr.list_checkpoints(cwd)
             print(format_checkpoint_list(checkpoints, cwd))
             return
 
-        # Handle /rollback diff <N>
         if args[0].lower() == "diff":
             if len(args) < 2:
                 print("  Usage: /rollback diff <N>")
@@ -3583,7 +3282,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if stat:
                         print(f"\n{stat}")
                     if diff:
-                        # Limit diff output to avoid terminal flood
                         diff_lines = diff.splitlines()
                         if len(diff_lines) > 80:
                             print("\n".join(diff_lines[:80]))
@@ -3594,7 +3292,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"  ❌ {result['error']}")
             return
 
-        # Resolve checkpoint reference (number or hash)
         checkpoints = mgr.list_checkpoints(cwd)
         if not checkpoints:
             print(f"  No checkpoints found for {cwd}")
@@ -3604,7 +3301,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not target_hash:
             return
 
-        # Check for file-level restore: /rollback <N> <file>
         file_path = args[1] if len(args) > 1 else None
 
         result = mgr.restore(cwd, target_hash, file_path=file_path)
@@ -3615,8 +3311,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
             print("  A pre-rollback snapshot was saved automatically.")
 
-            # Also undo the last conversation turn so the agent's context
-            # matches the restored filesystem state
             if self.conversation_history:
                 self.undo_last()
                 print("  Chat turn undone to match restored file state.")
@@ -3626,14 +3320,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
     def _resolve_checkpoint_ref(self, ref: str, checkpoints: list) -> str | None:
         """Resolve a checkpoint number or hash to a full commit hash."""
         try:
-            idx = int(ref) - 1  # 1-indexed for user
+            idx = int(ref) - 1
             if 0 <= idx < len(checkpoints):
                 return checkpoints[idx]["hash"]
             else:
                 print(f"  Invalid checkpoint number. Use 1-{len(checkpoints)}.")
                 return None
         except ValueError:
-            # Treat as a git hash
             return ref
 
     def _handle_stop_command(self):
@@ -3711,7 +3404,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
                 _cprint(f"  {_DIM}⚠ vision analysis error — path included for retry{_RST}")
 
-        # Combine: vision descriptions first, then the user's original text
         user_text = text if isinstance(text, str) and text else ""
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
@@ -3725,20 +3417,19 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             
             available, unavailable = check_tool_availability()
             
-            # Filter to only those missing API keys (not system deps)
             api_key_missing = [u for u in unavailable if u["missing_vars"]]
             
             if api_key_missing:
                 self.console.print()
                 self.console.print("[yellow]⚠️  Some tools disabled (missing API keys):[/]")
                 for item in api_key_missing:
-                    tools_str = ", ".join(item["tools"][:2])  # Show first 2 tools
+                    tools_str = ", ".join(item["tools"][:2])
                     if len(item["tools"]) > 2:
                         tools_str += f", +{len(item['tools'])-2} more"
                     self.console.print(f"   [dim]• {item['name']}[/] [dim italic]({', '.join(item['missing_vars'])})[/]")
                 self.console.print("[dim]   Run 'daedalus setup' to configure[/]")
         except Exception:
-            pass  # Don't crash on import errors
+            pass
     
     def _show_security_advisories(self):
         """Show a startup banner if any unacked security advisories match.
@@ -3757,12 +3448,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             hits = detect_compromised()
             banner = startup_banner(hits)
             if banner:
-                # Print to stderr — keeps stdout clean for piped automation,
-                # and Rich's banner rendering already wrote to stdout above.
                 print(banner, file=sys.stderr, flush=True)
         except Exception:
-            # Never let the security banner block startup. Failures are
-            # logged at DEBUG by the advisory module.
             pass
 
     def _prewarm_agent_runtime(self) -> None:
@@ -3785,7 +3472,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _show_status(self):
         """Show compact startup status line."""
-        # Avoid pulling the full tool registry into the bare Termux prompt path.
         if os.environ.get("DAEDALUS_DEFER_AGENT_STARTUP") == "1":
             tool_status = "tools deferred"
         else:
@@ -3793,18 +3479,15 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             tool_count = len(tools) if tools else 0
             tool_status = f"{tool_count} tools"
 
-        # Format model name (shorten if needed)
         model_short = self.model.split("/")[-1] if "/" in self.model else self.model
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
 
-        # Get API status indicator
         if self.api_key:
             api_indicator = "[green bold]●[/]"
         else:
             api_indicator = "[red bold]●[/]"
 
-        # Build status line with proper markup — skin-aware colors
         try:
             from daedalus_cli.skin_engine import get_active_skin
             skin = get_active_skin()
@@ -3880,7 +3563,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(;_;) No tools available")
             return
         
-        # Header
         print()
         title = "(^_^)/ Available Tools"
         width = 78
@@ -3890,7 +3572,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print("+" + "-" * width + "+")
         print()
         
-        # Group tools by toolset
         toolsets = {}
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):
             name = tool["function"]["name"]
@@ -3898,13 +3579,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if toolset not in toolsets:
                 toolsets[toolset] = []
             desc = tool["function"].get("description", "")
-            # First sentence: split on ". " (period+space) to avoid breaking on "e.g." or "v2.0"
             desc = desc.split("\n")[0]
             if ". " in desc:
                 desc = desc[:desc.index(". ") + 1]
             toolsets[toolset].append((name, desc))
         
-        # Display by toolset
         for toolset in sorted(toolsets.keys()):
             print(f"  [{toolset}]")
             for name, desc in toolsets[toolset]:
@@ -3918,7 +3597,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Display available toolsets with kawaii ASCII art."""
         all_toolsets = get_all_toolsets()
         
-        # Header
         print()
         title = "(^_^)b Available Toolsets"
         width = 58
@@ -3934,7 +3612,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 tool_count = info["tool_count"]
                 desc = info["description"]
                 
-                # Mark if currently enabled
                 marker = "(*)" if self.enabled_toolsets and name in self.enabled_toolsets else "   "
                 print(f"  {marker} {name:<18} [{tool_count:>2} tools] - {desc}")
         
@@ -3969,7 +3646,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
-        # Get terminal config from environment (which was set from cli-config.yaml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
@@ -4152,7 +3828,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 pass
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
-            # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 
         old_session_id = self.session_id
@@ -4219,7 +3894,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint("  Session database not available.")
             return
 
-        # Resolve title or ID
         from daedalus_cli.main import _resolve_session_by_name_or_id
         resolved = _resolve_session_by_name_or_id(target)
         target_id = resolved or target
@@ -4234,29 +3908,24 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint("  Already on that session.")
             return
 
-        # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
         except Exception:
             pass
 
-        # Switch to the target session
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
 
-        # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
         restored = [m for m in (restored or []) if m.get("role") != "session_meta"]
         self.conversation_history = restored
 
-        # Re-open the target session so it's not marked as ended
         try:
             self._session_db.reopen_session(target_id)
         except Exception:
             pass
 
-        # Sync the agent if already initialised
         if self.agent:
             self.agent.session_id = target_id
             self.agent.reset_session_state()
@@ -4300,33 +3969,27 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         parts = cmd_original.split(None, 1)
         branch_name = parts[1].strip() if len(parts) > 1 else ""
 
-        # Generate the new session ID
         now = datetime.now()
         timestamp_str = now.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         new_session_id = f"{timestamp_str}_{short_uuid}"
 
-        # Determine branch title
         if branch_name:
             branch_title = branch_name
         else:
-            # Auto-generate from the current session title
             current_title = None
             if self._session_db:
                 current_title = self._session_db.get_session_title(self.session_id)
             base = current_title or "branch"
             branch_title = self._session_db.get_next_title_in_lineage(base)
 
-        # Save the current session's state before branching
         parent_session_id = self.session_id
 
-        # End the old session
         try:
             self._session_db.end_session(self.session_id, "branched")
         except Exception:
             pass
 
-        # Create the new session with parent link
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
@@ -4342,7 +4005,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"  Failed to create branch session: {e}")
             return
 
-        # Copy conversation history to the new session
         for msg in self.conversation_history:
             try:
                 self._session_db.append_message(
@@ -4355,21 +4017,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     reasoning=msg.get("reasoning"),
                 )
             except Exception:
-                pass  # Best-effort copy
+                pass
 
-        # Set title on the branch
         try:
             self._session_db.set_session_title(new_session_id, branch_title)
         except Exception:
             pass
 
-        # Switch to the new session
         self.session_id = new_session_id
         self.session_start = now
         self._pending_title = None
-        self._resumed = True  # Prevents auto-title generation
+        self._resumed = True
 
-        # Sync the agent
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
@@ -4424,7 +4083,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No messages to retry.")
             return None
         
-        # Walk backwards to find the last user message
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
             if self.conversation_history[i].get("role") == "user":
@@ -4435,7 +4093,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No user message found to retry.")
             return None
         
-        # Extract the message text and remove everything from that point forward
         last_message = self.conversation_history[last_user_idx].get("content", "")
         self.conversation_history = self.conversation_history[:last_user_idx]
         
@@ -4452,7 +4109,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No messages to undo.")
             return
         
-        # Walk backwards to find the last user message
         last_user_idx = None
         for i in range(len(self.conversation_history) - 1, -1, -1):
             if self.conversation_history[i].get("role") == "user":
@@ -4463,11 +4119,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No user message found to undo.")
             return
         
-        # Count how many messages we're removing
         removed_count = len(self.conversation_history) - last_user_idx
         removed_msg = self.conversation_history[last_user_idx].get("content", "")
         
-        # Truncate history to before the last user message
         self.conversation_history = self.conversation_history[:last_user_idx]
         
         print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
@@ -4487,23 +4141,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         from daedalus_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
         from daedalus_cli.providers import get_label
 
-        # Parse args from the original command
-        parts = cmd_original.split(None, 1)  # split off '/model'
+        parts = cmd_original.split(None, 1)
         raw_args = parts[1].strip() if len(parts) > 1 else ""
 
-        # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
-        # No args at all: show available providers + models
         if not model_input and not explicit_provider:
             model_display = self.model or "unknown"
             provider_display = get_label(self.provider) if self.provider else "unknown"
             _cprint(f"  Current: {model_display} on {provider_display}")
             _cprint("")
 
-            # Show authenticated providers with top models
             try:
-                # Load user providers from config
                 user_provs = None
                 try:
                     from daedalus_cli.config import load_config
@@ -4536,7 +4185,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-            # Aliases
             from daedalus_cli.model_switch import MODEL_ALIASES
             alias_list = ", ".join(sorted(MODEL_ALIASES.keys()))
             _cprint(f"  Aliases: {alias_list}")
@@ -4546,7 +4194,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint("  /model <name> --global               persist to config")
             return
 
-        # Perform the switch
         result = switch_model(
             raw_input=model_input,
             current_provider=self.provider or "",
@@ -4561,9 +4208,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"  ✗ {result.error_message}")
             return
 
-        # Apply to CLI state.
-        # Update requested_provider so _ensure_runtime_credentials() doesn't
-        # overwrite the switch on the next turn (it re-resolves from this).
         old_model = self.model
         self.model = result.new_model
         self.provider = result.target_provider
@@ -4577,7 +4221,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if result.api_mode:
             self.api_mode = result.api_mode
 
-        # Apply to running agent (in-place swap)
         if self.agent is not None:
             try:
                 self.agent.switch_model(
@@ -4590,21 +4233,16 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
 
-        # Store a note to prepend to the next user message so the model
-        # knows a switch occurred (avoids injecting system messages mid-history
-        # which breaks providers and prompt caching).
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
             f"Adjust your self-identification accordingly.]"
         )
 
-        # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
-        # Rich metadata from models.dev
         mi = result.model_info
         if mi:
             if mi.context_window:
@@ -4615,7 +4253,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
         else:
-            # Fallback to old context length lookup
             try:
                 from agent.model_metadata import get_model_context_length
                 ctx = get_model_context_length(
@@ -4628,7 +4265,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 pass
 
-        # Cache notice
         cache_enabled = (
             ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
             or result.api_mode == "anthropic_messages"
@@ -4636,11 +4272,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if cache_enabled:
             _cprint("    Prompt caching: enabled")
 
-        # Warning from validation
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
 
-        # Persistence
         if persist_global:
             save_config_value("model.default", result.new_model)
             if result.provider_changed:
@@ -4662,7 +4296,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         )
         from daedalus_cli.auth import resolve_provider as _resolve_provider
 
-        # Resolve current provider
         raw_provider = normalize_provider(self.provider)
         if raw_provider == "auto":
             try:
@@ -4680,7 +4313,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         print(f"\n  Current: {self.model} via {current_label}")
         print()
 
-        # Show all authenticated providers with their models
         providers = list_available_providers()
         authed = [p for p in providers if p["authenticated"]]
         unauthed = [p for p in providers if not p["authenticated"]]
@@ -4692,7 +4324,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 marker = " ← active" if is_active else ""
                 print(f"    [{p['id']}]{marker}")
                 curated = curated_models_for_provider(p["id"])
-                # Fetch pricing for providers that support it (openrouter, nous)
                 pricing_map = get_pricing_for_provider(p["id"]) if p["id"] in ("openrouter", "nous") else {}
                 if curated and pricing_map:
                     cur_model = self.model if is_active else ""
@@ -4727,33 +4358,30 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         parts = cmd.split(maxsplit=1)
         
         if len(parts) > 1:
-            # Set new prompt
             new_prompt = parts[1].strip()
             
             if new_prompt.lower() == "clear":
                 self.system_prompt = ""
-                self.agent = None  # Force re-init
+                self.agent = None
                 if save_config_value("agent.system_prompt", ""):
                     print("(^_^)b System prompt cleared (saved to config)")
                 else:
                     print("(^_^) System prompt cleared (session only)")
             else:
                 self.system_prompt = new_prompt
-                self.agent = None  # Force re-init
+                self.agent = None
                 if save_config_value("agent.system_prompt", new_prompt):
                     print("(^_^)b System prompt set (saved to config)")
                 else:
                     print("(^_^) System prompt set (session only)")
                 print(f"  \"{new_prompt[:60]}{'...' if len(new_prompt) > 60 else ''}\"")
         else:
-            # Show current prompt
             print()
             print("+" + "-" * 50 + "+")
             print("|" + " " * 15 + "(^_^) System Prompt" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
             if self.system_prompt:
-                # Word wrap the prompt for display
                 words = self.system_prompt.split()
                 lines = []
                 current_line = ""
@@ -4794,12 +4422,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         parts = cmd.split(maxsplit=1)
         
         if len(parts) > 1:
-            # Set personality
             personality_name = parts[1].strip().lower()
             
             if personality_name in ("none", "default", "neutral"):
                 self.system_prompt = ""
-                self.agent = None  # Force re-init
+                self.agent = None
                 if save_config_value("agent.system_prompt", ""):
                     print("(^_^)b Personality cleared (saved to config)")
                 else:
@@ -4807,7 +4434,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print("  No personality overlay — using base agent behavior.")
             elif personality_name in self.personalities:
                 self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
-                self.agent = None  # Force re-init
+                self.agent = None
                 if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
@@ -4817,7 +4444,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")
         else:
-            # Show available personalities
             print()
             print("+" + "-" * 50 + "+")
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
@@ -5150,12 +4776,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Returns:
             bool: True to continue, False to exit
         """
-        # Lowercase only for dispatch matching; preserve original case for arguments
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
 
-        # Resolve aliases via central registry so adding an alias is a one-line
-        # change in daedalus_cli/commands.py instead of touching every dispatch site.
         from daedalus_cli.commands import resolve_command as _resolve_cmd
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
@@ -5175,10 +4798,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.show_config()
         elif canonical == "clear":
             self.new_session(silent=True)
-            # Clear terminal screen.  Inside the TUI, Rich's console.clear()
-            # goes through patch_stdout's StdoutProxy which swallows the
-            # screen-clear escape sequences.  Use prompt_toolkit's output
-            # object directly to actually clear the terminal.
             if self._app:
                 out = self._app.output
                 out.erase_screen()
@@ -5186,10 +4805,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 out.flush()
             else:
                 self.console.clear()
-            # Show fresh banner.  Inside the TUI we must route Rich output
-            # through ChatConsole (which uses prompt_toolkit's native ANSI
-            # renderer) instead of self.console (which writes raw to stdout
-            # and gets mangled by patch_stdout).
             if self._app:
                 cc = ChatConsole()
                 term_w = shutil.get_terminal_size().columns
@@ -5222,7 +4837,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 raw_title = parts[1].strip()
                 if raw_title:
                     if self._session_db:
-                        # Sanitize the title early so feedback matches what gets stored
                         try:
                             from daedalus_state import SessionDB
                             new_title = SessionDB.sanitize_title(raw_title)
@@ -5232,7 +4846,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         if not new_title:
                             _cprint("  Title is empty after cleanup. Please use printable characters.")
                         elif self._session_db.get_session(self.session_id):
-                            # Session exists in DB — set title directly
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
@@ -5241,8 +4854,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             except ValueError as e:
                                 _cprint(f"  {e}")
                         else:
-                            # Session not created yet — defer the title
-                            # Check uniqueness proactively with the sanitized title
                             existing = self._session_db.get_session_by_title(new_title)
                             if existing:
                                 _cprint(f"  Title '{new_title}' is already in use by session {existing['id']}")
@@ -5254,7 +4865,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 else:
                     _cprint("  Usage: /title <your session title>")
             else:
-                # Show current title and session ID if no argument given
                 if self._session_db:
                     _cprint(f"  Session ID: {self.session_id}")
                     session = self._session_db.get_session(self.session_id)
@@ -5275,17 +4885,14 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "provider":
             self._show_model_and_providers()
         elif canonical == "prompt":
-            # Use original case so prompt text isn't lowercased
             self._handle_prompt_command(cmd_original)
         elif canonical == "personality":
-            # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)
         elif canonical == "plan":
             self._handle_plan_command(cmd_original)
         elif canonical == "retry":
             retry_msg = self.retry_last()
             if retry_msg and hasattr(self, '_pending_input'):
-                # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
             self.undo_last()
@@ -5355,7 +4962,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "btw":
             self._handle_btw_command(cmd_original)
         elif canonical == "queue":
-            # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
             payload = parts[1].strip() if len(parts) > 1 else ""
             if not payload:
@@ -5371,7 +4977,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         else:
-            # Check for user-defined quick commands (bypass agent loop, no LLM call)
             base_cmd = cmd_lower.split()[0]
             quick_commands = self.config.get("quick_commands", {})
             if base_cmd.lstrip("/") in quick_commands:
@@ -5407,7 +5012,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
                     ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
-            # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from daedalus_cli.plugins import get_plugin_command_handler
                 plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
@@ -5419,8 +5023,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             _cprint(str(result))
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
-            # Skill bundles take precedence over individual skills — /<bundle>
-            # loads multiple skills at once. Rescans cheaply when files change.
             elif base_cmd in get_skill_bundles():
                 user_instruction = cmd_original[len(base_cmd):].strip()
                 bundle_result = build_bundle_invocation_message(
@@ -5442,7 +5044,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     ChatConsole().print(
                         f"[bold red]Failed to load bundle for {base_cmd}[/]"
                     )
-            # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
                 msg = build_skill_invocation_message(
@@ -5456,33 +5057,22 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 else:
                     ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
             else:
-                # Prefix matching: if input uniquely identifies one command, execute it.
-                # Matches against both built-in COMMANDS and installed skill commands so
-                # that execution-time resolution agrees with tab-completion.
                 from daedalus_cli.commands import COMMANDS
                 typed_base = cmd_lower.split()[0]
                 all_known = set(COMMANDS) | set(_skill_commands) | set(get_skill_bundles())
                 matches = [c for c in all_known if c.startswith(typed_base)]
                 if len(matches) > 1:
-                    # Prefer an exact match (typed the full command name)
                     exact = [c for c in matches if c == typed_base]
                     if len(exact) == 1:
                         matches = exact
                     else:
-                        # Prefer the unique shortest match:
-                        # /qui → /quit (5) wins over /quint-pipeline (15)
                         min_len = min(len(c) for c in matches)
                         shortest = [c for c in matches if len(c) == min_len]
                         if len(shortest) == 1:
                             matches = shortest
                 if len(matches) == 1:
-                    # Expand the prefix to the full command name, preserving arguments.
-                    # Guard against redispatching the same token to avoid infinite
-                    # recursion when the expanded name still doesn't hit an exact branch
-                    # (e.g. /config with extra args that are not yet handled above).
                     full_name = matches[0]
                     if full_name == typed_base:
-                        # Already an exact token — no expansion possible; fall through
                         _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
                         _cprint(f"{_DIM}{_GOLD}Type /help for available commands{_RST}")
                     else:
@@ -5569,7 +5159,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         task_num = self._background_task_counter
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
-        # Make sure we have valid credentials
         if not self._ensure_runtime_credentials():
             _cprint("  (>_<) Cannot start background task: no valid credentials.")
             return
@@ -5606,11 +5195,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
                 )
-                # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
 
                 def _bg_thinking(text: str) -> None:
-                    # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
                     if not self._agent_running:
                         self._spinner_text = text
                         if self._app:
@@ -5627,13 +5214,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
-                # Display result in the CLI (thread-safe via patch_stdout).
-                # Force a TUI refresh first so spinner/status bar don't overlap
-                # with the output (fixes #2718).
                 if self._app:
                     self._app.invalidate()
                     import time as _tmod
-                    _tmod.sleep(0.05)  # brief pause for refresh
+                    _tmod.sleep(0.05)
                 print()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
@@ -5664,13 +5248,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 else:
                     _cprint("  (No response generated)")
 
-                # Play bell if enabled
                 if self.bell_on_complete:
                     sys.stdout.write("\a")
                     sys.stdout.flush()
 
             except Exception as e:
-                # Same TUI refresh pattern as success path (#2718)
                 if self._app:
                     self._app.invalidate()
                     import time as _tmod
@@ -5679,7 +5261,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
                 self._background_tasks.pop(task_id, None)
-                # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
                     self._spinner_text = ""
                 if self._app:
@@ -5761,7 +5342,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
-                # TUI refresh before printing
                 if self._app:
                     self._app.invalidate()
                     time.sleep(0.05)
@@ -5822,7 +5402,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 [chrome, f"--remote-debugging-port={port}"],
                 stdout=_sp.DEVNULL,
                 stderr=_sp.DEVNULL,
-                start_new_session=True,  # detach from terminal
+                start_new_session=True,
             )
             return True
         except Exception:
@@ -5838,7 +5418,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
-            # Show current skin and list available
             current = get_active_skin_name()
             skins = list_skins()
             print(f"\n  Current skin: {current}")
@@ -5873,7 +5452,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             idx = cycle.index(self.tool_progress_mode)
         except ValueError:
-            idx = 2  # default to "all"
+            idx = 2
         self.tool_progress_mode = cycle[(idx + 1) % len(cycle)]
         self.verbose = self.tool_progress_mode == "verbose"
 
@@ -5881,15 +5460,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.agent.verbose_logging = self.verbose
             self.agent.quiet_mode = not self.verbose
             self.agent.reasoning_callback = self._current_reasoning_callback()
-            # VERBOSE tier = stream everything, unbuffered — bypasses both
-            # the tool-call content suppression (run_agent.py) and the
-            # reasoning-box-open defer (cli.py _emit_stream_text).
             self.agent.stream_verbose_mode = self.tool_progress_mode == "verbose"
 
-        # Use raw ANSI codes via _cprint so the output is routed through
-        # prompt_toolkit's renderer.  self.console.print() with Rich markup
-        # writes directly to stdout which patch_stdout's StdoutProxy mangles
-        # into garbled sequences like '?[33mTool progress: NEW?[0m' (#2262).
         from daedalus_cli.colors import Colors as _Colors
         labels = {
             "off": f"{_Colors.DIM}Tool progress: OFF{_Colors.RESET} — silent mode, just the final response.",
@@ -5922,7 +5494,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
-            # Show current state
             rc = self.reasoning_config
             if rc is None:
                 level = "medium (default)"
@@ -5938,7 +5509,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         arg = parts[1].strip().lower()
 
-        # Display toggle
         if arg in ("show", "on"):
             self.show_reasoning = True
             if self.agent:
@@ -5955,16 +5525,14 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"  {_GOLD}✓ Reasoning display: OFF (saved){_RST}")
             return
 
-        # Task-intensity gauge toggle (fork: context-budget-manager)
         if arg == "auto":
             self.reasoning_auto = True
-            self.agent = None  # Force agent re-init with gauge enabled
+            self.agent = None
             save_config_value("agent.reasoning_auto", True)
             _cprint(f"  {_GOLD}✓ Reasoning auto: ON (task-intensity gauge){_RST}")
             _cprint(f"  {_DIM}  Effort re-scores per task; /reasoning <level> disables.{_RST}")
             return
 
-        # Effort level change
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
@@ -5972,10 +5540,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(f"  {_DIM}Display:      show, hide | Auto: auto{_RST}")
             return
 
-        # A manual effort level disables the gauge (per the operator's spec)
         self.reasoning_auto = False
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        self.agent = None
 
         if save_config_value("agent.reasoning_effort", arg):
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
@@ -6045,7 +5612,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print("(._.) No API calls made yet in this session.")
             return
 
-        # Current context window state
         compressor = agent.context_compressor
         last_prompt = compressor.last_prompt_tokens
         ctx_len = compressor.context_length
@@ -6105,7 +5671,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""
-        # Parse optional --days flag
         parts = command.split()
         days = 30
         source = None
@@ -6147,7 +5712,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         import time
         import yaml as _yaml
 
-        CONFIG_WATCH_INTERVAL = 5.0  # seconds between config.yaml stat() calls
+        CONFIG_WATCH_INTERVAL = 5.0
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -6165,9 +5730,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
 
         if mtime == self._config_mtime:
-            return  # File unchanged — fast path
+            return
 
-        # File changed — check whether mcp_servers section changed
         self._config_mtime = mtime
         try:
             with open(cfg_path, encoding="utf-8") as f:
@@ -6177,12 +5741,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         new_mcp = new_cfg.get("mcp_servers") or {}
         if new_mcp == self._config_mcp_servers:
-            return  # mcp_servers unchanged (some other section was edited)
+            return
 
         self._config_mcp_servers = new_mcp
-        # Notify user and reload.  Run in a separate thread with a hard
-        # timeout so a hung MCP server cannot block the process_loop
-        # indefinitely (which would freeze the entire TUI).
         print()
         print("🔄 MCP server config changed — reloading connections...")
         _reload_thread = threading.Thread(
@@ -6202,20 +5763,16 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
-            # Capture old server names
             with _lock:
                 old_servers = set(_servers.keys())
 
             if not self._command_running:
                 print("🔄 Reloading MCP servers...")
 
-            # Shutdown existing connections
             shutdown_mcp_servers()
 
-            # Reconnect (reads config.yaml fresh)
             new_tools = discover_mcp_tools()
 
-            # Compute what changed
             with _lock:
                 connected_servers = set(_servers.keys())
 
@@ -6234,7 +5791,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 print(f"  🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
 
-            # Refresh the agent's tool list so the model can call new tools
             if self.agent is not None:
                 from model_tools import get_tool_definitions
                 self.agent.tools = get_tool_definitions(
@@ -6246,9 +5802,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     tool["function"]["name"] for tool in self.agent.tools
                 } if self.agent.tools else set()
 
-            # Inject a message at the END of conversation history so the
-            # model knows tools changed.  Appended after all existing
-            # messages to preserve prompt-cache for the prefix.
             change_parts = []
             if added:
                 change_parts.append(f"Added servers: {', '.join(sorted(added))}")
@@ -6263,8 +5816,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             })
 
-            # Persist session immediately so the session log reflects the
-            # updated tools list (self.agent.tools was refreshed above).
             if self.agent is not None:
                 try:
                     self.agent._persist_session(
@@ -6272,16 +5823,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self.conversation_history,
                     )
                 except Exception:
-                    pass  # Best-effort
+                    pass
 
             print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")
 
-    # ====================================================================
-    # Tool-call generation indicator (shown during streaming)
-    # ====================================================================
 
     def _on_tool_gen_start(self, tool_name: str, *, chars: int = None) -> None:
         """Called when the model begins generating tool-call arguments, and
@@ -6316,9 +5864,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         emoji = get_tool_emoji(tool_name, default="⚡")
         _cprint(f"  ┊ {emoji} preparing {tool_name}…")
 
-    # ====================================================================
-    # Tool progress callback (audio cues for voice mode)
-    # ====================================================================
 
     def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
         """Called on tool lifecycle events (tool.started, tool.completed, reasoning.available, etc.).
@@ -6327,7 +5872,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         is doing during tool execution (fills the gap between thinking
         spinner and next response).  Also plays audio cue in voice mode.
         """
-        # Only act on tool.started; ignore tool.completed, reasoning.available, etc.
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
@@ -6382,9 +5926,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
 
-    # ====================================================================
-    # Voice mode methods
-    # ====================================================================
 
     def _voice_start_recording(self):
         """Start capturing audio from the microphone."""
@@ -6407,13 +5948,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 "Option 3: Set VOICE_TOOLS_OPENAI_KEY (paid)"
             )
 
-        # Prevent double-start from concurrent threads (atomic check-and-set)
         with self._voice_lock:
             if self._voice_recording:
                 return
             self._voice_recording = True
 
-        # Load silence detection params from config
         voice_cfg = {}
         try:
             from daedalus_cli.config import load_config
@@ -6424,7 +5963,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if self._voice_recorder is None:
             self._voice_recorder = AudioRecorder()
 
-        # Apply config-driven silence params
         self._voice_recorder._silence_threshold = voice_cfg.get("silence_threshold", 200)
         self._voice_recorder._silence_duration = voice_cfg.get("silence_duration", 3.0)
 
@@ -6438,7 +5976,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._app.invalidate()
             self._voice_stop_and_transcribe()
 
-        # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
         try:
             from tools.voice_mode import play_beep
             play_beep(frequency=880, count=1)
@@ -6453,7 +5990,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             raise
         _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+B to stop & exit continuous){_RST}")
 
-        # Periodically refresh prompt to update audio level indicator
         def _refresh_level():
             while True:
                 with self._voice_lock:
@@ -6467,9 +6003,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
-        # Atomic guard: only one thread can enter stop-and-transcribe.
-        # Set _voice_processing immediately so concurrent Ctrl+B presses
-        # don't race into the START path while recorder.stop() holds its lock.
         with self._voice_lock:
             if not self._voice_recording:
                 return
@@ -6484,7 +6017,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             wav_path = self._voice_recorder.stop()
 
-            # Audio cue: double beep after stream stopped (no CoreAudio conflict)
             try:
                 from tools.voice_mode import play_beep
                 play_beep(frequency=660, count=2)
@@ -6495,12 +6027,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
                 return
 
-            # _voice_processing is already True (set atomically above)
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
             _cprint(f"{_DIM}Transcribing...{_RST}")
 
-            # Get STT model from config
             stt_model = None
             try:
                 from daedalus_cli.config import load_config
@@ -6529,31 +6059,21 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._voice_processing = False
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
-            # Clean up temp file
             try:
                 if wav_path and os.path.isfile(wav_path):
                     os.unlink(wav_path)
             except Exception:
                 pass
 
-            # Track consecutive no-speech cycles to avoid infinite restart loops.
             if not submitted:
                 self._no_speech_count = getattr(self, '_no_speech_count', 0) + 1
                 if self._no_speech_count >= 3:
                     self._voice_continuous = False
                     self._no_speech_count = 0
                     _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
-                    # NB: no early `return` here — it would live inside `finally`,
-                    # triggering a SyntaxWarning and silently swallowing any pending
-                    # exception. `_voice_continuous` is already False, so the
-                    # restart block below is skipped; identical control flow.
             else:
                 self._no_speech_count = 0
 
-            # If no transcript was submitted but continuous mode is active,
-            # restart recording so the user can keep talking.
-            # (When transcript IS submitted, process_loop handles restart
-            # after chat() completes.)
             if self._voice_continuous and not submitted and not self._voice_recording:
                 def _restart_recording():
                     try:
@@ -6574,24 +6094,21 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             from tools.voice_mode import play_audio_file
             import re
 
-            # Strip markdown and non-speech content for cleaner TTS
             tts_text = text[:4000] if len(text) > 4000 else text
-            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)   # fenced code blocks
-            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)  # [text](url) -> text
-            tts_text = re.sub(r'https?://\S+', '', tts_text)      # URLs
-            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)  # bold
-            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)      # italic
-            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)        # inline code
-            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)  # headers
-            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)  # list items
-            tts_text = re.sub(r'---+', '', tts_text)              # horizontal rules
-            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)        # excessive newlines
+            tts_text = re.sub(r'```[\s\S]*?```', ' ', tts_text)
+            tts_text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', tts_text)
+            tts_text = re.sub(r'https?://\S+', '', tts_text)
+            tts_text = re.sub(r'\*\*(.+?)\*\*', r'\1', tts_text)
+            tts_text = re.sub(r'\*(.+?)\*', r'\1', tts_text)
+            tts_text = re.sub(r'`(.+?)`', r'\1', tts_text)
+            tts_text = re.sub(r'^#+\s*', '', tts_text, flags=re.MULTILINE)
+            tts_text = re.sub(r'^\s*[-*]\s+', '', tts_text, flags=re.MULTILINE)
+            tts_text = re.sub(r'---+', '', tts_text)
+            tts_text = re.sub(r'\n{3,}', '\n\n', tts_text)
             tts_text = tts_text.strip()
             if not tts_text:
                 return
 
-            # Use MP3 output for CLI playback (afplay doesn't handle OGG well).
-            # The TTS tool may auto-convert MP3->OGG, but the original MP3 remains.
             os.makedirs(os.path.join(tempfile.gettempdir(), "daedalus_voice"), exist_ok=True)
             mp3_path = os.path.join(
                 tempfile.gettempdir(), "daedalus_voice",
@@ -6600,10 +6117,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             text_to_speech_tool(text=tts_text, output_path=mp3_path)
 
-            # Play the MP3 directly (the TTS tool returns OGG path but MP3 still exists)
             if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
                 play_audio_file(mp3_path)
-                # Clean up
                 try:
                     os.unlink(mp3_path)
                     ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
@@ -6631,7 +6146,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         elif subcommand == "status":
             self._show_voice_status()
         elif subcommand == "":
-            # Toggle
             if self._voice_mode:
                 self._disable_voice_mode()
             else:
@@ -6648,7 +6162,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         from tools.voice_mode import check_voice_requirements, detect_audio_environment
 
-        # Environment detection -- warn and block in incompatible environments
         env_check = detect_audio_environment()
         if not env_check["available"]:
             _cprint(f"\n{_GOLD}Voice mode unavailable in this environment:{_RST}")
@@ -6669,7 +6182,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         with self._voice_lock:
             self._voice_mode = True
 
-        # Check config for auto_tts
         try:
             from daedalus_cli.config import load_config
             voice_config = load_config().get("voice", {})
@@ -6679,9 +6191,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             pass
 
-        # Voice mode instruction is injected as a user message prefix (not a
-        # system prompt change) to avoid invalidating the prompt cache.  See
-        # _voice_message_prefix property and its usage in _process_message().
 
         tts_status = " (TTS enabled)" if self._voice_tts else ""
         try:
@@ -6708,7 +6217,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._voice_tts = False
             self._voice_continuous = False
 
-        # Shut down the persistent audio stream in background
         if recorder is not None:
             def _bg_shutdown(rec=recorder):
                 try:
@@ -6718,7 +6226,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             threading.Thread(target=_bg_shutdown, daemon=True).start()
             self._voice_recorder = None
 
-        # Stop any active TTS playback
         try:
             from tools.voice_mode import stop_playback
             stop_playback()
@@ -6785,21 +6292,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "response_queue": response_queue,
         }
         self._clarify_deadline = _time.monotonic() + timeout
-        # Open-ended questions skip straight to freetext input
         self._clarify_freetext = is_open_ended
 
-        # Trigger prompt_toolkit repaint from this (non-main) thread
         self._invalidate()
 
-        # Poll for the user's response.  The countdown in the hint line
-        # updates on each invalidate — but frequent repaints cause visible
-        # flicker in some terminals (Kitty, ghostty).  We only refresh the
-        # countdown every 5 s; selection changes (↑/↓) trigger instant
-        # Poll for the user's response.  The countdown in the hint line
-        # updates on each invalidate — but frequent repaints cause visible
-        # flicker in some terminals (Kitty, ghostty).  We only refresh the
-        # countdown every 5 s; selection changes (↑/↓) trigger instant
-        # repaints via the key bindings.
         _last_countdown_refresh = _time.monotonic()
         while True:
             try:
@@ -6810,7 +6306,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 remaining = self._clarify_deadline - _time.monotonic()
                 if remaining <= 0:
                     break
-                # Only repaint every 5 s for the countdown — avoids flicker
                 now = _time.monotonic()
                 if now - _last_countdown_refresh >= 5.0:
                     _last_countdown_refresh = now
@@ -6819,7 +6314,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _last_countdown_refresh = now
                     self._invalidate()
 
-        # Timed out — tear down the UI and let the agent decide
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -7078,11 +6572,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         Returns:
             The agent's response, or None on error
         """
-        # Single-query and direct chat callers do not go through run(), so
-        # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
 
-        # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
             return None
 
@@ -7090,7 +6581,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
-        # Initialize agent if needed
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(
@@ -7100,15 +6590,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         ):
             return None
         
-        # Pre-process images through the vision tool (Gemini Flash) so the
-        # main model receives text descriptions instead of raw base64 image
-        # content — works with any model, not just vision-capable ones.
         if images:
             message = self._preprocess_images_with_vision(
                 message if isinstance(message, str) else "", images
             )
 
-        # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
         if isinstance(message, str) and "@" in message:
             try:
                 from agent.context_references import preprocess_context_references
@@ -7130,34 +6616,21 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception as e:
                 logging.debug("@ context reference expansion failed: %s", e)
 
-        # Sanitize surrogate characters that can arrive via clipboard paste from
-        # rich-text editors (Google Docs, Word, etc.).  Lone surrogates are invalid
-        # UTF-8 and crash JSON serialization in the OpenAI SDK.
         if isinstance(message, str):
             from run_agent import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
-        # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
         
         try:
-            # Run the conversation with interrupt monitoring
             result = None
 
-            # Reset streaming display state for this turn
             self._reset_stream_state()
-            # Separate from _reset_stream_state because this must persist
-            # across intermediate turn boundaries (tool-calling loops) — only
-            # reset at the start of each user turn.
             self._reasoning_shown_this_turn = False
 
-            # --- Streaming TTS setup ---
-            # When ElevenLabs is the TTS provider and sounddevice is available,
-            # we stream audio sentence-by-sentence as the agent generates tokens
-            # instead of waiting for the full response.
             use_streaming_tts = False
             _streaming_box_opened = False
             text_queue = None
@@ -7176,7 +6649,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     )
                     _tts_cfg = _load_tts_cfg()
                     if _get_prov(_tts_cfg) == "elevenlabs":
-                        # Verify both ElevenLabs SDK and audio output are available
                         _import_elevenlabs()
                         _import_sounddevice()
                         use_streaming_tts = True
@@ -7212,9 +6684,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if text_queue is not None:
                         text_queue.put(delta)
 
-            # When voice mode is active, prepend a brief instruction so the
-            # model responds concisely. The prefix is API-call-local only —
-            # run_conversation persists the original clean user message.
             _voice_prefix = ""
             if self._voice_mode and isinstance(message, str):
                 _voice_prefix = (
@@ -7225,7 +6694,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             def run_agent():
                 nonlocal result
                 agent_message = _voice_prefix + message if _voice_prefix else message
-                # Prepend pending model switch note so the model knows about the switch
                 _msn = getattr(self, '_pending_model_switch_note', None)
                 if _msn:
                     agent_message = _msn + "\n\n" + agent_message
@@ -7233,7 +6701,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
-                        conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
+                        conversation_history=self.conversation_history[:-1],
                         stream_callback=stream_callback,
                         task_id=self.session_id,
                         persist_user_message=message if _voice_prefix else None,
@@ -7250,33 +6718,21 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         "error": _summary,
                     }
 
-            # Start agent in background thread
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
 
-            # Monitor the dedicated interrupt queue while the agent runs.
-            # _interrupt_queue is separate from _pending_input, so process_loop
-            # and chat() never compete for the same queue.
-            # When a clarify question is active, user input is handled entirely
-            # by the Enter key binding (routed to the clarify response queue),
-            # so we skip interrupt processing to avoid stealing that input.
             interrupt_msg = None
             while agent_thread.is_alive():
                 if hasattr(self, '_interrupt_queue'):
                     try:
                         interrupt_msg = self._interrupt_queue.get(timeout=0.1)
                         if interrupt_msg:
-                            # If clarify is active, the Enter handler routes
-                            # input directly; this queue shouldn't have anything.
-                            # But if it does (race condition), don't interrupt.
                             if self._clarify_state or self._clarify_freetext:
                                 continue
                             print("\n⚡ New message detected, interrupting...")
-                            # Signal TTS to stop on interrupt
                             if stop_event is not None:
                                 stop_event.set()
                             self.agent.interrupt(interrupt_msg)
-                            # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
                                 _dbg = _daedalus_home / "interrupt_debug.log"
                                 with open(_dbg, "a") as _f:
@@ -7290,52 +6746,33 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 pass
                             break
                     except queue.Empty:
-                        # Force prompt_toolkit to flush any pending stdout
-                        # output from the agent thread.  Without this, the
-                        # StdoutProxy buffer only flushes on renderer passes
-                        # triggered by input events — on macOS this causes
-                        # the CLI to appear frozen until the user types. (#1624)
                         self._invalidate(min_interval=0.15)
                 else:
-                    # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)
 
-            agent_thread.join()  # Ensure agent thread completes
+            agent_thread.join()
 
-            # Proactively clean up async clients whose event loop is dead.
-            # The agent thread may have created AsyncOpenAI clients bound
-            # to a per-thread event loop; if that loop is now closed, those
-            # clients' __del__ would crash prompt_toolkit's loop on GC.
             try:
                 from agent.auxiliary_client import cleanup_stale_async_clients
                 cleanup_stale_async_clients()
             except Exception:
                 pass
 
-            # Flush any remaining streamed text and close the box
             self._flush_stream()
 
-            # Signal end-of-text to TTS consumer and wait for it to finish
             if use_streaming_tts and text_queue is not None:
-                text_queue.put(None)  # sentinel
+                text_queue.put(None)
                 if tts_thread is not None:
                     tts_thread.join(timeout=120)
 
-            # Drain any remaining agent output still in the StdoutProxy
-            # buffer so tool/status lines render ABOVE our response box.
-            # The flush pushes data into the renderer queue; the short
-            # sleep lets the renderer actually paint it before we draw.
             import time as _time
             sys.stdout.flush()
             _time.sleep(0.15)
 
-            # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
-            # Get the final response
             response = result.get("final_response", "") if result else ""
 
-            # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
                     from agent.title_generator import maybe_auto_title
@@ -7349,34 +6786,21 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
 
-            # Handle failed or partial results (e.g., non-retryable errors, rate limits,
-            # truncated output, invalid tool calls). Both "failed" and "partial" with
-            # an empty final_response mean the agent couldn't produce a usable answer.
             if result and (result.get("failed") or result.get("partial")) and not response:
                 error_detail = result.get("error", "Unknown error")
                 response = f"Error: {error_detail}"
-                # Stop continuous voice mode on persistent errors (e.g. 429 rate limit)
-                # to avoid an infinite error → record → error loop
                 if self._voice_continuous:
                     self._voice_continuous = False
                     _cprint(f"\n{_DIM}Continuous voice mode stopped due to error.{_RST}")
 
-            # Handle interrupt - check if we were interrupted
             pending_message = None
             if result and result.get("interrupted"):
                 pending_message = result.get("interrupt_message") or interrupt_msg
-                # Add indicator that we were interrupted
                 if response and pending_message:
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
 
             response_previewed = result.get("response_previewed", False) if result else False
 
-            # Display reasoning (thinking) box if enabled and available.
-            # Skip when streaming already showed reasoning live.  Use the
-            # turn-persistent flag (_reasoning_shown_this_turn) instead of
-            # _reasoning_stream_started — the latter gets reset during
-            # intermediate turn boundaries (tool-calling loops), which caused
-            # the reasoning box to re-render after the final response.
             _reasoning_already_shown = getattr(self, '_reasoning_shown_this_turn', False)
             if self.show_reasoning and result and not _reasoning_already_shown:
                 reasoning = result.get("last_reasoning")
@@ -7386,7 +6810,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     r_fill = w - 2 - len(r_label)
                     r_top = f"{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}"
                     r_bot = f"{_DIM}└{'─' * (w - 2)}┘{_RST}"
-                    # Collapse long reasoning: show first 10 lines
                     lines = reasoning.strip().splitlines()
                     if len(lines) > 10:
                         display_reasoning = "\n".join(lines[:10])
@@ -7396,7 +6819,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
             if response and not response_previewed:
-                # Use skin engine for label/color with fallback
                 try:
                     from daedalus_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
@@ -7411,12 +6833,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
-                    # Text was already printed sentence-by-sentence; just close the box
                     w = shutil.get_terminal_size().columns
                     _cprint(f"\n{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
-                    # Response was already streamed token-by-token with box framing;
-                    # _flush_stream() already closed the box. Skip Rich Panel.
                     pass
                 else:
                     _chat_console = ChatConsole()
@@ -7431,14 +6850,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     ))
 
 
-            # Play terminal bell when agent finishes (if enabled).
-            # Works over SSH — the bell propagates to the user's terminal.
             if self.bell_on_complete:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
 
-            # Speak response aloud if voice TTS is enabled
-            # Skip batch TTS when streaming TTS already handled it
             if self._voice_tts and response and not use_streaming_tts:
                 threading.Thread(
                     target=self._voice_speak_response,
@@ -7447,11 +6862,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 ).start()
 
 
-            # Re-queue the interrupt message (and any that arrived while we were
-            # processing the first) as the next prompt for process_loop.
-            # Only reached when busy_input_mode == "interrupt" (the default).
-            # In "queue" mode Enter routes directly to _pending_input so this
-            # block is never hit.
             if pending_message and hasattr(self, '_pending_input'):
                 all_parts = [pending_message]
                 while not self._interrupt_queue.empty():
@@ -7476,10 +6886,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"Error: {e}")
             return None
         finally:
-            # Ensure streaming TTS resources are cleaned up even on error.
-            # Normal path sends the sentinel at line ~3568; this is a safety
-            # net for exception paths that skip it.  Duplicate sentinels are
-            # harmless — stream_tts_to_speaker exits on the first None.
             if text_queue is not None:
                 try:
                     text_queue.put_nowait(None)
@@ -7507,7 +6913,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             else:
                 duration_str = f"{seconds}s"
             
-            # Look up session title for resume-by-name hint
             session_title = None
             if self._session_db:
                 try:
@@ -7551,7 +6956,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         symbol = (symbol or "❯ ").rstrip() + " "
 
-        # Prepend profile name when not default
         try:
             from daedalus_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
@@ -7569,7 +6973,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if any(ch in candidate for ch in arrow_chars):
             return symbol, candidate.rstrip() + " "
 
-        # Icon-only custom prompts should still remain visible in special states.
         return symbol, symbol
 
     def _audio_level_bar(self) -> str:
@@ -7579,8 +6982,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if rec is None:
             return ""
         rms = rec.current_rms
-        # Normalize RMS (0-32767) to 0-7 index, with log-ish scaling
-        # Typical speech RMS is 500-5000, we cap display at ~8000
         level = min(rms, 8000) * 7 // 8000
         return _LEVEL_BARS[level]
 
@@ -7632,7 +7033,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._invalidate(min_interval=0.0)
         return True
 
-    # --- Protected TUI extension hooks for wrapper CLIs ---
 
     def _get_extra_tui_widgets(self) -> list:
         """Return extra prompt_toolkit widgets to insert into the TUI layout.
@@ -7709,10 +7109,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
-        # Push the entire TUI to the bottom of the terminal so the banner,
-        # responses, and prompt all appear pinned to the bottom — empty
-        # space stays above, not below.  This prints enough blank lines to
-        # scroll the cursor to the last row before any content is rendered.
         try:
             _term_lines = shutil.get_terminal_size().lines
             if _term_lines > 2:
@@ -7721,15 +7117,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             pass
 
         self.show_banner()
-        # Surface any active supply-chain security advisories right after the
-        # welcome banner. Quiet/single-query paths call this themselves.
         self._show_security_advisories()
 
-        # One-line Honcho session indicator (TTY-only, not captured by agent).
-        # Only show when the user explicitly configured Honcho for Daedalus
-        # (not auto-enabled from a stray HONCHO_API_KEY env var).
-        # If resuming a session, load history and display it immediately
-        # so the user has context before typing their first message.
         if self._resumed:
             if self._preload_resumed_session():
                 self._display_resumed_history()
@@ -7751,14 +7140,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._startup_skills_line_shown = True
         self.console.print()
 
-        # Pre-import the agent runtime off-thread during this idle window
-        # (banner shown, user about to type). The first turn otherwise pays
-        # ~1.5s of module imports on the time-to-first-token critical path:
-        # `import run_agent` plus the OpenAI SDK. Python's import lock makes
-        # this safe: if the user submits before the warm finishes, the main
-        # thread simply blocks on the remaining import work instead of
-        # redoing it. Skipped when agent startup is explicitly deferred —
-        # that path defers heavy work on purpose.
         if os.environ.get("DAEDALUS_DEFER_AGENT_STARTUP") != "1":
             threading.Thread(
                 target=self._prewarm_agent_runtime,
@@ -7766,71 +7147,55 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 daemon=True,
             ).start()
 
-        # State for async operation
         self._agent_running = False
-        self._pending_input = queue.Queue()     # For normal input (commands + new queries)
-        self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
+        self._pending_input = queue.Queue()
+        self._interrupt_queue = queue.Queue()
         self._should_exit = False
-        self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._last_ctrl_c_time = 0
 
-        # Give plugin manager a CLI reference so plugins can inject messages
         from daedalus_cli.plugins import get_plugin_manager
         get_plugin_manager()._cli_ref = self
 
-        # Config file watcher — detect mcp_servers changes and auto-reload
         from daedalus_cli.config import get_config_path as _get_config_path
         _cfg_path = _get_config_path()
         self._config_mtime: float = _cfg_path.stat().st_mtime if _cfg_path.exists() else 0.0
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
-        self._last_config_check: float = 0.0  # monotonic time of last check
+        self._last_config_check: float = 0.0
 
-        # Clarify tool state: interactive question/answer with the user.
-        # When the agent calls the clarify tool, _clarify_state is set and
-        # the prompt_toolkit UI switches to a selection mode.
-        self._clarify_state = None      # dict with question, choices, selected, response_queue
-        self._clarify_freetext = False  # True when user chose "Other" and is typing
-        self._clarify_deadline = 0      # monotonic timestamp when the clarify times out
+        self._clarify_state = None
+        self._clarify_freetext = False
+        self._clarify_deadline = 0
 
-        # Sudo password prompt state (similar mechanism to clarify)
-        self._sudo_state = None         # dict with response_queue when active
+        self._sudo_state = None
         self._sudo_deadline = 0
 
-        # Dangerous command approval state (similar mechanism to clarify)
-        self._approval_state = None     # dict with command, description, choices, selected, response_queue
+        self._approval_state = None
         self._approval_deadline = 0
-        self._approval_lock = threading.Lock()  # serialize concurrent approval prompts (delegation race fix)
+        self._approval_lock = threading.Lock()
 
-        # Slash command loading state
         self._command_running = False
         self._command_status = ""
 
-        # Secure secret capture state for skill setup
-        self._secret_state = None       # dict with var_name, prompt, metadata, response_queue
+        self._secret_state = None
         self._secret_deadline = 0
 
-        # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
         self._image_counter = 0
 
-        # Voice mode state (protected by _voice_lock for cross-thread access)
         self._voice_lock = threading.Lock()
-        self._voice_mode = False        # Whether voice mode is enabled
-        self._voice_tts = False         # Whether TTS output is enabled
-        self._voice_recorder = None     # AudioRecorder instance (lazy init)
-        self._voice_recording = False   # Whether currently recording
-        self._voice_processing = False  # Whether STT is in progress
-        self._voice_continuous = False  # Whether to auto-restart after agent responds
-        self._voice_tts_done = threading.Event()  # Signals TTS playback finished
-        self._voice_tts_done.set()  # Initially "done" (no TTS pending)
+        self._voice_mode = False
+        self._voice_tts = False
+        self._voice_recorder = None
+        self._voice_recording = False
+        self._voice_processing = False
+        self._voice_continuous = False
+        self._voice_tts_done = threading.Event()
+        self._voice_tts_done.set()
 
-        # Register callbacks so terminal_tool prompts route through our UI
         set_sudo_password_callback(self._sudo_password_callback)
         set_approval_callback(self._approval_callback)
         set_secret_capture_callback(self._secret_capture_callback)
 
-        # Ensure tirith security scanner is available (downloads if needed).
-        # Warn the user if tirith is enabled in config but not available,
-        # so they know command security scanning is degraded.
         try:
             from tools.tirith_security import ensure_installed
             tirith_path = ensure_installed(log_failures=False)
@@ -7841,9 +7206,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     _cprint(f"  {_DIM}⚠ tirith security scanner enabled but not available "
                             f"— command scanning will use pattern matching only{_RST}")
         except Exception:
-            pass  # Non-fatal — fail-open at scan time if unavailable
+            pass
         
-        # Key bindings for the input area
         kb = KeyBindings()
         
         @kb.add('enter')
@@ -7860,7 +7224,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             Commands (starting with /) always go to _pending_input so they're
             handled as commands, not sent as interrupt text to the agent.
             """
-            # --- Sudo password prompt: submit the typed password ---
             if self._sudo_state:
                 text = event.app.current_buffer.text
                 self._sudo_state["response_queue"].put(text)
@@ -7869,7 +7232,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
                 return
 
-            # --- Secret prompt: submit the typed secret ---
             if self._secret_state:
                 text = event.app.current_buffer.text
                 self._submit_secret_response(text)
@@ -7877,13 +7239,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
                 return
 
-            # --- Approval selection: confirm the highlighted choice ---
             if self._approval_state:
                 self._handle_approval_selection()
                 event.app.invalidate()
                 return
 
-            # --- Clarify freetext mode: user typed their own answer ---
             if self._clarify_freetext and self._clarify_state:
                 text = event.app.current_buffer.text.strip()
                 if text:
@@ -7894,7 +7254,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     event.app.invalidate()
                 return
 
-            # --- Clarify choice mode: confirm the highlighted selection ---
             if self._clarify_state and not self._clarify_freetext:
                 state = self._clarify_state
                 selected = state["selected"]
@@ -7904,20 +7263,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     self._clarify_state = None
                     event.app.invalidate()
                 else:
-                    # "Other" selected → switch to freetext
                     self._clarify_freetext = True
                     event.app.invalidate()
                 return
 
-            # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
 
-            # /background (/bg, /btw) while the agent is running dispatches
-            # immediately instead of falling into the queue/interrupt paths
-            # below — queuing it defeats the entire point of the command
-            # (see _should_handle_background_command_inline). The foreground
-            # turn is left alone: no interrupt, no steer.
             if self._should_handle_background_command_inline(text, has_images=has_images):
                 self.process_command(text)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -7925,21 +7277,17 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 return
 
             if text or has_images:
-                # Snapshot and clear attached images
                 images = list(self._attached_images)
                 self._attached_images.clear()
                 event.app.invalidate()
-                # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
                     if self.busy_input_mode == "queue":
-                        # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
                         _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
                     else:
                         self._interrupt_queue.put(payload)
-                        # Debug: log to file when message enters interrupt queue
                         try:
                             _dbg = _daedalus_home / "interrupt_debug.log"
                             with open(_dbg, "a") as _f:
@@ -7978,24 +7326,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """
             buf = event.current_buffer
             if buf.complete_state:
-                # Completion menu is open — accept the selection
                 completion = buf.complete_state.current_completion
                 if completion is None:
-                    # Menu open but nothing selected — select first then grab it
                     buf.go_to_completion(0)
                     completion = buf.complete_state and buf.complete_state.current_completion
                 if completion is None:
                     return
-                # Accept the selected completion
                 buf.apply_completion(completion)
             elif buf.suggestion and buf.suggestion.text:
-                # No completion menu, but there's a ghost text auto-suggestion — accept it
                 buf.insert_text(buf.suggestion.text)
             else:
-                # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
 
-        # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 
         @kb.add('up', filter=Condition(lambda: bool(self._clarify_state) and not self._clarify_freetext))
         def clarify_up(event):
@@ -8009,11 +7351,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """Move selection down in clarify choices."""
             if self._clarify_state:
                 choices = self._clarify_state.get("choices") or []
-                max_idx = len(choices)  # last index is the "Other" option
+                max_idx = len(choices)
                 self._clarify_state["selected"] = min(max_idx, self._clarify_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- Dangerous command approval: arrow-key navigation ---
 
         @kb.add('up', filter=Condition(lambda: bool(self._approval_state)))
         def approval_up(event):
@@ -8028,10 +7369,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
@@ -8059,9 +7396,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             import time as _time
             now = _time.time()
 
-            # Cancel active voice recording.
-            # Run cancel() in a background thread to prevent blocking the
-            # event loop if AudioRecorder._lock or CoreAudio takes time.
             _should_cancel_voice = False
             _recorder_ref = None
             with cli_ref._voice_lock:
@@ -8078,7 +7412,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
                 return
 
-            # Cancel sudo prompt
             if self._sudo_state:
                 self._sudo_state["response_queue"].put("")
                 self._sudo_state = None
@@ -8086,21 +7419,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 event.app.invalidate()
                 return
 
-            # Cancel secret prompt
             if self._secret_state:
                 self._cancel_secret_capture()
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
-            # Cancel approval prompt (deny)
             if self._approval_state:
                 self._approval_state["response_queue"].put("deny")
                 self._approval_state = None
                 event.app.invalidate()
                 return
 
-            # Cancel clarify prompt
             if self._clarify_state:
                 self._clarify_state["response_queue"].put(
                     "The user cancelled. Use your best judgement to proceed."
@@ -8122,8 +7452,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
                 self.agent.interrupt()
             else:
-                # If there's text or images, clear them (like bash).
-                # If everything is already empty, exit.
                 if event.app.current_buffer.text or self._attached_images:
                     event.app.current_buffer.reset()
                     self._attached_images.clear()
@@ -8156,9 +7484,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 os.kill(0, _sig.SIGTSTP)
             run_in_terminal(_suspend)
 
-        # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
-        # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
-        # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
         try:
             from daedalus_cli.config import load_config
             _raw_key = load_config().get("voice", {}).get("record_key", "ctrl+b")
@@ -8176,31 +7501,22 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """
             if not cli_ref._voice_mode:
                 return
-            # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:
-                # Manual stop via push-to-talk key: stop continuous mode
                 with cli_ref._voice_lock:
                     cli_ref._voice_continuous = False
-                # Flag clearing is handled atomically inside _voice_stop_and_transcribe
                 event.app.invalidate()
                 threading.Thread(
                     target=cli_ref._voice_stop_and_transcribe,
                     daemon=True,
                 ).start()
             else:
-                # Guard: don't START recording during agent run or interactive prompts
                 if cli_ref._agent_running:
                     return
                 if cli_ref._clarify_state or cli_ref._sudo_state or cli_ref._approval_state:
                     return
-                # Guard: don't start while a previous stop/transcribe cycle is
-                # still running — recorder.stop() holds AudioRecorder._lock and
-                # start() would block the event-loop thread waiting for it.
                 if cli_ref._voice_processing:
                     return
 
-                # Interrupt TTS if playing, so user can start talking.
-                # stop_playback() is fast (just terminates a subprocess).
                 if not cli_ref._voice_tts_done.is_set():
                     try:
                         from tools.voice_mode import stop_playback
@@ -8212,9 +7528,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 with cli_ref._voice_lock:
                     cli_ref._voice_continuous = True
 
-                # Dispatch to a daemon thread so play_beep(sd.wait),
-                # AudioRecorder.start(lock acquire), and config I/O
-                # never block the prompt_toolkit event loop.
                 def _start_recording():
                     try:
                         cli_ref._voice_start_recording()
@@ -8240,8 +7553,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             buffer.
             """
             pasted_text = event.data or ""
-            # Normalise line endings — Windows \r\n and old Mac \r both become \n
-            # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
@@ -8290,17 +7601,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
             else:
-                # No image found — show a hint
-                pass  # silent when no image (avoid noise on accidental press)
+                pass
 
-        # Dynamic prompt: shows Daedalus symbol when agent is working,
-        # or answer prompt when clarify freetext mode is active.
         cli_ref = self
 
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
-        # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
 
@@ -8324,8 +7631,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ),
         )
 
-        # Dynamic height: accounts for both explicit newlines AND visual
-        # wrapping of long lines so the input area always fits its content.
         def _input_height():
             try:
                 from prompt_toolkit.application import get_app
@@ -8341,20 +7646,17 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     available_width = 40
                 visual_lines = 0
                 for line in doc.lines:
-                    # Each logical line takes at least 1 visual row; long lines wrap.
-                    # Use prompt_toolkit's cell width so CJK wide characters count as 2.
                     line_width = get_cwidth(line)
                     if line_width <= 0:
                         visual_lines += 1
                     else:
-                        visual_lines += max(1, -(-line_width // available_width))  # ceil division
+                        visual_lines += max(1, -(-line_width // available_width))
                 return min(max(visual_lines, 1), 8)
             except Exception:
                 return 1
 
         input_area.window.height = _input_height
 
-        # Paste collapsing: detect large pastes and save to temp file
         _paste_counter = [0]
         _prev_text_len = [0]
         _prev_newline_count = [0]
@@ -8388,21 +7690,17 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             is_paste = chars_added > 1 or newlines_added >= 4
             if line_count >= 5 and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
-                # Save to temp file
                 paste_dir = _daedalus_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
                 _paste_just_collapsed[0] = True
                 buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed
 
-        # --- Input processors for password masking and inline placeholder ---
 
-        # Mask input with '*' when the sudo password prompt is active
         input_area.control.input_processors.append(
             ConditionalProcessor(
                 PasswordProcessor(),
@@ -8421,7 +7719,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 if not ti.document.text and ti.lineno == 0:
                     text = self._get_text()
                     if text:
-                        # Append after existing fragments (preserves the ❯ prompt)
                         return Transformation(fragments=ti.fragments + [('class:placeholder', text)])
                 return Transformation(fragments=ti.fragments)
 
@@ -8452,9 +7749,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         input_area.control.input_processors.append(_PlaceholderProcessor(_get_placeholder))
 
-        # Hint line above input: shown only for interactive prompts that need
-        # extra instructions (sudo countdown, approval navigation, clarify).
-        # The agent-running interrupt hint is now an inline placeholder above.
         def get_hint_text():
             import time as _time
 
@@ -8503,8 +7797,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def get_hint_height():
             if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
                 return 1
-            # Keep a 1-line spacer while agent runs so output doesn't push
-            # right up against the top rule of the input area
             return 1 if cli_ref._agent_running else 0
 
         def get_spinner_text():
@@ -8526,14 +7818,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             height=get_hint_height,
         )
 
-        # --- Clarify tool: dynamic display widget for questions + choices ---
 
         def _panel_box_width(title: str, content_lines: list[str], min_width: int = 46, max_width: int = 76) -> int:
             """Choose a stable panel width wide enough for the title and content."""
             term_cols = shutil.get_terminal_size((100, 20)).columns
             longest = max([len(title)] + [len(line) for line in content_lines] + [min_width - 4])
             inner = min(max(longest + 4, min_width - 2), max_width - 2, max(24, term_cols - 6))
-            return inner + 2  # account for the single leading/trailing spaces inside borders
+            return inner + 2
 
         def _wrap_panel_text(text: str, width: int, subsequent_indent: str = "") -> list[str]:
             wrapped = textwrap.wrap(
@@ -8577,13 +7868,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             inner_text_width = max(8, box_width - 2)
 
             lines = []
-            # Box top border
             lines.append(('class:clarify-border', '╭─ '))
             lines.append(('class:clarify-title', 'Daedalus needs your input'))
             lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len("Daedalus needs your input") - 3)) + '╮\n'))
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
-            # Question text
             for wrapped in _wrap_panel_text(question, inner_text_width):
                 _append_panel_line(lines, 'class:clarify-border', 'class:clarify-question', wrapped, box_width)
             _append_blank_panel_line(lines, 'class:clarify-border', box_width)
@@ -8595,7 +7884,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _append_blank_panel_line(lines, 'class:clarify-border', box_width)
 
             if choices:
-                # Multiple-choice mode: show selectable options
                 for i, choice in enumerate(choices):
                     style = 'class:clarify-selected' if i == selected and not cli_ref._clarify_freetext else 'class:clarify-choice'
                     prefix = '❯ ' if i == selected and not cli_ref._clarify_freetext else '  '
@@ -8603,7 +7891,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     for wrapped in wrapped_lines:
                         _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
 
-                # "Other" option (5th line, only shown when choices exist)
                 other_idx = len(choices)
                 if selected == other_idx and not cli_ref._clarify_freetext:
                     other_style = 'class:clarify-selected'
@@ -8629,7 +7916,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(lambda: cli_ref._clarify_state is not None),
         )
 
-        # --- Sudo password: display widget ---
 
         def _get_sudo_display():
             state = cli_ref._sudo_state
@@ -8692,7 +7978,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(lambda: cli_ref._secret_state is not None),
         )
 
-        # --- Dangerous command approval: display widget ---
 
         def _get_approval_display():
             return cli_ref._get_approval_display_fragments()
@@ -8705,10 +7990,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(lambda: cli_ref._approval_state is not None),
         )
 
-        # Horizontal rules above and below the input (bronze, 1 line each).
-        # The bottom rule moves down as the TextArea grows with newlines.
-        # Using char='─' instead of hardcoded repetition so the rule
-        # always spans the full terminal width on any screen size.
         input_rule_top = Window(
             char='─',
             height=1,
@@ -8720,7 +8001,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             style='class:input-rule',
         )
 
-        # Image attachment indicator — shows badges like [📎 Image #1] above input
         cli_ref = self
 
         def _get_image_bar():
@@ -8738,7 +8018,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             height=Condition(lambda: bool(cli_ref._attached_images)),
         )
 
-        # Persistent voice mode status bar (visible only when voice mode is on)
         def _get_voice_status():
             if cli_ref._voice_recording:
                 return [('class:voice-status-recording', ' ● REC  Ctrl+B to stop ')]
@@ -8760,25 +8039,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             Window(
                 content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
                 height=1,
-                # Prevent fragments that overflow the terminal width from
-                # wrapping onto a second line, which causes the status bar to
-                # appear duplicated (one full + one partial row) during long
-                # sessions, especially on SSH where shutil.get_terminal_size
-                # may return stale values.  _get_status_bar_fragments now reads
-                # width from prompt_toolkit's own output object, so fragments
-                # will always fit; wrap_lines=False is the belt-and-suspenders
-                # guard against any future width mismatch.
                 wrap_lines=False,
             ),
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
-        # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
-        # Layout: interactive prompt widgets + ruled input at bottom.
-        # The sudo, approval, and clarify widgets appear above the input when
-        # the corresponding interactive prompt is active.
         completions_menu = CompletionsMenu(max_height=12, scroll_offset=1)
 
         layout = Layout(
@@ -8801,7 +8068,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
         )
         
-        # Style for the application
         self._tui_style_base = {
             'input-area': '#FFF8DC',
             'placeholder': '#555555 italic',
@@ -8815,16 +8081,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
-            # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
-            # Clipboard image attachment badges
             'image-badge': '#87CEEB bold',
             'completion-menu': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion.current': 'bg:#333355 #FFD700',
             'completion-menu.meta.completion': 'bg:#1a1a2e #888888',
             'completion-menu.meta.completion.current': 'bg:#333355 #FFBF00',
-            # Clarify question panel
             'clarify-border': '#CD7F32',
             'clarify-title': '#FFD700 bold',
             'clarify-question': '#FFF8DC bold',
@@ -8832,19 +8095,16 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'clarify-selected': '#FFD700 bold',
             'clarify-active-other': '#FFD700 italic',
             'clarify-countdown': '#CD7F32',
-            # Sudo password panel
             'sudo-prompt': '#FF6B6B bold',
             'sudo-border': '#CD7F32',
             'sudo-title': '#FF6B6B bold',
             'sudo-text': '#FFF8DC',
-            # Dangerous command approval panel
             'approval-border': '#CD7F32',
             'approval-title': '#FF8C00 bold',
             'approval-desc': '#FFF8DC bold',
             'approval-cmd': '#AAAAAA italic',
             'approval-choice': '#AAAAAA',
             'approval-selected': '#FFD700 bold',
-            # Voice mode
             'voice-prompt': '#87CEEB',
             'voice-recording': '#FF4444 bold',
             'voice-processing': '#FFA500 italic',
@@ -8853,36 +8113,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
-        # Create the application
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
             full_screen=False,
             mouse_support=False,
-            # Read from display.cli_refresh_interval (default 1.0). When
-            # non-zero, prompt_toolkit redraws the UI on this cadence during
-            # idle, keeping wall-clock status-bar read-outs ticking. Set to 0
-            # to suppress background redraws entirely — avoids fighting
-            # terminal auto-scroll in non-fullscreen mode (Xshell, iTerm2,
-            # Windows Terminal).
             refresh_interval=float(CLI_CONFIG.get("display", {}).get("cli_refresh_interval", 1.0)),
-            # Erase the live bottom chrome (status bar, input box, separator
-            # rules) on exit instead of freezing a final copy into scrollback.
             erase_when_done=True,
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
-        self._app = app  # Store reference for clarify_callback
+        self._app = app
 
-        # ── Fix ghost status-bar lines on terminal resize ──────────────
-        # When the terminal shrinks (e.g. un-maximize), the emulator reflows
-        # the previously-rendered full-width rows (status bar, input rules)
-        # into multiple narrower rows.  prompt_toolkit's _on_resize handler
-        # only cursor_up()s by the stored layout height, missing the extra
-        # rows created by reflow — leaving ghost duplicates visible.
-        #
-        # Fix: before the standard erase, inflate _cursor_pos.y so the
-        # cursor moves up far enough to cover the reflowed ghost content.
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():
@@ -8912,7 +8154,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             y=renderer._cursor_pos.y + extra,
                         )
             except Exception:
-                pass  # never break resize handling
+                pass
             _original_on_resize()
 
         app._on_resize = _resize_clear_ghosts
@@ -8938,19 +8180,14 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
         
-        # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:
                 try:
-                    # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
                     except queue.Empty:
-                        # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
-                            # Check for background process completion notifications
-                            # while the agent is idle (user hasn't typed anything yet).
                             try:
                                 from tools.process_registry import process_registry
                                 if not process_registry.completion_queue.empty():
@@ -8973,13 +8210,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     if not user_input:
                         continue
 
-                    # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
                     
-                    # Check for commands — but detect dragged/pasted file paths first.
-                    # See _detect_file_drop() for details.
                     _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
                     if _file_drop:
                         _drop_path = _file_drop["path"]
@@ -8999,12 +8233,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True
-                            # Schedule app exit
                             if app.is_running:
                                 app.exit()
                         continue
                     
-                    # Expand paste references back to full content
                     import re as _re
                     _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
@@ -9018,7 +8250,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         print()
                         ChatConsole().print(_user_bar)
-                        # Show any surrounding user text alongside the paste summary
                         split_parts = _paste_ref_re.split(user_input)
                         visible_user_text = " ".join(
                             split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
@@ -9049,14 +8280,12 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             ChatConsole().print(_user_bar)
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
-                    # Show image attachment count
                     if submit_images:
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
-                    # Regular chat - run agent
                     self._agent_running = True
-                    app.invalidate()  # Refresh status line
+                    app.invalidate()
 
                     try:
                         self.chat(user_input, images=submit_images or None)
@@ -9064,12 +8293,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         self._agent_running = False
                         self._spinner_text = ""
 
-                        app.invalidate()  # Refresh status line
+                        app.invalidate()
 
-                        # Continuous voice: auto-restart recording after agent responds.
-                        # Dispatch to a daemon thread so play_beep (sd.wait) and
-                        # AudioRecorder.start (lock acquire) never block process_loop —
-                        # otherwise queued user input would stall silently.
                         if self._voice_mode and self._voice_continuous and not self._voice_recording:
                             def _restart_recording():
                                 try:
@@ -9082,10 +8307,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                     _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                             threading.Thread(target=_restart_recording, daemon=True).start()
 
-                        # Drain process completion notifications — any background
-                        # process that finished with notify_on_complete while the
-                        # agent was running (or before) gets auto-injected as a
-                        # new user message so the agent can react to it.
                         try:
                             from tools.process_registry import process_registry
                             while not process_registry.completion_queue.empty():
@@ -9102,19 +8323,16 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 )
                                 self._pending_input.put(_synth)
                         except Exception:
-                            pass  # Non-fatal — don't break the main loop
+                            pass
 
                 except Exception as e:
                     print(f"Error: {e}")
         
-        # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)
         process_thread.start()
         
-        # Register atexit cleanup so resources are freed even on unexpected exit
         atexit.register(_run_cleanup)
         
-        # Register signal handlers for graceful shutdown on SSH disconnect / SIGTERM
         def _signal_handler(signum, frame):
             """Handle SIGHUP/SIGTERM by triggering graceful cleanup."""
             logger.debug("Received signal %s, triggering graceful shutdown", signum)
@@ -9126,24 +8344,16 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if hasattr(_signal, 'SIGHUP'):
                 _signal.signal(_signal.SIGHUP, _signal_handler)
         except Exception:
-            pass  # Signal handlers may fail in restricted environments
+            pass
         
-        # Install a custom asyncio exception handler that suppresses the
-        # "Event loop is closed" RuntimeError from httpx transport cleanup.
-        # This is defense-in-depth — the primary fix is neuter_async_httpx_del
-        # which disables __del__ entirely, but older clients or SDK upgrades
-        # could bypass it.
         def _suppress_closed_loop_errors(loop, context):
             exc = context.get("exception")
             if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
-                return  # silently suppress
-            # Fall back to default handler for everything else
+                return
             loop.default_exception_handler(context)
 
-        # Run the application with patch_stdout for proper output handling
         try:
             with patch_stdout():
-                # Set the custom handler on prompt_toolkit's event loop
                 try:
                     import asyncio as _aio
                     _loop = _aio.get_event_loop()
@@ -9155,39 +8365,30 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             pass
         finally:
             self._should_exit = True
-            # Flush memories before exit (only for substantial conversations)
             if self.agent and self.conversation_history:
                 try:
                     self.agent.flush_memories(self.conversation_history)
                 except (Exception, KeyboardInterrupt):
                     pass
-            # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:
                 try:
                     self._voice_recorder.shutdown()
                 except Exception:
                     pass
                 self._voice_recorder = None
-            # Clean up old temp voice recordings
             try:
                 from tools.voice_mode import cleanup_temp_recordings
                 cleanup_temp_recordings()
             except Exception:
                 pass
-            # Unregister callbacks to avoid dangling references
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
-            # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
-            # Plugin hook: on_session_end — safety net for interrupted exits.
-            # run_conversation() already fires this per-turn on normal completion,
-            # so only fire here if the agent was mid-turn (_agent_running) when
-            # the exit occurred, meaning run_conversation's hook didn't fire.
             if self.agent and getattr(self, '_agent_running', False):
                 try:
                     from daedalus_cli.plugins import invoke_hook as _invoke_hook
@@ -9205,9 +8406,6 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._print_exit_summary()
 
 
-# ============================================================================
-# Main Entry Point
-# ============================================================================
 
 def main(
     query: str = None,
@@ -9264,17 +8462,11 @@ def main(
     """
     global _active_worktree
 
-    # Signal to terminal_tool that we're in interactive mode
-    # This enables interactive sudo password prompts with timeout
     os.environ["DAEDALUS_INTERACTIVE"] = "1"
 
-    # Discover + load plugins before any dispatch (idempotent). Closes the gap
-    # where plugin hooks/tools/CLI commands saw an empty registry because cli.py
-    # never called discover_plugins() at startup (only tools_config did).
     from daedalus_cli.plugins import discover_plugins
     discover_plugins()
     
-    # Handle gateway mode (messaging + cron)
     if gateway:
         import asyncio
         from gateway.run import start_gateway
@@ -9282,15 +8474,10 @@ def main(
         asyncio.run(start_gateway())
         return
 
-    # Skip worktree for list commands (they exit immediately)
     if not list_tools and not list_toolsets:
-        # ── Git worktree isolation (#652) ──
-        # Create an isolated worktree so this agent instance doesn't collide
-        # with other agents working on the same repo.
         use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
         wt_info = None
         if use_worktree:
-            # Prune stale worktrees from crashed/killed sessions
             _repo = _git_repo_root()
             if _repo:
                 _prune_stale_worktrees(_repo)
@@ -9300,23 +8487,17 @@ def main(
                 os.environ["TERMINAL_CWD"] = wt_info["path"]
                 atexit.register(_cleanup_worktree, wt_info)
             else:
-                # Worktree was explicitly requested but setup failed —
-                # don't silently run without isolation.
                 return
     else:
         wt_info = None
     
-    # Handle query shorthand
     query = query or q
 
-    # Parse toolsets - handle both string and tuple/list inputs
-    # Default to daedalus-cli toolset which includes cronjob management tools
     toolsets_list = None
     if toolsets:
         if isinstance(toolsets, str):
             toolsets_list = [t.strip() for t in toolsets.split(",")]
         elif isinstance(toolsets, (list, tuple)):
-            # Fire may pass multiple --toolsets as a tuple
             toolsets_list = []
             for t in toolsets:
                 if isinstance(t, str):
@@ -9324,13 +8505,11 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Use the shared resolver so MCP servers are included at runtime
         from daedalus_cli.tools_config import _get_platform_tools
         toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
 
-    # Create CLI instance
     cli = DaedalusCLI(
         model=model,
         toolsets=toolsets_list,
@@ -9359,7 +8538,6 @@ def main(
             ).strip()
             cli.preloaded_skills = loaded_skills
 
-    # Inject worktree context into agent's system prompt
     if wt_info:
         wt_note = (
             f"\n\n[System note: You are working in an isolated git worktree at "
@@ -9370,7 +8548,6 @@ def main(
         )
         cli.system_prompt = (cli.system_prompt or "") + wt_note
     
-    # Handle list commands (don't init agent for these)
     if list_tools:
         cli.show_banner()
         cli.show_tools()
@@ -9381,14 +8558,10 @@ def main(
         cli.show_toolsets()
         sys.exit(0)
     
-    # Register cleanup for single-query mode (interactive mode registers in run())
     atexit.register(_run_cleanup)
     
-    # Handle single query mode
     if query:
         if quiet:
-            # Quiet mode: suppress banner, spinner, tool previews.
-            # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
                 turn_route = cli._resolve_turn_agent_config(query)
@@ -9409,10 +8582,8 @@ def main(
                         print(response)
                     print(f"\nsession_id: {cli.session_id}")
                     
-                    # Ensure proper exit code for automation wrappers
                     sys.exit(1 if isinstance(result, dict) and result.get("failed") else 0)
             
-            # Exit with error code if credentials or agent init fails
             sys.exit(1)
         else:
             cli.show_banner()
@@ -9421,15 +8592,10 @@ def main(
             cli._print_exit_summary()
         return
     
-    # Run interactive mode
     cli.run()
 
 
 if __name__ == "__main__":
-    # CLI entry — plain argparse, NOT Google Fire. Fire coerced numeric-looking
-    # values to int (a session id like 20260810_105748_798252 arrived as the
-    # huge int 20260810105748798252, overflowing SQLite INTEGER on resume). All
-    # values here are passed through as typed strings/flags.
     import argparse
 
     _parser = argparse.ArgumentParser(
@@ -9450,7 +8616,6 @@ if __name__ == "__main__":
     _parser.add_argument("--list-tools", action="store_true", dest="list_tools", help="List available tools and exit")
     _parser.add_argument("--list-toolsets", action="store_true", dest="list_toolsets", help="List available toolsets and exit")
     _parser.add_argument("--gateway", action="store_true", help="Start the gateway")
-    # `--resume` is ALWAYS a string (session id) — never coerce.
     _parser.add_argument("--resume", type=str, default=None, help="Resume a previous session by its ID")
     _parser.add_argument("--worktree", "-w", action="store_true", dest="worktree", help="Run in an isolated git worktree")
     _parser.add_argument("--checkpoints", action="store_true", help="Enable checkpoints")

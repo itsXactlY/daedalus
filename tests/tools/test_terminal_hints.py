@@ -96,7 +96,6 @@ class TestBoundedScan:
         assert annotate_failure("noop", 1, out) is None
 
     def test_hint_functions_cannot_crash_annotate(self):
-        # A hint raising must not propagate.
         with mock_patch("tools.terminal_hints._OUTPUT_HINTS", [lambda c, o: 1 / 0]):
             assert annotate_failure("x", 1, "boom") is None
 
@@ -105,18 +104,12 @@ class TestTerminalIntegration:
     """The hint lands in the terminal result dict under 'hint'."""
 
     def test_hint_field_wired(self):
-        # Exercise the wiring path shape without a live environment: the
-        # result assembly guards on returncode != 0 and no exit_note.
         from tools import terminal_tool
-        # simulate: interpret gives None, hints give a value
         note = terminal_tool._interpret_exit_code("python x.py", 127)
         assert note is None
         hint = annotate_failure("python x.py", 127, "bash: python: command not found")
         assert hint and "python3" in hint
 
     def test_exit_note_suppresses_pattern_hint(self):
-        # grep exit 1 is informational; annotate_failure must not be reached
-        # for it in the wiring (exit_note wins). Just verify the semantics
-        # table still covers it.
         from tools import terminal_tool
         assert terminal_tool._interpret_exit_code("grep foo bar.txt", 1) is not None

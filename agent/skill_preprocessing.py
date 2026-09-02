@@ -15,16 +15,10 @@ from daedalus_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
 
 logger = logging.getLogger(__name__)
 
-# Matches ${DAEDALUS_SKILL_DIR} / ${DAEDALUS_SESSION_ID} tokens in SKILL.md.
-# Tokens that don't resolve (e.g. ${DAEDALUS_SESSION_ID} with no session) are
-# left as-is so the user can debug them.
 _SKILL_TEMPLATE_RE = re.compile(r"\$\{(DAEDALUS_SKILL_DIR|DAEDALUS_SESSION_ID)\}")
 
-# Matches inline shell snippets like:  !`date +%Y-%m-%d`
-# Non-greedy, single-line only -- no newlines inside the backticks.
 _INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
 
-# Cap inline-shell output so a runaway command can't blow out the context.
 _INLINE_SHELL_MAX_OUTPUT = 4000
 
 
@@ -91,10 +85,6 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     except FileNotFoundError:
         return "[inline-shell error: bash not found]"
     except RuntimeError as exc:
-        # tests/conftest.py installs a live-system guard that blocks real
-        # os.kill on out-of-tree PIDs. subprocess.run(timeout=...) may trip
-        # that guard while trying to clean up the timed-out shell; treat that
-        # as the same timeout outcome instead of surfacing the guard error.
         if "live-system guard: blocked os.kill" in str(exc):
             return f"[inline-shell timeout after {timeout}s: {command}]"
         return f"[inline-shell error: {exc}]"

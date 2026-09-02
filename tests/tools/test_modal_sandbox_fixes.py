@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 import pytest
 
-# Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -26,9 +25,6 @@ except ImportError:
     pytest.skip("daedalus tools not importable (missing deps)", allow_module_level=True)
 
 
-# =========================================================================
-# Test 1: Tool resolution includes terminal + file tools
-# =========================================================================
 
 class TestToolResolution:
     """Verify get_tool_definitions returns all expected tools for eval."""
@@ -55,9 +51,6 @@ class TestToolResolution:
         assert "terminal" in names, f"terminal tool missing! Only got: {names}."
 
 
-# =========================================================================
-# Test 2-4: CWD handling for container backends
-# =========================================================================
 
 class TestCwdHandling:
     """Verify host paths are sanitized for container backends."""
@@ -108,9 +101,6 @@ class TestCwdHandling:
         )
 
 
-# =========================================================================
-# Test 5: ephemeral_disk version check
-# =========================================================================
 
 class TestEphemeralDiskCheck:
     """Verify ephemeral_disk is only passed when modal supports it."""
@@ -128,11 +118,9 @@ class TestEphemeralDiskCheck:
 
         monkeypatch.setenv("TERMINAL_ENV", "modal")
         config = _tt_mod._get_env_config()
-        # The config has container_disk default of 51200
         disk = config.get("container_disk", 51200)
         assert disk > 0, "disk should default to > 0"
 
-        # Simulate the version check logic from terminal_tool.py
         sandbox_kwargs = {}
         if disk > 0:
             try:
@@ -146,9 +134,6 @@ class TestEphemeralDiskCheck:
         )
 
 
-# =========================================================================
-# Test 6: ModalEnvironment defaults
-# =========================================================================
 
 class TestModalEnvironmentDefaults:
     """Verify ModalEnvironment has correct defaults."""
@@ -165,9 +150,6 @@ class TestModalEnvironmentDefaults:
         )
 
 
-# =========================================================================
-# Test 7: ensurepip fix in ModalEnvironment
-# =========================================================================
 
 class TestEnsurepipFix:
     """Verify the pip fix is applied in the ModalEnvironment init."""
@@ -211,20 +193,15 @@ class TestEnsurepipFix:
         )
 
 
-# =========================================================================
-# Test 8: Host prefix list completeness
-# =========================================================================
 
 class TestHostPrefixList:
     """Verify the host prefix list catches common host-only paths."""
 
     def test_all_common_host_prefixes_caught(self):
         """The host prefix check should catch /Users/, /home/, C:\\, C:/."""
-        # Read the actual source to verify the prefixes
         import inspect
         source = inspect.getsource(_tt_mod._get_env_config)
         for prefix in ["/Users/", "/home/", 'C:\\\\"', "C:/"]:
-            # Normalize for source comparison
             check = prefix.rstrip('"')
             assert check in source or prefix in source, (
                 f"Host prefix {prefix!r} not found in _get_env_config. "

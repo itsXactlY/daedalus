@@ -82,8 +82,6 @@ async def test_unknown_slash_command_returns_guidance(monkeypatch):
     import gateway.run as gateway_run
 
     runner = _make_runner()
-    # If the LLM were called, this would fail: the guard must short-circuit
-    # before _run_agent is invoked.
     runner._run_agent = AsyncMock(
         side_effect=AssertionError(
             "unknown slash command leaked through to the agent"
@@ -132,8 +130,6 @@ async def test_unknown_slash_command_underscored_form_also_guarded(monkeypatch):
 async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
     """A real built-in like /status must NOT hit the unknown-command guard."""
     runner = _make_runner()
-    # Make _handle_status_command exist via the normal path by running a real
-    # dispatch. If the guard fires, the return string will mention "Unknown".
     runner._running_agents[build_session_key(_make_source())] = MagicMock()
 
     result = await runner._handle_message(_make_event("/status"))
@@ -149,7 +145,6 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     import gateway.run as gateway_run
 
     runner = _make_runner()
-    # Prevent real MCP work; we only care that the unknown guard doesn't fire.
     async def _noop_reload(*_a, **_kw):
         return "mcp reloaded"
 
@@ -161,6 +156,5 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
 
     result = await runner._handle_message(_make_event("/reload_mcp"))
 
-    # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result

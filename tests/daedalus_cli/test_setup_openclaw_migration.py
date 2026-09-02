@@ -7,9 +7,6 @@ from unittest.mock import MagicMock, patch
 from daedalus_cli import setup as setup_mod
 
 
-# ---------------------------------------------------------------------------
-# _offer_openclaw_migration — unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestOfferOpenclawMigration:
@@ -48,13 +45,11 @@ class TestOfferOpenclawMigration:
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
 
-        # Create a fake daedalus home with config
         daedalus_home = tmp_path / ".daedalus"
         daedalus_home.mkdir()
         config_path = daedalus_home / "config.yaml"
         config_path.write_text("agent:\n  max_turns: 90\n")
 
-        # Build a fake migration module
         fake_mod = ModuleType("openclaw_to_daedalus")
         fake_mod.resolve_selected_options = MagicMock(return_value={"soul", "memory"})
         fake_migrator = MagicMock()
@@ -74,7 +69,6 @@ class TestOfferOpenclawMigration:
             patch.object(setup_mod, "get_config_path", return_value=config_path),
             patch("importlib.util.spec_from_file_location") as mock_spec_fn,
         ):
-            # Wire up the fake module loading
             mock_spec = MagicMock()
             mock_spec.loader = MagicMock()
             mock_spec_fn.return_value = mock_spec
@@ -132,7 +126,6 @@ class TestOfferOpenclawMigration:
         daedalus_home = tmp_path / ".daedalus"
         daedalus_home.mkdir()
         config_path = daedalus_home / "config.yaml"
-        # config does NOT exist yet
 
         script = tmp_path / "openclaw_to_daedalus.py"
         script.write_text("# placeholder")
@@ -151,13 +144,9 @@ class TestOfferOpenclawMigration:
         ):
             setup_mod._offer_openclaw_migration(daedalus_home)
 
-        # save_config should have been called to bootstrap the file
         mock_save.assert_called_once_with({"agent": {}})
 
 
-# ---------------------------------------------------------------------------
-# Integration with run_setup_wizard — first-time flow
-# ---------------------------------------------------------------------------
 
 
 def _first_time_args() -> Namespace:
@@ -182,15 +171,11 @@ class TestSetupWizardOpenclawIntegration:
             patch.object(setup_mod, "get_env_value", return_value=""),
             patch.object(setup_mod, "is_interactive_stdin", return_value=True),
             patch("daedalus_cli.auth.get_active_provider", return_value=None),
-            # User presses Enter to start
             patch("builtins.input", return_value=""),
-            # Select "Full setup" (index 1) so we exercise the full path
             patch.object(setup_mod, "prompt_choice", return_value=1),
-            # Mock the migration offer
             patch.object(
                 setup_mod, "_offer_openclaw_migration", return_value=False
             ) as mock_migration,
-            # Mock the actual setup sections so they don't run
             patch.object(setup_mod, "setup_model_provider"),
             patch.object(setup_mod, "setup_terminal_backend"),
             patch.object(setup_mod, "setup_agent_settings"),
@@ -234,7 +219,6 @@ class TestSetupWizardOpenclawIntegration:
         ):
             setup_mod.run_setup_wizard(args)
 
-        # load_config called twice: once at start, once after migration
         assert call_order.count("load_config") == 2
 
     def test_reloaded_config_flows_into_remaining_setup_sections(self, tmp_path):
@@ -283,7 +267,6 @@ class TestSetupWizardOpenclawIntegration:
                 side_effect=lambda k: "sk-xxx" if k == "OPENROUTER_API_KEY" else "",
             ),
             patch("daedalus_cli.auth.get_active_provider", return_value=None),
-            # Returning user picks "Exit"
             patch.object(setup_mod, "prompt_choice", return_value=9),
             patch.object(
                 setup_mod, "_offer_openclaw_migration", return_value=False
@@ -294,9 +277,6 @@ class TestSetupWizardOpenclawIntegration:
         mock_migration.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _get_section_config_summary / _skip_configured_section — unit tests
-# ---------------------------------------------------------------------------
 
 
 class TestGetSectionConfigSummary:
@@ -420,7 +400,6 @@ class TestSetupWizardSkipsConfiguredSections:
         """
         args = _first_time_args()
 
-        # Track whether migration has "run" — after it does, API key is available
         migration_done = {"value": False}
 
         def env_side(key):
@@ -446,12 +425,10 @@ class TestSetupWizardSkipsConfiguredSections:
             patch("daedalus_cli.auth.get_active_provider", return_value=None),
             patch("builtins.input", return_value=""),
             patch.object(setup_mod, "prompt_choice", return_value=1),
-            # Migration succeeds and flips the env_side flag
             patch.object(
                 setup_mod, "_offer_openclaw_migration",
                 side_effect=fake_migration,
             ),
-            # User says No to all reconfig prompts
             patch.object(setup_mod, "prompt_yes_no", return_value=False),
             patch.object(setup_mod, "setup_model_provider") as mock_model,
             patch.object(setup_mod, "setup_terminal_backend") as mock_terminal,
@@ -463,12 +440,8 @@ class TestSetupWizardSkipsConfiguredSections:
         ):
             setup_mod.run_setup_wizard(args)
 
-        # Model has API key → skip offered, user said No → section NOT called
         mock_model.assert_not_called()
-        # Terminal/agent always have a summary → skip offered, user said No
         mock_terminal.assert_not_called()
         mock_agent.assert_not_called()
-        # Gateway has no tokens (env_side returns "" for gateway keys) → section runs
         mock_gateway.assert_called_once()
-        # Tools have no keys → section runs
         mock_tools.assert_called_once()

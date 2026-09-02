@@ -77,9 +77,6 @@ def _clear_approval_state():
     mod._pending.clear()
 
 
-# ------------------------------------------------------------------
-# Blocking gateway approval infrastructure (tools/approval.py)
-# ------------------------------------------------------------------
 
 
 class TestBlockingGatewayApproval:
@@ -98,13 +95,11 @@ class TestBlockingGatewayApproval:
         session_key = "test-session"
         register_gateway_notify(session_key, lambda d: None)
 
-        # Simulate what check_all_command_guards does
         entry = _ApprovalEntry({"command": "rm -rf /"})
         _gateway_queues.setdefault(session_key, []).append(entry)
 
         assert has_blocking_approval(session_key) is True
 
-        # Resolve from another thread
         def resolve():
             time.sleep(0.1)
             resolve_gateway_approval(session_key, "once")
@@ -203,9 +198,6 @@ class TestBlockingGatewayApproval:
         assert pending_approval_count(session_key) == 2
 
 
-# ------------------------------------------------------------------
-# /approve command
-# ------------------------------------------------------------------
 
 
 class TestApproveCommand:
@@ -286,9 +278,6 @@ class TestApproveCommand:
         assert session_key not in runner._pending_approvals
 
 
-# ------------------------------------------------------------------
-# /deny command
-# ------------------------------------------------------------------
 
 
 class TestDenyCommand:
@@ -338,9 +327,6 @@ class TestDenyCommand:
         assert "No pending command" in result
 
 
-# ------------------------------------------------------------------
-# Bare "yes" must NOT trigger approval
-# ------------------------------------------------------------------
 
 
 class TestBareTextNoLongerApproves:
@@ -360,13 +346,9 @@ class TestBareTextNoLongerApproves:
         entry = _ApprovalEntry({"command": "test"})
         _gateway_queues[session_key] = [entry]
 
-        # "yes" is not /approve — entry should still be pending
         assert not entry.event.is_set()
 
 
-# ------------------------------------------------------------------
-# End-to-end blocking flow
-# ------------------------------------------------------------------
 
 
 class TestBlockingApprovalE2E:
@@ -538,7 +520,6 @@ class TestBlockingApprovalE2E:
         for t in threads:
             t.start()
 
-        # Wait for all 3 to block
         for _ in range(100):
             if len(notified) >= 3:
                 break
@@ -547,7 +528,6 @@ class TestBlockingApprovalE2E:
         assert len(notified) == 3
         assert pending_approval_count(session_key) == 3
 
-        # Approve all at once
         count = resolve_gateway_approval(session_key, "session", resolve_all=True)
         assert count == 3
 
@@ -592,9 +572,6 @@ class TestBlockingApprovalE2E:
         for t in threads:
             t.start()
 
-        # Wait for both threads to register pending approvals instead of
-        # relying on a fixed sleep.  The approval module stores entries in
-        # _gateway_queues[session_key] — poll until we see 2 entries.
         from tools.approval import _gateway_queues
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -602,9 +579,8 @@ class TestBlockingApprovalE2E:
                 break
             time.sleep(0.05)
 
-        # Approve first, deny second
-        resolve_gateway_approval(session_key, "once")   # oldest
-        resolve_gateway_approval(session_key, "deny")   # next
+        resolve_gateway_approval(session_key, "once")
+        resolve_gateway_approval(session_key, "deny")
 
         for t in threads:
             t.join(timeout=5)
@@ -615,9 +591,6 @@ class TestBlockingApprovalE2E:
         unregister_gateway_notify(session_key)
 
 
-# ------------------------------------------------------------------
-# Fallback: no gateway callback (cron/batch mode)
-# ------------------------------------------------------------------
 
 
 class TestFallbackNoCallback:

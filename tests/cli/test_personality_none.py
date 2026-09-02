@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch, mock_open
 import yaml
 
 
-# ── CLI tests ──────────────────────────────────────────────────────────────
 
 class TestCLIPersonalityNone:
 
@@ -70,7 +69,6 @@ class TestCLIPersonalityNone:
         assert "none" in output.lower()
 
 
-# ── Gateway tests ──────────────────────────────────────────────────────────
 
 class TestGatewayPersonalityNone:
 

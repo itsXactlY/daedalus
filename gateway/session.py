@@ -28,9 +28,6 @@ def _now() -> datetime:
     return datetime.now()
 
 
-# ---------------------------------------------------------------------------
-# PII redaction helpers
-# ---------------------------------------------------------------------------
 
 _PHONE_RE = re.compile(r"^\+?\d[\d\-\s]{6,}$")
 
@@ -83,63 +80,30 @@ class SessionSource:
     platform: Platform
     chat_id: str
     chat_name: Optional[str] = None
-    chat_type: str = "dm"  # "dm", "group", "channel", "thread"
+    chat_type: str = "dm"
     user_id: Optional[str] = None
     user_name: Optional[str] = None
-    thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
-    chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
-    user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
-    chat_id_alt: Optional[str] = None  # Signal group internal ID
-    is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
-    # Platform-neutral SCOPE discriminator (Discord guild / Slack workspace /
-    # Matrix server). Drives server/workspace isolation + the relay δ/ε/ζ gate.
-    # `scope_id` is canonical; `guild_id` is a deprecated legacy alias kept
-    # for backward compat. Both are written by to_dict and read by from_dict
-    # (scope_id wins).
+    thread_id: Optional[str] = None
+    chat_topic: Optional[str] = None
+    user_id_alt: Optional[str] = None
+    chat_id_alt: Optional[str] = None
+    is_bot: bool = False
     scope_id: Optional[str] = None
-    guild_id: Optional[str] = None  # @deprecated legacy alias for scope_id
-    parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
-    message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
-    role_authorized: bool = False  # True when adapter granted access via role (not user ID)
-    # Profile this inbound message is routed to in a multiplexing gateway
-    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
-    # None => the gateway's active/default profile.
+    guild_id: Optional[str] = None
+    parent_chat_id: Optional[str] = None
+    message_id: Optional[str] = None
+    role_authorized: bool = False
     profile: Optional[str] = None
-    # Transport-local fail-closed signal for an explicit profile route whose
-    # target is not served. Excluded from repr/equality and wire serialization.
     profile_route_rejected: bool = field(default=False, repr=False, compare=False)
 
-    # Discord auto-thread metadata.  Newly auto-created Discord threads start
-    # with a fast placeholder title from the raw message, then the gateway can
-    # rename them after the first agent turn using the generated session title.
-    # Keep this explicit so pre-existing or human-renamed threads are not
-    # mistaken for safe rename targets.
     auto_thread_created: bool = False
     auto_thread_initial_name: Optional[str] = None
 
-    # Discord auto-thread session-continuity signal. Set by the connector on an
-    # inbound CHANNEL message (no thread_id yet) that its auto-thread policy WILL
-    # deliver into a newly-created thread. A Discord thread created from a message
-    # reuses that message's id as the thread id, so the connector knows the id
-    # before the thread exists. The gateway keys the session on this so a
-    # channel message and its thread follow-ups share ONE session: the channel
-    # message INITIATES it (keyed on the prospective thread id), and later
-    # messages arriving in that thread (real thread_id == this value) CONTINUE
-    # it. Without this, every channel message collapses into one parent-channel
-    # session and only the first auto-thread ever gets an auto-title/rename.
     prospective_thread_id: Optional[str] = None
 
-    # Internal, wire-INVISIBLE trust signal: True when this event was delivered
-    # to the gateway over a per-instance-authenticated relay transport.
-    # Deliberately excluded from to_dict/from_dict so a peer can never forge
-    # it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
 
     def __post_init__(self) -> None:
-        # Dual-field reconciliation: `scope_id` is canonical, `guild_id` is
-        # the deprecated alias. Mirror whichever was provided onto the other
-        # (scope_id wins on conflict) so internal readers of EITHER field see
-        # the same value.
         if self.scope_id is None and self.guild_id is not None:
             self.scope_id = self.guild_id
         elif self.scope_id is not None:
@@ -181,9 +145,6 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
-        # Dual-write: emit BOTH the canonical `scope_id` and the deprecated
-        # `guild_id` alias (mirrored in __post_init__) so a reader on either
-        # side of the migration resolves the scope.
         scope = self.scope_id if self.scope_id is not None else self.guild_id
         if scope:
             d["scope_id"] = scope
@@ -215,8 +176,6 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
-            # Dual-read: prefer the canonical `scope_id`, fall back to the
-            # deprecated `guild_id` alias (a peer not yet migrated sends it).
             scope_id=data.get("scope_id", data.get("guild_id")),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
@@ -251,7 +210,6 @@ class SessionContext:
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
     
-    # Session metadata
     session_key: str = ""
     session_id: str = ""
     created_at: Optional[datetime] = None
@@ -332,22 +290,18 @@ def build_session_context_prompt(
     Platforms like Discord are excluded because mentions need real IDs.
     Routing still uses the original values (they stay in SessionSource).
     """
-    # Only apply redaction on platforms where IDs aren't needed for mentions
     redact_pii = redact_pii and context.source.platform in _PII_SAFE_PLATFORMS
     lines = [
         "## Current Session Context",
         "",
     ]
     
-    # Source info
     platform_name = context.source.platform.value.title()
     if context.source.platform == Platform.LOCAL:
         lines.append(f"**Source:** {platform_name} (the machine running this agent)")
     else:
-        # Build a description that respects PII redaction
         src = context.source
         if redact_pii:
-            # Build a safe description without raw IDs
             _uname = src.user_name or (
                 _hash_sender_id(src.user_id) if src.user_id else "user"
             )
@@ -364,16 +318,9 @@ def build_session_context_prompt(
             desc = src.description
         lines.append(f"**Source:** {platform_name} ({desc})")
     
-    # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
-    # User identity.
-    # In shared thread sessions (non-DM with thread_id), multiple users
-    # contribute to the same conversation.  Don't pin a single user name
-    # in the system prompt — it changes per-turn and would bust the prompt
-    # cache.  Instead, note that this is a multi-user thread; individual
-    # sender names are prefixed on each user message by the gateway.
     _is_shared_thread = (
         context.source.chat_type != "dm"
         and context.source.thread_id
@@ -391,7 +338,6 @@ def build_session_context_prompt(
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
     
-    # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
         lines.append("")
         lines.append(
@@ -402,11 +348,6 @@ def build_session_context_prompt(
             "that you can only read messages sent directly to you and respond."
         )
     elif context.source.platform == Platform.DISCORD:
-        # Inject the Discord IDs block only when the agent actually has
-        # Discord tools loaded this session -- i.e. the user opted into
-        # `discord` / `discord_admin` via `daedalus tools` AND the bot
-        # token is configured. Otherwise keep the stale-API disclaimer
-        # honest so we never promise tools the agent lacks.
         if _discord_tools_loaded():
             src = context.source
             id_lines = ["", "**Discord IDs (for the `discord` / `discord_admin` tools):**"]
@@ -433,7 +374,6 @@ def build_session_context_prompt(
                 "that you can only read messages sent directly to you and respond."
             )
 
-    # Connected platforms
     platforms_list = ["local (files on this machine)"]
     for p in context.connected_platforms:
         if p != Platform.LOCAL:
@@ -441,7 +381,6 @@ def build_session_context_prompt(
     
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
     
-    # Home channels
     if context.home_channels:
         lines.append("")
         lines.append("**Home Channels (default destinations):**")
@@ -449,11 +388,9 @@ def build_session_context_prompt(
             hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
             lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
     
-    # Delivery options for scheduled tasks
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
     
-    # Origin delivery
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
     else:
@@ -462,14 +399,11 @@ def build_session_context_prompt(
         )
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
     
-    # Local always available
     lines.append("- `\"local\"` → Save to local files only (~/.daedalus/cron/output/)")
     
-    # Platform home channels
     for platform, home in context.home_channels.items():
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home.name})")
     
-    # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
     
@@ -488,15 +422,12 @@ class SessionEntry:
     created_at: datetime
     updated_at: datetime
     
-    # Origin metadata for delivery routing
     origin: Optional[SessionSource] = None
     
-    # Display metadata
     display_name: Optional[str] = None
     platform: Optional[Platform] = None
     chat_type: str = "dm"
     
-    # Token tracking
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -505,19 +436,12 @@ class SessionEntry:
     estimated_cost_usd: float = 0.0
     cost_status: str = "unknown"
     
-    # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
     
-    # Set when a session was created because the previous one expired;
-    # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
-    auto_reset_reason: Optional[str] = None  # "idle" or "daily"
-    reset_had_activity: bool = False  # whether the expired session had any messages
+    auto_reset_reason: Optional[str] = None
+    reset_had_activity: bool = False
     
-    # Set by the background expiry watcher after it successfully flushes
-    # memories for this session.  Persisted to sessions.json so the flag
-    # survives gateway restarts (the old in-memory _pre_flushed_sessions
-    # set was lost on restart, causing redundant re-flushes).
     memory_flushed: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
@@ -623,9 +547,6 @@ def build_session_key(
     if source.thread_id:
         key_parts.append(source.thread_id)
 
-    # In threads, default to shared sessions (all participants see the same
-    # conversation).  Per-user isolation only applies when explicitly enabled
-    # via thread_sessions_per_user, or when there is no thread (regular group).
     isolate_user = group_sessions_per_user
     if source.thread_id and not thread_sessions_per_user:
         isolate_user = False
@@ -654,7 +575,6 @@ class SessionStore:
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
         
-        # Initialize SQLite session database
         self._db = None
         try:
             from daedalus_state import SessionDB
@@ -683,7 +603,6 @@ class SessionStore:
                         try:
                             self._entries[key] = SessionEntry.from_dict(entry_data)
                         except (ValueError, KeyError):
-                            # Skip entries with unknown/removed platform values
                             continue
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
@@ -818,9 +737,7 @@ class SessionStore:
             try:
                 return self._db.session_count() > 1
             except Exception:
-                pass  # fall through to heuristic
-        # Fallback: check if sessions.json was loaded with existing data.
-        # This covers the rare case where the DB is unavailable.
+                pass
         with self._lock:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
@@ -839,8 +756,6 @@ class SessionStore:
         session_key = self._generate_session_key(source)
         now = _now()
 
-        # SQLite calls are made outside the lock to avoid holding it during I/O.
-        # All _entries / _loaded mutations are protected by self._lock.
         db_end_session_id = None
         db_create_kwargs = None
 
@@ -856,10 +771,8 @@ class SessionStore:
                     self._save()
                     return entry
                 else:
-                    # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
             else:
@@ -867,7 +780,6 @@ class SessionStore:
                 auto_reset_reason = None
                 reset_had_activity = False
 
-            # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
             entry = SessionEntry(
@@ -892,7 +804,6 @@ class SessionStore:
                 "user_id": source.user_id,
             }
 
-        # SQLite operations outside the lock
         if self._db and db_end_session_id:
             try:
                 self._db.end_session(db_end_session_id, "session_reset")
@@ -905,17 +816,10 @@ class SessionStore:
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
-        # Seed new DM thread sessions with parent DM session history.
-        # When a bot reply creates a Slack thread and the user responds in it,
-        # the thread gets a new session (keyed by thread_ts).  Without seeding,
-        # the thread session starts with zero context — the user's original
-        # question and the bot's answer are invisible.  Fix: copy the parent
-        # DM session's transcript into the new thread session so context carries
-        # over while still keeping threads isolated from each other.
         if (
             source.chat_type == "dm"
             and source.thread_id
-            and entry.created_at == entry.updated_at  # brand-new session
+            and entry.created_at == entry.updated_at
             and not was_auto_reset
         ):
             parent_source = SessionSource(
@@ -923,7 +827,6 @@ class SessionStore:
                 chat_id=source.chat_id,
                 chat_type="dm",
                 user_id=source.user_id,
-                # no thread_id — this is the parent DM session
             )
             parent_key = self._generate_session_key(parent_source)
             with self._lock:
@@ -1028,7 +931,6 @@ class SessionStore:
 
             old_entry = self._entries[session_key]
 
-            # Don't switch if already on that session
             if old_entry.session_id == target_session_id:
                 return old_entry
 
@@ -1084,7 +986,6 @@ class SessionStore:
                      via its own _flush_messages_to_session_db(), preventing
                      the duplicate-write bug (#860).
         """
-        # Write to SQLite (unless the agent already handled it)
         if self._db and not skip_db:
             try:
                 self._db.append_message(
@@ -1098,7 +999,6 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
         
-        # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
         with open(transcript_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(message, ensure_ascii=False) + "\n")
@@ -1109,7 +1009,6 @@ class SessionStore:
         Used by /retry, /undo, and /compress to persist modified conversation history.
         Rewrites both SQLite and legacy JSONL storage.
         """
-        # SQLite: clear old messages and re-insert
         if self._db:
             try:
                 self._db.clear_messages(session_id)
@@ -1129,7 +1028,6 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
         
-        # JSONL: overwrite the file
         transcript_path = self.get_transcript_path(session_id)
         with open(transcript_path, "w", encoding="utf-8") as f:
             for msg in messages:
@@ -1138,15 +1036,12 @@ class SessionStore:
     def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript."""
         db_messages = []
-        # Try SQLite first
         if self._db:
             try:
                 db_messages = self._db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.debug("Could not load messages from DB: %s", e)
 
-        # Load legacy JSONL transcript (may contain more history than SQLite
-        # for sessions created before the DB layer was introduced).
         transcript_path = self.get_transcript_path(session_id)
         jsonl_messages = []
         if transcript_path.exists():
@@ -1162,16 +1057,6 @@ class SessionStore:
                                 session_id, line[:120],
                             )
 
-        # Prefer whichever source has more messages.
-        #
-        # Background: when a session pre-dates SQLite storage (or when the DB
-        # layer was added while a long-lived session was already active), the
-        # first post-migration turn writes only the *new* messages to SQLite
-        # (because _flush_messages_to_session_db skips messages already in
-        # conversation_history, assuming they're persisted).  On the *next*
-        # turn load_transcript returns those few SQLite rows and ignores the
-        # full JSONL history — the model sees a context of 1-4 messages instead
-        # of hundreds.  Using the longer source prevents this silent truncation.
         if len(jsonl_messages) > len(db_messages):
             if db_messages:
                 logger.debug(

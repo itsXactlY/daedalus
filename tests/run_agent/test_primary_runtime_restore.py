@@ -60,9 +60,6 @@ def _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="fallback-key
     return mock_client
 
 
-# =============================================================================
-# _primary_runtime snapshot
-# =============================================================================
 
 class TestPrimaryRuntimeSnapshot:
     def test_snapshot_created_at_init(self):
@@ -113,9 +110,6 @@ class TestPrimaryRuntimeSnapshot:
         assert "anthropic_api_key" not in rt
 
 
-# =============================================================================
-# _restore_primary_runtime()
-# =============================================================================
 
 class TestRestorePrimaryRuntime:
     def test_noop_when_not_fallback(self):
@@ -130,7 +124,6 @@ class TestRestorePrimaryRuntime:
         original_model = agent.model
         original_provider = agent.provider
 
-        # Simulate fallback activation
         mock_client = _mock_resolve()
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
@@ -139,7 +132,6 @@ class TestRestorePrimaryRuntime:
         assert agent.model == "anthropic/claude-sonnet-4"
         assert agent.provider == "openrouter"
 
-        # Restore should bring back the primary
         with patch("run_agent.OpenAI", return_value=MagicMock()):
             result = agent._restore_primary_runtime()
 
@@ -156,17 +148,16 @@ class TestRestorePrimaryRuntime:
                 {"provider": "anthropic", "model": "model-b"},
             ],
         )
-        # Advance through the chain
         mock_client = _mock_resolve()
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
 
-        assert agent._fallback_index == 1  # consumed one entry
+        assert agent._fallback_index == 1
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
             agent._restore_primary_runtime()
 
-        assert agent._fallback_index == 0  # reset for next turn
+        assert agent._fallback_index == 0
 
     def test_restores_compressor_state(self):
         agent = _make_agent(
@@ -175,12 +166,10 @@ class TestRestorePrimaryRuntime:
         original_ctx_len = agent.context_compressor.context_length
         original_threshold = agent.context_compressor.threshold_tokens
 
-        # Simulate fallback modifying compressor
         mock_client = _mock_resolve()
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
 
-        # Manually simulate compressor being changed (as _try_activate_fallback does)
         agent.context_compressor.context_length = 32000
         agent.context_compressor.threshold_tokens = 25600
 
@@ -194,7 +183,6 @@ class TestRestorePrimaryRuntime:
         agent = _make_agent()
         original_caching = agent._use_prompt_caching
 
-        # Simulate fallback changing the caching flag
         agent._fallback_activated = True
         agent._use_prompt_caching = not original_caching
 
@@ -214,9 +202,6 @@ class TestRestorePrimaryRuntime:
         assert result is False
 
 
-# =============================================================================
-# _try_recover_primary_transport()
-# =============================================================================
 
 def _make_transport_error(error_type="ReadTimeout"):
     """Create an exception whose type().__name__ matches the given name."""
@@ -303,7 +288,6 @@ class TestTryRecoverPrimaryTransport:
     def test_allowed_for_anthropic_direct(self):
         """Direct Anthropic endpoint should get recovery."""
         agent = _make_agent(provider="anthropic", base_url="https://api.anthropic.com")
-        # For non-anthropic_messages api_mode, it will use OpenAI client
         error = _make_transport_error("ConnectError")
 
         with patch("run_agent.OpenAI", return_value=MagicMock()), \
@@ -335,7 +319,6 @@ class TestTryRecoverPrimaryTransport:
             agent._try_recover_primary_transport(
                 error, retry_count=3, max_retries=3,
             )
-            # wait_time = min(3 + retry_count, 8) = min(6, 8) = 6
             mock_sleep.assert_called_once_with(6)
 
     def test_wait_time_capped_at_8(self):
@@ -347,7 +330,6 @@ class TestTryRecoverPrimaryTransport:
             agent._try_recover_primary_transport(
                 error, retry_count=10, max_retries=3,
             )
-            # wait_time = min(3 + 10, 8) = 8
             mock_sleep.assert_called_once_with(8)
 
     def test_closes_existing_client_before_rebuild(self):
@@ -379,9 +361,6 @@ class TestTryRecoverPrimaryTransport:
         assert result is False
 
 
-# =============================================================================
-# Integration: restore_primary_runtime called from run_conversation
-# =============================================================================
 
 class TestRestoreInRunConversation:
     """Verify the hook in run_conversation() calls _restore_primary_runtime."""
@@ -392,8 +371,6 @@ class TestRestoreInRunConversation:
 
         with patch.object(agent, "_restore_primary_runtime", return_value=True) as mock_restore, \
              patch.object(agent, "run_conversation", wraps=None) as _:
-            # We can't easily run the full conversation, but we can verify
-            # the method exists and is callable
             agent._restore_primary_runtime()
             mock_restore.assert_called_once()
 
@@ -404,7 +381,6 @@ class TestRestoreInRunConversation:
             provider="custom",
         )
 
-        # Turn 1: activate fallback
         mock_client = _mock_resolve()
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             assert agent._try_activate_fallback() is True
@@ -414,7 +390,6 @@ class TestRestoreInRunConversation:
         assert agent.provider == "openrouter"
         assert agent._fallback_index == 1
 
-        # Turn 2: restore primary
         with patch("run_agent.OpenAI", return_value=MagicMock()):
             assert agent._restore_primary_runtime() is True
 

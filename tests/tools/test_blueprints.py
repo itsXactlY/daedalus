@@ -135,19 +135,14 @@ class TestExportBlueprint:
             "prompt": "Summarize my unread email.",
         }
         md = export_blueprint(job, "# Morning Brief\n\nDoes the morning digest.")
-        # The exported SKILL.md must itself parse back as a blueprint.
         spec = parse_blueprint(md)
         assert spec is not None
         assert spec.schedule == "0 8 * * *"
         assert spec.deliver == "telegram"
-        # Name is sanitized to a valid skill identifier.
         assert spec.skill_name == "my-morning-brief"
 
 
     def test_export_interval_job_without_display(self):
-        # Regression: parse_schedule stores interval periods as "minutes" —
-        # exporting a job with only the parsed schedule dict must round-trip
-        # the real interval, not fall back to the daily default.
         job = {
             "name": "poller",
             "schedule": {"kind": "interval", "minutes": 30},

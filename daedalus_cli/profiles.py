@@ -32,7 +32,6 @@ from typing import List, Optional
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
-# Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
     "memories",
     "sessions",
@@ -44,62 +43,48 @@ _PROFILE_DIRS = [
     "cron",
 ]
 
-# Files copied during --clone (if they exist in the source)
 _CLONE_CONFIG_FILES = [
     "config.yaml",
     ".env",
     "SOUL.md",
 ]
 
-# Subdirectory files copied during --clone (path relative to profile root).
-# Memory files are part of the agent's curated identity — just as important
-# as SOUL.md for continuity when cloning a profile.
 _CLONE_SUBDIR_FILES = [
     "memories/MEMORY.md",
     "memories/USER.md",
 ]
 
-# Runtime files stripped after --clone-all (shouldn't carry over)
 _CLONE_ALL_STRIP = [
     "gateway.pid",
     "gateway_state.json",
     "processes.json",
 ]
 
-# Directories/files to exclude when exporting the default (~/.daedalus) profile.
-# The default profile contains infrastructure (repo checkout, worktrees, DBs,
-# caches, binaries) that named profiles don't have.  We exclude those so the
-# export is a portable, reasonable-size archive of actual profile data.
 _DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
-    # Infrastructure
-    "daedalus",         # repo checkout (multi-GB)
-    ".worktrees",           # git worktrees
-    "profiles",             # other profiles — never recursive-export
-    "bin",                  # installed binaries (tirith, etc.)
-    "node_modules",         # npm packages
-    # Databases & runtime state
+    "daedalus",
+    ".worktrees",
+    "profiles",
+    "bin",
+    "node_modules",
     "state.db", "state.db-shm", "state.db-wal",
     "daedalus_state.db",
     "response_store.db", "response_store.db-shm", "response_store.db-wal",
     "gateway.pid", "gateway_state.json", "processes.json",
-    "auth.json",            # API keys, OAuth tokens, credential pools
-    ".env",                 # API keys (dotenv)
+    "auth.json",
+    ".env",
     "auth.lock", "active_profile", ".update_check",
     "errors.log",
     ".daedalus_history",
-    # Caches (regenerated on use)
     "image_cache", "audio_cache", "document_cache",
     "browser_screenshots", "checkpoints",
     "sandboxes",
-    "logs",                 # gateway logs
+    "logs",
 })
 
-# Names that cannot be used as profile aliases
 _RESERVED_NAMES = frozenset({
     "daedalus", "default", "test", "tmp", "root", "sudo",
 })
 
-# Daedalus subcommands that cannot be used as profile names/aliases
 _DAEDALUS_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "login", "logout",
     "status", "cron", "doctor", "config", "pairing", "skills", "tools",
@@ -108,9 +93,6 @@ _DAEDALUS_SUBCOMMANDS = frozenset({
 })
 
 
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
 
 def _get_profiles_root() -> Path:
     """Return the directory where named profiles are stored.
@@ -137,14 +119,11 @@ def _get_wrapper_dir() -> Path:
     return Path.home() / ".local" / "bin"
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
 
 def validate_profile_name(name: str) -> None:
     """Raise ``ValueError`` if *name* is not a valid profile identifier."""
     if name == "default":
-        return  # special alias for ~/.daedalus
+        return
     if not _PROFILE_ID_RE.match(name):
         raise ValueError(
             f"Invalid profile name {name!r}. Must match "
@@ -166,9 +145,6 @@ def profile_exists(name: str) -> bool:
     return get_profile_dir(name).is_dir()
 
 
-# ---------------------------------------------------------------------------
-# Alias / wrapper script management
-# ---------------------------------------------------------------------------
 
 def check_alias_collision(name: str) -> Optional[str]:
     """Return a human-readable collision message, or None if the name is safe.
@@ -180,7 +156,6 @@ def check_alias_collision(name: str) -> Optional[str]:
     if name in _DAEDALUS_SUBCOMMANDS:
         return f"'{name}' conflicts with a daedalus subcommand"
 
-    # Check existing commands in PATH
     wrapper_dir = _get_wrapper_dir()
     try:
         result = subprocess.run(
@@ -188,19 +163,18 @@ def check_alias_collision(name: str) -> Optional[str]:
         )
         if result.returncode == 0:
             existing_path = result.stdout.strip()
-            # Allow overwriting our own wrappers
             if existing_path == str(wrapper_dir / name):
                 try:
                     content = (wrapper_dir / name).read_text()
                     if "daedalus -p" in content:
-                        return None  # it's our wrapper, safe to overwrite
+                        return None
                 except Exception:
                     pass
             return f"'{name}' conflicts with an existing command ({existing_path})"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass
 
-    return None  # safe
+    return None
 
 
 def _is_wrapper_dir_in_path() -> bool:
@@ -236,7 +210,6 @@ def remove_wrapper_script(name: str) -> bool:
     wrapper_path = _get_wrapper_dir() / name
     if wrapper_path.exists():
         try:
-            # Verify it's our wrapper before removing
             content = wrapper_path.read_text()
             if "daedalus -p" in content:
                 wrapper_path.unlink()
@@ -246,9 +219,6 @@ def remove_wrapper_script(name: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# ProfileInfo
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ProfileInfo:
@@ -294,7 +264,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
             return False
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
-        os.kill(pid, 0)  # existence check
+        os.kill(pid, 0)
         return True
     except (json.JSONDecodeError, KeyError, ValueError, TypeError,
             ProcessLookupError, PermissionError, OSError):
@@ -313,16 +283,12 @@ def _count_skills(profile_dir: Path) -> int:
     return count
 
 
-# ---------------------------------------------------------------------------
-# CRUD operations
-# ---------------------------------------------------------------------------
 
 def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
     wrapper_dir = _get_wrapper_dir()
 
-    # Default profile
     default_home = _get_default_daedalus_home()
     if default_home.is_dir():
         model, provider = _read_config_model(default_home)
@@ -337,7 +303,6 @@ def list_profiles() -> List[ProfileInfo]:
             skill_count=_count_skills(default_home),
         ))
 
-    # Named profiles
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
         for entry in sorted(profiles_root.iterdir()):
@@ -402,11 +367,9 @@ def create_profile(
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{name}' already exists at {profile_dir}")
 
-    # Resolve clone source
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
         if clone_from is None:
-            # Default: clone from active profile
             from daedalus_constants import get_daedalus_home
             source_dir = get_daedalus_home()
         else:
@@ -418,25 +381,20 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile
         shutil.copytree(source_dir, profile_dir)
-        # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)
     else:
-        # Bootstrap directory structure
         profile_dir.mkdir(parents=True, exist_ok=True)
         for subdir in _PROFILE_DIRS:
             (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-        # Clone config files from source
         if source_dir is not None:
             for filename in _CLONE_CONFIG_FILES:
                 src = source_dir / filename
                 if src.exists():
                     shutil.copy2(src, profile_dir / filename)
 
-            # Clone memory and other subdirectory files
             for relpath in _CLONE_SUBDIR_FILES:
                 src = source_dir / relpath
                 if src.exists():
@@ -500,7 +458,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if not profile_dir.is_dir():
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
 
-    # Show what will be deleted
     model, provider = _read_config_model(profile_dir)
     gw_running = _check_gateway_running(profile_dir)
     skill_count = _count_skills(profile_dir)
@@ -516,7 +473,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         "All config, API keys, memories, sessions, skills, cron jobs",
     ]
 
-    # Check for service
     wrapper_path = _get_wrapper_dir() / name
     has_wrapper = wrapper_path.exists()
     if has_wrapper:
@@ -528,7 +484,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     if gw_running:
         print(f"  ⚠ Gateway is running — it will be stopped.")
 
-    # Confirmation
     if not yes:
         print()
         try:
@@ -540,26 +495,21 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print("Cancelled.")
             return profile_dir
 
-    # 1. Disable service (prevents auto-restart)
     _cleanup_gateway_service(name, profile_dir)
 
-    # 2. Stop running gateway
     if gw_running:
         _stop_gateway_process(profile_dir)
 
-    # 3. Remove wrapper script
     if has_wrapper:
         if remove_wrapper_script(name):
             print(f"✓ Removed {wrapper_path}")
 
-    # 4. Remove profile directory
     try:
         shutil.rmtree(profile_dir)
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
 
-    # 5. Clear active_profile if it pointed to this profile
     try:
         active = get_active_profile()
         if active == name:
@@ -576,8 +526,6 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     """Disable and remove systemd/launchd service for a profile."""
     import platform as _platform
 
-    # Derive service name for this profile
-    # Temporarily set DAEDALUS_HOME so _profile_suffix resolves correctly
     old_home = os.environ.get("DAEDALUS_HOME")
     try:
         os.environ["DAEDALUS_HOME"] = str(profile_dir)
@@ -634,7 +582,6 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         os.kill(pid, _signal.SIGTERM)
-        # Wait up to 10s for graceful shutdown
         for _ in range(20):
             _time.sleep(0.5)
             try:
@@ -642,7 +589,6 @@ def _stop_gateway_process(profile_dir: Path) -> None:
             except ProcessLookupError:
                 print(f"✓ Gateway stopped (PID {pid})")
                 return
-        # Force kill
         try:
             os.kill(pid, _signal.SIGKILL)
         except ProcessLookupError:
@@ -654,9 +600,6 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         print(f"⚠ Could not stop gateway: {e}")
 
 
-# ---------------------------------------------------------------------------
-# Active profile (sticky default)
-# ---------------------------------------------------------------------------
 
 def get_active_profile() -> str:
     """Read the sticky active profile name.
@@ -688,10 +631,8 @@ def set_active_profile(name: str) -> None:
     path = _get_active_profile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if name == "default":
-        # Remove the file to indicate default
         path.unlink(missing_ok=True)
     else:
-        # Atomic write
         tmp = path.with_suffix(".tmp")
         tmp.write_text(name + "\n")
         tmp.replace(path)
@@ -724,9 +665,6 @@ def get_active_profile_name() -> str:
     return "custom"
 
 
-# ---------------------------------------------------------------------------
-# Export / Import
-# ---------------------------------------------------------------------------
 
 def _default_export_ignore(root_dir: Path):
     """Return an *ignore* callable for :func:`shutil.copytree`.
@@ -738,13 +676,10 @@ def _default_export_ignore(root_dir: Path):
     def _ignore(directory: str, contents: list) -> set:
         ignored: set = set()
         for entry in contents:
-            # Universal exclusions (any depth)
             if entry == "__pycache__" or entry.endswith((".sock", ".tmp")):
                 ignored.add(entry)
-            # npm lockfiles can appear at root
             elif entry in ("package.json", "package-lock.json"):
                 ignored.add(entry)
-        # Root-level exclusions
         if Path(directory) == root_dir:
             ignored.update(c for c in contents if c in _DEFAULT_EXPORT_EXCLUDE_ROOT)
         return ignored
@@ -765,13 +700,9 @@ def export_profile(name: str, output_path: str) -> Path:
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
 
     output = Path(output_path)
-    # shutil.make_archive wants the base name without extension
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
 
     if name == "default":
-        # The default profile IS ~/.daedalus itself — its parent is ~/ and its
-        # directory name is ".daedalus", not "default".  We stage a clean copy
-        # under a temp dir so the archive contains ``default/...``.
         with tempfile.TemporaryDirectory() as tmpdir:
             staged = Path(tmpdir) / "default"
             shutil.copytree(
@@ -782,7 +713,6 @@ def export_profile(name: str, output_path: str) -> Path:
             result = shutil.make_archive(base, "gztar", tmpdir, "default")
             return Path(result)
 
-    # Named profiles — stage a filtered copy to exclude credentials
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / name
         _CREDENTIAL_FILES = {"auth.json", ".env"}
@@ -859,7 +789,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    # Peek at the archive to find the top-level directory name
     with tarfile.open(archive, "r:gz") as tf:
         top_dirs = {
             parts[0]
@@ -881,9 +810,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
             "Specify it explicitly: daedalus profile import <archive> --name <name>"
         )
 
-    # Archives exported from the default profile have "default/" as top-level
-    # dir.  Importing as "default" would target ~/.daedalus itself — disallow
-    # that and guide the user toward a named profile.
     if inferred_name == "default":
         raise ValueError(
             "Cannot import as 'default' — that is the built-in root profile (~/.daedalus). "
@@ -900,7 +826,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
     _safe_extract_profile_archive(archive, profiles_root)
 
-    # If the archive extracted under a different name, rename
     extracted = profiles_root / (top_dirs.pop() if top_dirs else inferred_name)
     if extracted != profile_dir and extracted.exists():
         extracted.rename(profile_dir)
@@ -908,9 +833,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     return profile_dir
 
 
-# ---------------------------------------------------------------------------
-# Rename
-# ---------------------------------------------------------------------------
 
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile.
@@ -933,16 +855,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     if new_dir.exists():
         raise FileExistsError(f"Profile '{new_name}' already exists.")
 
-    # 1. Stop gateway if running
     if _check_gateway_running(old_dir):
         _cleanup_gateway_service(old_name, old_dir)
         _stop_gateway_process(old_dir)
 
-    # 2. Rename directory
     old_dir.rename(new_dir)
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
 
-    # 3. Update wrapper script
     remove_wrapper_script(old_name)
     collision = check_alias_collision(new_name)
     if not collision:
@@ -951,7 +870,6 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     else:
         print(f"⚠ Cannot create alias '{new_name}' — {collision}")
 
-    # 4. Update active_profile if it pointed to old name
     try:
         if get_active_profile() == old_name:
             set_active_profile(new_name)
@@ -962,9 +880,6 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     return new_dir
 
 
-# ---------------------------------------------------------------------------
-# Tab completion
-# ---------------------------------------------------------------------------
 
 def generate_bash_completion() -> str:
     """Generate a bash completion script for daedalus profile names."""
@@ -1047,9 +962,6 @@ _daedalus "$@"
 '''
 
 
-# ---------------------------------------------------------------------------
-# Profile env resolution (called from _apply_profile_override)
-# ---------------------------------------------------------------------------
 
 def resolve_profile_env(profile_name: str) -> str:
     """Resolve a profile name to a DAEDALUS_HOME path string.

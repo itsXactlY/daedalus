@@ -15,16 +15,13 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult, _RETRYABLE_E
 from gateway.platforms.base import Platform, PlatformConfig
 
 
-# ---------------------------------------------------------------------------
-# Minimal concrete adapter for testing (no real network)
-# ---------------------------------------------------------------------------
 
 class _StubAdapter(BasePlatformAdapter):
     def __init__(self):
         cfg = PlatformConfig()
         super().__init__(cfg, Platform.TELEGRAM)
-        self._send_results = []   # queue of SendResult to return per call
-        self._send_calls = []     # record of (chat_id, content) sent
+        self._send_results = []
+        self._send_calls = []
 
     def _next_result(self) -> SendResult:
         if self._send_results:
@@ -48,9 +45,6 @@ class _StubAdapter(BasePlatformAdapter):
         return {"name": "test", "type": "direct", "chat_id": chat_id}
 
 
-# ---------------------------------------------------------------------------
-# _is_retryable_error
-# ---------------------------------------------------------------------------
 
 class TestIsRetryableError:
     def test_none_is_not_retryable(self):
@@ -82,9 +76,6 @@ class TestIsRetryableError:
         assert _StubAdapter._is_retryable_error("ConnectTimeout: connection timed out")
 
 
-# ---------------------------------------------------------------------------
-# _is_timeout_error
-# ---------------------------------------------------------------------------
 
 class TestIsTimeoutError:
     def test_none_is_not_timeout(self):
@@ -110,9 +101,6 @@ class TestIsTimeoutError:
         assert not _StubAdapter._is_timeout_error("ConnectionError: host unreachable")
 
 
-# ---------------------------------------------------------------------------
-# _send_with_retry — success on first attempt
-# ---------------------------------------------------------------------------
 
 class TestSendWithRetrySuccess:
     @pytest.mark.asyncio
@@ -131,9 +119,6 @@ class TestSendWithRetrySuccess:
         assert result.message_id == "abc"
 
 
-# ---------------------------------------------------------------------------
-# _send_with_retry — network error with successful retry
-# ---------------------------------------------------------------------------
 
 class TestSendWithRetryNetworkRetry:
     @pytest.mark.asyncio
@@ -146,7 +131,7 @@ class TestSendWithRetryNetworkRetry:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
         assert result.success
-        assert len(adapter._send_calls) == 2  # initial + 1 retry
+        assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio
     async def test_timeout_not_retried_to_prevent_duplicates(self):
@@ -159,7 +144,6 @@ class TestSendWithRetryNetworkRetry:
         ]
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
-        # No retry, no fallback — timeout returns failure immediately
         mock_sleep.assert_not_called()
         assert not result.success
         assert len(adapter._send_calls) == 1
@@ -197,34 +181,26 @@ class TestSendWithRetryNetworkRetry:
         adapter._send_results = [
             SendResult(success=False, error="httpx.ConnectError: host unreachable"),
             SendResult(success=False, error="Bad Request: can't parse entities"),
-            SendResult(success=True, message_id="fallback_ok"),  # plain-text fallback
+            SendResult(success=True, message_id="fallback_ok"),
         ]
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "**bold**", max_retries=2, base_delay=0)
         assert result.success
-        # 3 calls: initial (network) + 1 retry (non-network, breaks loop) + plain-text fallback
         assert len(adapter._send_calls) == 3
         assert "plain text" in adapter._send_calls[-1][1].lower()
 
 
-# ---------------------------------------------------------------------------
-# _send_with_retry — all retries exhausted → user notification
-# ---------------------------------------------------------------------------
 
 class TestSendWithRetryExhausted:
     @pytest.mark.asyncio
     async def test_sends_user_notice_after_exhaustion(self):
         adapter = _StubAdapter()
         network_err = SendResult(success=False, error="httpx.ConnectError: host unreachable")
-        # initial + 2 retries + notice attempt
         adapter._send_results = [network_err, network_err, network_err, SendResult(success=True)]
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
-        # Result is the last failed one (before notice)
         assert not result.success
-        # 4 total calls: 1 initial + 2 retries + 1 notice
         assert len(adapter._send_calls) == 4
-        # The notice content should mention delivery failure
         notice_content = adapter._send_calls[-1][1]
         assert "delivery failed" in notice_content.lower() or "Message delivery failed" in notice_content
 
@@ -247,12 +223,9 @@ class TestSendWithRetryExhausted:
         adapter.send = send_with_notice_failure
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
-        assert not result.success  # still failed, but no exception raised
+        assert not result.success
 
 
-# ---------------------------------------------------------------------------
-# _send_with_retry — non-network failure → plain-text fallback (no retry)
-# ---------------------------------------------------------------------------
 
 class TestSendWithRetryFallback:
     @pytest.mark.asyncio
@@ -264,11 +237,9 @@ class TestSendWithRetryFallback:
         ]
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             result = await adapter._send_with_retry("chat1", "**bold**", max_retries=2, base_delay=0)
-        # No sleep — no retry loop for non-network errors
         mock_sleep.assert_not_called()
         assert result.success
         assert len(adapter._send_calls) == 2
-        # Fallback content should be plain-text notice
         assert "plain text" in adapter._send_calls[1][1].lower()
 
     @pytest.mark.asyncio
@@ -281,4 +252,4 @@ class TestSendWithRetryFallback:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2)
         assert not result.success
-        assert len(adapter._send_calls) == 2  # original + fallback only
+        assert len(adapter._send_calls) == 2

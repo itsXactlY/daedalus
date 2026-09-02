@@ -34,14 +34,11 @@ class TestManagedServerAPI:
         sig = inspect.signature(ManagedServer.__init__)
         params = list(sig.parameters.keys())
 
-        # Core params that must exist
         assert "self" in params
         assert "server" in params
         assert "tokenizer" in params
         assert "track_tree" in params
 
-        # tool_call_parser — required for tool_call_support branch
-        # If this fails, atroposlib hasn't been updated to tool_call_support
         has_tool_parser = "tool_call_parser" in params
         if not has_tool_parser:
             pytest.skip(
@@ -83,8 +80,6 @@ class TestManagedServerAPI:
         """get_logprobs should be removed in tool_call_support branch."""
         from atroposlib.envs.server_handling.managed_server import ManagedServer
 
-        # In baseline, get_logprobs exists. In tool_call_support, it's removed.
-        # We just note the state — not a hard fail either way.
         has_get_logprobs = hasattr(ManagedServer, "get_logprobs")
         if has_get_logprobs:
             pytest.skip(
@@ -110,7 +105,6 @@ class TestParserCompatibility:
         assert len(tool_calls) == 1
 
         tc = tool_calls[0]
-        # ManagedServer accesses these attrs directly
         assert hasattr(tc, "id")
         assert hasattr(tc, "function")
         assert hasattr(tc.function, "name")
@@ -130,12 +124,10 @@ class TestParserCompatibility:
 
         parser = get_parser("hermes")
 
-        # With tool calls
         text = '<tool_call>{"name": "terminal", "arguments": {"command": "ls"}}</tool_call>'
         content, _ = parser.parse(text)
         assert content is None or isinstance(content, str)
 
-        # Without tool calls
         content2, _ = parser.parse("Just text")
         assert isinstance(content2, str)
 

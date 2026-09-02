@@ -218,9 +218,6 @@ class TestSearchHandler:
         assert "error" in result
 
 
-# ---------------------------------------------------------------------------
-# Tool result hint tests (#722)
-# ---------------------------------------------------------------------------
 
 class TestPatchHints:
     """Patch tool should hint when old_string is not found."""

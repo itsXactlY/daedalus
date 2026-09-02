@@ -882,7 +882,6 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
-# --- Reasoning-only response tests (fix for empty content retry loop) ---
 
 
 def _codex_reasoning_only_response(*, encrypted_content="enc_abc123", summary_text="Thinking..."):
@@ -962,7 +961,6 @@ def test_run_conversation_codex_continues_after_reasoning_only_response(monkeypa
 
     assert result["completed"] is True
     assert result["final_response"] == "The final answer is 42."
-    # The reasoning-only turn should be in messages as an incomplete interim
     assert any(
         msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
@@ -975,7 +973,6 @@ def test_run_conversation_codex_preserves_encrypted_reasoning_in_interim(monkeyp
     """Encrypted codex_reasoning_items must be preserved in interim messages
     even when there is no visible reasoning text or content."""
     agent = _build_agent(monkeypatch)
-    # Response with encrypted reasoning but no human-readable summary
     reasoning_response = SimpleNamespace(
         output=[
             SimpleNamespace(
@@ -1000,7 +997,6 @@ def test_run_conversation_codex_preserves_encrypted_reasoning_in_interim(monkeyp
 
     assert result["completed"] is True
     assert result["final_response"] == "Done thinking."
-    # The interim message must have codex_reasoning_items preserved
     interim_msgs = [
         msg for msg in result["messages"]
         if msg.get("role") == "assistant"
@@ -1030,12 +1026,10 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     ]
     items = agent._chat_messages_to_responses_input(messages)
 
-    # Find the reasoning item
     reasoning_indices = [i for i, it in enumerate(items) if it.get("type") == "reasoning"]
     assert len(reasoning_indices) == 1
     ri_idx = reasoning_indices[0]
 
-    # There must be a following item after the reasoning
     assert ri_idx < len(items) - 1, "Reasoning item must not be the last item (missing_following_item)"
     following = items[ri_idx + 1]
     assert following.get("role") == "assistant"
@@ -1046,7 +1040,6 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
     must NOT be treated as duplicates."""
     agent = _build_agent(monkeypatch)
     responses = [
-        # First reasoning-only response
         SimpleNamespace(
             output=[
                 SimpleNamespace(
@@ -1057,7 +1050,6 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
             usage=SimpleNamespace(input_tokens=50, output_tokens=100, total_tokens=150),
             status="completed", model="gpt-5-codex",
         ),
-        # Second reasoning-only response (different encrypted content)
         SimpleNamespace(
             output=[
                 SimpleNamespace(
@@ -1076,7 +1068,6 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
 
     assert result["completed"] is True
     assert result["final_response"] == "Final answer after thinking."
-    # Both reasoning-only interim messages should be in history (not collapsed)
     interim_msgs = [
         msg for msg in result["messages"]
         if msg.get("role") == "assistant"

@@ -24,7 +24,6 @@ from daedalus_cli.plugins import (
 )
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
@@ -44,7 +43,6 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     return plugin_dir
 
 
-# ── TestPluginDiscovery ────────────────────────────────────────────────────
 
 
 class TestPluginDiscovery:
@@ -98,7 +96,7 @@ class TestPluginDiscovery:
 
         mgr = PluginManager()
         mgr.discover_and_load()
-        mgr.discover_and_load()  # second call should no-op
+        mgr.discover_and_load()
 
         assert len(mgr._plugins) == 1
 
@@ -138,7 +136,6 @@ class TestPluginDiscovery:
         assert "ep_plugin" in mgr._plugins
 
 
-# ── TestPluginLoading ──────────────────────────────────────────────────────
 
 
 class TestPluginLoading:
@@ -181,7 +178,6 @@ class TestPluginLoading:
         _make_plugin_dir(plugins_dir, "ns_plugin")
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path / "daedalus_test"))
 
-        # Clean up any prior namespace module
         sys.modules.pop("daedalus_plugins.ns_plugin", None)
 
         mgr = PluginManager()
@@ -190,7 +186,6 @@ class TestPluginLoading:
         assert "daedalus_plugins.ns_plugin" in sys.modules
 
 
-# ── TestPluginHooks ────────────────────────────────────────────────────────
 
 
 class TestPluginHooks:
@@ -212,7 +207,6 @@ class TestPluginHooks:
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        # Should not raise
         mgr.invoke_hook("pre_tool_call", tool_name="test", args={}, task_id="t1")
 
     def test_hook_exception_does_not_propagate(self, tmp_path, monkeypatch):
@@ -227,7 +221,6 @@ class TestPluginHooks:
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        # Should not raise despite 1/0
         mgr.invoke_hook("post_tool_call", tool_name="x", args={}, result="r", task_id="")
 
     def test_hook_return_values_collected(self, tmp_path, monkeypatch):
@@ -311,7 +304,6 @@ class TestPluginHooks:
         assert any("on_banana" in record.message for record in caplog.records)
 
 
-# ── TestPluginContext ──────────────────────────────────────────────────────
 
 
 class TestPluginContext:
@@ -343,7 +335,6 @@ class TestPluginContext:
         assert "plugin_echo" in registry._tools
 
 
-# ── TestPluginToolVisibility ───────────────────────────────────────────────
 
 
 class TestPluginToolVisibility:
@@ -374,23 +365,19 @@ class TestPluginToolVisibility:
 
         from model_tools import get_tool_definitions
 
-        # Plugin tools are included when their toolset is explicitly enabled
         tools = get_tool_definitions(enabled_toolsets=["terminal", "plugin_vis_plugin"], quiet_mode=True)
         tool_names = [t["function"]["name"] for t in tools]
         assert "vis_tool" in tool_names
 
-        # Plugin tools are excluded when only other toolsets are enabled
         tools2 = get_tool_definitions(enabled_toolsets=["terminal"], quiet_mode=True)
         tool_names2 = [t["function"]["name"] for t in tools2]
         assert "vis_tool" not in tool_names2
 
-        # Plugin tools are included when no toolset filter is active (all enabled)
         tools3 = get_tool_definitions(quiet_mode=True)
         tool_names3 = [t["function"]["name"] for t in tools3]
         assert "vis_tool" in tool_names3
 
 
-# ── TestPluginManagerList ──────────────────────────────────────────────────
 
 
 class TestPluginManagerList:
@@ -546,7 +533,6 @@ class TestPreLlmCallTargetRouting:
             conversation_history=[], is_first_turn=True, model="test",
         )
 
-        # Replicate run_agent.py routing logic — everything goes to user msg
         _ctx_parts = []
         for r in results:
             if isinstance(r, dict) and r.get("context"):
@@ -561,7 +547,3 @@ class TestPreLlmCallTargetRouting:
         assert "plain text C" in _plugin_user_context
 
 
-# NOTE: TestPluginCommands removed – register_command() was never implemented
-# in PluginContext (daedalus_cli/plugins.py).  The tests referenced _plugin_commands,
-# commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
-# integration — all of which are unimplemented features.

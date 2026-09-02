@@ -63,9 +63,6 @@ def _ref_map(payload: Dict[str, Any]) -> Dict[str, Set[str]]:
     """
     normalized: Dict[str, Set[str]] = {}
     snapshot = payload.get("snapshot")
-    # semantic_v2 carries the authoritative action-bearing entries in
-    # ``content_refs``; some transitional builds also emitted a ``refs`` list
-    # or map. Prefer the richer live shape, then accept both older forms.
     raw = payload.get("content_refs")
     if not raw:
         raw = payload.get("refs")
@@ -193,8 +190,6 @@ class CuaTypedBrowserRoute:
 
     def _call(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(args)
-        # The wrapper owns the session capability.  Never let a model-provided
-        # id replace it or address another run's target/ref namespace.
         payload["session"] = self._session_id
         return _tool_payload(self._call_tool(name, payload))
 
@@ -262,8 +257,6 @@ class CuaTypedBrowserRoute:
             self.state.tab_ids = _tab_ids(payload)
             self.state.binding_quality = quality if isinstance(quality, str) else None
             self.state.mutation_allowed = mutation_allowed
-            # Binding mints the target/tab capabilities but is not a page
-            # snapshot. Require one fresh tab read before any mutation.
             self.state.verification_required = True
             payload["exact_binding"] = quality == "exact"
             if quality != "exact" or not mutation_allowed:
@@ -313,8 +306,6 @@ class CuaTypedBrowserRoute:
 
         continuing = continuation is not None
         if not continuing:
-            # A new snapshot supersedes every prior ref before the transport
-            # call.  Failure therefore cannot leave a stale ref usable.
             self.state.clear_refs()
         payload = self._call("get_browser_state", args)
         if payload.get("status") not in (None, "ok") or payload.get("isError") is True:
@@ -360,9 +351,6 @@ class CuaTypedBrowserRoute:
                     "browser_exact_target_required",
                     "Existing-profile attachment requires an exact positive pid and window_id pair.",
                 )
-            # The driver owns the immutable standard/bounded/unrestricted
-            # decision. Standard fails closed without a certified host;
-            # explicit Daedalus YOLO owns a private unrestricted daemon.
             self.state.clear()
             return self._call(
                 "browser_prepare",
@@ -398,8 +386,6 @@ class CuaTypedBrowserRoute:
         exact_window = _positive_int(window_id)
         if exact_window is not None:
             args["window_id"] = exact_window
-        # Preparation/reconnect may have side effects even if its transport
-        # fails. Invalidate old capabilities before crossing that boundary.
         self.state.clear()
         return self._call("browser_prepare", args)
 
@@ -530,9 +516,6 @@ class CuaTypedBrowserRoute:
         call_args["target_id"] = self.state.target_id
         call_args["tab_id"] = selected_tab
         if not dialog_inspect:
-            # A lost/refused response does not prove the action was a no-op.
-            # Disarm refs before transport so callers must observe fresh state
-            # before any retry, trust downgrade, or different mutation.
             self.state.tab_id = selected_tab
             self.state.clear_refs()
             self.state.verification_required = True
@@ -565,9 +548,6 @@ class CuaTypedBrowserRoute:
             payload["fresh_dialog_state"] = True
             return payload
 
-        # Never chain mutations from remembered state.  Navigation and a fresh
-        # snapshot both invalidate refs in the driver; applying the same rule to
-        # all mutations guarantees fresh-state verification before another act.
         payload["verification_required"] = True
         payload["next_step"] = "fresh_browser_state"
         return payload

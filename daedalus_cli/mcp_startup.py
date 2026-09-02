@@ -19,8 +19,6 @@ def _has_configured_mcp_servers() -> bool:
         mcp_servers = (read_raw_config() or {}).get("mcp_servers")
         return isinstance(mcp_servers, dict) and len(mcp_servers) > 0
     except Exception:
-        # Be conservative: if config probing fails, try discovery in the
-        # background so startup still can't block.
         return True
 
 
@@ -58,13 +56,6 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         if not _has_configured_mcp_servers():
             return
 
-        # Capture the caller's context-local DAEDALUS_HOME override (profile
-        # scoping in multi-profile processes like the dashboard/desktop
-        # backend) and re-install it inside the discovery thread. ContextVars
-        # do not propagate into bare threads, so without this a session
-        # "switched" to profile X would discover the LAUNCH profile's
-        # mcp_servers instead (#67605). The config gate above already runs on
-        # the caller's thread, so it sees the same override.
         try:
             from daedalus_constants import get_daedalus_home_override
 

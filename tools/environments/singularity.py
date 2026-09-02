@@ -90,9 +90,6 @@ def _save_snapshots(data: Dict[str, str]) -> None:
     _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
 
 
-# -------------------------------------------------------------------------
-# Singularity helpers (scratch dir, SIF cache, SIF building)
-# -------------------------------------------------------------------------
 
 def _get_scratch_dir() -> Path:
     """Get the best directory for Singularity sandboxes.
@@ -193,9 +190,6 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
             return image
 
 
-# -------------------------------------------------------------------------
-# SingularityEnvironment
-# -------------------------------------------------------------------------
 
 class SingularityEnvironment(BaseEnvironment):
     """Hardened Singularity/Apptainer container with resource limits and persistence.
@@ -228,11 +222,9 @@ class SingularityEnvironment(BaseEnvironment):
         self._task_id = task_id
         self._overlay_dir: Optional[Path] = None
 
-        # Resource limits
         self._cpu = cpu
         self._memory = memory
 
-        # Persistent overlay directory
         if self._persistent:
             overlay_base = _get_scratch_dir() / "daedalus-overlays"
             overlay_base.mkdir(parents=True, exist_ok=True)
@@ -244,17 +236,13 @@ class SingularityEnvironment(BaseEnvironment):
     def _start_instance(self):
         cmd = [self.executable, "instance", "start"]
 
-        # Security: full isolation from host
         cmd.extend(["--containall", "--no-home"])
 
-        # Writable layer
         if self._persistent and self._overlay_dir:
-            # Persistent writable overlay -- survives across restarts
             cmd.extend(["--overlay", str(self._overlay_dir)])
         else:
             cmd.append("--writable-tmpfs")
 
-        # Mount credential files and skills directory (read-only).
         try:
             from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
 
@@ -275,7 +263,6 @@ class SingularityEnvironment(BaseEnvironment):
         except Exception as e:
             logger.debug("Singularity: could not load credential/skills mounts: %s", e)
 
-        # Resource limits (cgroup-based, may require root or appropriate config)
         if self._memory > 0:
             cmd.extend(["--memory", f"{self._memory}M"])
         if self._cpu > 0:
@@ -303,7 +290,6 @@ class SingularityEnvironment(BaseEnvironment):
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
 
-        # Merge sudo password (if any) with caller-supplied stdin_data.
         if sudo_stdin is not None and stdin_data is not None:
             effective_stdin = sudo_stdin + stdin_data
         elif sudo_stdin is not None:
@@ -311,8 +297,6 @@ class SingularityEnvironment(BaseEnvironment):
         else:
             effective_stdin = stdin_data
 
-        # apptainer exec --pwd doesn't expand ~, so prepend a cd into the command.
-        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
         if work_dir == "~":
             exec_command = f"cd ~ && {exec_command}"
             work_dir = "/tmp"
@@ -387,7 +371,6 @@ class SingularityEnvironment(BaseEnvironment):
                 logger.warning("Failed to stop Singularity instance %s: %s", self.instance_id, e)
             self._instance_started = False
 
-        # Record overlay path for persistence restoration
         if self._persistent and self._overlay_dir:
             snapshots = _load_snapshots()
             snapshots[self._task_id] = str(self._overlay_dir)

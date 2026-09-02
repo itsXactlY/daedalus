@@ -76,7 +76,7 @@ class TestCLIStatusBar:
         assert "claude-sonnet-4-20250514" in text
         assert "12.4K/200K" in text
         assert "6%" in text
-        assert "$0.06" not in text  # cost hidden by default
+        assert "$0.06" not in text
         assert "15m" in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
@@ -177,7 +177,7 @@ class TestCLIStatusBar:
         )
 
         text = cli_obj._build_status_bar_text(width=120)
-        assert "$" not in text  # cost is never shown in status bar
+        assert "$" not in text
 
     def test_build_status_bar_text_collapses_for_narrow_terminal(self):
         cli_obj = _attach_agent(
@@ -193,7 +193,7 @@ class TestCLIStatusBar:
         text = cli_obj._build_status_bar_text(width=60)
 
         assert "⚕" in text
-        assert "$0.06" not in text  # cost hidden by default
+        assert "$0.06" not in text
         assert "15m" in text
         assert "200K" not in text
 
@@ -302,7 +302,7 @@ class TestStatusBarWidthSource:
 
             total_text = "".join(text for _, text in frags)
             display_width = cli_obj._status_bar_display_width(total_text)
-            assert display_width <= width + 4, (  # +4 for minor padding chars
+            assert display_width <= width + 4, (
                 f"At width={width}, fragment total {display_width} cells overflows "
                 f"({total_text!r})"
             )
@@ -343,7 +343,7 @@ class TestStatusBarWidthSource:
 
         with patch("prompt_toolkit.application.get_app", return_value=mock_app), \
              patch("shutil.get_terminal_size") as mock_shutil:
-            text = cli_obj._build_status_bar_text()  # no explicit width
+            text = cli_obj._build_status_bar_text()
 
         mock_shutil.assert_not_called()
         assert isinstance(text, str)

@@ -32,9 +32,6 @@ from gateway.platforms.api_server import (
 )
 
 
-# ---------------------------------------------------------------------------
-# check_api_server_requirements
-# ---------------------------------------------------------------------------
 
 
 class TestCheckRequirements:
@@ -46,9 +43,6 @@ class TestCheckRequirements:
         assert check_api_server_requirements() is False
 
 
-# ---------------------------------------------------------------------------
-# ResponseStore
-# ---------------------------------------------------------------------------
 
 
 class TestResponseStore:
@@ -66,7 +60,6 @@ class TestResponseStore:
         store.put("resp_1", {"output": "one"})
         store.put("resp_2", {"output": "two"})
         store.put("resp_3", {"output": "three"})
-        # Adding a 4th should evict resp_1
         store.put("resp_4", {"output": "four"})
         assert store.get("resp_1") is None
         assert store.get("resp_2") is not None
@@ -77,9 +70,7 @@ class TestResponseStore:
         store.put("resp_1", {"output": "one"})
         store.put("resp_2", {"output": "two"})
         store.put("resp_3", {"output": "three"})
-        # Access resp_1 to move it to end
         store.get("resp_1")
-        # Now resp_2 is the oldest — adding a 4th should evict resp_2
         store.put("resp_4", {"output": "four"})
         assert store.get("resp_2") is None
         assert store.get("resp_1") is not None
@@ -103,9 +94,6 @@ class TestResponseStore:
         assert store.delete("resp_missing") is False
 
 
-# ---------------------------------------------------------------------------
-# Adapter initialization
-# ---------------------------------------------------------------------------
 
 
 class TestAdapterInit:
@@ -149,9 +137,6 @@ class TestAdapterInit:
         )
 
 
-# ---------------------------------------------------------------------------
-# Auth checking
-# ---------------------------------------------------------------------------
 
 
 class TestAuth:
@@ -197,9 +182,6 @@ class TestAuth:
         assert result.status == 401
 
 
-# ---------------------------------------------------------------------------
-# Helpers for HTTP tests
-# ---------------------------------------------------------------------------
 
 
 def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
@@ -238,9 +220,6 @@ def auth_adapter():
     return _make_adapter(api_key="sk-secret")
 
 
-# ---------------------------------------------------------------------------
-# /health endpoint
-# ---------------------------------------------------------------------------
 
 
 class TestHealthEndpoint:
@@ -276,9 +255,6 @@ class TestHealthEndpoint:
             assert data["platform"] == "daedalus"
 
 
-# ---------------------------------------------------------------------------
-# /v1/models endpoint
-# ---------------------------------------------------------------------------
 
 
 class TestModelsEndpoint:
@@ -312,9 +288,6 @@ class TestModelsEndpoint:
             assert resp.status == 200
 
 
-# ---------------------------------------------------------------------------
-# /v1/chat/completions endpoint
-# ---------------------------------------------------------------------------
 
 
 class TestChatCompletionsEndpoint:
@@ -353,11 +326,10 @@ class TestChatCompletionsEndpoint:
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             async def _mock_run_agent(**kwargs):
-                # Simulate streaming: invoke stream_delta_callback with tokens
                 cb = kwargs.get("stream_delta_callback")
                 if cb:
                     cb("Hello!")
-                    cb(None)  # End signal
+                    cb(None)
                 return (
                     {"final_response": "Hello!", "messages": [], "api_calls": 1},
                     {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
@@ -395,13 +367,11 @@ class TestChatCompletionsEndpoint:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
                 if cb:
-                    # Simulate: agent streams partial text, then fires None
-                    # (tool call box-close signal), then streams the final answer
                     cb("Thinking")
-                    cb(None)          # mid-stream None from tool calls
-                    await asyncio.sleep(0.05)  # simulate tool execution delay
+                    cb(None)
+                    await asyncio.sleep(0.05)
                     cb(" about it...")
-                    cb(None)          # another None (possible second tool round)
+                    cb(None)
                     await asyncio.sleep(0.05)
                     cb(" The answer is 42.")
                 return (
@@ -421,9 +391,7 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "[DONE]" in body
-                # The final answer text must appear in the SSE stream
                 assert "The answer is 42." in body
-                # All partial text must be present too
                 assert "Thinking" in body
                 assert " about it..." in body
 
@@ -437,7 +405,6 @@ class TestChatCompletionsEndpoint:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
                 tp_cb = kwargs.get("tool_progress_callback")
-                # Simulate tool progress before streaming content
                 if tp_cb:
                     tp_cb("tool.started", "terminal", "ls -la", {"command": "ls -la"})
                 if cb:
@@ -460,9 +427,7 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "[DONE]" in body
-                # Tool progress message must appear in the stream
                 assert "ls -la" in body
-                # Final content must also be present
                 assert "Here are the files." in body
 
     @pytest.mark.asyncio
@@ -497,9 +462,7 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
                 body = await resp.text()
-                # Internal _thinking event should NOT appear
                 assert "some internal state" not in body
-                # Real tool progress should appear
                 assert "Python docs" in body
 
     @pytest.mark.asyncio
@@ -572,7 +535,6 @@ class TestChatCompletionsEndpoint:
                 )
 
             assert resp.status == 200
-            # Check that _run_agent was called with the system prompt
             call_kwargs = mock_run.call_args
             assert call_kwargs.kwargs.get("ephemeral_system_prompt") == "You are a pirate."
             assert call_kwargs.kwargs.get("user_message") == "Hello"
@@ -625,9 +587,6 @@ class TestChatCompletionsEndpoint:
             assert "Provider failed" in data["error"]["message"]
 
 
-# ---------------------------------------------------------------------------
-# /v1/responses endpoint
-# ---------------------------------------------------------------------------
 
 
 class TestResponsesEndpoint:
@@ -704,7 +663,6 @@ class TestResponsesEndpoint:
 
             assert resp.status == 200
             call_kwargs = mock_run.call_args.kwargs
-            # Last message is user_message, rest are history
             assert call_kwargs["user_message"] == "What is 2+2?"
             assert len(call_kwargs["conversation_history"]) == 1
 
@@ -741,7 +699,6 @@ class TestResponsesEndpoint:
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            # First request
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result_1, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp1 = await cli.post(
@@ -753,7 +710,6 @@ class TestResponsesEndpoint:
             data1 = await resp1.json()
             response_id = data1["id"]
 
-            # Second request chaining from the first
             mock_result_2 = {
                 "final_response": "3",
                 "messages": [{"role": "assistant", "content": "3"}],
@@ -772,7 +728,6 @@ class TestResponsesEndpoint:
                 )
 
             assert resp2.status == 200
-            # The conversation_history should contain the full history from the first response
             call_kwargs = mock_run.call_args.kwargs
             assert len(call_kwargs["conversation_history"]) > 0
             assert call_kwargs["user_message"] == "Now add 1 more"
@@ -811,7 +766,6 @@ class TestResponsesEndpoint:
 
             assert resp.status == 200
             data = await resp.json()
-            # The response has an ID but it shouldn't be retrievable
             assert adapter._response_store.get(data["id"]) is None
 
     @pytest.mark.asyncio
@@ -821,7 +775,6 @@ class TestResponsesEndpoint:
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            # First request with instructions
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp1 = await cli.post(
@@ -836,7 +789,6 @@ class TestResponsesEndpoint:
             data1 = await resp1.json()
             resp_id = data1["id"]
 
-            # Second request without instructions
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp2 = await cli.post(
@@ -876,9 +828,6 @@ class TestResponsesEndpoint:
             assert resp.status == 400
 
 
-# ---------------------------------------------------------------------------
-# Auth on endpoints
-# ---------------------------------------------------------------------------
 
 
 class TestEndpointAuth:
@@ -917,9 +866,6 @@ class TestEndpointAuth:
             assert resp.status == 200
 
 
-# ---------------------------------------------------------------------------
-# Config integration
-# ---------------------------------------------------------------------------
 
 
 class TestConfigIntegration:
@@ -975,9 +921,6 @@ class TestConfigIntegration:
         assert Platform.API_SERVER not in connected
 
 
-# ---------------------------------------------------------------------------
-# Multiple system messages
-# ---------------------------------------------------------------------------
 
 
 class TestMultipleSystemMessages:
@@ -1008,9 +951,6 @@ class TestMultipleSystemMessages:
             assert "Be concise." in prompt
 
 
-# ---------------------------------------------------------------------------
-# send() method (not used but required by base)
-# ---------------------------------------------------------------------------
 
 
 class TestSendMethod:
@@ -1023,9 +963,6 @@ class TestSendMethod:
         assert "HTTP request/response" in result.error
 
 
-# ---------------------------------------------------------------------------
-# GET /v1/responses/{response_id}
-# ---------------------------------------------------------------------------
 
 
 class TestGetResponse:
@@ -1036,7 +973,6 @@ class TestGetResponse:
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
-            # Create a response first
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
                 resp = await cli.post(
@@ -1048,7 +984,6 @@ class TestGetResponse:
             data = await resp.json()
             response_id = data["id"]
 
-            # Now GET it
             resp2 = await cli.get(f"/v1/responses/{response_id}")
             assert resp2.status == 200
             data2 = await resp2.json()
@@ -1071,9 +1006,6 @@ class TestGetResponse:
             assert resp.status == 401
 
 
-# ---------------------------------------------------------------------------
-# DELETE /v1/responses/{response_id}
-# ---------------------------------------------------------------------------
 
 
 class TestDeleteResponse:
@@ -1094,7 +1026,6 @@ class TestDeleteResponse:
             data = await resp.json()
             response_id = data["id"]
 
-            # Delete it
             resp2 = await cli.delete(f"/v1/responses/{response_id}")
             assert resp2.status == 200
             data2 = await resp2.json()
@@ -1102,7 +1033,6 @@ class TestDeleteResponse:
             assert data2["object"] == "response"
             assert data2["deleted"] is True
 
-            # Verify it's gone
             resp3 = await cli.get(f"/v1/responses/{response_id}")
             assert resp3.status == 404
 
@@ -1121,9 +1051,6 @@ class TestDeleteResponse:
             assert resp.status == 401
 
 
-# ---------------------------------------------------------------------------
-# Tool calls in output
-# ---------------------------------------------------------------------------
 
 
 class TestToolCallsInOutput:
@@ -1172,7 +1099,6 @@ class TestToolCallsInOutput:
             data = await resp.json()
             output = data["output"]
 
-            # Should have: function_call, function_call_output, message
             assert len(output) == 3
             assert output[0]["type"] == "function_call"
             assert output[0]["name"] == "calculator"
@@ -1204,9 +1130,6 @@ class TestToolCallsInOutput:
             assert data["output"][0]["type"] == "message"
 
 
-# ---------------------------------------------------------------------------
-# Usage / token counting
-# ---------------------------------------------------------------------------
 
 
 class TestUsageCounting:
@@ -1256,9 +1179,6 @@ class TestUsageCounting:
             assert data["usage"]["total_tokens"] == 280
 
 
-# ---------------------------------------------------------------------------
-# Truncation
-# ---------------------------------------------------------------------------
 
 
 class TestTruncation:
@@ -1267,7 +1187,6 @@ class TestTruncation:
         """With truncation=auto, history over 100 messages is trimmed."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
 
-        # Pre-seed a stored response with a long history
         long_history = [{"role": "user", "content": f"msg {i}"} for i in range(150)]
         adapter._response_store.put("resp_prev", {
             "response": {"id": "resp_prev", "object": "response"},
@@ -1291,7 +1210,6 @@ class TestTruncation:
 
         assert resp.status == 200
         call_kwargs = mock_run.call_args.kwargs
-        # History should be truncated to 100
         assert len(call_kwargs["conversation_history"]) <= 100
 
     @pytest.mark.asyncio
@@ -1324,9 +1242,6 @@ class TestTruncation:
         assert len(call_kwargs["conversation_history"]) == 150
 
 
-# ---------------------------------------------------------------------------
-# CORS
-# ---------------------------------------------------------------------------
 
 
 class TestCORS:
@@ -1458,9 +1373,6 @@ class TestCORS:
             )
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Max-Age") == "600"
-# ---------------------------------------------------------------------------
-# Conversation parameter
-# ---------------------------------------------------------------------------
 
 
 class TestConversationParameter:
@@ -1481,7 +1393,6 @@ class TestConversationParameter:
                 assert resp.status == 200
                 data = await resp.json()
                 assert data["status"] == "completed"
-                # Conversation mapping should be set
                 assert adapter._response_store.get_conversation("my-chat") is not None
 
     @pytest.mark.asyncio
@@ -1494,7 +1405,6 @@ class TestConversationParameter:
                     {"final_response": "First response", "messages": [], "api_calls": 1},
                     {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
                 )
-                # First request
                 resp1 = await cli.post("/v1/responses", json={
                     "input": "hello",
                     "conversation": "test-conv",
@@ -1503,7 +1413,6 @@ class TestConversationParameter:
                 data1 = await resp1.json()
                 resp1_id = data1["id"]
 
-                # Second request — should chain
                 mock_run.return_value = (
                     {"final_response": "Second response", "messages": [], "api_calls": 1},
                     {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
@@ -1514,12 +1423,10 @@ class TestConversationParameter:
                 })
                 assert resp2.status == 200
 
-                # The second call should have received conversation history from the first
                 assert mock_run.call_count == 2
                 second_call_kwargs = mock_run.call_args_list[1]
                 history = second_call_kwargs.kwargs.get("conversation_history",
                           second_call_kwargs[1].get("conversation_history", []) if len(second_call_kwargs) > 1 else [])
-                # History should be non-empty (contains messages from first response)
                 assert len(history) > 0
 
     @pytest.mark.asyncio
@@ -1546,16 +1453,13 @@ class TestConversationParameter:
                     {"final_response": "Response A", "messages": [], "api_calls": 1},
                     {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
                 )
-                # Conversation A
                 await cli.post("/v1/responses", json={"input": "conv-a msg", "conversation": "conv-a"})
-                # Conversation B
                 mock_run.return_value = (
                     {"final_response": "Response B", "messages": [], "api_calls": 1},
                     {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
                 )
                 await cli.post("/v1/responses", json={"input": "conv-b msg", "conversation": "conv-b"})
 
-                # They should have different response IDs in the mapping
                 assert adapter._response_store.get_conversation("conv-a") != adapter._response_store.get_conversation("conv-b")
 
     @pytest.mark.asyncio
@@ -1574,13 +1478,9 @@ class TestConversationParameter:
                     "store": False,
                 })
                 assert resp.status == 200
-                # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
 
 
-# ---------------------------------------------------------------------------
-# X-Daedalus-Session-Id header (session continuity)
-# ---------------------------------------------------------------------------
 
 
 class TestSessionIdHeader:
@@ -1644,7 +1544,6 @@ class TestSessionIdHeader:
                 resp = await cli.post(
                     "/v1/chat/completions",
                     headers={"X-Daedalus-Session-Id": "existing-session"},
-                    # Request body has different history — should be ignored
                     json={
                         "model": "daedalus",
                         "messages": [
@@ -1657,7 +1556,6 @@ class TestSessionIdHeader:
 
             assert resp.status == 200
             call_kwargs = mock_run.call_args.kwargs
-            # History must come from DB, not from the request body
             assert call_kwargs["conversation_history"] == db_history
             assert call_kwargs["user_message"] == "new question"
 
@@ -1665,7 +1563,6 @@ class TestSessionIdHeader:
     async def test_db_failure_falls_back_to_empty_history(self, adapter):
         """If SessionDB raises, history falls back to empty and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
-        # Simulate DB failure: _session_db is None and SessionDB() constructor raises
         adapter._session_db = None
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

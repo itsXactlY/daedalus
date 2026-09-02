@@ -26,9 +26,6 @@ from tools.homeassistant_tool import (
 )
 
 
-# ---------------------------------------------------------------------------
-# 1. REST tool handlers (real HTTP against fake server)
-# ---------------------------------------------------------------------------
 
 
 class TestToolRest:
@@ -134,7 +131,6 @@ class TestToolRest:
             assert len(result["affected_entities"]) == 1
             assert result["affected_entities"][0]["state"] == "on"
 
-            # Verify fake server recorded the call
             assert len(server.received_service_calls) == 1
             call = server.received_service_calls[0]
             assert call["domain"] == "light"
@@ -143,9 +139,6 @@ class TestToolRest:
             assert call["data"]["brightness"] == 255
 
 
-# ---------------------------------------------------------------------------
-# 2. Auth and error cases (tool layer, real HTTP against fake server)
-# ---------------------------------------------------------------------------
 
 
 class TestAuthAndErrors:

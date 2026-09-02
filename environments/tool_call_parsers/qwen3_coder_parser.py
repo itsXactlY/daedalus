@@ -36,23 +36,19 @@ def _try_convert_value(value: str) -> Any:
     """
     stripped = value.strip()
 
-    # Handle null
     if stripped.lower() == "null":
         return None
 
-    # Try JSON first (handles objects, arrays, strings, numbers, booleans)
     try:
         return json.loads(stripped)
     except (json.JSONDecodeError, TypeError):
         pass
 
-    # Try Python literal eval (handles tuples, etc.)
     try:
         return ast.literal_eval(stripped)
     except (ValueError, SyntaxError, TypeError):
         pass
 
-    # Return as string
     return stripped
 
 
@@ -67,17 +63,14 @@ class Qwen3CoderToolCallParser(ToolCallParser):
     START_TOKEN = "<tool_call>"
     FUNCTION_PREFIX = "<function="
 
-    # Find complete tool_call blocks (or unclosed at end)
     TOOL_CALL_REGEX = re.compile(
         r"<tool_call>(.*?)</tool_call>|<tool_call>(.*?)$", re.DOTALL
     )
 
-    # Find function blocks within a tool_call
     FUNCTION_REGEX = re.compile(
         r"<function=(.*?)</function>|<function=(.*)$", re.DOTALL
     )
 
-    # Find parameter blocks within a function
     PARAMETER_REGEX = re.compile(
         r"<parameter=(.*?)(?:</parameter>|(?=<parameter=)|(?=</function>)|$)",
         re.DOTALL,
@@ -86,12 +79,10 @@ class Qwen3CoderToolCallParser(ToolCallParser):
     def _parse_function_call(self, function_str: str) -> Optional[ChatCompletionMessageToolCall]:
         """Parse a single <function=name>...</function> block into a ToolCall."""
         try:
-            # Extract function name: everything before the first '>'
             gt_idx = function_str.index(">")
             func_name = function_str[:gt_idx].strip()
             params_str = function_str[gt_idx + 1:]
 
-            # Extract parameters
             param_dict: Dict[str, Any] = {}
             for match_text in self.PARAMETER_REGEX.findall(params_str):
                 if ">" not in match_text:
@@ -100,7 +91,6 @@ class Qwen3CoderToolCallParser(ToolCallParser):
                 param_name = match_text[:eq_idx].strip()
                 param_value = match_text[eq_idx + 1:]
 
-                # Clean up whitespace
                 if param_value.startswith("\n"):
                     param_value = param_value[1:]
                 if param_value.endswith("\n"):
@@ -124,15 +114,12 @@ class Qwen3CoderToolCallParser(ToolCallParser):
             return text, None
 
         try:
-            # Find all tool_call blocks
             tc_matches = self.TOOL_CALL_REGEX.findall(text)
             raw_blocks = [m[0] if m[0] else m[1] for m in tc_matches]
 
-            # Fallback: if no tool_call tags, try the whole text
             if not raw_blocks:
                 raw_blocks = [text]
 
-            # Find function blocks within each tool_call
             function_strs: List[str] = []
             for block in raw_blocks:
                 func_matches = self.FUNCTION_REGEX.findall(block)
@@ -141,7 +128,6 @@ class Qwen3CoderToolCallParser(ToolCallParser):
             if not function_strs:
                 return text, None
 
-            # Parse each function call
             tool_calls: List[ChatCompletionMessageToolCall] = []
             for func_str in function_strs:
                 tc = self._parse_function_call(func_str)
@@ -151,7 +137,6 @@ class Qwen3CoderToolCallParser(ToolCallParser):
             if not tool_calls:
                 return text, None
 
-            # Content before tool calls
             first_tc = text.find(self.START_TOKEN)
             if first_tc < 0:
                 first_tc = text.find(self.FUNCTION_PREFIX)

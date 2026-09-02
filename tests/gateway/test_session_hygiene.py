@@ -23,9 +23,6 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_history(n_messages: int, content_size: int = 100) -> list:
     """Build a fake transcript with n_messages user/assistant pairs."""
@@ -39,13 +36,8 @@ def _make_history(n_messages: int, content_size: int = 100) -> list:
 
 def _make_large_history_tokens(target_tokens: int) -> list:
     """Build a history that estimates to roughly target_tokens tokens."""
-    # estimate_messages_tokens_rough counts total chars in str(msg) // 4
-    # Each msg dict has ~60 chars of overhead + content chars
-    # So for N tokens we need roughly N * 4 total chars across all messages
     target_chars = target_tokens * 4
-    # Each message as a dict string is roughly len(content) + 60 chars
     msg_overhead = 60
-    # Use 50 messages with appropriately sized content
     n_msgs = 50
     content_size = max(10, (target_chars // n_msgs) - msg_overhead)
     return _make_history(n_msgs, content_size=content_size)
@@ -77,9 +69,6 @@ class HygieneCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-# ---------------------------------------------------------------------------
-# Detection threshold tests (model-aware, unified with compression config)
-# ---------------------------------------------------------------------------
 
 class TestSessionHygieneThresholds:
     """Test that the threshold logic correctly identifies large sessions.
@@ -93,7 +82,6 @@ class TestSessionHygieneThresholds:
         history = _make_history(10)
         approx_tokens = estimate_messages_tokens_rough(history)
 
-        # For a 200k-context model at 85% threshold = 170k
         context_length = 200_000
         threshold_pct = 0.85
         compress_token_threshold = int(context_length * threshold_pct)
@@ -103,7 +91,6 @@ class TestSessionHygieneThresholds:
 
     def test_large_token_count_triggers(self):
         """High token count should trigger compression when exceeding model threshold."""
-        # Build a history that exceeds 85% of a 200k model (170k tokens)
         history = _make_large_history_tokens(180_000)
         approx_tokens = estimate_messages_tokens_rough(history)
 
@@ -116,11 +103,9 @@ class TestSessionHygieneThresholds:
 
     def test_under_threshold_no_trigger(self):
         """Session under threshold should not trigger, even with many messages."""
-        # 250 short messages — lots of messages but well under token threshold
         history = _make_history(250, content_size=10)
         approx_tokens = estimate_messages_tokens_rough(history)
 
-        # 200k model at 85% = 170k token threshold
         context_length = 200_000
         threshold_pct = 0.85
         compress_token_threshold = int(context_length * threshold_pct)
@@ -138,7 +123,6 @@ class TestSessionHygieneThresholds:
         which caused premature compression in tool-heavy sessions with 200+
         messages but low total tokens.
         """
-        # 300 very short messages — old system would compress, new should not
         history = _make_history(300, content_size=10)
         approx_tokens = estimate_messages_tokens_rough(history)
 
@@ -146,51 +130,38 @@ class TestSessionHygieneThresholds:
         threshold_pct = 0.85
         compress_token_threshold = int(context_length * threshold_pct)
 
-        # Token-based check only
         needs_compress = approx_tokens >= compress_token_threshold
         assert not needs_compress
 
     def test_threshold_scales_with_model(self):
         """Different models should have different compression thresholds."""
-        # 128k model at 85% = 108,800 tokens
         small_model_threshold = int(128_000 * 0.85)
-        # 200k model at 85% = 170,000 tokens
         large_model_threshold = int(200_000 * 0.85)
-        # 1M model at 85% = 850,000 tokens
         huge_model_threshold = int(1_000_000 * 0.85)
 
-        # A session at ~120k tokens:
         history = _make_large_history_tokens(120_000)
         approx_tokens = estimate_messages_tokens_rough(history)
 
-        # Should trigger for 128k model
         assert approx_tokens >= small_model_threshold
-        # Should NOT trigger for 200k model
         assert approx_tokens < large_model_threshold
-        # Should NOT trigger for 1M model
         assert approx_tokens < huge_model_threshold
 
     def test_custom_threshold_percentage(self):
         """Custom threshold percentage from config should be respected."""
         context_length = 200_000
 
-        # At 50% threshold = 100k
         low_threshold = int(context_length * 0.50)
-        # At 90% threshold = 180k
         high_threshold = int(context_length * 0.90)
 
         history = _make_large_history_tokens(150_000)
         approx_tokens = estimate_messages_tokens_rough(history)
 
-        # Should trigger at 50% but not at 90%
         assert approx_tokens >= low_threshold
         assert approx_tokens < high_threshold
 
     def test_minimum_message_guard(self):
         """Sessions with fewer than 4 messages should never trigger."""
         history = _make_history(3, content_size=100_000)
-        # Even with enormous content, < 4 messages should be skipped
-        # (the gateway code checks `len(history) >= 4` before evaluating)
         assert len(history) < 4
 
 
@@ -200,14 +171,14 @@ class TestSessionHygieneWarnThreshold:
     def test_warn_when_still_large(self):
         """If compressed result is still above 95% of context, should warn."""
         context_length = 200_000
-        warn_threshold = int(context_length * 0.95)  # 190k
+        warn_threshold = int(context_length * 0.95)
         post_compress_tokens = 195_000
         assert post_compress_tokens >= warn_threshold
 
     def test_no_warn_when_under(self):
         """If compressed result is under 95% of context, no warning."""
         context_length = 200_000
-        warn_threshold = int(context_length * 0.95)  # 190k
+        warn_threshold = int(context_length * 0.95)
         post_compress_tokens = 150_000
         assert post_compress_tokens < warn_threshold
 
@@ -242,7 +213,6 @@ class TestEstimatedTokenThreshold:
         context_length = 200_000
         threshold_pct = 0.85
         threshold = int(context_length * threshold_pct)
-        # Both paths should use 170K — no inflation
         assert threshold == 170_000
 
     def test_warn_threshold_below_context(self):
@@ -258,9 +228,7 @@ class TestEstimatedTokenThreshold:
         safe and harmless.
         """
         context_length = 200_000
-        threshold = int(context_length * 0.85)  # 170K
-        # If actual tokens = 113K, rough estimate = 113K * 1.5 = 170K
-        # Hygiene fires when estimate hits 170K, actual is ~113K = 57% of ctx
+        threshold = int(context_length * 0.85)
         actual_when_fires = threshold / 1.5
         assert actual_when_fires > context_length * 0.50, (
             "Early fire should still be above agent's 50% threshold"
@@ -293,7 +261,6 @@ class TestTokenEstimation:
         """
         history = _make_history(648, content_size=1800)
         tokens = estimate_messages_tokens_rough(history)
-        # Should be well above the 170K threshold for a 200k model
         threshold = int(200_000 * 0.85)
         assert tokens > threshold
 
@@ -311,7 +278,6 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
             self._print_fn = None
 
         def _compress_context(self, messages, *_args, **_kwargs):
-            # Simulate real _compress_context: create a new session_id
             self.session_id = f"{self.session_id}_compressed"
             return ([{"role": "assistant", "content": "compressed"}], None)
 
@@ -381,6 +347,4 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     result = await runner._handle_message(event)
 
     assert result == "ok"
-    # Compression warnings are no longer sent to users — compression
-    # happens silently with server-side logging only.
     assert len(adapter.sent) == 0

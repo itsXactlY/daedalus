@@ -15,16 +15,6 @@ from agent.skill_commands import (
 )
 
 
-# Session preview = the head of the first user message, shown wherever a
-# session has no title (sidebar rows, pickers, exports, the desktop's
-# `sessionTitle` fallback).
-#
-# A /skill invocation expands into a message that embeds the whole skill body,
-# so the plain head of it previews the SKILL's opening prose as if the user had
-# written it. Scaffolded rows therefore carry a wider excerpt so
-# ``_shape_preview`` can hand it to ``describe_skill_invocation`` and recover
-# ``/work — fix the title leak``: the whole message while it stays under the
-# budget, and head + tail (where the typed instruction lands) once it doesn't.
 _PREVIEW_HEAD_CHARS = 63
 
 
@@ -52,10 +42,6 @@ _PREVIEW_CONTENT_SQL = "REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' ')"
 _PREVIEW_SCAFFOLDED_SQL = f"m.content LIKE '{SKILL_SCAFFOLD_SQL_LIKE}'"
 
 
-# The shared ``_preview_raw`` SELECT expression, interpolated by every listing
-# query. A scaffolded row gets a wider excerpt: the whole message while it fits
-# the budget, else head + tail (where the typed instruction lands) spliced
-# around SKILL_EXCERPT_JOINT.
 _PREVIEW_RAW_SELECT = (
     f"CASE WHEN {_PREVIEW_SCAFFOLDED_SQL}"
     f" AND LENGTH(m.content) > {_PREVIEW_SCAFFOLD_WINDOW * 2}"
@@ -80,8 +66,6 @@ def _shape_preview(raw: Any) -> str:
     return text
 
 
-# A child session counts as a /branch (kept visible, never cascade-deleted) if
-# it carries the stable marker OR the legacy end_reason heuristic holds.
 _BRANCH_CHILD_SQL = (
     "json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p"
@@ -98,8 +82,6 @@ _COMPRESSION_CHILD_SQL = (
 )
 
 
-# Rows that surface in pickers: roots + branch children (subagent runs and
-# compression continuations stay hidden).
 _LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
 
 
@@ -167,20 +149,9 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 SCHEMA_VERSION = 25
 
 
-# FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
-# state_meta key ``fts_storage_version``. The main schema version advances
-# freely on open (so future migrations always land); the FTS *layout* only
-# reaches the current version when a DB is either born fresh or explicitly
-# optimized via ``daedalus sessions optimize-storage``. A legacy DB sits at
-# layout 0 (marker absent) with a working inline index until the user opts in.
-#   1 = v23 external-content layout (content/tool_name/tool_calls,
-#       tool-row-excluded trigram)
 FTS_STORAGE_VERSION = 1
 
 
-# Cap on user-controlled FTS5 query input before regex/sanitizer processing.
-# Search queries do not need to be arbitrarily large, and bounding them keeps
-# sanitizer/runtime behavior predictable under adversarial input.
 MAX_FTS5_QUERY_CHARS = 2_048
 
 
@@ -374,10 +345,6 @@ CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
 """
 
 
-# Indexes that reference columns added in later schema versions must be
-# created AFTER _reconcile_columns() has had a chance to ADD them on
-# existing databases. SCHEMA_SQL above is run by sqlite executescript
-# which would otherwise fail on legacy DBs ("no such column: active").
 DEFERRED_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
@@ -394,25 +361,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
 """
 
 
-# ── Deferred FTS rebuild bookkeeping (schema v23) ──
-# While a background index rebuild is pending, two state_meta keys define
-# which message rows are currently IN the FTS indexes:
-#
-#   fts_rebuild_high_water  H — MAX(messages.id) at the moment the old
-#                                indexes were dropped
-#   fts_rebuild_progress    P — highest id the chunked backfill has indexed
-#
-# A row is indexed iff  id <= P  (backfilled)  OR  id > H  (inserted after
-# the drop; ids are AUTOINCREMENT so new rows are always > H and the insert
-# triggers index them live).  Rows in (P, H] are not yet indexed.
-#
-# Every trigger below gates on that same predicate: firing an FTS5
-# external-content 'delete' for a row that is NOT in the index corrupts the
-# index, and skipping it for a row that IS indexed leaves a stale entry.
-# When no rebuild is pending both keys are absent and COALESCE turns the
-# predicate into a tautology (id > -1 OR id <= -1), i.e. normal operation.
-# The two state_meta PK probes per write are negligible next to the FTS
-# insert itself.
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
@@ -463,20 +411,6 @@ END;
 """
 
 
-# Trigram FTS5 table for CJK substring search.  The default unicode61
-# tokenizer splits CJK characters into individual tokens, breaking phrase
-# matching.  The trigram tokenizer creates overlapping 3-byte sequences so
-# substring queries work natively for any script (CJK, Thai, etc.).
-#
-# The trigram index is the most expensive index in state.db (~2.6x the size
-# of the text it covers), and ``role='tool'`` rows are ~90% of message bytes
-# while being almost entirely machine noise (base64 payloads, file dumps,
-# delegation transcripts).  The index therefore reads through
-# ``messages_fts_trigram_src``, a view that excludes tool rows — they stay
-# fully stored in ``messages`` and fully searchable via the standard
-# ``messages_fts`` index; they just don't get trigram (CJK substring)
-# treatment.  ``search_messages`` routes CJK queries that filter on
-# ``role='tool'`` to the LIKE fallback for the same reason.
 FTS_TRIGRAM_SQL = """
 CREATE VIEW IF NOT EXISTS messages_fts_trigram_src AS
     SELECT id, role, content, tool_name, tool_calls
@@ -542,32 +476,12 @@ _FTS_CJK_TRIGGERS = (
 )
 
 
-# state_meta breadcrumb set when a tokenizer-less process had to drop the
-# cjk triggers to keep message writes alive: rows written from that moment
-# on are missing from the cjk index, so it must not serve reads until
-# `daedalus sessions optimize-storage` rebuilds it on a capable host.
 FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
 
-# Durable breadcrumb for a base/trigram FTS index that was detached from the
-# canonical messages table after runtime corruption. While present, startup
-# must rebuild the complete index before reinstalling sync triggers: rows may
-# have been written while those triggers were absent, so merely recreating
-# them would preserve an unknown index gap.
 FTS_STALE_KEY = "fts_stale"
 
 
-# ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────
-# Used ONLY to keep an existing pre-v23 install's search working and its
-# triggers repairable UNTIL the user opts into `daedalus db optimize`. This is
-# the exact inline shape v11..v22 shipped: each virtual table stores its own
-# copy of ``content || tool_name || tool_calls`` and the trigram table indexes
-# every row (including role='tool'). We never CREATE these on a fresh install —
-# fresh installs are born on the v23 external-content schema above. These
-# constants exist so a legacy DB is never accidentally handed the v23 DDL
-# (which would create the external-content trigram source VIEW and leave the
-# DB in a mixed, broken state). `optimize_fts_storage()` is what migrates a
-# legacy DB to the v23 shape.
 LEGACY_FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content

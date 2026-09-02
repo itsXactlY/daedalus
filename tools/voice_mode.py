@@ -23,10 +23,6 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Lazy audio imports -- never imported at module level to avoid crashing
-# in headless environments (SSH, Docker, WSL, no PortAudio).
-# ---------------------------------------------------------------------------
 
 def _import_audio():
     """Lazy-import sounddevice and numpy.  Returns (sd, np).
@@ -55,19 +51,15 @@ def detect_audio_environment() -> dict:
     reasons that block voice mode), and 'notices' (list of informational
     messages that do NOT block voice mode).
     """
-    warnings = []   # hard-fail: these block voice mode
-    notices = []     # informational: logged but don't block
+    warnings = []
+    notices = []
 
-    # SSH detection
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker detection
     if os.path.exists('/.dockerenv'):
         warnings.append("Running inside Docker container -- no audio devices")
 
-    # WSL detection — PulseAudio bridge makes audio work in WSL.
-    # Only block if PULSE_SERVER is not configured.
     try:
         with open('/proc/version', 'r') as f:
             if 'microsoft' in f.read().lower():
@@ -83,7 +75,6 @@ def detect_audio_environment() -> dict:
     except (FileNotFoundError, PermissionError, OSError):
         pass
 
-    # Check audio libraries
     try:
         sd, _ = _import_audio()
         try:
@@ -91,8 +82,6 @@ def detect_audio_environment() -> dict:
             if not devices:
                 warnings.append("No audio input/output devices detected")
         except Exception:
-            # In WSL with PulseAudio, device queries can fail even though
-            # recording/playback works fine. Don't block if PULSE_SERVER is set.
             if os.environ.get('PULSE_SERVER'):
                 notices.append("Audio device query failed but PULSE_SERVER is set -- continuing")
             else:
@@ -113,26 +102,18 @@ def detect_audio_environment() -> dict:
         "notices": notices,
     }
 
-# ---------------------------------------------------------------------------
-# Recording parameters
-# ---------------------------------------------------------------------------
-SAMPLE_RATE = 16000  # Whisper native rate
-CHANNELS = 1  # Mono
-DTYPE = "int16"  # 16-bit PCM
-SAMPLE_WIDTH = 2  # bytes per sample (int16)
-MAX_RECORDING_SECONDS = 120  # Safety cap
+SAMPLE_RATE = 16000
+CHANNELS = 1
+DTYPE = "int16"
+SAMPLE_WIDTH = 2
+MAX_RECORDING_SECONDS = 120
 
-# Silence detection defaults
-SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
-SILENCE_DURATION_SECONDS = 3.0  # Seconds of continuous silence before auto-stop
+SILENCE_RMS_THRESHOLD = 200
+SILENCE_DURATION_SECONDS = 3.0
 
-# Temp directory for voice recordings
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "daedalus_voice")
 
 
-# ============================================================================
-# Audio cues (beep tones)
-# ============================================================================
 def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> None:
     """Play a short beep tone using numpy + sounddevice.
 
@@ -146,14 +127,13 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
     except (ImportError, OSError):
         return
     try:
-        gap = 0.06  # seconds between beeps
+        gap = 0.06
         samples_per_beep = int(SAMPLE_RATE * duration)
         samples_per_gap = int(SAMPLE_RATE * gap)
 
         parts = []
         for i in range(count):
             t = np.linspace(0, duration, samples_per_beep, endpoint=False)
-            # Apply fade in/out to avoid click artifacts
             tone = np.sin(2 * np.pi * frequency * t)
             fade_len = min(int(SAMPLE_RATE * 0.01), samples_per_beep // 4)
             tone[:fade_len] *= np.linspace(0, 1, fade_len)
@@ -164,8 +144,6 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
 
         audio = np.concatenate(parts)
         sd.play(audio, samplerate=SAMPLE_RATE)
-        # sd.wait() calls Event.wait() without timeout — hangs forever if the
-        # audio device stalls.  Poll with a 2s ceiling and force-stop.
         deadline = time.monotonic() + 2.0
         while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -174,9 +152,6 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
         logger.debug("Beep playback failed: %s", e)
 
 
-# ============================================================================
-# AudioRecorder
-# ============================================================================
 class AudioRecorder:
     """Thread-safe audio recorder using sounddevice.InputStream.
 
@@ -199,25 +174,21 @@ class AudioRecorder:
         self._frames: List[Any] = []
         self._recording = False
         self._start_time: float = 0.0
-        # Silence detection state
         self._has_spoken = False
-        self._speech_start: float = 0.0  # When speech attempt began
-        self._dip_start: float = 0.0  # When current below-threshold dip began
-        self._min_speech_duration: float = 0.3  # Seconds of speech needed to confirm
-        self._max_dip_tolerance: float = 0.3  # Max dip duration before resetting speech
+        self._speech_start: float = 0.0
+        self._dip_start: float = 0.0
+        self._min_speech_duration: float = 0.3
+        self._max_dip_tolerance: float = 0.3
         self._silence_start: float = 0.0
-        self._resume_start: float = 0.0  # Tracks sustained speech after silence starts
-        self._resume_dip_start: float = 0.0  # Dip tolerance tracker for resume detection
+        self._resume_start: float = 0.0
+        self._resume_dip_start: float = 0.0
         self._on_silence_stop = None
         self._silence_threshold: int = SILENCE_RMS_THRESHOLD
         self._silence_duration: float = SILENCE_DURATION_SECONDS
-        self._max_wait: float = 15.0  # Max seconds to wait for speech before auto-stop
-        # Peak RMS seen during recording (for speech presence check in stop())
+        self._max_wait: float = 15.0
         self._peak_rms: int = 0
-        # Live audio level (read by UI for visual feedback)
         self._current_rms: int = 0
 
-    # -- public properties ---------------------------------------------------
 
     @property
     def is_recording(self) -> bool:
@@ -234,7 +205,6 @@ class AudioRecorder:
         """Current audio input RMS level (0-32767). Updated each audio chunk."""
         return self._current_rms
 
-    # -- public methods ------------------------------------------------------
 
     def _ensure_stream(self) -> None:
         """Create the audio InputStream once and keep it alive.
@@ -245,83 +215,61 @@ class AudioRecorder:
         re-opening an ``InputStream`` hangs indefinitely on macOS.
         """
         if self._stream is not None:
-            return  # already alive
+            return
 
         sd, np = _import_audio()
 
         def _callback(indata, frames, time_info, status):  # noqa: ARG001
             if status:
                 logger.debug("sounddevice status: %s", status)
-            # When not recording the stream is idle — discard audio.
             if not self._recording:
                 return
             self._frames.append(indata.copy())
 
-            # Compute RMS for level display and silence detection
             rms = int(np.sqrt(np.mean(indata.astype(np.float64) ** 2)))
             self._current_rms = rms
             if rms > self._peak_rms:
                 self._peak_rms = rms
 
-            # Silence detection
             if self._on_silence_stop is not None:
                 now = time.monotonic()
                 elapsed = now - self._start_time
 
                 if rms > self._silence_threshold:
-                    # Audio is above threshold -- this is speech (or noise).
-                    self._dip_start = 0.0  # Reset dip tracker
+                    self._dip_start = 0.0
                     if self._speech_start == 0.0:
                         self._speech_start = now
                     elif not self._has_spoken and now - self._speech_start >= self._min_speech_duration:
                         self._has_spoken = True
                         logger.debug("Speech confirmed (%.2fs above threshold)",
                                      now - self._speech_start)
-                    # After speech is confirmed, only reset silence timer if
-                    # speech is sustained (>0.3s above threshold).  Brief
-                    # spikes from ambient noise should NOT reset the timer.
                     if not self._has_spoken:
                         self._silence_start = 0.0
                     else:
-                        # Track resumed speech with dip tolerance.
-                        # Brief dips below threshold are normal during speech,
-                        # so we mirror the initial speech detection pattern:
-                        # start tracking, tolerate short dips, confirm after 0.3s.
-                        self._resume_dip_start = 0.0  # Above threshold — no dip
+                        self._resume_dip_start = 0.0
                         if self._resume_start == 0.0:
                             self._resume_start = now
                         elif now - self._resume_start >= self._min_speech_duration:
                             self._silence_start = 0.0
                             self._resume_start = 0.0
                 elif self._has_spoken:
-                    # Below threshold after speech confirmed.
-                    # Use dip tolerance before resetting resume tracker —
-                    # natural speech has brief dips below threshold.
                     if self._resume_start > 0:
                         if self._resume_dip_start == 0.0:
                             self._resume_dip_start = now
                         elif now - self._resume_dip_start >= self._max_dip_tolerance:
-                            # Sustained dip — user actually stopped speaking
                             self._resume_start = 0.0
                             self._resume_dip_start = 0.0
                 elif self._speech_start > 0:
-                    # We were in a speech attempt but RMS dipped.
-                    # Tolerate brief dips (micro-pauses between syllables).
                     if self._dip_start == 0.0:
                         self._dip_start = now
                     elif now - self._dip_start >= self._max_dip_tolerance:
-                        # Dip lasted too long -- genuine silence, reset
                         logger.debug("Speech attempt reset (dip lasted %.2fs)",
                                      now - self._dip_start)
                         self._speech_start = 0.0
                         self._dip_start = 0.0
 
-                # Fire silence callback when:
-                # 1. User spoke then went silent for silence_duration, OR
-                # 2. No speech detected at all for max_wait seconds
                 should_fire = False
                 if self._has_spoken and rms <= self._silence_threshold:
-                    # User was speaking and now is silent
                     if self._silence_start == 0.0:
                         self._silence_start = now
                     elif now - self._silence_start >= self._silence_duration:
@@ -336,7 +284,7 @@ class AudioRecorder:
                 if should_fire:
                     with self._lock:
                         cb = self._on_silence_stop
-                        self._on_silence_stop = None  # fire only once
+                        self._on_silence_stop = None
                     if cb:
                         def _safe_cb():
                             try:
@@ -345,7 +293,6 @@ class AudioRecorder:
                                 logger.error("Silence callback failed: %s", e, exc_info=True)
                         threading.Thread(target=_safe_cb, daemon=True).start()
 
-        # Create stream — may block on CoreAudio (first call only).
         stream = None
         try:
             stream = sd.InputStream(
@@ -393,7 +340,7 @@ class AudioRecorder:
 
         with self._lock:
             if self._recording:
-                return  # already recording
+                return
 
             self._frames = []
             self._start_time = time.monotonic()
@@ -407,7 +354,6 @@ class AudioRecorder:
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
 
-        # Ensure the persistent stream is alive (no-op after first call).
         self._ensure_stream()
 
         with self._lock:
@@ -431,7 +377,6 @@ class AudioRecorder:
 
         t = threading.Thread(target=_do_close, daemon=True)
         t.start()
-        # Poll in short intervals so Ctrl+C is not blocked
         deadline = __import__("time").monotonic() + timeout
         while t.is_alive() and __import__("time").monotonic() < deadline:
             t.join(timeout=0.1)
@@ -453,12 +398,10 @@ class AudioRecorder:
 
             self._recording = False
             self._current_rms = 0
-            # Stream stays alive — no close needed.
 
             if not self._frames:
                 return None
 
-            # Concatenate frames and write WAV
             _, np = _import_audio()
             audio_data = np.concatenate(self._frames, axis=0)
             self._frames = []
@@ -466,14 +409,11 @@ class AudioRecorder:
             elapsed = time.monotonic() - self._start_time
             logger.info("Voice recording stopped (%.1fs, %d samples)", elapsed, len(audio_data))
 
-            # Skip very short recordings (< 0.3s of audio)
             min_samples = int(SAMPLE_RATE * 0.3)
             if len(audio_data) < min_samples:
                 logger.debug("Recording too short (%d samples), discarding", len(audio_data))
                 return None
 
-            # Skip silent recordings using peak RMS (not overall average, which
-            # gets diluted by silence at the end of the recording).
             if self._peak_rms < SILENCE_RMS_THRESHOLD:
                 logger.info("Recording too quiet (peak RMS=%d < %d), discarding",
                             self._peak_rms, SILENCE_RMS_THRESHOLD)
@@ -499,11 +439,9 @@ class AudioRecorder:
             self._recording = False
             self._frames = []
             self._on_silence_stop = None
-        # Close stream OUTSIDE the lock to avoid deadlock with audio callback
         self._close_stream_with_timeout()
         logger.info("AudioRecorder shut down")
 
-    # -- private helpers -----------------------------------------------------
 
     @staticmethod
     def _write_wav(audio_data) -> str:
@@ -526,10 +464,6 @@ class AudioRecorder:
         return wav_path
 
 
-# ============================================================================
-# Whisper hallucination filter
-# ============================================================================
-# Whisper commonly hallucinates these phrases on silent/near-silent audio.
 WHISPER_HALLUCINATIONS = {
     "thank you.",
     "thank you",
@@ -548,7 +482,6 @@ WHISPER_HALLUCINATIONS = {
     "you",
     "the end.",
     "the end",
-    # Non-English hallucinations (common on silence)
     "продолжение следует",
     "продолжение следует...",
     "sous-titres",
@@ -560,7 +493,6 @@ WHISPER_HALLUCINATIONS = {
     "ご視聴ありがとうございました",
 }
 
-# Regex patterns for repetitive hallucinations (e.g. "Thank you. Thank you. Thank you.")
 _HALLUCINATION_REPEAT_RE = re.compile(
     r'^(?:thank you|thanks|bye|you|ok|okay|the end|\.|\s|,|!)+$',
     flags=re.IGNORECASE,
@@ -572,18 +504,13 @@ def is_whisper_hallucination(transcript: str) -> bool:
     cleaned = transcript.strip().lower()
     if not cleaned:
         return True
-    # Exact match against known phrases
     if cleaned.rstrip('.!') in WHISPER_HALLUCINATIONS or cleaned in WHISPER_HALLUCINATIONS:
         return True
-    # Repetitive patterns (e.g. "Thank you. Thank you. Thank you. you")
     if _HALLUCINATION_REPEAT_RE.match(cleaned):
         return True
     return False
 
 
-# ============================================================================
-# STT dispatch
-# ============================================================================
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a WAV recording using the existing Whisper pipeline.
 
@@ -601,7 +528,6 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
 
     result = transcribe_audio(wav_path, model=model)
 
-    # Filter out Whisper hallucinations (common on silent/near-silent audio)
     if result.get("success") and is_whisper_hallucination(result.get("transcript", "")):
         logger.info("Filtered Whisper hallucination: %r", result["transcript"])
         return {"success": True, "transcript": "", "filtered": True}
@@ -609,11 +535,7 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     return result
 
 
-# ============================================================================
-# Audio playback (interruptable)
-# ============================================================================
 
-# Global reference to the active playback process so it can be interrupted.
 _active_playback: Optional[subprocess.Popen] = None
 _playback_lock = threading.Lock()
 
@@ -630,7 +552,6 @@ def stop_playback() -> None:
             logger.info("Audio playback interrupted")
         except Exception:
             pass
-    # Also stop sounddevice playback if active
     try:
         sd, _ = _import_audio()
         sd.stop()
@@ -657,7 +578,6 @@ def play_audio_file(file_path: str) -> bool:
         logger.warning("Audio file not found: %s", file_path)
         return False
 
-    # Try sounddevice for WAV files
     if file_path.endswith(".wav"):
         try:
             sd, np = _import_audio()
@@ -667,8 +587,6 @@ def play_audio_file(file_path: str) -> bool:
                 sample_rate = wf.getframerate()
 
             sd.play(audio_data, samplerate=sample_rate)
-            # sd.wait() calls Event.wait() without timeout — hangs forever if
-            # the audio device stalls.  Poll with a ceiling and force-stop.
             duration_secs = len(audio_data) / sample_rate
             deadline = time.monotonic() + duration_secs + 2.0
             while sd.get_stream() and sd.get_stream().active and time.monotonic() < deadline:
@@ -676,11 +594,10 @@ def play_audio_file(file_path: str) -> bool:
             sd.stop()
             return True
         except (ImportError, OSError):
-            pass  # audio libs not available, fall through to system players
+            pass
         except Exception as e:
             logger.debug("sounddevice playback failed: %s", e)
 
-    # Fall back to system audio players (using Popen for interruptability)
     system = platform.system()
     players = []
 
@@ -716,9 +633,6 @@ def play_audio_file(file_path: str) -> bool:
     return False
 
 
-# ============================================================================
-# Requirements check
-# ============================================================================
 def check_voice_requirements() -> Dict[str, Any]:
     """Check if all voice mode requirements are met.
 
@@ -726,7 +640,6 @@ def check_voice_requirements() -> Dict[str, Any]:
         Dict with ``available``, ``audio_available``, ``stt_available``,
         ``missing_packages``, and ``details``.
     """
-    # Determine STT provider availability
     from tools.transcription_tools import _get_provider, _load_stt_config, is_stt_enabled
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)
@@ -739,7 +652,6 @@ def check_voice_requirements() -> Dict[str, Any]:
     if not has_audio:
         missing.extend(["sounddevice", "numpy"])
 
-    # Environment detection
     env_check = detect_audio_environment()
 
     available = has_audio and stt_available and env_check["available"]
@@ -779,9 +691,6 @@ def check_voice_requirements() -> Dict[str, Any]:
     }
 
 
-# ============================================================================
-# Temp file cleanup
-# ============================================================================
 def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     """Remove old temporary voice recording files.
 

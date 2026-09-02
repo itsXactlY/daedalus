@@ -34,16 +34,12 @@ import requests
 logger = logging.getLogger(__name__)
 
 MODELS_DEV_URL = "https://models.dev/api.json"
-_MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
+_MODELS_DEV_CACHE_TTL = 3600
 
-# In-memory cache
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
 
 
-# ---------------------------------------------------------------------------
-# Dataclasses — rich metadata for providers and models
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ModelInfo:
@@ -52,36 +48,31 @@ class ModelInfo:
     id: str
     name: str
     family: str
-    provider_id: str        # models.dev provider ID (e.g. "anthropic")
+    provider_id: str
 
-    # Capabilities
     reasoning: bool = False
     tool_call: bool = False
-    attachment: bool = False       # supports image/file attachments (vision)
+    attachment: bool = False
     temperature: bool = False
     structured_output: bool = False
     open_weights: bool = False
 
-    # Modalities
-    input_modalities: Tuple[str, ...] = ()    # ("text", "image", "pdf", ...)
+    input_modalities: Tuple[str, ...] = ()
     output_modalities: Tuple[str, ...] = ()
 
-    # Limits
     context_window: int = 0
     max_output: int = 0
     max_input: Optional[int] = None
 
-    # Cost (per million tokens, USD)
     cost_input: float = 0.0
     cost_output: float = 0.0
     cost_cache_read: Optional[float] = None
     cost_cache_write: Optional[float] = None
 
-    # Metadata
     knowledge_cutoff: str = ""
     release_date: str = ""
-    status: str = ""          # "alpha", "beta", "deprecated", or ""
-    interleaved: Any = False  # True or {"field": "reasoning_content"}
+    status: str = ""
+    interleaved: Any = False
 
     def has_cost_data(self) -> bool:
         return self.cost_input > 0 or self.cost_output > 0
@@ -128,22 +119,18 @@ class ModelInfo:
 class ProviderInfo:
     """Full metadata for a provider from models.dev."""
 
-    id: str                         # models.dev provider ID
-    name: str                       # display name
-    env: Tuple[str, ...]            # env var names for API key
-    api: str                        # base URL
-    doc: str = ""                   # documentation URL
+    id: str
+    name: str
+    env: Tuple[str, ...]
+    api: str
+    doc: str = ""
     model_count: int = 0
 
     def has_api_url(self) -> bool:
         return bool(self.api)
 
 
-# ---------------------------------------------------------------------------
-# Provider ID mapping: Daedalus ↔ models.dev
-# ---------------------------------------------------------------------------
 
-# Daedalus provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
     "anthropic": "anthropic",
@@ -172,7 +159,6 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "cohere": "cohere",
 }
 
-# Reverse mapping: models.dev → Daedalus (built lazily)
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
 
 
@@ -218,7 +204,6 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     """
     global _models_dev_cache, _models_dev_cache_time
 
-    # Check in-memory cache
     if (
         not force_refresh
         and _models_dev_cache
@@ -226,7 +211,6 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     ):
         return _models_dev_cache
 
-    # Try network fetch
     try:
         response = requests.get(MODELS_DEV_URL, timeout=15)
         response.raise_for_status()
@@ -244,8 +228,6 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     except Exception as e:
         logger.debug("Failed to fetch models.dev: %s", e)
 
-    # Fall back to disk cache — use a short TTL (5 min) so we retry
-    # the network fetch soon instead of serving stale data for a full hour.
     if not _models_dev_cache:
         _models_dev_cache = _load_disk_cache()
         if _models_dev_cache:
@@ -274,14 +256,12 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     if not isinstance(models, dict):
         return None
 
-    # Exact match
     entry = models.get(model)
     if entry:
         ctx = _extract_context(entry)
         if ctx:
             return ctx
 
-    # Case-insensitive match
     model_lower = model.lower()
     for mid, mdata in models.items():
         if mid.lower() == model_lower:
@@ -308,9 +288,6 @@ def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Model capability metadata
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -348,12 +325,10 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
 def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
     """Find a model entry by exact match, then case-insensitive fallback."""
-    # Exact match
     entry = models.get(model)
     if isinstance(entry, dict):
         return entry
 
-    # Case-insensitive match
     model_lower = model.lower()
     for mid, mdata in models.items():
         if mid.lower() == model_lower and isinstance(mdata, dict):
@@ -384,12 +359,10 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
     if entry is None:
         return None
 
-    # Extract capability flags (default to False if missing)
     supports_tools = bool(entry.get("tool_call", False))
     supports_vision = bool(entry.get("attachment", False))
     supports_reasoning = bool(entry.get("reasoning", False))
 
-    # Extract limits
     limit = entry.get("limit", {})
     if not isinstance(limit, dict):
         limit = {}
@@ -423,8 +396,6 @@ def list_provider_models(provider: str) -> List[str]:
     return list(models.keys())
 
 
-# Patterns that indicate non-agentic or noise models (TTS, embedding,
-# dated preview snapshots, live/streaming-only, image-only).
 import re
 _NOISE_PATTERNS: re.Pattern = re.compile(
     r"-tts\b|embedding|live-|-(preview|exp)-\d{2,4}[-_]|"
@@ -475,11 +446,9 @@ def search_models_dev(
     if not data:
         return []
 
-    # Build list of (provider_id, model_id, entry) candidates
     candidates: List[tuple] = []
 
     if provider is not None:
-        # Search only the specified provider
         mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
         if not mdev_provider_id:
             return []
@@ -490,7 +459,6 @@ def search_models_dev(
                 for mid, mdata in models.items():
                     candidates.append((provider, mid, mdata))
     else:
-        # Search across all mapped providers
         for daedalus_prov, mdev_prov in PROVIDER_TO_MODELS_DEV.items():
             provider_data = data.get(mdev_prov, {})
             if isinstance(provider_data, dict):
@@ -502,17 +470,14 @@ def search_models_dev(
     if not candidates:
         return []
 
-    # Use difflib for fuzzy matching — case-insensitive comparison
     model_ids_lower = [c[1].lower() for c in candidates]
     query_lower = query.lower()
 
-    # First try exact substring matches (more intuitive than pure edit-distance)
     substring_matches = []
     for prov, mid, mdata in candidates:
         if query_lower in mid.lower():
             substring_matches.append({"provider": prov, "model_id": mid, "entry": mdata})
 
-    # Then add difflib fuzzy matches for any remaining slots
     fuzzy_ids = difflib.get_close_matches(
         query_lower, model_ids_lower, n=limit * 2, cutoff=0.4
     )
@@ -520,7 +485,6 @@ def search_models_dev(
     seen_ids: set = set()
     results: List[Dict[str, Any]] = []
 
-    # Prioritize substring matches
     for match in substring_matches:
         key = (match["provider"], match["model_id"])
         if key not in seen_ids:
@@ -529,9 +493,7 @@ def search_models_dev(
             if len(results) >= limit:
                 return results
 
-    # Add fuzzy matches
     for fid in fuzzy_ids:
-        # Find original-case candidates matching this lowered ID
         for prov, mid, mdata in candidates:
             if mid.lower() == fid:
                 key = (prov, mid)
@@ -544,9 +506,6 @@ def search_models_dev(
     return results
 
 
-# ---------------------------------------------------------------------------
-# Rich dataclass constructors — parse raw models.dev JSON into dataclasses
-# ---------------------------------------------------------------------------
 
 def _parse_model_info(model_id: str, raw: Dict[str, Any], provider_id: str) -> ModelInfo:
     """Convert a raw models.dev model entry dict into a ModelInfo dataclass."""
@@ -613,9 +572,6 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
     )
 
 
-# ---------------------------------------------------------------------------
-# Provider-level queries
-# ---------------------------------------------------------------------------
 
 def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
     """Get full provider metadata from models.dev.
@@ -623,7 +579,6 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
     Accepts either a Daedalus provider ID (e.g. "kilocode") or a models.dev
     ID (e.g. "kilo").  Returns None if the provider is not in the catalog.
     """
-    # Resolve Daedalus ID → models.dev ID
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
     data = fetch_models_dev()
@@ -671,9 +626,6 @@ def get_providers_for_env_var(env_var: str) -> List[str]:
     return matches
 
 
-# ---------------------------------------------------------------------------
-# Model-level queries (rich ModelInfo)
-# ---------------------------------------------------------------------------
 
 def get_model_info(
     provider_id: str, model_id: str
@@ -694,12 +646,10 @@ def get_model_info(
     if not isinstance(models, dict):
         return None
 
-    # Exact match
     raw = models.get(model_id)
     if isinstance(raw, dict):
         return _parse_model_info(model_id, raw, mdev_id)
 
-    # Case-insensitive fallback
     model_lower = model_id.lower()
     for mid, mdata in models.items():
         if mid.lower() == model_lower and isinstance(mdata, dict):
@@ -717,7 +667,6 @@ def get_model_info_any_provider(model_id: str) -> Optional[ModelInfo]:
     """
     data = fetch_models_dev()
 
-    # Try Daedalus-mapped providers first (more likely what the user wants)
     for daedalus_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
@@ -730,16 +679,14 @@ def get_model_info_any_provider(model_id: str) -> Optional[ModelInfo]:
         if isinstance(raw, dict):
             return _parse_model_info(model_id, raw, mdev_id)
 
-        # Case-insensitive
         model_lower = model_id.lower()
         for mid, mdata in models.items():
             if mid.lower() == model_lower and isinstance(mdata, dict):
                 return _parse_model_info(mid, mdata, mdev_id)
 
-    # Fall back to ALL providers
     for pid, pdata in data.items():
         if pid in _get_reverse_mapping():
-            continue  # already checked
+            continue
         if not isinstance(pdata, dict):
             continue
         models = pdata.get("models", {})

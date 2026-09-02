@@ -58,7 +58,7 @@ def _make_runner():
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = None
-    runner._agent_cache_lock = None  # disables _evict_cached_agent lock path
+    runner._agent_cache_lock = None
     runner._is_user_authorized = lambda _source: True
     runner._format_session_info = lambda: ""
 
@@ -71,7 +71,6 @@ async def test_new_command_clears_session_model_override():
     runner = _make_runner()
     session_key = build_session_key(_make_source())
 
-    # Simulate a prior /model switch stored as a session override
     runner._session_model_overrides[session_key] = {
         "model": "gpt-4o",
         "provider": "openai",

@@ -28,7 +28,6 @@ from openai.types.chat.chat_completion_message_tool_call import (
 
 logger = logging.getLogger(__name__)
 
-# Type alias for parser return value
 ParseResult = Tuple[Optional[str], Optional[List[ChatCompletionMessageToolCall]]]
 
 
@@ -58,7 +57,6 @@ class ToolCallParser(ABC):
         raise NotImplementedError
 
 
-# Global parser registry: name -> parser class
 PARSER_REGISTRY: Dict[str, Type[ToolCallParser]] = {}
 
 
@@ -105,8 +103,6 @@ def list_parsers() -> List[str]:
     return sorted(PARSER_REGISTRY.keys())
 
 
-# Import all parser modules to trigger registration via @register_parser decorators
-# Each module registers itself when imported
 from environments.tool_call_parsers.hermes_parser import HermesToolCallParser  # noqa: E402, F401
 from environments.tool_call_parsers.longcat_parser import LongcatToolCallParser  # noqa: E402, F401
 from environments.tool_call_parsers.mistral_parser import MistralToolCallParser  # noqa: E402, F401

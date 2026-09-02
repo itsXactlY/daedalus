@@ -18,11 +18,6 @@ _DAEDALUS_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_DAEDALUS_HOME_OVERRIDE", default=_UNSET
 )
 
-# ── TUI busy-indicator styles ─────────────────────────────────────────
-# Single source of truth shared by the CLI /indicator command, the TUI
-# gateway config handler, and the /help command registry. Keep in sync
-# with ``INDICATOR_STYLES`` / ``DEFAULT_INDICATOR_STYLE`` in
-# ``ui-tui/src/app/interfaces.ts`` on the frontend side.
 INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
 DEFAULT_INDICATOR_STYLE: str = "kaomoji"
 
@@ -79,14 +74,6 @@ def _daedalus_home_from_env() -> Path:
     scope rather than a per-task profile.  Shared by :func:`get_daedalus_home`
     and :func:`get_process_daedalus_home` so the two never drift.
     """
-    # DAEDALUS_HOME only. This used to read
-    #     os.environ.get("DAEDALUS_HOME") or os.environ.get("DAEDALUS_HOME")
-    # -- the same variable twice, so the second branch could never fire. It was
-    # originally a fallback to upstream's HERMES_HOME that the fork's blanket
-    # rename collapsed onto its own name. Not restored: adopting HERMES_HOME
-    # would silently point a Daedalus install at a Hermes home, which is the
-    # exact thing the docstring above says must not happen. Point DAEDALUS_HOME
-    # at it explicitly if that is what you want.
     val = os.environ.get("DAEDALUS_HOME", "").strip()
     if val:
         return Path(val)
@@ -110,11 +97,6 @@ def _warn_profile_fallback_once() -> None:
         active = ""
     if active and active != "default":
         _profile_fallback_warned = True
-        # Write directly to stderr.  We intentionally do NOT route this
-        # through ``logging`` because (a) this function is called at
-        # module-import time from 30+ sites, often before logging is
-        # configured, and (b) root-logger propagation would double-emit
-        # on consoles where a StreamHandler is already attached.
         msg = (
             f"[DAEDALUS_HOME fallback] DAEDALUS_HOME is unset but active "
             f"profile is {active!r}. Falling back to {fallback_home}, which "
@@ -201,19 +183,13 @@ def get_default_daedalus_root() -> Path:
     env_path = Path(env_home)
     try:
         env_path.resolve().relative_to(native_home.resolve())
-        # DAEDALUS_HOME is under ~/.daedalus (normal or profile mode)
         return native_home
     except ValueError:
         pass
 
-    # Docker / custom deployment.
-    # Check if this is a profile path: <root>/profiles/<name>
-    # If the immediate parent dir is named "profiles", the root is
-    # the grandparent — this covers Docker profiles correctly.
     if env_path.parent.name == "profiles":
         return env_path.parent.parent
 
-    # Not a profile path — DAEDALUS_HOME itself is the root
     return env_path
 
 
@@ -247,6 +223,13 @@ def get_optional_mcps_dir(default: Path | None = None) -> Path:
     return get_daedalus_home() / "optional-mcps"
 
 
+def get_code_root() -> Path:
+    override = os.getenv("DAEDALUS_CODE_ROOT", "").strip()
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent
+
+
 def get_bundled_skills_dir(default: Path | None = None) -> Path:
     """Return the bundled skills directory for source and packaged installs.
 
@@ -260,6 +243,9 @@ def get_bundled_skills_dir(default: Path | None = None) -> Path:
         return Path(override)
     if default is not None:
         return default
+    source_skills = get_code_root() / "skills"
+    if source_skills.is_dir():
+        return source_skills
     return get_daedalus_home() / "skills"
 
 
@@ -312,10 +298,6 @@ def iter_daedalus_node_dirs(home: Path | None = None) -> list[Path]:
     root = home or get_daedalus_home()
     dirs = [root / "node"]
     bin_dir = root / "node" / "bin"
-    # NOTE: keep this ordering in sync with daedalusManagedNodePathEntries() in
-    # apps/desktop/electron/backend-env.ts — the Electron main process is Node
-    # and cannot import this module, so the platform-ordering rule is mirrored
-    # there (once; main.ts imports it rather than keeping its own copy).
     if sys.platform == "win32":
         return dirs + [bin_dir]
     return [bin_dir] + dirs
@@ -326,8 +308,6 @@ def _candidate_node_command_names(command: str) -> list[str]:
     if sys.platform != "win32" or "." in base:
         return [base]
     if base.lower() == "npm":
-        # Prefer npm.cmd. PowerShell may block npm.ps1 by execution policy, and
-        # CreateProcess cannot launch a bare .ps1 the way it can launch .cmd.
         return ["npm.cmd", "npm.exe", "npm"]
     if base.lower() == "npx":
         return ["npx.cmd", "npx.exe", "npx"]
@@ -481,9 +461,6 @@ def _bootstrap_managed_node_posix() -> bool:
             env={
                 **os.environ,
                 "DAEDALUS_HOME": str(get_daedalus_home()),
-                # Private provisioning: do not symlink node/npm/npx into
-                # ~/.local/bin — the user has their own toolchain on PATH and
-                # this tree must not shadow it.
                 "DAEDALUS_NODE_SKIP_LINKS": "1",
             },
             capture_output=True,
@@ -600,7 +577,7 @@ def _managed_node_tree_outdated(home: Path | None = None) -> bool:
                 )
                 major = int(result.stdout.decode().strip().lstrip("v").split(".")[0])
             except (OSError, subprocess.TimeoutExpired, ValueError, IndexError):
-                return False  # broken, not outdated — the runnable probe handles it
+                return False
             return major < _DAEDALUS_NODE_TARGET_MAJOR
     return False
 
@@ -722,11 +699,8 @@ def agent_browser_runnable(path: str | None) -> bool:
     """
     if not path:
         return False
-    # The npx fallback is a two-token command string, not a filesystem path.
     if " " in path and path.split()[0].endswith("npx"):
         return True
-    # exists() follows symlinks — a dangling link returns False here, so we
-    # never even spawn a subprocess for the broken-link case.
     if not os.path.exists(path) or not os.access(path, os.X_OK):
         return False
     import subprocess
@@ -769,21 +743,16 @@ def _legacy_path_has_content(path: Path) -> bool:
     except FileNotFoundError:
         return False
     except OSError:
-        # PermissionError on a parent, or any other inspection failure:
-        # treat as occupied rather than silently orphaning legacy data.
         return True
     if stat.S_ISLNK(st.st_mode):
-        # Resolve the link's target. A dangling symlink has no content and
-        # must not shadow the new layout; a valid one is judged on its target.
         try:
-            target_st = path.stat()  # follows the link
+            target_st = path.stat()
         except FileNotFoundError:
-            return False  # dangling symlink → fall through to new layout
+            return False
         except OSError:
-            return True  # can't resolve → assume occupied, don't orphan data
+            return True
         if not stat.S_ISDIR(target_st.st_mode):
             return True
-        # target is a directory — fall through to the iterdir() emptiness check
     elif not stat.S_ISDIR(st.st_mode):
         return True
     try:
@@ -826,7 +795,6 @@ def secure_parent_dir(path: Path) -> None:
     See https://github.com/NousResearch/daedalus/issues/25821.
     """
     parent = path.parent.resolve()
-    # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
     if parent == Path("/") or len(parent.parts) < 3:
         return
     try:
@@ -874,7 +842,7 @@ def _iter_real_home_candidates(env: dict[str, str] | None = None) -> list[str]:
     try:
         import pwd
 
-        pw_home = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX-only module inside try/except
+        pw_home = pwd.getpwuid(os.getuid()).pw_dir.strip()
         if pw_home:
             candidates.append(pw_home)
     except Exception:
@@ -1019,7 +987,6 @@ def _canonical_model_variants(model: str) -> list[str]:
     """
     import re
 
-    # Version-dot regexes — digit-separator-digit interconversion
     _dash_to_dot = lambda s: re.sub(r'(\d)-(\d)', r'\1.\2', s)
     _dot_to_dash = lambda s: re.sub(r'(\d)\.(\d)', r'\1-\2', s)
 
@@ -1038,29 +1005,22 @@ def _canonical_model_variants(model: str) -> list[str]:
         _add(all_dashed)
         all_dotted = s.replace('-', '.')
         _add(all_dotted)
-        # Version-dot recovery on each base form
         _add(_dash_to_dot(s))
         _add(_dot_to_dash(s))
         _add(_dash_to_dot(all_dashed))
         _add(_dot_to_dash(all_dotted))
 
-    # 1-3. Base variants for the full string
     _add_with_derivatives(model)
 
-    # Split by / to handle provider prefix
     parts = model.split('/')
 
-    # 4. Bare model variants (strip provider/aggregator prefix)
     if len(parts) >= 2:
         bare = parts[-1]
         _add_with_derivatives(bare)
 
-    # Strip aggregator only (3+ parts)
-    # e.g. "openrouter/anthropic/claude-opus-4.5" → "anthropic/claude-opus-4.5"
     if len(parts) >= 3:
         _add_with_derivatives('/'.join(parts[1:]))
 
-    # 5. Prepend known provider prefixes to bare variants
     known_providers = (
         'anthropic', 'openai', 'google', 'openrouter', 'groq', 'mistral',
         'xai', 'cohere', 'perplexity', 'together', 'fireworks', 'deepseek',
@@ -1070,7 +1030,6 @@ def _canonical_model_variants(model: str) -> list[str]:
         for provider in known_providers:
             _add(f"{provider}/{v}")
 
-    # Prepend aggregator to single-slash variants
     single_slash_variants = [v for v in variants if v.count('/') == 1]
     known_aggregators = ('openrouter', 'opencode', 'fireworks', 'groq', 'together')
     for v in single_slash_variants:
@@ -1163,9 +1122,6 @@ def resolve_reasoning_config(cfg: dict | None, model: str = "") -> dict | None:
     if per_model is not None:
         return per_model
 
-    # Global fallback — keep the raw value; coercing with ``or ""`` turns a
-    # YAML boolean False into "", silently re-enabling thinking for users
-    # who explicitly disabled it.
     effort = agent_cfg.get("reasoning_effort", "")
     result = parse_reasoning_effort(effort)
     if effort and str(effort).strip() and result is None:
@@ -1278,7 +1234,6 @@ def is_container() -> bool:
     if os.path.exists("/run/.containerenv"):
         _container_detected = True
         return True
-    # Kubernetes always injects this into pod containers; absent on hosts.
     if os.environ.get("KUBERNETES_SERVICE_HOST"):
         _container_detected = True
         return True
@@ -1291,9 +1246,6 @@ def is_container() -> bool:
                 return True
     except OSError:
         pass
-    # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
-    # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
             mountinfo = f.read()
@@ -1306,7 +1258,6 @@ def is_container() -> bool:
     return False
 
 
-# ─── Well-Known Paths ─────────────────────────────────────────────────────────
 
 
 def get_config_path() -> Path:
@@ -1329,7 +1280,6 @@ def get_env_path() -> Path:
     return get_daedalus_home() / ".env"
 
 
-# ─── Network Preferences ─────────────────────────────────────────────────────
 
 
 def apply_ipv4_preference(force: bool = False) -> None:
@@ -1353,20 +1303,18 @@ def apply_ipv4_preference(force: bool = False) -> None:
 
     import socket
 
-    # Guard against double-patching
     if getattr(socket.getaddrinfo, "_daedalus_ipv4_patched", False):
         return
 
     _original_getaddrinfo = socket.getaddrinfo
 
     def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-        if family == 0:  # AF_UNSPEC — caller didn't request a specific family
+        if family == 0:
             try:
                 return _original_getaddrinfo(
                     host, port, socket.AF_INET, type, proto, flags
                 )
             except socket.gaierror:
-                # No A record — fall back to full resolution (pure-IPv6 hosts)
                 return _original_getaddrinfo(host, port, family, type, proto, flags)
         return _original_getaddrinfo(host, port, family, type, proto, flags)
 
@@ -1374,9 +1322,7 @@ def apply_ipv4_preference(force: bool = False) -> None:
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 
-# ─── Streaming Response Constants ────────────────────────────────────────────
 
-# Response ID for partial stream stubs used during error recovery
 PARTIAL_STREAM_STUB_ID = "partial-stream-stub"
 
 FINISH_REASON_LENGTH = "length"
@@ -1388,7 +1334,6 @@ OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 
 
-# ─── Venv layout ─────────────────────────────────────────────────────────────
 
 def venv_bin_dir(venv_dir, *, windows: bool | None = None) -> Path:
     """Directory holding a venv's executables (``Scripts`` / ``bin``).
@@ -1425,13 +1370,7 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
     )
 
 
-# ─── Partial-update diagnostics ──────────────────────────────────────────────
 
-# Top-level packages/modules that ship as part of Daedalus itself. An ImportError
-# naming one of these means our own tree is inconsistent; anything else is a
-# third-party problem with different remediation. Single source of truth —
-# `daedalus_cli.update_cmd`'s post-update probe consumes this same set so the
-# guard that BLOCKS and the hint that EXPLAINS can never disagree.
 FIRST_PARTY_MODULE_ROOTS = frozenset(
     {
         "agent",
@@ -1483,8 +1422,6 @@ def partial_update_hint(exc: BaseException) -> list[str]:
     """
     if not isinstance(exc, ImportError):
         return []
-    # A missing third-party dependency is a different problem (bad venv, missing
-    # extra) with different remediation, so don't claim a partial update.
     if isinstance(exc, ModuleNotFoundError):
         return []
     name = getattr(exc, "name", None)

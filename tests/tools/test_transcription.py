@@ -13,9 +13,6 @@ from unittest.mock import MagicMock, patch, mock_open
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Provider selection
-# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -71,9 +68,6 @@ class TestGetProvider:
         assert _get_provider({"enabled": False, "provider": "openai"}) == "none"
 
 
-# ---------------------------------------------------------------------------
-# File validation
-# ---------------------------------------------------------------------------
 
 
 class TestValidateAudioFile:
@@ -107,7 +101,7 @@ class TestValidateAudioFile:
         with patch.object(type(f), "stat", return_value=os.stat_result((
             real_stat.st_mode, real_stat.st_ino, real_stat.st_dev,
             real_stat.st_nlink, real_stat.st_uid, real_stat.st_gid,
-            MAX_FILE_SIZE + 1,  # st_size
+            MAX_FILE_SIZE + 1,
             real_stat.st_atime, real_stat.st_mtime, real_stat.st_ctime,
         ))):
             result = _validate_audio_file(str(f))
@@ -115,9 +109,6 @@ class TestValidateAudioFile:
         assert "too large" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Local transcription
-# ---------------------------------------------------------------------------
 
 
 class TestTranscribeLocal:
@@ -152,9 +143,6 @@ class TestTranscribeLocal:
         assert "not installed" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# OpenAI transcription
-# ---------------------------------------------------------------------------
 
 
 class TestTranscribeOpenAI:
@@ -183,9 +171,6 @@ class TestTranscribeOpenAI:
         assert result["transcript"] == "Hello from OpenAI"
 
 
-# ---------------------------------------------------------------------------
-# Main transcribe_audio() dispatch
-# ---------------------------------------------------------------------------
 
 
 class TestTranscribeAudio:

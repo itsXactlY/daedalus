@@ -45,16 +45,11 @@ DISCORD_API_BASE = "https://discord.com/api/v10"
 _DISCORD_RESPONSE_BODY_MAX_BYTES = 4 * 1024 * 1024
 _DISCORD_ERROR_BODY_MAX_BYTES = 64 * 1024
 
-# Application flag bits (from GET /applications/@me → "flags").
-# Source: https://discord.com/developers/docs/resources/application#application-object-application-flags
 _FLAG_GATEWAY_GUILD_MEMBERS = 1 << 14
 _FLAG_GATEWAY_GUILD_MEMBERS_LIMITED = 1 << 15
 _FLAG_GATEWAY_MESSAGE_CONTENT = 1 << 18
 _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED = 1 << 19
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 class DiscordAPIError(Exception):
     """Raised when a Discord API call fails."""
@@ -130,9 +125,6 @@ def _discord_request(
         raise DiscordAPIError(e.code, error_body) from e
 
 
-# ---------------------------------------------------------------------------
-# Channel type mapping
-# ---------------------------------------------------------------------------
 
 _CHANNEL_TYPE_NAMES = {
     0: "text",
@@ -152,21 +144,11 @@ def _channel_type_name(type_id: int) -> str:
     return _CHANNEL_TYPE_NAMES.get(type_id, f"unknown({type_id})")
 
 
-# ---------------------------------------------------------------------------
-# Capability detection (application intents)
-# ---------------------------------------------------------------------------
 
-# Module-level cache so the app/me endpoint is hit at most once per process.
 _capability_cache: Dict[str, Dict[str, Any]] = {}
 
-# Disk-cache TTL for detected capabilities.  Privileged intents change only
-# when the user flips them in the Discord Developer Portal, so 24h staleness
-# is harmless — and a stale value only affects which actions appear in the
-# schema (a hidden action re-appears on the next refresh; an exposed action
-# the bot lost fails at call time with an enriched 403).
 _CAPABILITY_DISK_TTL_SECONDS = 24 * 3600
 
-# One background detection per process at most.
 _capability_bg_started: set = set()
 _capability_bg_lock = threading.Lock()
 
@@ -254,10 +236,6 @@ def _detect_capabilities_nonblocking(token: str) -> Dict[str, Any]:
         _capability_cache[token] = disk
         return disk
 
-    # Cold start — pin the permissive default for THIS process (schema
-    # stability: tool schemas must not change between agent inits within a
-    # live process, or the per-conversation prompt cache breaks) and detect
-    # in the background for the NEXT process via the disk cache.
     caps_default = {
         "has_members_intent": True,
         "has_message_content": True,
@@ -304,7 +282,7 @@ def _fetch_capabilities(token: str) -> Dict[str, Any]:
             flags & (_FLAG_GATEWAY_MESSAGE_CONTENT | _FLAG_GATEWAY_MESSAGE_CONTENT_LIMITED)
         )
         caps["detected"] = True
-    except Exception as exc:  # nosec — detection is best-effort
+    except Exception as exc:
         logger.info(
             "Discord capability detection failed (%s); exposing all actions.", exc,
         )
@@ -341,9 +319,6 @@ def _reset_capability_cache() -> None:
         _capability_bg_started = set()
 
 
-# ---------------------------------------------------------------------------
-# Action implementations
-# ---------------------------------------------------------------------------
 
 def _list_guilds(token: str, **_kwargs: Any) -> str:
     """List all guilds the bot is a member of."""
@@ -382,13 +357,11 @@ def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
     """List all channels in a guild, organized by category."""
     channels = _discord_request("GET", f"/guilds/{guild_id}/channels", token)
 
-    # Organize: categories first, then channels under each
     categories: Dict[Optional[str], Dict[str, Any]] = {}
     uncategorized: List[Dict[str, Any]] = []
 
-    # First pass: collect categories
     for ch in channels:
-        if ch["type"] == 4:  # category
+        if ch["type"] == 4:
             categories[ch["id"]] = {
                 "id": ch["id"],
                 "name": ch["name"],
@@ -396,7 +369,6 @@ def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
                 "channels": [],
             }
 
-    # Second pass: assign channels to categories
     for ch in channels:
         if ch["type"] == 4:
             continue
@@ -414,7 +386,6 @@ def _list_channels(token: str, guild_id: str, **_kwargs: Any) -> str:
         else:
             uncategorized.append(entry)
 
-    # Sort
     sorted_cats = sorted(categories.values(), key=lambda c: c["position"])
     for cat in sorted_cats:
         cat["channels"].sort(key=lambda c: c["position"])
@@ -558,7 +529,7 @@ def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
         author = msg.get("author", {})
         result.append({
             "id": msg["id"],
-            "content": msg.get("content", "")[:200],  # Truncate for overview
+            "content": msg.get("content", "")[:200],
             "author": author.get("username"),
             "timestamp": msg.get("timestamp"),
         })
@@ -591,19 +562,17 @@ def _create_thread(
 ) -> str:
     """Create a thread in a channel."""
     if message_id:
-        # Create thread from an existing message
         path = f"/channels/{channel_id}/messages/{message_id}/threads"
         body: Dict[str, Any] = {
             "name": name,
             "auto_archive_duration": auto_archive_duration,
         }
     else:
-        # Create a standalone thread
         path = f"/channels/{channel_id}/threads"
         body = {
             "name": name,
             "auto_archive_duration": auto_archive_duration,
-            "type": 11,  # PUBLIC_THREAD
+            "type": 11,
         }
     thread = _discord_request("POST", path, token, body=body)
     return json.dumps({
@@ -625,9 +594,6 @@ def _remove_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwarg
     return json.dumps({"success": True, "message": f"Role {role_id} removed from user {user_id}."})
 
 
-# ---------------------------------------------------------------------------
-# Action dispatch + metadata
-# ---------------------------------------------------------------------------
 
 _ACTIONS = {
     "list_guilds": _list_guilds,
@@ -653,9 +619,6 @@ _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _ADMIN_ACTION_NAMES}
 
-# Single-source-of-truth manifest: action → (signature, one-line description).
-# Consumed by :func:`_build_schema` so the schema's top-level description
-# always matches the registered action set.
 _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("list_guilds", "()", "list servers the bot is in"),
     ("server_info", "(guild_id)", "server details + member counts"),
@@ -674,10 +637,8 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
 
-# Actions that require the GUILD_MEMBERS privileged intent.
 _INTENT_GATED_MEMBERS = frozenset({"member_info", "search_members"})
 
-# Per-action required params for runtime validation.
 _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "server_info": ["guild_id"],
     "list_channels": ["guild_id"],
@@ -696,9 +657,6 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Config-based action allowlist
-# ---------------------------------------------------------------------------
 
 def _load_allowed_actions_config() -> Optional[List[str]]:
     """Read ``discord.server_actions`` from user config.
@@ -751,19 +709,14 @@ def _available_actions(
     """
     actions: List[str] = []
     for name in _ACTIONS:
-        # Intent filter
         if not caps.get("has_members_intent", True) and name in _INTENT_GATED_MEMBERS:
             continue
-        # Config allowlist filter
         if allowlist is not None and name not in allowlist:
             continue
         actions.append(name)
     return actions
 
 
-# ---------------------------------------------------------------------------
-# Schema construction
-# ---------------------------------------------------------------------------
 
 def _build_schema(
     actions: List[str],
@@ -779,7 +732,6 @@ def _build_schema(
     if not actions:
         return None
 
-    # Action manifest lines (action-first, parameter-scoped).
     manifest_lines = [
         f"  {name}{sig}  — {desc}"
         for name, sig, desc in _ACTION_MANIFEST
@@ -913,9 +865,6 @@ def get_dynamic_schema() -> Optional[Dict[str, Any]]:
     return get_dynamic_schema_core()
 
 
-# ---------------------------------------------------------------------------
-# 403 error enrichment
-# ---------------------------------------------------------------------------
 
 _ACTION_403_HINT = {
     "pin_message": (
@@ -970,18 +919,12 @@ def _enrich_403(action: str, body: str) -> str:
     return f"{base} (Raw: {body})"
 
 
-# ---------------------------------------------------------------------------
-# Check function
-# ---------------------------------------------------------------------------
 
 def check_discord_tool_requirements() -> bool:
     """Tool is available only when a Discord bot token is configured."""
     return bool(_get_bot_token())
 
 
-# ---------------------------------------------------------------------------
-# Handlers
-# ---------------------------------------------------------------------------
 
 def _run_discord_action(
     action: str,
@@ -1011,9 +954,6 @@ def _run_discord_action(
             available_actions=list(valid_actions.keys()),
         )
 
-    # Config-level allowlist gate (defense in depth — schema already filtered,
-    # but a stale cached schema from a prior config should not let denied
-    # actions through).
     allowlist = _load_allowed_actions_config()
     if allowlist is not None and action not in allowlist:
         return tool_error(
@@ -1072,9 +1012,6 @@ def discord_admin_handler(action: str, **kwargs) -> str:
     return _run_discord_action(action, _ADMIN_ACTIONS, "discord_admin", **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# Tool registration
-# ---------------------------------------------------------------------------
 
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",

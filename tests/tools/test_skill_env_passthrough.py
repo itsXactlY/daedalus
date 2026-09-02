@@ -51,10 +51,8 @@ class TestSkillViewRegistersPassthrough:
         monkeypatch.setattr(
             "tools.skills_tool.SKILLS_DIR", tmp_path
         )
-        # Set the env var so it's "available"
         monkeypatch.setenv("TENOR_API_KEY", "test-value-123")
 
-        # Patch the secret capture callback to not prompt
         with patch("tools.skills_tool._secret_capture_callback", None):
             from tools.skills_tool import skill_view
 

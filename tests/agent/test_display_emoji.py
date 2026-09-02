@@ -14,16 +14,12 @@ class TestGetToolEmoji:
         mock_registry.get_emoji.return_value = "🎨"
         with mock_patch("agent.display._get_skin", return_value=None), \
              mock_patch("agent.display.registry", mock_registry, create=True):
-            # Need to patch the import inside get_tool_emoji
             pass
-        # Direct test: patch the lazy import path
         with mock_patch("agent.display._get_skin", return_value=None):
-            # get_tool_emoji will try to import registry — mock that
             mock_reg = MagicMock()
             mock_reg.get_emoji.return_value = "📖"
             with mock_patch.dict("sys.modules", {}):
                 import sys
-                # Patch tools.registry module
                 mock_module = MagicMock()
                 mock_module.registry = mock_reg
                 with mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
@@ -89,8 +85,8 @@ class TestGetToolEmoji:
         mock_module.registry = mock_reg
         with mock_patch("agent.display._get_skin", return_value=skin), \
              mock_patch.dict(sys.modules, {"tools.registry": mock_module}):
-            assert get_tool_emoji("terminal") == "⚔"  # skin override
-            assert get_tool_emoji("web_search") == "🔍"  # registry fallback
+            assert get_tool_emoji("terminal") == "⚔"
+            assert get_tool_emoji("web_search") == "🔍"
 
 
 class TestSkinConfigToolEmojis:

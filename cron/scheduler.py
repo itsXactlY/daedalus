@@ -16,7 +16,6 @@ import os
 import subprocess
 import sys
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
     import fcntl
 except ImportError:
@@ -28,9 +27,6 @@ except ImportError:
 from pathlib import Path
 from typing import Optional
 
-# Add parent directory to path for imports BEFORE repo-level imports.
-# Without this, standalone invocations (e.g. after `daedalus update` reloads
-# the module) fail with ModuleNotFoundError for daedalus_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from daedalus_constants import get_daedalus_home
@@ -39,8 +35,6 @@ from daedalus_time import now as _daedalus_now
 
 logger = logging.getLogger(__name__)
 
-# Valid delivery platforms — used to validate user-supplied platform names
-# in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
@@ -49,15 +43,10 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
-# Sentinel: when a cron agent has nothing new to report, it can start its
-# response with this marker to suppress delivery.  Output is still saved
-# locally for audit.
 SILENT_MARKER = "[SILENT]"
 
-# Resolve Daedalus home directory (respects DAEDALUS_HOME override)
 _daedalus_home = get_daedalus_home()
 
-# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
 _LOCK_DIR = _daedalus_home / "cron"
 _LOCK_FILE = _LOCK_DIR / ".tick.lock"
 
@@ -89,8 +78,6 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
         for platform_name in ("matrix", "telegram", "discord", "slack", "bluebubbles"):
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if chat_id:
@@ -118,7 +105,6 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         else:
             chat_id, thread_id = rest, None
 
-        # Resolve human-friendly labels like "Alice (dm)" to real IDs.
         try:
             from gateway.channel_directory import resolve_channel_name
             resolved = resolve_channel_name(platform_key, chat_id)
@@ -158,7 +144,6 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
-# Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background
 _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a'})
 _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
@@ -213,13 +198,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
             logger.warning("Job '%s': %s", job["id"], msg)
             return msg
-        return None  # local-only jobs don't deliver — not a failure
+        return None
 
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
 
-    # Diagnostic: log thread_id for topic-aware delivery debugging
     origin = job.get("origin") or {}
     origin_thread = origin.get("thread_id")
     if origin_thread and not thread_id:
@@ -274,9 +258,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.warning("Job '%s': %s", job["id"], msg)
         return msg
 
-    # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
     wrap_response = True
     try:
         user_cfg = load_config()
@@ -295,17 +276,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
 
-    # Prefer the live adapter when the gateway is running — this supports E2EE
-    # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
     runtime_adapter = (adapters or {}).get(platform)
     if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
         send_metadata = {"thread_id": thread_id} if thread_id else None
         try:
-            # Send cleaned text (MEDIA tags stripped) — not the raw content
             text_to_send = cleaned_delivery_content.strip()
             adapter_ok = True
             if text_to_send:
@@ -320,9 +297,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
                         job["id"], platform_name, chat_id, err,
                     )
-                    adapter_ok = False  # fall through to standalone path
+                    adapter_ok = False
 
-            # Send extracted media files as native attachments via the live adapter
             if adapter_ok and media_files:
                 _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
 
@@ -335,15 +311,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 job["id"], platform_name, chat_id, e,
             )
 
-    # Standalone path: run the async send in a fresh event loop (safe from any thread)
     coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
     try:
         result = asyncio.run(coro)
     except RuntimeError:
-        # asyncio.run() checks for a running loop before awaiting the coroutine;
-        # when it raises, the original coro was never started — close it to
-        # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
-        # fresh thread that has no running loop.
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -363,8 +334,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
-_DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
-# Backward-compatible module override used by tests and emergency monkeypatches.
+_DEFAULT_SCRIPT_TIMEOUT = 120
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 
 
@@ -430,8 +400,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     else:
         path = (scripts_dir / raw).resolve()
 
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within DAEDALUS_HOME/scripts/.
     try:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
@@ -458,7 +426,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
 
-        # Redact secrets from both stdout and stderr before any return path.
         try:
             from agent.redact import redact_sensitive_text
             stdout = redact_sensitive_text(stdout)
@@ -487,7 +454,6 @@ def _build_job_prompt(job: dict) -> str:
     prompt = job.get("prompt", "")
     skills = job.get("skills")
 
-    # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
     if script_path:
         success, script_output = _run_job_script(script_path)
@@ -513,8 +479,6 @@ def _build_job_prompt(job: dict) -> str:
                 f"{prompt}"
             )
 
-    # Always prepend cron execution guidance so the agent knows how
-    # delivery works and can suppress delivery when appropriate.
     cron_hint = (
         "[SYSTEM: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
@@ -581,8 +545,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     from run_agent import AIAgent
     
-    # Initialize SQLite session store so cron job messages are persisted
-    # and discoverable via session_search (same pattern as gateway/run.py).
     _session_db = None
     try:
         from daedalus_state import SessionDB
@@ -600,15 +562,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Prompt: %s", prompt[:100])
 
     try:
-        # Inject origin context so the agent's send_message tool knows the chat.
-        # Must be INSIDE the try block so the finally cleanup always runs.
         if origin:
             os.environ["DAEDALUS_SESSION_PLATFORM"] = origin["platform"]
             os.environ["DAEDALUS_SESSION_CHAT_ID"] = str(origin["chat_id"])
             if origin.get("chat_name"):
                 os.environ["DAEDALUS_SESSION_CHAT_NAME"] = origin["chat_name"]
-        # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart.
         from dotenv import load_dotenv
         try:
             load_dotenv(str(_daedalus_home / ".env"), override=True, encoding="utf-8")
@@ -624,7 +582,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         model = job.get("model") or os.getenv("DAEDALUS_MODEL") or ""
 
-        # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
         try:
             import yaml
@@ -641,7 +598,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
-        # Apply IPv4 preference if configured.
         try:
             from daedalus_constants import apply_ipv4_preference
             _net_cfg = _cfg.get("network", {})
@@ -650,12 +606,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml
         from daedalus_constants import parse_reasoning_effort
         effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
-        # Prefill messages from env or config.yaml
         prefill_messages = None
         prefill_file = os.getenv("DAEDALUS_PREFILL_MESSAGES_FILE", "") or _cfg.get("prefill_messages_file", "")
         if prefill_file:
@@ -673,10 +627,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
 
-        # Provider routing
         pr = _cfg.get("provider_routing", {})
         smart_routing = _cfg.get("smart_model_routing", {}) or {}
 
@@ -747,21 +699,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
-            skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_context_files=True,
+            skip_memory=True,
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
         )
         
-        # Run the agent with an *inactivity*-based timeout: the job can run
-        # for hours if it's actively calling tools / receiving stream tokens,
-        # but a hung API call or stuck tool with no activity for the configured
-        # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via DAEDALUS_CRON_TIMEOUT env var.  0 = unlimited.
-        #
-        # Uses the agent's built-in activity tracker (updated by
-        # _touch_activity() on every tool call, API call, and stream delta).
         _cron_timeout = float(os.getenv("DAEDALUS_CRON_TIMEOUT", 600))
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
@@ -770,7 +714,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
                 result = _cron_future.result()
             else:
                 result = None
@@ -781,7 +724,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if done:
                         result = _cron_future.result()
                         break
-                    # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
                         try:
@@ -799,7 +741,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
 
         if _inactivity_timeout:
-            # Build diagnostic summary from the agent's activity tracker.
             _activity = {}
             if hasattr(agent, "get_activity_summary"):
                 try:
@@ -828,8 +769,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             )
 
         final_response = result.get("final_response", "") or ""
-        # Use a separate variable for log display; keep final_response clean
-        # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
         output = f"""# Cron Job: {job_name}
@@ -873,7 +812,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
-        # Clean up injected env vars so they don't leak to other jobs
         for key in (
             "DAEDALUS_SESSION_PLATFORM",
             "DAEDALUS_SESSION_CHAT_ID",
@@ -911,7 +849,6 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     _LOCK_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
         lock_fd = open(_LOCK_FILE, "w")
@@ -938,10 +875,6 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         executed = 0
         for job in due_jobs:
             try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
                 advance_next_run(job["id"])
 
                 success, output, final_response, error = run_job(job)
@@ -950,9 +883,6 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
                 should_deliver = bool(deliver_content)
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():

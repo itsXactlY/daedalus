@@ -73,10 +73,9 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
     """Return the parsed YAML frontmatter mapping, or None if absent/invalid."""
     if not isinstance(text, str):
         return None
-    stripped = text.lstrip("\ufeff").lstrip()  # BOM is not whitespace; strip explicitly
+    stripped = text.lstrip("\ufeff").lstrip()
     if not stripped.startswith("---"):
         return None
-    # Find the closing fence after the opening one.
     after_open = stripped[3:]
     end = after_open.find("\n---")
     if end == -1:
@@ -153,7 +152,6 @@ def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
         return None
 
     base = Path(SKILLS_DIR)
-    # Skills live at skills/<category>/<name>/SKILL.md or skills/<name>/SKILL.md.
     candidates = list(base.glob(f"**/{skill_name}/SKILL.md"))
     for path in candidates:
         try:
@@ -162,7 +160,6 @@ def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
             continue
         spec = parse_blueprint(text)
         if spec is not None:
-            # Prefer the frontmatter name, fall back to the directory name.
             if not spec.skill_name:
                 spec.skill_name = skill_name
             return spec
@@ -254,7 +251,6 @@ def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional
     import yaml
 
     name = blueprint_name or job.get("name") or "shared-blueprint"
-    # Sanitize to a valid skill identifier.
     name = "".join(c if (c.isalnum() or c in "-_") else "-" for c in str(name).lower())
     name = name.strip("-_") or "shared-blueprint"
 
@@ -307,8 +303,6 @@ def _schedule_to_string(schedule: Any) -> str:
         if kind == "cron" and schedule.get("expr"):
             return str(schedule["expr"])
         if kind == "interval":
-            # parse_schedule stores interval periods as "minutes"; tolerate a
-            # legacy/foreign "seconds" form too.
             if schedule.get("minutes"):
                 mins = int(schedule["minutes"])
                 if mins % 60 == 0:
@@ -321,4 +315,4 @@ def _schedule_to_string(schedule: Any) -> str:
                 if secs % 60 == 0:
                     return f"every {secs // 60}m"
                 return f"every {secs}s"
-    return "0 9 * * *"  # safe daily fallback
+    return "0 9 * * *"

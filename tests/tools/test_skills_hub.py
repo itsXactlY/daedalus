@@ -28,9 +28,6 @@ from tools.skills_hub import (
 )
 
 
-# ---------------------------------------------------------------------------
-# GitHubSource._parse_frontmatter_quick
-# ---------------------------------------------------------------------------
 
 
 class TestParseFrontmatterQuick:
@@ -70,9 +67,6 @@ class TestParseFrontmatterQuick:
         assert fm == {}
 
 
-# ---------------------------------------------------------------------------
-# GitHubSource.trust_level_for
-# ---------------------------------------------------------------------------
 
 
 class TestTrustLevelFor:
@@ -82,7 +76,6 @@ class TestTrustLevelFor:
 
     def test_trusted_repo(self):
         src = self._source()
-        # TRUSTED_REPOS is imported from skills_guard, test with known trusted repo
         from tools.skills_guard import TRUSTED_REPOS
         if TRUSTED_REPOS:
             repo = next(iter(TRUSTED_REPOS))
@@ -99,13 +92,9 @@ class TestTrustLevelFor:
     def test_two_part_identifier(self):
         src = self._source()
         result = src.trust_level_for("owner/repo")
-        # No path part — still resolves repo correctly
         assert result in ("trusted", "community")
 
 
-# ---------------------------------------------------------------------------
-# SkillsShSource
-# ---------------------------------------------------------------------------
 
 
 class TestSkillsShSource:
@@ -375,7 +364,6 @@ class TestSkillsShSource:
 
         assert bundle is not None
         assert bundle.identifier == "skills-sh/owner/repo/product-designer"
-        # All candidate identifiers are tried before falling back to discovery
         assert mock_fetch.call_args_list[-1] == ((resolved_identifier,), {})
         assert mock_fetch.call_args_list[0] == (("owner/repo/product-designer",), {})
 
@@ -400,16 +388,13 @@ class TestSkillsShSource:
                 resp.status_code = 404
                 return resp
             if url.endswith("/contents/"):
-                # Root listing for shallow scan — return empty so it falls through
                 resp.status_code = 200
                 resp.json = lambda: []
                 return resp
             if "/contents/" in url:
-                # All contents API calls fail (candidate paths miss)
                 resp.status_code = 404
                 return resp
             if url.endswith("owner/repo"):
-                # Repo info → default branch
                 resp.status_code = 200
                 resp.json = lambda: {"default_branch": "main"}
                 return resp
@@ -417,7 +402,6 @@ class TestSkillsShSource:
                 resp.status_code = 200
                 resp.json = lambda: {"tree": tree_entries}
                 return resp
-            # skills.sh detail page
             resp.status_code = 200
             resp.text = "<h1>my-skill</h1>"
             return resp
@@ -438,7 +422,6 @@ class TestSkillsShSource:
         assert bundle is not None
         assert bundle.source == "skills.sh"
         assert bundle.files["SKILL.md"] == "# My Skill"
-        # Verify the tree-resolved identifier was used for the final GitHub fetch
         mock_fetch.assert_any_call("owner/repo/cli-tool/components/skills/development/my-skill")
 
     @patch.object(GitHubSource, "_find_skill_in_repo_tree")
@@ -756,9 +739,6 @@ class TestCreateSourceRouter:
         assert any(isinstance(src, WellKnownSkillSource) for src in sources)
 
 
-# ---------------------------------------------------------------------------
-# HubLockFile
-# ---------------------------------------------------------------------------
 
 
 class TestHubLockFile:
@@ -824,7 +804,6 @@ class TestHubLockFile:
     def test_record_uninstall_nonexistent(self, tmp_path):
         lock = HubLockFile(path=tmp_path / "lock.json")
         lock.save({"version": 1, "installed": {}})
-        # Should not raise
         lock.record_uninstall("nonexistent")
 
     def test_get_installed(self, tmp_path):
@@ -865,9 +844,6 @@ class TestHubLockFile:
         assert lock.is_hub_installed("other") is False
 
 
-# ---------------------------------------------------------------------------
-# TapsManager
-# ---------------------------------------------------------------------------
 
 
 class TestTapsManager:
@@ -920,9 +896,6 @@ class TestTapsManager:
         assert len(taps) == 2
 
 
-# ---------------------------------------------------------------------------
-# LobeHubSource._convert_to_skill_md
-# ---------------------------------------------------------------------------
 
 
 class TestConvertToSkillMd:
@@ -960,9 +933,6 @@ class TestConvertToSkillMd:
         assert "name: bare-agent" in result
 
 
-# ---------------------------------------------------------------------------
-# unified_search — dedup logic
-# ---------------------------------------------------------------------------
 
 
 class TestUnifiedSearchDedup:
@@ -1050,9 +1020,6 @@ class TestUnifiedSearchDedup:
         assert len(results) == 1
 
 
-# ---------------------------------------------------------------------------
-# append_audit_log
-# ---------------------------------------------------------------------------
 
 
 class TestAppendAuditLog:
@@ -1082,9 +1049,6 @@ class TestAppendAuditLog:
         assert "hash123" in content
 
 
-# ---------------------------------------------------------------------------
-# _skill_meta_to_dict
-# ---------------------------------------------------------------------------
 
 
 class TestSkillMetaToDict:
@@ -1097,15 +1061,11 @@ class TestSkillMetaToDict:
         d = _skill_meta_to_dict(meta)
         assert d["name"] == "test"
         assert d["tags"] == ["a", "b"]
-        # Can reconstruct from dict
         restored = SkillMeta(**d)
         assert restored.name == meta.name
         assert restored.trust_level == meta.trust_level
 
 
-# ---------------------------------------------------------------------------
-# Official skills / binary assets
-# ---------------------------------------------------------------------------
 
 
 class TestOptionalSkillSourceBinaryAssets:
@@ -1223,9 +1183,6 @@ class TestQuarantineBundleBinaryAssets:
         assert not absolute_target.exists()
 
 
-# ---------------------------------------------------------------------------
-# GitHubSource._download_directory — tree API + fallback (#2940)
-# ---------------------------------------------------------------------------
 
 
 class TestDownloadDirectoryViaTree:
@@ -1260,7 +1217,7 @@ class TestDownloadDirectoryViaTree:
         assert "SKILL.md" in files
         assert "scripts/run.py" in files
         assert "references/api.md" in files
-        assert "other/file.txt" not in files  # outside target path
+        assert "other/file.txt" not in files
         assert len(files) == 3
 
     @patch.object(GitHubSource, "_download_directory_recursive", return_value={"SKILL.md": "# ok"})
@@ -1368,4 +1325,4 @@ class TestDownloadDirectoryRecursive:
         files = src._download_directory_recursive("owner/repo", "skill")
 
         assert "SKILL.md" in files
-        assert "scripts/run.py" not in files  # lost due to rate limit
+        assert "scripts/run.py" not in files

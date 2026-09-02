@@ -27,7 +27,6 @@ class HermesToolCallParser(ToolCallParser):
     Also handles unclosed <tool_call> at end-of-string (truncated generation).
     """
 
-    # Matches both closed and unclosed tool_call tags
     PATTERN = re.compile(
         r"<tool_call>\s*(.*?)\s*</tool_call>|<tool_call>\s*(.*)", re.DOTALL
     )
@@ -43,7 +42,6 @@ class HermesToolCallParser(ToolCallParser):
 
             tool_calls: List[ChatCompletionMessageToolCall] = []
             for match in matches:
-                # match is a tuple: (closed_content, unclosed_content)
                 raw_json = match[0] if match[0] else match[1]
                 if not raw_json.strip():
                     continue
@@ -65,7 +63,6 @@ class HermesToolCallParser(ToolCallParser):
             if not tool_calls:
                 return text, None
 
-            # Content is everything before the first <tool_call> tag
             content = text[: text.find("<tool_call>")].strip()
             return content if content else None, tool_calls
 

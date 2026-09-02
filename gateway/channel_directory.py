@@ -53,9 +53,6 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
     return f"{base_name} / {topic_label}"
 
 
-# ---------------------------------------------------------------------------
-# Build / refresh
-# ---------------------------------------------------------------------------
 
 def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
@@ -76,7 +73,6 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
-    # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
     for plat_name in ("telegram", "whatsapp", "signal", "email", "sms"):
         if plat_name not in platforms:
             platforms[plat_name] = _build_from_sessions(plat_name)
@@ -114,28 +110,22 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 "guild": guild.name,
                 "type": "channel",
             })
-        # Also include DM-capable users we've interacted with is not
-        # feasible via guild enumeration; those come from sessions.
 
-    # Merge any DMs from session history
     channels.extend(_build_from_sessions("discord"))
     return channels
 
 
 def _build_slack(adapter) -> List[Dict[str, str]]:
     """List Slack channels the bot has joined."""
-    # Slack adapter may expose a web client
     client = getattr(adapter, "_app", None) or getattr(adapter, "_client", None)
     if not client:
         return _build_from_sessions("slack")
 
     try:
         from tools.send_message_tool import _send_slack  # noqa: F401
-        # Use the Slack Web API directly if available
     except Exception:
         pass
 
-    # Fallback to session data
     return _build_from_sessions("slack")
 
 
@@ -171,9 +161,6 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
     return entries
 
 
-# ---------------------------------------------------------------------------
-# Read / resolve
-# ---------------------------------------------------------------------------
 
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
@@ -202,14 +189,12 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
 
     query = _normalize_channel_query(name)
 
-    # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:
         if _normalize_channel_query(ch["name"]) == query:
             return ch["id"]
         if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
             return ch["id"]
 
-    # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
         guild_part, ch_part = query.rsplit("/", 1)
         for ch in channels:
@@ -217,7 +202,6 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
             if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
                 return ch["id"]
 
-    # 3. Partial prefix match (only if unambiguous)
     matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
     if len(matches) == 1:
         return matches[0]["id"]
@@ -239,7 +223,6 @@ def format_directory_for_display() -> str:
         if not channels:
             continue
 
-        # Group Discord channels by guild
         if plat_name == "discord":
             guilds: Dict[str, List] = {}
             dms: List = []

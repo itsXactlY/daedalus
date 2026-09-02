@@ -14,7 +14,6 @@ import sys
 import shutil
 from pathlib import Path
 
-# Resolve project root
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -26,7 +25,6 @@ OK = "\033[92m\u2713\033[0m"
 FAIL = "\033[91m\u2717\033[0m"
 WARN = "\033[93m!\033[0m"
 
-# Track whether discord.py is available for later sections
 _discord_available = False
 
 
@@ -63,7 +61,6 @@ def check_packages():
     section("Python Packages")
     ok = True
 
-    # discord.py
     try:
         import discord
         _discord_available = True
@@ -72,7 +69,6 @@ def check_packages():
         check("discord.py", False, "pip install discord.py[voice]")
         ok = False
 
-    # PyNaCl
     try:
         import nacl
         ver = getattr(nacl, "__version__", "unknown")
@@ -87,7 +83,6 @@ def check_packages():
         check("PyNaCl", False, "pip install PyNaCl>=1.5.0")
         ok = False
 
-    # davey (DAVE E2EE)
     try:
         import davey
         check("davey (DAVE E2EE)", True, f"v{getattr(davey, '__version__', '?')}")
@@ -95,14 +90,12 @@ def check_packages():
         check("davey (DAVE E2EE)", False, "pip install davey")
         ok = False
 
-    # Optional: local STT
     try:
         import faster_whisper
         check("faster-whisper (local STT)", True)
     except ImportError:
         warn("faster-whisper (local STT)", "not installed — local STT unavailable")
 
-    # Optional: TTS providers
     try:
         import edge_tts
         check("edge-tts", True)
@@ -123,7 +116,6 @@ def check_system_tools():
     section("System Tools")
     ok = True
 
-    # Opus codec
     if _discord_available:
         try:
             import discord
@@ -132,14 +124,13 @@ def check_system_tools():
                 import ctypes.util
                 opus_path = ctypes.util.find_library("opus")
                 if not opus_path:
-                    # Platform-specific fallback paths
                     candidates = [
-                        "/opt/homebrew/lib/libopus.dylib",   # macOS Apple Silicon
-                        "/usr/local/lib/libopus.dylib",      # macOS Intel
-                        "/usr/lib/x86_64-linux-gnu/libopus.so.0",  # Debian/Ubuntu x86
-                        "/usr/lib/aarch64-linux-gnu/libopus.so.0", # Debian/Ubuntu ARM
-                        "/usr/lib/libopus.so",               # Arch Linux
-                        "/usr/lib64/libopus.so",             # RHEL/Fedora
+                        "/opt/homebrew/lib/libopus.dylib",
+                        "/usr/local/lib/libopus.dylib",
+                        "/usr/lib/x86_64-linux-gnu/libopus.so.0",
+                        "/usr/lib/aarch64-linux-gnu/libopus.so.0",
+                        "/usr/lib/libopus.so",
+                        "/usr/lib64/libopus.so",
                     ]
                     for p in candidates:
                         if os.path.isfile(p):
@@ -159,7 +150,6 @@ def check_system_tools():
     else:
         warn("Opus codec", "skipped — discord.py not installed")
 
-    # ffmpeg
     ffmpeg_path = shutil.which("ffmpeg")
     if ffmpeg_path:
         check("ffmpeg", True, ffmpeg_path)
@@ -174,7 +164,6 @@ def check_env_vars():
     """Check environment variables. Returns (ok, token, groq_key, eleven_key)."""
     section("Environment Variables")
 
-    # Load .env
     try:
         from dotenv import load_dotenv
         if ENV_FILE.exists():
@@ -191,7 +180,6 @@ def check_env_vars():
         check("DISCORD_BOT_TOKEN", False, "not set")
         ok = False
 
-    # Allowed users — resolve usernames if possible
     allowed = os.getenv("DISCORD_ALLOWED_USERS", "")
     if allowed:
         users = [u.strip() for u in allowed.split(",") if u.strip()]
@@ -256,7 +244,6 @@ def check_config(groq_key, eleven_key):
     else:
         warn("config.yaml", "not found — using defaults")
 
-    # Voice mode state
     voice_mode_path = DAEDALUS_HOME / "gateway_voice_mode.json"
     if voice_mode_path.exists():
         try:
@@ -319,7 +306,6 @@ def check_bot_permissions(token):
         bot_name = bot.get("username", "?")
         check("Bot login", True, f"{bot_name[:3]}{'*' * (len(bot_name) - 3)}")
 
-        # Check guilds
         r2 = requests.get("https://discord.com/api/v10/users/@me/guilds", headers=headers, timeout=5)
         if r2.status_code != 200:
             warn("Guilds", f"HTTP {r2.status_code}")
@@ -375,7 +361,6 @@ def main():
     check_config(groq_key, eleven_key)
     all_ok &= check_bot_permissions(token)
 
-    # Summary
     print()
     print("\033[1m" + "-" * 50 + "\033[0m")
     if all_ok:

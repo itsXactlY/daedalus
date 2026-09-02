@@ -13,9 +13,6 @@ from tools.memory_tool import (
 )
 
 
-# =========================================================================
-# Tool schema guidance
-# =========================================================================
 
 class TestMemorySchema:
     def test_discourages_diary_style_task_logs(self):
@@ -27,9 +24,6 @@ class TestMemorySchema:
         assert ">80%" not in description
 
 
-# =========================================================================
-# Security scanning
-# =========================================================================
 
 class TestScanMemoryContent:
     def test_clean_content_passes(self):
@@ -85,9 +79,6 @@ class TestScanMemoryContent:
         assert "sys_prompt_override" in result
 
 
-# =========================================================================
-# MemoryStore core operations
-# =========================================================================
 
 @pytest.fixture()
 def store(tmp_path, monkeypatch):
@@ -117,11 +108,10 @@ class TestMemoryStoreAdd:
     def test_add_duplicate_rejected(self, store):
         store.add("memory", "fact A")
         result = store.add("memory", "fact A")
-        assert result["success"] is True  # No error, just a note
-        assert len(store.memory_entries) == 1  # Not duplicated
+        assert result["success"] is True
+        assert len(store.memory_entries) == 1
 
     def test_add_exceeding_limit_rejected(self, store):
-        # Fill up to near limit
         store.add("memory", "x" * 490)
         result = store.add("memory", "this will exceed the limit")
         assert result["success"] is False
@@ -202,7 +192,6 @@ class TestMemoryStorePersistence:
     def test_deduplication_on_load(self, tmp_path, monkeypatch):
         monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", tmp_path)
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
-        # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
         mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
 
@@ -214,9 +203,8 @@ class TestMemoryStorePersistence:
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
         store.add("memory", "loaded at start")
-        store.load_from_disk()  # Re-load to capture snapshot
+        store.load_from_disk()
 
-        # Add more after load
         store.add("memory", "added later")
 
         snapshot = store.format_for_system_prompt("memory")
@@ -229,9 +217,6 @@ class TestMemoryStoreSnapshot:
         assert store.format_for_system_prompt("memory") is None
 
 
-# =========================================================================
-# memory_tool() dispatcher
-# =========================================================================
 
 class TestMemoryToolDispatcher:
     def test_no_store_returns_error(self):

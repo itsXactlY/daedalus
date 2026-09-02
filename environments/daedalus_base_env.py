@@ -26,9 +26,6 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-# Ensure the daedalus repo root is on sys.path so that imports like
-# `from model_tools import ...` and `from environments.X import ...` work
-# regardless of where the script is invoked from.
 _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -36,14 +33,10 @@ if str(_repo_root) not in sys.path:
 from dotenv import load_dotenv
 from pydantic import Field
 
-# Load API keys from daedalus/.env so all environments can access them
 _env_path = _repo_root / ".env"
 if _env_path.exists():
     load_dotenv(dotenv_path=_env_path)
 
-# Apply monkey patches for async-safe tool operation inside Atropos's event loop.
-# This patches SwerexModalEnvironment to use a background thread instead of
-# asyncio.run(), which would deadlock inside Atropos. Safe for normal CLI too.
 from environments.patches import apply_patches
 apply_patches()
 
@@ -68,7 +61,6 @@ from tools.budget_config import (
     DEFAULT_PREVIEW_SIZE_CHARS,
 )
 
-# Import daedalus toolset infrastructure
 from model_tools import get_tool_definitions
 from toolset_distributions import sample_toolsets_from_distribution
 
@@ -83,8 +75,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
     terminal backend, dataset loading, and tool call parsing.
     """
 
-    # --- Toolset configuration ---
-    # Mutually exclusive: use either enabled_toolsets OR distribution
     enabled_toolsets: Optional[List[str]] = Field(
         default=None,
         description="Explicit list of daedalus toolsets to enable (e.g., ['terminal', 'file', 'web']). "
@@ -101,7 +91,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
         "Mutually exclusive with enabled_toolsets.",
     )
 
-    # --- Agent loop configuration ---
     max_agent_turns: int = Field(
         default=30,
         description="Maximum number of LLM calls (tool-calling iterations) per rollout.",
@@ -116,7 +105,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
         description="Sampling temperature for agent generation during rollouts.",
     )
 
-    # --- Terminal backend ---
     terminal_backend: str = Field(
         default="local",
         description="Terminal backend: 'local', 'modal', 'daytona', 'ssh', 'singularity'. "
@@ -135,7 +123,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
         "the longest gap between tool calls (e.g., waiting for LLM response).",
     )
 
-    # --- Dataset ---
     dataset_name: Optional[str] = Field(
         default=None,
         description="HuggingFace dataset name. Optional if tasks are defined inline.",
@@ -149,7 +136,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
         description="Which field in the dataset contains the prompt.",
     )
 
-    # --- Thread pool ---
     tool_pool_size: int = Field(
         default=128,
         description="Thread pool size for tool execution. Each concurrent task needs a "
@@ -157,7 +143,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
         "Too small = thread pool starvation.",
     )
 
-    # --- Phase 2: Tool call parsing ---
     tool_call_parser: str = Field(
         default="daedalus",
         description="Tool call parser name for Phase 2 (VLLM server type). "
@@ -165,8 +150,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
         "Options: daedalus, mistral, llama3_json, qwen, deepseek_v3, etc.",
     )
 
-    # --- Tool result budget ---
-    # Defaults imported from tools.budget_config (single source of truth).
     default_result_size_chars: int = Field(
         default=DEFAULT_RESULT_SIZE_CHARS,
         description="Default per-tool threshold (chars) for persisting large results "
@@ -191,15 +174,6 @@ class DaedalusAgentEnvConfig(BaseEnvConfig):
         "Note: read_file is pinned to infinity and cannot be overridden.",
     )
 
-    # --- Provider-specific parameters ---
-    # Passed as extra_body to the OpenAI client's chat.completions.create() call.
-    # Useful for OpenRouter provider preferences, transforms, route settings, etc.
-    # Example YAML:
-    #   extra_body:
-    #     provider:
-    #       ignore: ["DeepInfra", "Fireworks"]
-    #       order: ["Together"]
-    #     transforms: ["middle-out"]
     extra_body: Optional[Dict[str, Any]] = Field(
         default=None,
         description="Extra body parameters passed to the OpenAI client's "
@@ -252,9 +226,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
     ):
         super().__init__(config, server_configs, slurm, testing)
 
-        # Set terminal environment variables so daedalus tools pick them up.
-        # These can all be overridden per-environment via config fields instead
-        # of requiring users to set shell env vars.
         if config.terminal_backend:
             os.environ["TERMINAL_ENV"] = config.terminal_backend
         os.environ["TERMINAL_TIMEOUT"] = str(config.terminal_timeout)
@@ -264,27 +235,17 @@ class DaedalusAgentBaseEnv(BaseEnv):
             f"timeout={config.terminal_timeout}s, lifetime={config.terminal_lifetime}s"
         )
 
-        # Resize the agent loop's thread pool for tool execution.
-        # This must be large enough for the number of concurrent tasks
-        # (e.g., 89 parallel TB2 eval tasks each need a thread for tool calls).
         from environments.agent_loop import resize_tool_pool
         resize_tool_pool(config.tool_pool_size)
 
-        # Set tool_parser on the ServerManager so ManagedServer uses it
-        # for bidirectional tool call translation (raw text ↔ OpenAI tool_calls).
         if hasattr(self.server, 'tool_parser'):
             self.server.tool_parser = config.tool_call_parser
             print(f"🔧 Tool parser: {config.tool_call_parser}")
 
-        # Current group's resolved tools (set in collect_trajectories)
         self._current_group_tools: Optional[Tuple[List[Dict], Set[str]]] = None
 
-        # Tool error tracking for wandb logging
         self._tool_error_buffer: List[Dict[str, Any]] = []
 
-    # =========================================================================
-    # Toolset resolution (per-group)
-    # =========================================================================
 
     def _resolve_tools_for_group(self) -> Tuple[List[Dict[str, Any]], Set[str]]:
         """
@@ -304,7 +265,7 @@ class DaedalusAgentBaseEnv(BaseEnv):
             group_toolsets = sample_toolsets_from_distribution(config.distribution)
             logger.info("Sampled toolsets from '%s': %s", config.distribution, group_toolsets)
         else:
-            group_toolsets = config.enabled_toolsets  # None means "all available"
+            group_toolsets = config.enabled_toolsets
             if group_toolsets is None:
                 logger.warning(
                     "enabled_toolsets is None -- loading ALL tools including messaging. "
@@ -321,9 +282,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
         logger.info("Resolved %d tools for group: %s", len(valid_names), sorted(valid_names))
         return tools, valid_names
 
-    # =========================================================================
-    # Server mode detection
-    # =========================================================================
 
     def _use_managed_server(self) -> bool:
         """
@@ -339,13 +297,9 @@ class DaedalusAgentBaseEnv(BaseEnv):
             return False
 
         server = self.server.servers[0]
-        # If the server is an OpenAI server (not VLLM/SGLang), use direct mode
         from atroposlib.envs.server_handling.openai_server import OpenAIServer
         return not isinstance(server, OpenAIServer)
 
-    # =========================================================================
-    # Core Atropos integration
-    # =========================================================================
 
     async def collect_trajectories(
         self, item: Item
@@ -361,16 +315,10 @@ class DaedalusAgentBaseEnv(BaseEnv):
         group_size times in parallel. We resolve tools once here and store
         them for all those calls to use.
         """
-        # Resolve toolsets for this group (shared by all rollouts in the group)
         self._current_group_tools = self._resolve_tools_for_group()
 
-        # Delegate to the default implementation which calls collect_trajectory()
-        # group_size times via asyncio.gather
         return await super().collect_trajectories(item)
 
-    # =========================================================================
-    # Wandb rollout display -- format trajectories nicely
-    # =========================================================================
 
     @staticmethod
     def _format_trajectory_for_display(messages: List[Dict[str, Any]]) -> str:
@@ -391,25 +339,20 @@ class DaedalusAgentBaseEnv(BaseEnv):
                 parts.append(f"[USER]\n{content}")
 
             elif role == "assistant":
-                # Show reasoning if present
                 reasoning = msg.get("reasoning_content", "")
                 if reasoning:
-                    # Truncate long reasoning for display
                     if len(reasoning) > 300:
                         reasoning = reasoning[:300] + "..."
                     parts.append(f"[ASSISTANT thinking]\n{reasoning}")
 
-                # Show content
                 if content:
                     parts.append(f"[ASSISTANT]\n{content}")
 
-                # Show tool calls
                 tool_calls = msg.get("tool_calls", [])
                 for tc in tool_calls:
                     func = tc.get("function", {})
                     name = func.get("name", "?")
                     args = func.get("arguments", "{}")
-                    # Truncate long arguments for display
                     if len(args) > 200:
                         args = args[:200] + "..."
                     parts.append(f"[TOOL CALL] {name}({args})")
@@ -417,7 +360,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
             elif role == "tool":
                 tool_id = msg.get("tool_call_id", "")
                 result = content
-                # Truncate long tool results for display
                 if len(result) > 500:
                     result = result[:500] + "..."
                 parts.append(f"[TOOL RESULT] {result}")
@@ -441,7 +383,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
         for i in range(min(num_keep, len(scored_data.get("scores", [])))):
             score = scored_data["scores"][i]
 
-            # Use messages if available for rich display
             messages = None
             if scored_data.get("messages") and i < len(scored_data["messages"]):
                 messages = scored_data["messages"][i]
@@ -464,11 +405,9 @@ class DaedalusAgentBaseEnv(BaseEnv):
         if wandb_metrics is None:
             wandb_metrics = {}
 
-        # Log tool error stats
         if self._tool_error_buffer:
             wandb_metrics["train/tool_errors_count"] = len(self._tool_error_buffer)
 
-            # Log error details as a summary string (tables can crash wandb on tmp cleanup)
             error_summaries = []
             for err in self._tool_error_buffer:
                 error_summaries.append(
@@ -476,7 +415,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
                 )
             wandb_metrics["train/tool_error_details"] = "\n".join(error_summaries)
 
-            # Also print to stdout for immediate visibility
             for summary in error_summaries:
                 print(f"  Tool Error: {summary}")
 
@@ -497,26 +435,18 @@ class DaedalusAgentBaseEnv(BaseEnv):
         """
         task_id = str(uuid.uuid4())
 
-        # Get group-level tools (resolved once in collect_trajectories)
         if self._current_group_tools is None:
-            # Fallback: resolve per-trajectory if called outside collect_trajectories
             tools, valid_names = self._resolve_tools_for_group()
         else:
             tools, valid_names = self._current_group_tools
 
-        # Build initial messages
         messages: List[Dict[str, Any]] = []
         if self.config.system_prompt:
             messages.append({"role": "system", "content": self.config.system_prompt})
         messages.append({"role": "user", "content": self.format_prompt(item)})
 
-        # Run the agent loop
         result: AgentResult
         if self._use_managed_server():
-            # Phase 2: ManagedServer with ToolCallTranslator -- exact tokens + logprobs
-            # tool_parser is set on ServerManager in __init__ and passed through
-            # to ManagedServer, which uses ToolCallTranslator for bidirectional
-            # translation between raw text and OpenAI tool_calls.
             try:
                 async with self.server.managed_server(
                     tokenizer=self.tokenizer,
@@ -535,7 +465,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
                     )
                     result = await agent.run(messages)
             except NotImplementedError:
-                # DummyManagedServer not allowed -- fall back to Phase 1
                 logger.warning(
                     "ManagedServer not available (OpenAI server?). "
                     "Falling back to direct server mode."
@@ -553,7 +482,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
                 )
                 result = await agent.run(messages)
         else:
-            # Phase 1: OpenAI server -- native tool_calls, placeholder tokens
             agent = DaedalusAgentLoop(
                 server=self.server,
                 tool_schemas=tools,
@@ -567,9 +495,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
             )
             result = await agent.run(messages)
 
-        # Skip reward computation if the agent loop produced no meaningful work
-        # (e.g., API call failed on turn 1). No point spinning up a Modal sandbox
-        # just to verify files that were never created.
         only_system_and_user = all(
             msg.get("role") in ("system", "user") for msg in result.messages
         )
@@ -580,7 +505,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
             )
             reward = 0.0
         else:
-            # Compute reward using ToolContext (gives verifier full tool access)
             ctx = ToolContext(task_id)
             try:
                 reward = await self.compute_reward(item, result, ctx)
@@ -590,7 +514,6 @@ class DaedalusAgentBaseEnv(BaseEnv):
             finally:
                 ctx.cleanup()
 
-        # Track tool errors for wandb logging
         if result.tool_errors:
             for err in result.tool_errors:
                 self._tool_error_buffer.append({
@@ -601,29 +524,20 @@ class DaedalusAgentBaseEnv(BaseEnv):
                     "result": err.tool_result[:300],
                 })
 
-        # Build ScoredDataItem from ManagedServer state
-        # Phase 2: real tokens/masks/logprobs from SequenceNodes
-        # Phase 1: placeholder tokens (still need a valid ScoredDataItem for the pipeline)
         nodes = (result.managed_state or {}).get("nodes", [])
 
         if nodes:
-            # Phase 2 (or DummyManagedServer): use actual node data
-            node = nodes[-1]  # Final sequence node = full trajectory
+            node = nodes[-1]
             scored_item: Dict[str, Any] = {
                 "tokens": node.tokens,
                 "masks": node.masked_tokens,
                 "scores": reward,
             }
 
-            # Include logprobs if available (Phase 2)
             if hasattr(node, "logprobs") and node.logprobs:
-                scored_item["advantages"] = None  # Computed by trainer
+                scored_item["advantages"] = None
                 scored_item["ref_logprobs"] = None
         else:
-            # Phase 1 with no managed state: create placeholder tokens
-            # so the data pipeline doesn't break. These are NOT suitable
-            # for training but allow process mode (SFT data gen) to work.
-            # Tokenize the full conversation to get approximate tokens.
             full_text = "\n".join(
                 msg.get("content", "") for msg in result.messages if msg.get("content")
             )
@@ -634,18 +548,14 @@ class DaedalusAgentBaseEnv(BaseEnv):
 
             scored_item = {
                 "tokens": tokens,
-                "masks": [-100] + tokens[1:],  # Mask first token as prompt
+                "masks": [-100] + tokens[1:],
                 "scores": reward,
             }
 
-        # Always include messages for wandb rollout display and data logging
         scored_item["messages"] = result.messages
 
         return scored_item, []
 
-    # =========================================================================
-    # Abstract methods -- subclasses must implement
-    # =========================================================================
 
     @abstractmethod
     async def setup(self):

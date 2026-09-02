@@ -57,9 +57,6 @@ from tools.debug_helpers import DebugSession
 
 logger = logging.getLogger(__name__)
 
-# Configuration for MoA processing
-# Reference models - these generate diverse initial responses in parallel.
-# Keep this list aligned with current top-tier OpenRouter frontier options.
 REFERENCE_MODELS = [
     "anthropic/claude-opus-4.6",
     "google/gemini-3-pro-preview",
@@ -67,18 +64,13 @@ REFERENCE_MODELS = [
     "deepseek/deepseek-v3.2",
 ]
 
-# Aggregator model - synthesizes reference responses into final output.
-# Prefer the strongest synthesis model in the current OpenRouter lineup.
 AGGREGATOR_MODEL = "anthropic/claude-opus-4.6"
 
-# Temperature settings optimized for MoA performance
-REFERENCE_TEMPERATURE = 0.6  # Balanced creativity for diverse perspectives
-AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
+REFERENCE_TEMPERATURE = 0.6
+AGGREGATOR_TEMPERATURE = 0.4
 
-# Failure handling configuration
-MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
+MIN_SUCCESSFUL_REFERENCES = 1
 
-# System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
 
 Responses from models:"""
@@ -125,7 +117,6 @@ async def _run_reference_model_safe(
         try:
             logger.info("Querying %s (attempt %s/%s)", model, attempt + 1, max_retries)
             
-            # Build parameters for the API call
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
@@ -137,8 +128,6 @@ async def _run_reference_model_safe(
                 }
             }
             
-            # GPT models (especially gpt-4o-mini) don't support custom temperature values
-            # Only include temperature for non-GPT models
             if not model.lower().startswith('gpt-'):
                 api_params["temperature"] = temperature
             
@@ -146,7 +135,6 @@ async def _run_reference_model_safe(
             
             content = extract_content_or_reasoning(response)
             if not content:
-                # Reasoning-only response — let the retry loop handle it
                 logger.warning("%s returned empty content (attempt %s/%s), retrying", model, attempt + 1, max_retries)
                 if attempt < max_retries - 1:
                     await asyncio.sleep(min(2 ** (attempt + 1), 60))
@@ -156,8 +144,6 @@ async def _run_reference_model_safe(
             
         except Exception as e:
             error_str = str(e)
-            # Keep retry-path logging concise; full tracebacks are reserved for
-            # terminal failure paths so long-running MoA retries don't flood logs.
             if "invalid" in error_str.lower():
                 logger.warning("%s invalid request error (attempt %s): %s", model, attempt + 1, error_str)
             elif "rate" in error_str.lower() or "limit" in error_str.lower():
@@ -166,7 +152,6 @@ async def _run_reference_model_safe(
                 logger.warning("%s unknown error (attempt %s): %s", model, attempt + 1, error_str)
 
             if attempt < max_retries - 1:
-                # Exponential backoff for rate limiting: 2s, 4s, 8s, 16s, 32s, 60s
                 sleep_time = min(2 ** (attempt + 1), 60)
                 logger.info("Retrying in %ss...", sleep_time)
                 await asyncio.sleep(sleep_time)
@@ -196,7 +181,6 @@ async def _run_aggregator_model(
     """
     logger.info("Running aggregator model: %s", AGGREGATOR_MODEL)
 
-    # Build parameters for the API call
     api_params = {
         "model": AGGREGATOR_MODEL,
         "messages": [
@@ -211,8 +195,6 @@ async def _run_aggregator_model(
         }
     }
 
-    # GPT models (especially gpt-4o-mini) don't support custom temperature values
-    # Only include temperature for non-GPT models
     if not AGGREGATOR_MODEL.lower().startswith('gpt-'):
         api_params["temperature"] = temperature
 
@@ -220,7 +202,6 @@ async def _run_aggregator_model(
 
     content = extract_content_or_reasoning(response)
 
-    # Retry once on empty content (reasoning-only response)
     if not content:
         logger.warning("Aggregator returned empty content, retrying once")
         response = await _get_openrouter_client().chat.completions.create(**api_params)
@@ -296,24 +277,20 @@ async def mixture_of_agents_tool(
         logger.info("Starting Mixture-of-Agents processing...")
         logger.info("Query: %s", user_prompt[:100])
         
-        # Validate API key availability
         if not os.getenv("OPENROUTER_API_KEY"):
             raise ValueError("OPENROUTER_API_KEY environment variable not set")
         
-        # Use provided models or defaults
         ref_models = reference_models or REFERENCE_MODELS
         agg_model = aggregator_model or AGGREGATOR_MODEL
         
         logger.info("Using %s reference models in 2-layer MoA architecture", len(ref_models))
         
-        # Layer 1: Generate diverse responses from reference models (with failure handling)
         logger.info("Layer 1: Generating reference responses...")
         model_results = await asyncio.gather(*[
             _run_reference_model_safe(model, user_prompt, REFERENCE_TEMPERATURE)
             for model in ref_models
         ])
         
-        # Separate successful and failed responses
         successful_responses = []
         failed_models = []
         
@@ -331,7 +308,6 @@ async def mixture_of_agents_tool(
         if failed_models:
             logger.warning("Failed models: %s", ', '.join(failed_models))
         
-        # Check if we have enough successful responses to proceed
         if successful_count < MIN_SUCCESSFUL_REFERENCES:
             raise ValueError(f"Insufficient successful reference models ({successful_count}/{len(ref_models)}). Need at least {MIN_SUCCESSFUL_REFERENCES} successful responses.")
         
@@ -339,7 +315,6 @@ async def mixture_of_agents_tool(
         debug_call_data["failed_models_count"] = failed_count
         debug_call_data["failed_models"] = failed_models
         
-        # Layer 2: Aggregate responses using the aggregator model
         logger.info("Layer 2: Synthesizing final response...")
         aggregator_system_prompt = _construct_aggregator_prompt(
             AGGREGATOR_SYSTEM_PROMPT, 
@@ -352,13 +327,11 @@ async def mixture_of_agents_tool(
             AGGREGATOR_TEMPERATURE
         )
         
-        # Calculate processing time
         end_time = datetime.datetime.now()
         processing_time = (end_time - start_time).total_seconds()
         
         logger.info("MoA processing completed in %.2f seconds", processing_time)
         
-        # Prepare successful response (only final aggregated result, minimal fields)
         result = {
             "success": True,
             "response": final_response,
@@ -373,7 +346,6 @@ async def mixture_of_agents_tool(
         debug_call_data["processing_time_seconds"] = processing_time
         debug_call_data["models_used"] = result["models_used"]
         
-        # Log debug information
         _debug.log_call("mixture_of_agents_tool", debug_call_data)
         _debug.save()
         
@@ -383,11 +355,9 @@ async def mixture_of_agents_tool(
         error_msg = f"Error in MoA processing: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
         
-        # Calculate processing time even for errors
         end_time = datetime.datetime.now()
         processing_time = (end_time - start_time).total_seconds()
         
-        # Prepare error response (minimal fields)
         result = {
             "success": False,
             "response": "MoA processing failed. Please try again or use a single model for this query.",
@@ -465,7 +435,6 @@ if __name__ == "__main__":
     print("🤖 Mixture-of-Agents Tool Module")
     print("=" * 50)
     
-    # Check if API key is available
     api_available = check_openrouter_api_key()
     
     if not api_available:
@@ -478,7 +447,6 @@ if __name__ == "__main__":
     
     print("🛠️  MoA tools ready for use!")
     
-    # Show current configuration
     config = get_moa_configuration()
     print("\n⚙️  Current Configuration:")
     print(f"  🤖 Reference models ({len(config['reference_models'])}): {', '.join(config['reference_models'])}")
@@ -488,7 +456,6 @@ if __name__ == "__main__":
     print(f"  🛡️  Failure tolerance: {config['failure_tolerance']}")
     print(f"  📊 Minimum successful models: {config['min_successful_references']}")
     
-    # Show debug mode status
     if _debug.active:
         print(f"\n🐛 Debug mode ENABLED - Session ID: {_debug.session_id}")
         print(f"   Debug logs will be saved to: ./logs/moa_tools_debug_{_debug.session_id}.json")
@@ -530,9 +497,6 @@ if __name__ == "__main__":
     print("  # Logs saved to: ./logs/moa_tools_debug_UUID.json")
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 from tools.registry import registry
 
 MOA_SCHEMA = {

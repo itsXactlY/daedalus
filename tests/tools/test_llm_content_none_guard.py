@@ -19,7 +19,6 @@ import pytest
 from agent.auxiliary_client import extract_content_or_reasoning
 
 
-# ── helpers ────────────────────────────────────────────────────────────────
 
 def _make_response(content, **msg_attrs):
     """Build a minimal OpenAI-compatible ChatCompletion response stub.
@@ -37,7 +36,6 @@ def _run(coro):
     return asyncio.get_event_loop().run_until_complete(coro)
 
 
-# ── mixture_of_agents_tool — reference model (line 146) ───────────────────
 
 class TestMoAReferenceModelContentNone:
     """tools/mixture_of_agents_tool.py — _query_model()"""
@@ -46,7 +44,6 @@ class TestMoAReferenceModelContentNone:
         """Demonstrate that None content from a reasoning model crashes."""
         response = _make_response(None)
 
-        # Simulate the exact line: response.choices[0].message.content.strip()
         with pytest.raises(AttributeError):
             response.choices[0].message.content.strip()
 
@@ -65,7 +62,6 @@ class TestMoAReferenceModelContentNone:
         assert content == "Hello world"
 
 
-# ── mixture_of_agents_tool — aggregator (line 214) ────────────────────────
 
 class TestMoAAggregatorContentNone:
     """tools/mixture_of_agents_tool.py — _run_aggregator()"""
@@ -83,7 +79,6 @@ class TestMoAAggregatorContentNone:
         assert content == ""
 
 
-# ── web_tools — LLM content processor (line 419) ─────────────────────────
 
 class TestWebToolsProcessorContentNone:
     """tools/web_tools.py — _process_with_llm() return line"""
@@ -101,7 +96,6 @@ class TestWebToolsProcessorContentNone:
         assert content == ""
 
 
-# ── web_tools — synthesis/summarization (line 538) ────────────────────────
 
 class TestWebToolsSynthesisContentNone:
     """tools/web_tools.py — synthesize_content() final_summary line"""
@@ -119,7 +113,6 @@ class TestWebToolsSynthesisContentNone:
         assert content == ""
 
 
-# ── vision_tools (line 350) ───────────────────────────────────────────────
 
 class TestVisionToolsContentNone:
     """tools/vision_tools.py — analyze_image() analysis extraction"""
@@ -137,7 +130,6 @@ class TestVisionToolsContentNone:
         assert content == ""
 
 
-# ── skills_guard (line 963) ───────────────────────────────────────────────
 
 class TestSkillsGuardContentNone:
     """tools/skills_guard.py — _llm_audit_skill() llm_text extraction"""
@@ -155,7 +147,6 @@ class TestSkillsGuardContentNone:
         assert content == ""
 
 
-# ── session_search_tool (line 164) ────────────────────────────────────────
 
 class TestSessionSearchContentNone:
     """tools/session_search_tool.py — _summarize_session() return line"""
@@ -173,7 +164,6 @@ class TestSessionSearchContentNone:
         assert content == ""
 
 
-# ── integration: verify the actual source lines are guarded ───────────────
 
 class TestSourceLinesAreGuarded:
     """Read the actual source files and verify the fix is applied.
@@ -191,7 +181,6 @@ class TestSourceLinesAreGuarded:
 
     def test_mixture_of_agents_reference_model_guarded(self):
         src = self._read_file("tools/mixture_of_agents_tool.py")
-        # The unguarded pattern should NOT exist
         assert ".message.content.strip()" not in src, (
             "tools/mixture_of_agents_tool.py still has unguarded "
             ".content.strip() — apply `(... or \"\").strip()` guard"
@@ -226,7 +215,6 @@ class TestSourceLinesAreGuarded:
         )
 
 
-# ── extract_content_or_reasoning() ────────────────────────────────────────
 
 class TestExtractContentOrReasoning:
     """agent/auxiliary_client.py — extract_content_or_reasoning()"""

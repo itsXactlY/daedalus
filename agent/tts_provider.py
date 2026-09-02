@@ -56,9 +56,6 @@ DEFAULT_OUTPUT_FORMAT = "mp3"
 VALID_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "opus", "flac"})
 
 
-# ---------------------------------------------------------------------------
-# ABC
-# ---------------------------------------------------------------------------
 
 
 class TTSProvider(abc.ABC):
@@ -255,9 +252,6 @@ class TTSProvider(abc.ABC):
         return False
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def resolve_output_format(value: Optional[str]) -> str:

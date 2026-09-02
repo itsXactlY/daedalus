@@ -65,9 +65,6 @@ def _same_endpoint(a: str, b: str) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Per-server entry
-# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -98,9 +95,6 @@ class _ProviderEntry:
     pending_401: dict[str, "asyncio.Future[bool]"] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# DaedalusMCPOAuthProvider — OAuthClientProvider subclass with disk-watch
-# ---------------------------------------------------------------------------
 
 
 def _make_daedalus_provider_class() -> Optional[type]:
@@ -139,11 +133,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
             super().__init__(*args, **kwargs)
             self._daedalus_server_name = server_name
             self._daedalus_home = ""
-            # When the client_id comes from config.yaml (pre-registered), an
-            # invalid_client rejection means the *config* is wrong — deleting
-            # client.json would just be re-seeded from config and re-running
-            # registration can't help. Only auto-heal dynamically-registered
-            # clients. See _maybe_flag_poisoned_client.
             self._daedalus_preregistered = preregistered
 
         async def _initialize(self) -> None:
@@ -183,11 +172,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
             if tokens is not None and tokens.expires_in is not None:
                 self.context.update_token_expiry(tokens)
 
-            # Cold-load: restore OAuth server metadata from disk before any
-            # refresh attempt. Without this, a restarted process with cached
-            # tokens but no in-memory metadata would fall back to the SDK's
-            # guessed ``{server_url}/token`` path (returns 404 on most real
-            # providers) and require a full browser re-authorization.
             storage = self.context.storage
             from tools.mcp_oauth import DaedalusTokenStorage
             if (
@@ -204,11 +188,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
                         meta.token_endpoint,
                     )
 
-            # Pre-flight OAuth AS discovery so ``_refresh_token`` has a
-            # correct ``token_endpoint`` before the first refresh attempt.
-            # Only runs when we have tokens on cold-load but no cached
-            # metadata — i.e. the exact scenario where the SDK's built-in
-            # 401-branch discovery hasn't had a chance to run yet.
             if (
                 tokens is not None
                 and self.context.oauth_metadata is None
@@ -216,8 +195,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
                 try:
                     await self._prefetch_oauth_metadata()
                 except Exception as exc:  # pragma: no cover — defensive
-                    # Non-fatal: if discovery fails, the SDK's normal 401-
-                    # branch discovery will run on the next request.
                     logger.debug(
                         "MCP OAuth '%s': pre-flight metadata discovery "
                         "failed (non-fatal): %s",
@@ -233,7 +210,7 @@ def _make_daedalus_provider_class() -> Optional[type]:
             builders and response handlers so we track whatever the SDK
             version we're pinned to expects.
             """
-            import httpx  # local import: httpx is an MCP SDK dependency
+            import httpx
             from mcp.client.auth.utils import (
                 build_oauth_authorization_server_metadata_discovery_urls,
                 build_protected_resource_metadata_discovery_urls,
@@ -244,7 +221,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
 
             server_url = self.context.server_url
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # Step 1: PRM discovery to learn the authorization_server URL.
                 for url in build_protected_resource_metadata_discovery_urls(
                     None, server_url
                 ):
@@ -266,8 +242,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
                             )
                         break
 
-                # Step 2: ASM discovery against the auth_server_url (or
-                # server_url fallback for legacy providers).
                 for url in build_oauth_authorization_server_metadata_discovery_urls(
                     self.context.auth_server_url, server_url
                 ):
@@ -285,8 +259,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
                         break
                     if asm:
                         self.context.oauth_metadata = asm
-                        # Persist immediately so a subsequent cold-load can
-                        # skip discovery entirely.
                         storage = self.context.storage
                         from tools.mcp_oauth import DaedalusTokenStorage
                         if isinstance(storage, DaedalusTokenStorage):
@@ -368,9 +340,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
                 if not _same_endpoint(req_url, token_endpoint):
                     return
                 body = await response.aread()
-                # Word-boundary match: matches `"error":"invalid_client"` but
-                # not the RFC 7591 registration error `invalid_client_metadata`
-                # (the trailing `_metadata` removes the right-hand boundary).
                 if not re.search(rb"\binvalid_client\b", body.lower()):
                     return
 
@@ -378,7 +347,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
                 from tools.mcp_oauth import DaedalusTokenStorage
                 if isinstance(storage, DaedalusTokenStorage):
                     storage.poison_client_registration()
-                # Drop the in-memory client so the SDK re-registers next flow.
                 self.context.client_info = None
                 self._initialized = False
             except Exception as exc:  # pragma: no cover — defensive, must not throw
@@ -388,9 +356,6 @@ def _make_daedalus_provider_class() -> Optional[type]:
                 )
 
         async def async_auth_flow(self, request):  # type: ignore[override]
-            # Pre-flow hook: ask the manager to refresh from disk if needed.
-            # Any failure here is non-fatal — we just log and proceed with
-            # whatever state the SDK already has.
             try:
                 await get_manager().invalidate_if_disk_changed(
                     self._daedalus_server_name,
@@ -402,45 +367,23 @@ def _make_daedalus_provider_class() -> Optional[type]:
                     self._daedalus_server_name, exc,
                 )
 
-            # Manually bridge the bidirectional generator protocol. httpx's
-            # auth_flow driver (httpx._client._send_handling_auth) calls
-            # ``auth_flow.asend(response)`` to feed HTTP responses back into
-            # the generator. A naive wrapper using ``async for item in inner:
-            # yield item`` DISCARDS those .asend(response) values and resumes
-            # the inner generator with None, so the SDK's
-            # ``response = yield request`` branch in
-            # mcp/client/auth/oauth2.py sees response=None and crashes at
-            # ``if response.status_code == 401`` with AttributeError.
-            #
-            # The bridge below forwards each .asend() value into the inner
-            # generator via inner.asend(incoming), preserving the bidirectional
-            # contract. Regression from PR #11383 caught by
-            # tests/tools/test_mcp_oauth_bidirectional.py.
             inner = super().async_auth_flow(request)
             try:
                 outgoing = await inner.__anext__()
                 while True:
                     incoming = yield outgoing
-                    # Sniff the response for a dead-client-registration signal
-                    # before handing it back to the SDK (best-effort, GH#36767).
                     await self._maybe_flag_poisoned_client(incoming)
                     outgoing = await inner.asend(incoming)
             except StopAsyncIteration:
-                # Persist any metadata the SDK discovered lazily during the
-                # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
 
     return DaedalusMCPOAuthProvider
 
 
-# Cached at import time. Tested and used by :class:`MCPOAuthManager`.
 _DAEDALUS_PROVIDER_CLS: Optional[type] = _make_daedalus_provider_class()
 
 
-# ---------------------------------------------------------------------------
-# Manager
-# ---------------------------------------------------------------------------
 
 
 class MCPOAuthManager:
@@ -454,12 +397,8 @@ class MCPOAuthManager:
     def __init__(self) -> None:
         self._entries: dict[tuple[str, str], _ProviderEntry] = {}
         self._entries_lock = threading.Lock()
-        # Holds strong references to in-flight 401 handler tasks so the
-        # event loop's weak-reference bookkeeping cannot GC them mid-run
-        # and leave `await pending` waiters hanging forever.
         self._inflight_tasks: set[asyncio.Task] = set()
 
-    # -- Provider construction / caching -------------------------------------
 
     def get_or_build_provider(
         self,
@@ -529,7 +468,6 @@ class MCPOAuthManager:
             )
             return None
 
-        # Local imports avoid circular deps at module import time.
         from tools.mcp_oauth import (
             DaedalusTokenStorage,
             OAuthNonInteractiveError,
@@ -632,7 +570,6 @@ class MCPOAuthManager:
         with self._entries_lock:
             self._entries.pop(self._key(server_name, daedalus_home), None)
 
-    # -- Disk watch ----------------------------------------------------------
 
     async def invalidate_if_disk_changed(
         self,
@@ -664,9 +601,6 @@ class MCPOAuthManager:
             if mtime_ns != entry.last_mtime_ns:
                 old = entry.last_mtime_ns
                 entry.last_mtime_ns = mtime_ns
-                # Force the SDK's OAuthClientProvider to reload from storage
-                # on its next auth flow. `_initialized` is private API but
-                # stable across the MCP SDK versions we pin (>=1.26.0).
                 if hasattr(entry.provider, "_initialized"):
                     entry.provider._initialized = False  # noqa: SLF001
                 logger.info(
@@ -677,7 +611,6 @@ class MCPOAuthManager:
                 return True
             return False
 
-    # -- 401 handler (dedup'd) -----------------------------------------------
 
     async def handle_401(
         self,
@@ -712,7 +645,6 @@ class MCPOAuthManager:
 
                 async def _do_handle() -> None:
                     try:
-                        # Step 1: Did disk change? Picks up external refresh.
                         disk_changed = await self.invalidate_if_disk_changed(
                             server_name
                         )
@@ -721,9 +653,6 @@ class MCPOAuthManager:
                                 pending.set_result(True)
                             return
 
-                        # Step 2: No disk change — if the SDK can refresh
-                        # in-place, let the caller retry. The SDK's httpx.Auth
-                        # flow will issue the refresh on the next request.
                         provider = entry.provider
                         ctx = getattr(provider, "context", None)
                         can_refresh = False
@@ -760,9 +689,6 @@ class MCPOAuthManager:
             return False
 
 
-# ---------------------------------------------------------------------------
-# Module-level singleton
-# ---------------------------------------------------------------------------
 
 
 _MANAGER: Optional[MCPOAuthManager] = None

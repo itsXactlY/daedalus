@@ -56,9 +56,6 @@ VALID_ASPECT_RATIOS: Tuple[str, ...] = ("landscape", "square", "portrait")
 DEFAULT_ASPECT_RATIO = "landscape"
 
 
-# ---------------------------------------------------------------------------
-# ABC
-# ---------------------------------------------------------------------------
 
 
 class ImageGenProvider(abc.ABC):
@@ -188,9 +185,6 @@ class ImageGenProvider(abc.ABC):
         """
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def resolve_aspect_ratio(value: Optional[str]) -> str:
@@ -256,10 +250,6 @@ def save_b64_image(
     return path
 
 
-# Extension inference for save_url_image — keep small and explicit.  We don't
-# want to import mimetypes for a handful of formats every image_gen provider
-# actually returns, and we never want to inherit a content-type that points
-# at HTML or JSON when the API gives us a degenerate response.
 _URL_IMAGE_CONTENT_TYPES = {
     "image/png": "png",
     "image/jpeg": "jpg",
@@ -293,9 +283,6 @@ def save_url_image(
     response = requests.get(url, timeout=timeout, stream=True)
     response.raise_for_status()
 
-    # Infer extension from the response content-type, falling back to the
-    # URL suffix when xAI / OpenAI omit a precise type (some CDNs return
-    # ``application/octet-stream``).  Defaults to ``png``.
     content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
     extension = _URL_IMAGE_CONTENT_TYPES.get(content_type)
     if extension is None:

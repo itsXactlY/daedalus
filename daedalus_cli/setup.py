@@ -76,8 +76,6 @@ def _supports_same_provider_pool_setup(provider: str) -> bool:
     return pconfig.auth_type in {"api_key", "oauth_device_code"}
 
 
-# Default model lists per provider — used as fallback when the live
-# /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
     "copilot-acp": [
         "copilot-acp",
@@ -193,7 +191,6 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
     pconfig = PROVIDER_REGISTRY[provider_id]
     is_copilot_catalog_provider = provider_id in {"copilot", "copilot-acp"}
 
-    # Resolve API key and base URL for the probe
     if is_copilot_catalog_provider:
         api_key = ""
         if provider_id == "copilot":
@@ -223,7 +220,6 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
         catalog = None
 
-    # Try live /models endpoint
     if is_copilot_catalog_provider and catalog:
         live_models = [item.get("id", "") for item in catalog if item.get("id")]
     else:
@@ -281,9 +277,6 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
                 selected_model = custom
             _set_default_model(config, selected_model)
     else:
-        # "Keep current" selected — validate it's compatible with the new
-        # provider.  OpenRouter-formatted names (containing "/") won't work
-        # on direct-API providers and would silently break the gateway.
         if "/" in (current_model or "") and provider_models:
             print_warning(
                 f"Current model \"{current_model}\" looks like an OpenRouter model "
@@ -314,7 +307,6 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         config["model"] = model_cfg
 
 
-# Import config helpers
 from daedalus_cli.config import (
     get_daedalus_home,
     get_config_path,
@@ -325,7 +317,6 @@ from daedalus_cli.config import (
     get_env_value,
     ensure_daedalus_home,
 )
-# display_daedalus_home imported lazily at call sites (stale-module safety during daedalus update)
 
 from daedalus_cli.colors import Colors, color
 
@@ -427,10 +418,8 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
-                # Rows available for list items: rows 2..(max_y-2) inclusive.
                 visible = max(1, max_y - 3)
 
-                # Scroll the viewport so the cursor is always visible.
                 if cursor < scroll_offset:
                     scroll_offset = cursor
                 elif cursor >= scroll_offset + visible:
@@ -609,14 +598,12 @@ def _prompt_api_key(var: dict):
 
 def _print_setup_summary(config: dict, daedalus_home):
     """Print the setup completion summary."""
-    # Tool availability summary
     print()
     print_header("Tool Availability Summary")
 
     tool_status = []
     subscription_features = get_nous_subscription_features(config)
 
-    # Vision — use the same runtime resolver as the actual vision tools
     try:
         from agent.auxiliary_client import get_available_vision_backends
 
@@ -629,13 +616,11 @@ def _print_setup_summary(config: dict, daedalus_home):
     else:
         tool_status.append(("Vision (image analysis)", False, "run 'daedalus setup' to configure"))
 
-    # Mixture of Agents — requires OpenRouter specifically (calls multiple models)
     if get_env_value("OPENROUTER_API_KEY"):
         tool_status.append(("Mixture of Agents", True, None))
     else:
         tool_status.append(("Mixture of Agents", False, "OPENROUTER_API_KEY"))
 
-    # Web tools (Exa, Parallel, Firecrawl, or Tavily)
     if subscription_features.web.managed_by_nous:
         tool_status.append(("Web Search & Extract (Nous subscription)", True, None))
     elif subscription_features.web.available:
@@ -646,7 +631,6 @@ def _print_setup_summary(config: dict, daedalus_home):
     else:
         tool_status.append(("Web Search & Extract", False, "EXA_API_KEY, PARALLEL_API_KEY, FIRECRAWL_API_KEY/FIRECRAWL_API_URL, or TAVILY_API_KEY"))
 
-    # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
     if subscription_features.browser.managed_by_nous:
         tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
@@ -674,7 +658,6 @@ def _print_setup_summary(config: dict, daedalus_home):
             ("Browser Automation", False, missing_browser_hint)
         )
 
-    # FAL (image generation)
     if subscription_features.image_gen.managed_by_nous:
         tool_status.append(("Image Generation (Nous subscription)", True, None))
     elif subscription_features.image_gen.available:
@@ -682,7 +665,6 @@ def _print_setup_summary(config: dict, daedalus_home):
     else:
         tool_status.append(("Image Generation", False, "FAL_KEY"))
 
-    # TTS — show configured provider
     tts_provider = config.get("tts", {}).get("provider", "edge")
     if subscription_features.tts.managed_by_nous:
         tool_status.append(("Text-to-Speech (OpenAI via Nous subscription)", True, None))
@@ -717,7 +699,6 @@ def _print_setup_summary(config: dict, daedalus_home):
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
-    # Tinker + WandB (RL training)
     if get_env_value("TINKER_API_KEY") and get_env_value("WANDB_API_KEY"):
         tool_status.append(("RL Training (Tinker)", True, None))
     elif get_env_value("TINKER_API_KEY"):
@@ -725,26 +706,20 @@ def _print_setup_summary(config: dict, daedalus_home):
     else:
         tool_status.append(("RL Training (Tinker)", False, "TINKER_API_KEY"))
 
-    # Home Assistant
     if get_env_value("HASS_TOKEN"):
         tool_status.append(("Smart Home (Home Assistant)", True, None))
 
-    # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
         tool_status.append(("Skills Hub (GitHub)", True, None))
     else:
         tool_status.append(("Skills Hub (GitHub)", False, "GITHUB_TOKEN"))
 
-    # Terminal (always available if system deps met)
     tool_status.append(("Terminal/Commands", True, None))
 
-    # Task planning (always available, in-memory)
     tool_status.append(("Task Planning (todo)", True, None))
 
-    # Skills (always available -- bundled skills + user-created skills)
     tool_status.append(("Skills (view, create, edit)", True, None))
 
-    # Print status
     available_count = sum(1 for _, avail, _ in tool_status if avail)
     total_count = len(tool_status)
 
@@ -770,7 +745,6 @@ def _print_setup_summary(config: dict, daedalus_home):
         print_warning(f"or edit {_dhh()}/.env directly to add the missing API keys.")
         print()
 
-    # Done banner
     print()
     print(
         color(
@@ -789,7 +763,6 @@ def _print_setup_summary(config: dict, daedalus_home):
     )
     print()
 
-    # Show file locations prominently
     from daedalus_constants import display_daedalus_home as _dhh
     print(color(f"📁 All your files are in {_dhh()}/:", Colors.CYAN, Colors.BOLD))
     print()
@@ -839,7 +812,6 @@ def _prompt_container_resources(config: dict):
     print()
     print_info("Container Resource Settings:")
 
-    # Persistence
     current_persist = terminal.get("container_persistent", True)
     persist_label = "yes" if current_persist else "no"
     print_info("  Persistent filesystem keeps files between sessions.")
@@ -849,7 +821,6 @@ def _prompt_container_resources(config: dict):
     )
     terminal["container_persistent"] = persist_str.lower() in ("yes", "true", "y", "1")
 
-    # CPU
     current_cpu = terminal.get("container_cpu", 1)
     cpu_str = prompt("  CPU cores", str(current_cpu))
     try:
@@ -857,7 +828,6 @@ def _prompt_container_resources(config: dict):
     except ValueError:
         pass
 
-    # Memory
     current_mem = terminal.get("container_memory", 5120)
     mem_str = prompt("  Memory in MB (5120 = 5GB)", str(current_mem))
     try:
@@ -865,7 +835,6 @@ def _prompt_container_resources(config: dict):
     except ValueError:
         pass
 
-    # Disk
     current_disk = terminal.get("container_disk", 51200)
     disk_str = prompt("  Disk in MB (51200 = 50GB)", str(current_disk))
     try:
@@ -874,13 +843,8 @@ def _prompt_container_resources(config: dict):
         pass
 
 
-# Tool categories and provider config are now in tools_config.py (shared
-# between `daedalus tools` and `daedalus setup tools`).
 
 
-# =============================================================================
-# Section 1: Model & Provider Configuration
-# =============================================================================
 
 
 
@@ -902,8 +866,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     print_info(f"   Guide: {_DOCS_BASE}/integrations/providers")
     print()
 
-    # Delegate to the shared daedalus model flow — handles provider picker,
-    # credential prompting, model selection, and config persistence.
     from daedalus_cli.main import select_provider_and_model
     try:
         select_provider_and_model()
@@ -915,16 +877,11 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         print_warning(f"Provider setup encountered an error: {exc}")
         print_info("You can try again later with: daedalus model")
 
-    # Re-sync the wizard's config dict from what cmd_model saved to disk.
-    # This is critical: cmd_model writes to disk via its own load/save cycle,
-    # and the wizard's final save_config(config) must not overwrite those
-    # changes with stale values (#4172).
     _refreshed = load_config()
     config["model"] = _refreshed.get("model", config.get("model"))
     if _refreshed.get("custom_providers"):
         config["custom_providers"] = _refreshed["custom_providers"]
 
-    # Derive the selected provider for downstream steps (vision setup).
     selected_provider = None
     _m = config.get("model")
     if isinstance(_m, dict):
@@ -932,7 +889,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
 
     nous_subscription_selected = selected_provider == "nous"
 
-    # ── Same-provider fallback & rotation setup (full setup only) ──
     if not quick and _supports_same_provider_pool_setup(selected_provider):
         try:
             from types import SimpleNamespace
@@ -1011,7 +967,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         except Exception as exc:
             logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
-    # ── Vision & Image Analysis Setup (full setup only) ──
     if quick:
         _vision_needs_setup = False
     else:
@@ -1055,14 +1010,14 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         ]
         _vision_idx = prompt_choice("Configure vision:", _vision_choices, 2)
 
-        if _vision_idx == 0:  # OpenRouter
+        if _vision_idx == 0:
             _or_key = prompt("  OpenRouter API key", password=True).strip()
             if _or_key:
                 save_env_value("OPENROUTER_API_KEY", _or_key)
                 print_success("OpenRouter key saved — vision will use Gemini")
             else:
                 print_info("Skipped — vision won't be available")
-        elif _vision_idx == 1:  # OpenAI-compatible endpoint
+        elif _vision_idx == 1:
             _base_url = prompt("  Base URL (blank for OpenAI)").strip() or "https://api.openai.com/v1"
             _api_key_label = "  API key"
             if "api.openai.com" in _base_url.lower():
@@ -1070,7 +1025,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
             _oai_key = prompt(_api_key_label, password=True).strip()
             if _oai_key:
                 save_env_value("OPENAI_API_KEY", _oai_key)
-                # Save vision base URL to config (not .env — only secrets go there)
                 _vaux = config.setdefault("auxiliary", {}).setdefault("vision", {})
                 _vaux["base_url"] = _base_url
                 if "api.openai.com" in _base_url.lower():
@@ -1109,9 +1063,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _setup_tts_provider(config)
 
 
-# =============================================================================
-# Section 1b: TTS Provider Configuration
-# =============================================================================
 
 
 def _check_espeak_ng() -> bool:
@@ -1120,11 +1071,6 @@ def _check_espeak_ng() -> bool:
     return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
 
 
-# neutts has no extra and tracks upstream model code, so setup deliberately
-# installs the newest release (`-U`) rather than an exact pin. Bound the
-# *major* anyway: an unreviewed 2.x landing automatically on every user's
-# machine is the supply-chain vector that `-U` opens, and a major bound
-# closes it without freezing the 1.x model work.
 NEUTTS_SPEC = "neutts[all]<2.0"
 
 
@@ -1133,7 +1079,6 @@ def _install_neutts_deps() -> bool:
     import subprocess
     import sys
 
-    # Check espeak-ng
     if not _check_espeak_ng():
         print()
         print_warning("NeuTTS requires espeak-ng for phonemization.")
@@ -1160,7 +1105,6 @@ def _install_neutts_deps() -> bool:
         else:
             print_warning("espeak-ng is required for NeuTTS. Install it manually before using NeuTTS.")
 
-    # Install neutts Python package
     print()
     print_info("Installing neutts Python package...")
     print_info("This will also download the TTS model (~300MB) on first use.")
@@ -1231,7 +1175,6 @@ def _setup_tts_provider(config: dict):
             )
 
     if selected == "neutts":
-        # Check if already installed
         try:
             import importlib.util
             already_installed = importlib.util.find_spec("neutts") is not None
@@ -1290,7 +1233,6 @@ def _setup_tts_provider(config: dict):
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
 
-    # Save the selection
     if "tts" not in config:
         config["tts"] = {}
     config["tts"]["provider"] = selected
@@ -1303,9 +1245,6 @@ def setup_tts(config: dict):
     _setup_tts_provider(config)
 
 
-# =============================================================================
-# Section 2: Terminal Backend Configuration
-# =============================================================================
 
 
 def setup_terminal_backend(config: dict):
@@ -1322,7 +1261,6 @@ def setup_terminal_backend(config: dict):
     current_backend = config.get("terminal", {}).get("backend", "local")
     is_linux = _platform.system() == "Linux"
 
-    # Build backend choices with descriptions
     terminal_choices = [
         "Local - run directly on this machine (default)",
         "Modal - serverless cloud sandbox",
@@ -1339,7 +1277,6 @@ def setup_terminal_backend(config: dict):
         backend_to_idx["singularity"] = next_idx
         next_idx += 1
 
-    # Add keep current option
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
@@ -1360,7 +1297,6 @@ def setup_terminal_backend(config: dict):
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
 
-        # CWD for messaging
         print()
         print_info("Working directory for messaging sessions:")
         print_info("  When using Daedalus via Telegram/Discord, this is where")
@@ -1372,7 +1308,6 @@ def setup_terminal_backend(config: dict):
         if cwd:
             config["terminal"]["cwd"] = cwd
 
-        # Sudo support
         print()
         existing_sudo = get_env_value("SUDO_PASSWORD")
         if existing_sudo:
@@ -1389,7 +1324,6 @@ def setup_terminal_backend(config: dict):
     elif selected_backend == "singularity":
         print_success("Terminal backend: Singularity/Apptainer")
 
-        # Check if singularity/apptainer is available
         sing_bin = shutil.which("apptainer") or shutil.which("singularity")
         if not sing_bin:
             print_warning("Singularity/Apptainer not found in PATH!")
@@ -1451,7 +1385,6 @@ def setup_terminal_backend(config: dict):
             config["terminal"]["modal_mode"] = "direct"
             print_info("Requires a Modal account: https://modal.com")
 
-            # Check if modal SDK is installed
             try:
                 __import__("modal")
             except ImportError:
@@ -1483,7 +1416,6 @@ def setup_terminal_backend(config: dict):
                 else:
                     print_warning("Install failed — run manually: pip install modal")
 
-            # Modal token
             print()
             print_info("Modal authentication:")
             print_info("  Get your token at: https://modal.com/settings")
@@ -1513,7 +1445,6 @@ def setup_terminal_backend(config: dict):
         print_info("Each session gets a dedicated sandbox with filesystem persistence.")
         print_info("Sign up at: https://daytona.io")
 
-        # Check if daytona SDK is installed
         try:
             __import__("daytona")
         except ImportError:
@@ -1540,7 +1471,6 @@ def setup_terminal_backend(config: dict):
                 if result.stderr:
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
-        # Daytona API key
         print()
         existing_key = get_env_value("DAYTONA_API_KEY")
         if existing_key:
@@ -1556,7 +1486,6 @@ def setup_terminal_backend(config: dict):
                 save_env_value("DAYTONA_API_KEY", api_key)
                 print_success("    Configured")
 
-        # Daytona image
         current_image = config.get("terminal", {}).get(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
@@ -1570,32 +1499,27 @@ def setup_terminal_backend(config: dict):
         print_success("Terminal backend: SSH")
         print_info("Run commands on a remote machine via SSH.")
 
-        # SSH host
         current_host = get_env_value("TERMINAL_SSH_HOST") or ""
         host = prompt("  SSH host (hostname or IP)", current_host)
         if host:
             save_env_value("TERMINAL_SSH_HOST", host)
 
-        # SSH user
         current_user = get_env_value("TERMINAL_SSH_USER") or ""
         user = prompt("  SSH user", current_user or os.getenv("USER", ""))
         if user:
             save_env_value("TERMINAL_SSH_USER", user)
 
-        # SSH port
         current_port = get_env_value("TERMINAL_SSH_PORT") or "22"
         port = prompt("  SSH port", current_port)
         if port and port != "22":
             save_env_value("TERMINAL_SSH_PORT", port)
 
-        # SSH key
         current_key = get_env_value("TERMINAL_SSH_KEY") or ""
         default_key = str(Path.home() / ".ssh" / "id_rsa")
         ssh_key = prompt("  SSH private key path", current_key or default_key)
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
 
-        # Test connection
         if host and prompt_yes_no("  Test SSH connection?", True):
             print_info("  Testing connection...")
             import subprocess
@@ -1614,8 +1538,6 @@ def setup_terminal_backend(config: dict):
                 print_warning(f"  SSH connection failed: {result.stderr.strip()}")
                 print_info("  Check your SSH key and host settings.")
 
-    # Sync terminal backend to .env so terminal_tool picks it up directly.
-    # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
     save_env_value("TERMINAL_ENV", selected_backend)
     if selected_backend == "modal":
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
@@ -1624,17 +1546,10 @@ def setup_terminal_backend(config: dict):
     print_success(f"Terminal backend set to: {selected_backend}")
 
 
-# =============================================================================
-# Section 3: Agent Settings
-# =============================================================================
 
 
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
-    # max_turns lives in config.yaml. Do NOT also write DAEDALUS_MAX_ITERATIONS
-    # to .env: the env var takes precedence over config (see cli.py), so writing
-    # it here makes agent.max_turns decorative -- the user edits config.yaml,
-    # nothing changes, and the cause is a line in a file meant for secrets.
     config.setdefault("agent", {})["max_turns"] = 90
 
     config.setdefault("display", {})["tool_progress"] = "all"
@@ -1664,10 +1579,6 @@ def setup_agent_settings(config: dict):
     print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
     print()
 
-    # ── Max Iterations ──
-    # Config leads. An exported DAEDALUS_MAX_ITERATIONS is still honoured at
-    # runtime as a deliberate override, but it is no longer what setup shows or
-    # writes.
     current_max = str(config.get("agent", {}).get("max_turns", 90))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
@@ -1677,14 +1588,12 @@ def setup_agent_settings(config: dict):
     try:
         max_iter = int(max_iter_str)
         if max_iter > 0:
-            # config.yaml only -- see _apply_default_agent_settings.
             config.setdefault("agent", {})["max_turns"] = max_iter
             config.pop("max_turns", None)
             print_success(f"Max iterations set to {max_iter}")
     except ValueError:
         print_warning("Invalid number, keeping current value")
 
-    # ── Tool Progress Display ──
     print_info("")
     print_info("Tool Progress Display")
     print_info("Controls how much tool activity is shown (CLI and messaging).")
@@ -1704,7 +1613,6 @@ def setup_agent_settings(config: dict):
     else:
         print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
 
-    # ── Context Compression ──
     print_header("Context Compression")
     print_info("Automatically summarizes old messages when context gets too long.")
     print_info(
@@ -1726,7 +1634,6 @@ def setup_agent_settings(config: dict):
         f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
     )
 
-    # ── Session Reset Policy ──
     print_header("Session Reset Policy")
     print_info(
         "Messaging sessions (Telegram, Discord, etc.) accumulate context over time."
@@ -1767,7 +1674,7 @@ def setup_agent_settings(config: dict):
 
     config.setdefault("session_reset", {})
 
-    if reset_idx == 0:  # Both
+    if reset_idx == 0:
         config["session_reset"]["mode"] = "both"
         idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
         try:
@@ -1786,7 +1693,7 @@ def setup_agent_settings(config: dict):
         print_success(
             f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min idle or daily at {config['session_reset'].get('at_hour', 4)}:00"
         )
-    elif reset_idx == 1:  # Idle only
+    elif reset_idx == 1:
         config["session_reset"]["mode"] = "idle"
         idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
         try:
@@ -1798,7 +1705,7 @@ def setup_agent_settings(config: dict):
         print_success(
             f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min of inactivity"
         )
-    elif reset_idx == 2:  # Daily only
+    elif reset_idx == 2:
         config["session_reset"]["mode"] = "daily"
         hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
         try:
@@ -1810,7 +1717,7 @@ def setup_agent_settings(config: dict):
         print_success(
             f"Sessions reset daily at {config['session_reset'].get('at_hour', 4)}:00"
         )
-    elif reset_idx == 3:  # None
+    elif reset_idx == 3:
         config["session_reset"]["mode"] = "none"
         print_info(
             "Sessions will never auto-reset. Context is managed only by compression."
@@ -1818,14 +1725,10 @@ def setup_agent_settings(config: dict):
         print_warning(
             "Long conversations will grow in cost. Use /reset manually when needed."
         )
-    # else: keep current (idx == 4)
 
     save_config(config)
 
 
-# =============================================================================
-# Section 4: Messaging Platforms (Gateway)
-# =============================================================================
 
 
 def _setup_telegram():
@@ -1835,7 +1738,6 @@ def _setup_telegram():
     if existing:
         print_info("Telegram: already configured")
         if not prompt_yes_no("Reconfigure Telegram?", False):
-            # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
                 print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
                 if prompt_yes_no("Add allowed users now?", True):
@@ -2203,7 +2105,6 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  daedalus config edit")
 
 
-# Platform registry for the gateway checklist
 _GATEWAY_PLATFORMS = [
     ("Discord", "DISCORD_BOT_TOKEN", _setup_discord),
     ("Slack", "SLACK_BOT_TOKEN", _setup_slack),
@@ -2220,11 +2121,9 @@ def setup_gateway(config: dict):
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
-    # Build checklist items, pre-selecting already-configured platforms
     items = []
     pre_selected = []
     for i, (name, env_var, _func) in enumerate(_GATEWAY_PLATFORMS):
-        # Matrix has two possible env vars
         is_configured = bool(get_env_value(env_var))
         if name == "Matrix" and not is_configured:
             is_configured = bool(get_env_value("MATRIX_PASSWORD"))
@@ -2243,7 +2142,6 @@ def setup_gateway(config: dict):
         name, _env_var, setup_func = _GATEWAY_PLATFORMS[idx]
         setup_func()
 
-    # ── Gateway Service Setup ──
     any_messaging = (
         get_env_value("TELEGRAM_BOT_TOKEN")
         or get_env_value("DISCORD_BOT_TOKEN")
@@ -2259,7 +2157,6 @@ def setup_gateway(config: dict):
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
 
-        # Check if any home channels are missing
         missing_home = []
         if get_env_value("TELEGRAM_BOT_TOKEN") and not get_env_value(
             "TELEGRAM_HOME_CHANNEL"
@@ -2283,7 +2180,6 @@ def setup_gateway(config: dict):
                     f"     daedalus config set {plat.upper()}_HOME_CHANNEL <channel_id>"
                 )
 
-        # Offer to install the gateway as a system service
         import platform as _platform
 
         _is_linux = _platform.system() == "Linux"
@@ -2366,9 +2262,6 @@ def setup_gateway(config: dict):
         print_info("━" * 50)
 
 
-# =============================================================================
-# Section 5: Tool Configuration (delegates to unified tools_config.py)
-# =============================================================================
 
 
 def setup_tools(config: dict, first_install: bool = False):
@@ -2386,9 +2279,6 @@ def setup_tools(config: dict, first_install: bool = False):
     tools_command(first_install=first_install, config=config)
 
 
-# =============================================================================
-# Post-Migration Section Skip Logic
-# =============================================================================
 
 
 def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]:
@@ -2405,7 +2295,6 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             or get_env_value("ANTHROPIC_API_KEY")
         )
         if not has_key:
-            # Check for OAuth providers
             try:
                 from daedalus_cli.auth import get_active_provider
                 if get_active_provider():
@@ -2443,7 +2332,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             platforms.append("Signal")
         if platforms:
             return ", ".join(platforms)
-        return None  # No platforms configured — section must run
+        return None
 
     elif section_key == "tools":
         tools = []
@@ -2475,9 +2364,6 @@ def _skip_configured_section(
     return not prompt_yes_no(f"  Reconfigure {label.lower()}?", default=False)
 
 
-# =============================================================================
-# OpenClaw Migration
-# =============================================================================
 
 
 _OPENCLAW_SCRIPT = (
@@ -2513,12 +2399,10 @@ def _offer_openclaw_migration(daedalus_home: Path) -> bool:
         )
         return False
 
-    # Ensure config.yaml exists before migration tries to read it
     config_path = get_config_path()
     if not config_path.exists():
         save_config(load_config())
 
-    # Dynamically load the migration script
     try:
         spec = importlib.util.spec_from_file_location(
             "openclaw_to_daedalus", _OPENCLAW_SCRIPT
@@ -2528,8 +2412,6 @@ def _offer_openclaw_migration(daedalus_home: Path) -> bool:
             return False
 
         mod = importlib.util.module_from_spec(spec)
-        # Register in sys.modules so @dataclass can resolve the module
-        # (Python 3.11+ requires this for dynamically loaded modules)
         import sys as _sys
         _sys.modules[spec.name] = mod
         try:
@@ -2538,7 +2420,6 @@ def _offer_openclaw_migration(daedalus_home: Path) -> bool:
             _sys.modules.pop(spec.name, None)
             raise
 
-        # Run migration with the "full" preset, execute mode, no overwrite
         selected = mod.resolve_selected_options(None, None, preset="full")
         migrator = mod.Migrator(
             source_root=openclaw_dir.resolve(),
@@ -2557,7 +2438,6 @@ def _offer_openclaw_migration(daedalus_home: Path) -> bool:
         logger.debug("OpenClaw migration error", exc_info=True)
         return False
 
-    # Print summary
     summary = report.get("summary", {})
     migrated = summary.get("migrated", 0)
     skipped = summary.get("skipped", 0)
@@ -2582,9 +2462,6 @@ def _offer_openclaw_migration(daedalus_home: Path) -> bool:
     return True
 
 
-# =============================================================================
-# Main Wizard Orchestrator
-# =============================================================================
 
 SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
@@ -2595,9 +2472,6 @@ SETUP_SECTIONS = [
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
-# The returning-user menu intentionally omits standalone TTS because model setup
-# already includes TTS selection and tools setup covers the rest of the provider
-# configuration. Keep this list in the same order as the visible menu entries.
 RETURNING_USER_MENU_SECTION_KEYS = [
     "model",
     "terminal",
@@ -2627,7 +2501,6 @@ def run_setup_wizard(args):
     config = load_config()
     daedalus_home = get_daedalus_home()
 
-    # Detect non-interactive environments (headless SSH, Docker, CI/CD)
     non_interactive = getattr(args, 'non_interactive', False)
     if not non_interactive and not is_interactive_stdin():
         non_interactive = True
@@ -2638,7 +2511,6 @@ def run_setup_wizard(args):
         )
         return
 
-    # Check if a specific section was requested
     section = getattr(args, "section", None)
     if section:
         for key, label, func in SETUP_SECTIONS:
@@ -2667,7 +2539,6 @@ def run_setup_wizard(args):
         print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
         return
 
-    # Check if this is an existing installation with a provider configured
     from daedalus_cli.auth import get_active_provider
 
     active_provider = get_active_provider()
@@ -2715,7 +2586,6 @@ def run_setup_wizard(args):
     migration_ran = False
 
     if is_existing:
-        # ── Returning User Menu ──
         print()
         print_header("Welcome Back!")
         print_success("You already have Daedalus configured.")
@@ -2734,28 +2604,20 @@ def run_setup_wizard(args):
             "Exit",
         ]
 
-        # Separator indices (not selectable, but prompt_choice doesn't filter them,
-        # so we handle them below)
         choice = prompt_choice("What would you like to do?", menu_choices, 0)
 
         if choice == 0:
-            # Quick setup
             _run_quick_setup(config, daedalus_home)
             return
         elif choice == 1:
-            # Full setup — fall through to run all sections
             pass
         elif choice in (2, 8):
-            # Separator — treat as exit
             print_info("Exiting. Run 'daedalus setup' again when ready.")
             return
         elif choice == 9:
             print_info("Exiting. Run 'daedalus setup' again when ready.")
             return
         elif 3 <= choice <= 7:
-            # Individual section — map by key, not by position.
-            # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
-            # so positional indexing (choice - 3) would dispatch the wrong section.
             section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 3]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
@@ -2765,10 +2627,8 @@ def run_setup_wizard(args):
                 _print_setup_summary(config, daedalus_home)
             return
     else:
-        # ── First-Time Setup ──
         print()
 
-        # Offer OpenClaw migration before configuration begins
         migration_ran = _offer_openclaw_migration(daedalus_home)
         if migration_ran:
             config = load_config()
@@ -2782,7 +2642,6 @@ def run_setup_wizard(args):
             _run_first_time_quick_setup(config, daedalus_home, is_existing)
             return
 
-    # ── Full Setup — run all sections ──
     print_header("Configuration Location")
     print_info(f"Config file:  {get_config_path()}")
     print_info(f"Secrets file: {get_env_path()}")
@@ -2797,27 +2656,21 @@ def run_setup_wizard(args):
         print_info("Each section below will show what was imported — press Enter to keep,")
         print_info("or choose to reconfigure if needed.")
 
-    # Section 1: Model & Provider
     if not (migration_ran and _skip_configured_section(config, "model", "Model & Provider")):
         setup_model_provider(config)
 
-    # Section 2: Terminal Backend
     if not (migration_ran and _skip_configured_section(config, "terminal", "Terminal Backend")):
         setup_terminal_backend(config)
 
-    # Section 3: Agent Settings
     if not (migration_ran and _skip_configured_section(config, "agent", "Agent Settings")):
         setup_agent_settings(config)
 
-    # Section 4: Messaging Platforms
     if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
         setup_gateway(config)
 
-    # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
 
-    # Save and show summary
     save_config(config)
     _print_setup_summary(config, daedalus_home)
 
@@ -2846,16 +2699,13 @@ def _run_first_time_quick_setup(config: dict, daedalus_home, is_existing: bool):
     settings, and tools — the user can customize later via
     ``daedalus setup <section>``.
     """
-    # Step 1: Model & Provider (essential — skips rotation/vision/TTS)
     setup_model_provider(config, quick=True)
 
-    # Step 2: Apply defaults for everything else
     _apply_default_agent_settings(config)
     config.setdefault("terminal", {}).setdefault("backend", "local")
 
     save_config(config)
 
-    # Step 3: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
         "Connect a messaging platform? (Telegram, Discord, etc.)",
@@ -2894,7 +2744,6 @@ def _run_quick_setup(config: dict, daedalus_home):
     print()
     print_header("Quick Setup — Missing Items Only")
 
-    # Check what's missing
     missing_required = [
         v for v in get_missing_env_vars(required_only=False) if v.get("is_required")
     ]
@@ -2918,7 +2767,6 @@ def _run_quick_setup(config: dict, daedalus_home):
         print_info("or pick a specific section from the menu.")
         return
 
-    # Handle missing required env vars
     if missing_required:
         print()
         print_info(f"{len(missing_required)} required setting(s) missing:")
@@ -2944,7 +2792,6 @@ def _run_quick_setup(config: dict, daedalus_home):
             else:
                 print_warning(f"  Skipped {var['name']}")
 
-    # Split missing optional vars by category
     missing_tools = [v for v in missing_optional if v.get("category") == "tool"]
     missing_messaging = [
         v
@@ -2952,7 +2799,6 @@ def _run_quick_setup(config: dict, daedalus_home):
         if v.get("category") == "messaging" and not v.get("advanced")
     ]
 
-    # ── Tool API keys (checklist) ──
     if missing_tools:
         print()
         print_header("Tool API Keys")
@@ -2972,14 +2818,12 @@ def _run_quick_setup(config: dict, daedalus_home):
             var = missing_tools[idx]
             _prompt_api_key(var)
 
-    # ── Messaging platforms (checklist then prompt for selected) ──
     if missing_messaging:
         print()
         print_header("Messaging Platforms")
         print_info("Connect Daedalus to messaging apps to chat from anywhere.")
         print_info("You can configure these later with 'daedalus setup gateway'.")
 
-        # Group by platform (preserving order)
         platform_order = []
         platforms = {}
         for var in missing_messaging:
@@ -3032,7 +2876,6 @@ def _run_quick_setup(config: dict, daedalus_home):
                     print_warning("  Skipped")
                 print()
 
-    # Handle missing config fields
     if missing_config:
         print()
         print_info(
@@ -3041,9 +2884,7 @@ def _run_quick_setup(config: dict, daedalus_home):
         for field in missing_config:
             print_success(f"  Added {field['key']} = {field['default']}")
 
-        # Update config version
         config["_config_version"] = latest_ver
         save_config(config)
 
-    # Jump to summary
     _print_setup_summary(config, daedalus_home)

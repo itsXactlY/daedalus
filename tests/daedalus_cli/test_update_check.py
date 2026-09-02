@@ -20,7 +20,6 @@ def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     from daedalus_cli import __version__ as _version
     from daedalus_cli.banner import check_for_updates
 
-    # Create a fake git repo and fresh cache
     repo_dir = tmp_path / "daedalus"
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
@@ -44,7 +43,6 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     repo_dir.mkdir()
     (repo_dir / ".git").mkdir()
 
-    # Write an expired cache (timestamp far in the past)
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(json.dumps({"ts": 0, "behind": 1}))
 
@@ -55,8 +53,6 @@ def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
         result = check_for_updates()
 
     assert result == 5
-    # The 0.20 check runs 4 git subprocess calls on the stale path:
-    # remote get-url, is-shallow-repository, scoped fetch, and rev-list.
     assert mock_run.call_count == 4
 
 
@@ -64,7 +60,6 @@ def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     """Returns None when .git directory doesn't exist anywhere."""
     import daedalus_cli.banner as banner
 
-    # Create a fake banner.py so the fallback path also has no .git
     fake_banner = tmp_path / "daedalus_cli" / "banner.py"
     fake_banner.parent.mkdir(parents=True, exist_ok=True)
     fake_banner.touch()
@@ -85,12 +80,10 @@ def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     if not (project_root / ".git").exists():
         pytest.skip("Not running from a git checkout")
 
-    # Point DAEDALUS_HOME at a temp dir with no daedalus/.git
     monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
     with patch("daedalus_cli.banner.subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
         result = banner.check_for_updates()
-    # Should have fallen back to project root and run git commands
     assert mock_run.call_count >= 1
 
 
@@ -98,7 +91,6 @@ def test_prefetch_non_blocking():
     """prefetch_update_check() should return immediately without blocking."""
     import daedalus_cli.banner as banner
 
-    # Reset module state
     banner._update_result = None
     banner._update_check_done = threading.Event()
 
@@ -107,10 +99,8 @@ def test_prefetch_non_blocking():
         banner.prefetch_update_check()
         elapsed = time.monotonic() - start
 
-        # Should return almost immediately (well under 1 second)
         assert elapsed < 1.0
 
-        # Wait for the background thread to finish
         banner._update_check_done.wait(timeout=5)
         assert banner._update_result == 5
 
@@ -119,7 +109,6 @@ def test_get_update_result_timeout():
     """get_update_result() returns None when check hasn't completed within timeout."""
     import daedalus_cli.banner as banner
 
-    # Reset module state — don't set the event
     banner._update_result = None
     banner._update_check_done = threading.Event()
 
@@ -127,7 +116,6 @@ def test_get_update_result_timeout():
     result = banner.get_update_result(timeout=0.1)
     elapsed = time.monotonic() - start
 
-    # Should have waited ~0.1s and returned None
     assert result is None
     assert elapsed < 0.5
 
@@ -136,7 +124,6 @@ def test_invalidate_update_cache_clears_all_profiles(tmp_path):
     """_invalidate_update_cache() should delete .update_check from ALL profiles."""
     from daedalus_cli.main import _invalidate_update_cache
 
-    # Build a fake ~/.daedalus with default + two named profiles
     default_home = tmp_path / ".daedalus"
     default_home.mkdir()
     (default_home / ".update_check").write_text('{"ts":1,"behind":50}')
@@ -150,7 +137,6 @@ def test_invalidate_update_cache_clears_all_profiles(tmp_path):
     with patch.object(Path, "home", return_value=tmp_path):
         _invalidate_update_cache()
 
-    # All three caches should be gone
     assert not (default_home / ".update_check").exists(), "default profile cache not cleared"
     assert not (profiles_root / "ops" / ".update_check").exists(), "ops profile cache not cleared"
     assert not (profiles_root / "dev" / ".update_check").exists(), "dev profile cache not cleared"

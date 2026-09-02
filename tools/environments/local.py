@@ -15,17 +15,8 @@ from tools.environments.base import BaseEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
 from tools.interrupt import is_interrupted
 
-# Unique marker to isolate real command output from shell init/exit noise.
-# printf (no trailing newline) keeps the boundaries clean for splitting.
 _OUTPUT_FENCE = "__DAEDALUS_FENCE_a9f7b3__"
 
-# Daedalus-internal env vars that should NOT leak into terminal subprocesses.
-# These are loaded from ~/.daedalus/.env for Daedalus' own LLM/provider calls
-# but can break external CLIs (e.g. codex) that also honor them.
-# See: https://github.com/NousResearch/daedalus/issues/1002
-#
-# Built dynamically from the provider registry so new providers are
-# automatically covered without manual blocklist maintenance.
 _DAEDALUS_PROVIDER_ENV_FORCE_PREFIX = "_DAEDALUS_FORCE_"
 
 
@@ -59,33 +50,30 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
 
-    # Vars not covered above but still Daedalus-internal / conflict-prone.
     blocked.update({
         "OPENAI_BASE_URL",
         "OPENAI_API_KEY",
-        "OPENAI_API_BASE",         # legacy alias
+        "OPENAI_API_BASE",
         "OPENAI_ORG_ID",
         "OPENAI_ORGANIZATION",
         "OPENROUTER_API_KEY",
         "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_TOKEN",         # OAuth token (not in registry as env var)
+        "ANTHROPIC_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
         "LLM_MODEL",
-        # Expanded isolation for other major providers (Issue #1002)
-        "GOOGLE_API_KEY",          # Gemini / Google AI Studio
-        "DEEPSEEK_API_KEY",        # DeepSeek
-        "MISTRAL_API_KEY",         # Mistral AI
-        "GROQ_API_KEY",            # Groq
-        "TOGETHER_API_KEY",        # Together AI
-        "PERPLEXITY_API_KEY",      # Perplexity
-        "COHERE_API_KEY",          # Cohere
-        "FIREWORKS_API_KEY",       # Fireworks AI
-        "XAI_API_KEY",             # xAI (Grok)
-        "HELICONE_API_KEY",        # LLM Observability proxy
+        "GOOGLE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "MISTRAL_API_KEY",
+        "GROQ_API_KEY",
+        "TOGETHER_API_KEY",
+        "PERPLEXITY_API_KEY",
+        "COHERE_API_KEY",
+        "FIREWORKS_API_KEY",
+        "XAI_API_KEY",
+        "HELICONE_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
-        # Gateway/runtime config not represented in OPTIONAL_ENV_VARS.
         "TELEGRAM_HOME_CHANNEL",
         "TELEGRAM_HOME_CHANNEL_NAME",
         "DISCORD_HOME_CHANNEL",
@@ -115,12 +103,10 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
         "GATEWAY_ALLOWED_USERS",
-        # Skills Hub / GitHub app auth paths and aliases.
         "GH_TOKEN",
         "GITHUB_APP_ID",
         "GITHUB_APP_PRIVATE_KEY_PATH",
         "GITHUB_APP_INSTALLATION_ID",
-        # Remote sandbox backend credentials.
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
@@ -174,22 +160,18 @@ def _find_bash() -> str:
             shutil.which("bash")
             or ("/usr/bin/bash" if os.path.isfile("/usr/bin/bash") else None)
             or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
-            or os.environ.get("SHELL")  # last resort: whatever they have
+            or os.environ.get("SHELL")
             or "/bin/sh"
         )
 
-    # Windows: look for Git Bash (installed with Git for Windows).
-    # Allow override via env var (same pattern as Claude Code).
     custom = os.environ.get("DAEDALUS_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
         return custom
 
-    # shutil.which finds bash.exe if Git\bin is on PATH
     found = shutil.which("bash")
     if found:
         return found
 
-    # Check common Git for Windows install locations
     for candidate in (
         os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
         os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
@@ -205,20 +187,15 @@ def _find_bash() -> str:
     )
 
 
-# Backward compat — process_registry.py imports this name
 _find_shell = _find_bash
 
 
-# Noise lines emitted by interactive shells when stdin is not a terminal.
-# Used as a fallback when output fence markers are missing.
 _SHELL_NOISE_SUBSTRINGS = (
-    # bash
     "bash: cannot set terminal process group",
     "bash: no job control in this shell",
     "no job control in this shell",
     "cannot set terminal process group",
     "tcsetattr: Inappropriate ioctl for device",
-    # zsh / oh-my-zsh / macOS terminal session
     "Restored session:",
     "Saving session...",
     "Last login:",
@@ -240,11 +217,9 @@ def _clean_shell_noise(output: str) -> str:
 
     lines = output.split("\n")
 
-    # Strip leading noise
     while lines and _is_noise(lines[0]):
         lines.pop(0)
 
-    # Strip trailing noise (walk backwards, skip empty lines from split)
     end = len(lines) - 1
     while end >= 0 and (not lines[end] or _is_noise(lines[end])):
         end -= 1
@@ -255,14 +230,11 @@ def _clean_shell_noise(output: str) -> str:
     cleaned = lines[: end + 1]
     result = "\n".join(cleaned)
 
-    # Preserve trailing newline if original had one
     if output.endswith("\n") and result and not result.endswith("\n"):
         result += "\n"
     return result
 
 
-# Standard PATH entries for environments with minimal PATH (e.g. systemd services).
-# Includes macOS Homebrew paths (/opt/homebrew/* for Apple Silicon).
 _SANE_PATH = (
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -308,7 +280,6 @@ def _extract_fenced_output(raw: str) -> str:
     last = raw.rfind(_OUTPUT_FENCE)
 
     if last <= first:
-        # Only start fence found (e.g. user command called `exit`)
         return _clean_shell_noise(raw[start:])
 
     return raw[start:last]
@@ -391,11 +362,6 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             effective_stdin = stdin_data
 
         user_shell = _find_bash()
-        # Newline-separated wrapper (not `cmd; __daedalus_rc=...` on one line).
-        # A trailing `; __daedalus_rc` glued to `<<EOF` / a closing `EOF` line breaks
-        # heredoc parsing: the delimiter must be alone on its line, otherwise the
-        # rest of this script becomes heredoc body and leaks into stdout (e.g. gh
-        # issue/PR flows that use here-documents for bodies).
         fenced_cmd = (
             f"printf '{_OUTPUT_FENCE}'\n"
             f"{exec_command}\n"

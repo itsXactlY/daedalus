@@ -4,7 +4,6 @@ from unittest.mock import patch
 
 import pytest
 
-# tiktoken is not in core/[all] deps — skip estimation tests when unavailable
 _has_tiktoken = True
 try:
     import tiktoken  # noqa: F401
@@ -14,7 +13,6 @@ except ImportError:
 _needs_tiktoken = pytest.mark.skipif(not _has_tiktoken, reason="tiktoken not installed")
 
 
-# ─── Token Estimation Tests ──────────────────────────────────────────────────
 
 
 @_needs_tiktoken
@@ -22,7 +20,6 @@ def test_estimate_tool_tokens_returns_positive_counts():
     """_estimate_tool_tokens should return a non-empty dict with positive values."""
     from daedalus_cli.tools_config import _estimate_tool_tokens, _tool_token_cache
 
-    # Clear cache to force fresh computation
     import daedalus_cli.tools_config as tc
     tc._tool_token_cache = None
 
@@ -67,7 +64,6 @@ def test_estimate_tool_tokens_returns_empty_when_tiktoken_unavailable(monkeypatc
 
     assert result == {}
 
-    # Reset cache for other tests
     tc._tool_token_cache = None
 
 
@@ -79,12 +75,10 @@ def test_estimate_tool_tokens_covers_known_tools():
 
     tokens = tc._estimate_tool_tokens()
 
-    # These tools should always be discoverable
     for expected in ("terminal", "web_search", "read_file"):
         assert expected in tokens, f"Expected {expected!r} in token estimates"
 
 
-# ─── Status Function Tests ───────────────────────────────────────────────────
 
 
 def test_prompt_toolset_checklist_passes_status_fn(monkeypatch):
@@ -96,14 +90,13 @@ def test_prompt_toolset_checklist_passes_status_fn(monkeypatch):
     def fake_checklist(title, items, selected, *, cancel_returns=None, status_fn=None):
         captured_kwargs["status_fn"] = status_fn
         captured_kwargs["title"] = title
-        return selected  # Return pre-selected unchanged
+        return selected
 
     monkeypatch.setattr("daedalus_cli.curses_ui.curses_checklist", fake_checklist)
 
     tc._prompt_toolset_checklist("CLI", {"web", "terminal"})
 
     assert "status_fn" in captured_kwargs
-    # If tiktoken is available, status_fn should be set
     tokens = tc._estimate_tool_tokens()
     if tokens:
         assert captured_kwargs["status_fn"] is not None
@@ -128,10 +121,8 @@ def test_status_fn_returns_formatted_token_count(monkeypatch):
     if status_fn is None:
         pytest.skip("tiktoken unavailable; status_fn not created")
 
-    # Find the indices for web and terminal
     idx_map = {ts_key: i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)}
 
-    # Call status_fn with web + terminal selected
     result = status_fn({idx_map["web"], idx_map["terminal"]})
     assert "tokens" in result
     assert "Est. tool context" in result
@@ -158,13 +149,10 @@ def test_status_fn_deduplicates_overlapping_tools(monkeypatch):
 
     idx_map = {ts_key: i for i, (ts_key, _, _) in enumerate(CONFIGURABLE_TOOLSETS)}
 
-    # web alone
     web_only = status_fn({idx_map["web"]})
-    # browser includes web_search, so browser + web should not double-count web_search
     browser_only = status_fn({idx_map["browser"]})
     both = status_fn({idx_map["web"], idx_map["browser"]})
 
-    # Extract numeric token counts from strings like "~8.3k tokens" or "~350 tokens"
     import re
 
     def parse_tokens(s):
@@ -180,7 +168,6 @@ def test_status_fn_deduplicates_overlapping_tools(monkeypatch):
     browser_tok = parse_tokens(browser_only)
     both_tok = parse_tokens(both)
 
-    # Both together should be LESS than naive sum (due to web_search dedup)
     naive_sum = web_tok + browser_tok
     assert both_tok < naive_sum, (
         f"Expected deduplication: web({web_tok}) + browser({browser_tok}) = {naive_sum} "
@@ -215,7 +202,6 @@ def test_status_fn_empty_selection():
     assert "~0 tokens" in result
 
 
-# ─── Curses UI Status Bar Tests ──────────────────────────────────────────────
 
 
 def test_curses_checklist_numbered_fallback_shows_status(monkeypatch, capsys):
@@ -225,7 +211,6 @@ def test_curses_checklist_numbered_fallback_shows_status(monkeypatch, capsys):
     def my_status(chosen):
         return f"Selected {len(chosen)} items"
 
-    # Simulate user pressing Enter immediately (empty input → confirm)
     monkeypatch.setattr("builtins.input", lambda _prompt="": "")
 
     result = _numbered_fallback(
@@ -259,14 +244,12 @@ def test_curses_checklist_numbered_fallback_without_status(monkeypatch, capsys):
     assert result == {0}
 
 
-# ─── Registry get_schema Tests ───────────────────────────────────────────────
 
 
 def test_registry_get_schema_returns_schema():
     """registry.get_schema() should return a tool's schema dict."""
     from tools.registry import registry
 
-    # Import to trigger discovery
     import model_tools  # noqa: F401
 
     schema = registry.get_schema("terminal")

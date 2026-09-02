@@ -154,13 +154,11 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     codex_home = Path(codex_home_str).expanduser()
     ordered: List[str] = []
 
-    # Try live API if we have a token
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:
             return _add_forward_compat_models(api_models)
 
-    # Fall back to local sources
     default_model = _read_default_model(codex_home)
     if default_model:
         ordered.append(default_model)

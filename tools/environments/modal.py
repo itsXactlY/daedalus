@@ -205,7 +205,6 @@ class ModalEnvironment(BaseModalExecutionEnvironment):
                     mount_entry["container_path"],
                 )
 
-            # Mount individual skill files (symlinks filtered out).
             skills_files = iter_skills_files()
             for entry in skills_files:
                 cred_mounts.append(
@@ -217,9 +216,6 @@ class ModalEnvironment(BaseModalExecutionEnvironment):
             if skills_files:
                 logger.info("Modal: mounting %d skill files", len(skills_files))
 
-            # Mount host-side cache files (documents, images, audio,
-            # screenshots).  New files arriving mid-session are picked up
-            # by _sync_files() before each command execution.
             cache_files = iter_cache_files()
             for entry in cache_files:
                 cred_mounts.append(
@@ -255,10 +251,6 @@ class ModalEnvironment(BaseModalExecutionEnvironment):
         try:
             target_image_spec = restored_snapshot_id or image
             try:
-                # _resolve_modal_image keeps the Modal bootstrap fix together:
-                # it applies setup_dockerfile_commands with ensurepip before
-                # Modal builds registry images, while snapshot ids restore via
-                # modal.Image.from_id() without rebuilding.
                 effective_image = _resolve_modal_image(target_image_spec)
                 self._app, self._sandbox = self._worker.run_coroutine(
                     _create_sandbox(effective_image),

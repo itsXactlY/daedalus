@@ -63,7 +63,6 @@ class TestResolve:
         assert result == "resolved once"
         assert calls == ["once"]
 
-        # Entry should be popped.
         assert slash_confirm.get_pending("sess1") is None
 
     @pytest.mark.asyncio
@@ -82,12 +81,10 @@ class TestResolve:
 
         slash_confirm.register("sess1", "cid1", "cmd", handler)
 
-        # Simulate two near-simultaneous button clicks.
         r1, r2 = await asyncio.gather(
             slash_confirm.resolve("sess1", "cid1", "once"),
             slash_confirm.resolve("sess1", "cid1", "once"),
         )
-        # Exactly one should have run the handler.
         assert calls == ["once"]
         assert (r1 == "ran") ^ (r2 == "ran")
 
@@ -104,7 +101,6 @@ class TestClear:
         assert slash_confirm.get_pending("sess1") is None
 
     def test_clear_missing_is_noop(self):
-        # Should not raise.
         slash_confirm.clear("nobody")
 
 

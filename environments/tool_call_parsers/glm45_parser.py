@@ -80,7 +80,6 @@ class Glm45ToolCallParser(ToolCallParser):
                 func_name = detail.group(1).strip()
                 func_args_raw = detail.group(2)
 
-                # Parse arg_key/arg_value pairs
                 pairs = self.FUNC_ARG_REGEX.findall(func_args_raw) if func_args_raw else []
                 arg_dict: Dict[str, Any] = {}
                 for key, value in pairs:

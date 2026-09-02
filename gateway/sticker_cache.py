@@ -17,7 +17,6 @@ from daedalus_cli.config import get_daedalus_home
 
 CACHE_PATH = get_daedalus_home() / "sticker_cache.json"
 
-# Vision prompt for describing stickers -- kept concise to save tokens
 STICKER_VISION_PROMPT = (
     "Describe this sticker in 1-2 sentences. Focus on what it depicts -- "
     "character, action, emotion. Be concise and objective."

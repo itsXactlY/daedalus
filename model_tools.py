@@ -32,13 +32,10 @@ from toolsets import resolve_toolset, validate_toolset
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Async Bridging  (single source of truth -- used by registry.dispatch too)
-# =============================================================================
 
-_tool_loop = None          # persistent loop for the main (CLI) thread
+_tool_loop = None
 _tool_loop_lock = threading.Lock()
-_worker_thread_local = threading.local()  # per-worker-thread persistent loops
+_worker_thread_local = threading.local()
 
 
 def _get_tool_loop():
@@ -106,17 +103,11 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
-        # Inside an async context (gateway, RL env) — run in a fresh thread.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
             return future.result(timeout=300)
 
-    # If we're on a worker thread (e.g., parallel tool execution in
-    # delegate_task), use a per-thread persistent loop.  This avoids
-    # contention with the main thread's shared loop while keeping cached
-    # httpx/AsyncOpenAI clients bound to a live loop for the thread's
-    # lifetime — preventing "Event loop is closed" on GC cleanup.
     if threading.current_thread() is not threading.main_thread():
         worker_loop = _get_worker_loop()
         return worker_loop.run_until_complete(coro)
@@ -125,9 +116,6 @@ def _run_async(coro):
     return tool_loop.run_until_complete(coro)
 
 
-# =============================================================================
-# Tool Discovery  (importing each module triggers its registry.register calls)
-# =============================================================================
 
 def _discover_tools():
     """Import all built-in self-registering tool modules.
@@ -152,14 +140,12 @@ def _discover_tools():
 
 _discover_tools()
 
-# MCP tool discovery (external MCP servers from config)
 try:
     from tools.mcp_tool import discover_mcp_tools
     discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
 
-# Plugin tool discovery (user/project/pip plugins)
 try:
     from daedalus_cli.plugins import discover_plugins
     discover_plugins()
@@ -167,22 +153,42 @@ except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
 
 
-# =============================================================================
-# Backward-compat constants  (built once after discovery)
-# =============================================================================
 
 TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
 
 TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
 
-# Resolved tool names from the last get_tool_definitions() call.
-# Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
 
+_last_full_tool_defs: List[Dict[str, Any]] = []
 
-# =============================================================================
-# Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
-# =============================================================================
+_promoted_tool_defs: Dict[str, Dict[str, Any]] = {}
+
+
+def drain_promoted_tool_defs() -> List[Dict[str, Any]]:
+    global _promoted_tool_defs
+    if not _promoted_tool_defs:
+        return []
+    drained = list(_promoted_tool_defs.values())
+    _promoted_tool_defs = {}
+    return drained
+
+
+def _promote_deferred_tool(name: str, scope: List[Dict[str, Any]]) -> None:
+    if name in _promoted_tool_defs:
+        return
+    for td in scope:
+        fn = td.get("function") or {}
+        if fn.get("name") == name:
+            _promoted_tool_defs[name] = {"type": "function", "function": fn}
+            return
+    schema = registry.get_schema(name)
+    if isinstance(schema, dict):
+        fn = schema.get("function") if schema.get("type") == "function" else schema
+        if isinstance(fn, dict) and fn.get("name"):
+            _promoted_tool_defs[name] = {"type": "function", "function": fn}
+
+
 
 _LEGACY_TOOLSET_MAP = {
     "web_tools": ["web_search", "web_extract"],
@@ -210,14 +216,12 @@ _LEGACY_TOOLSET_MAP = {
 }
 
 
-# =============================================================================
-# get_tool_definitions  (the main schema provider)
-# =============================================================================
 
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    skip_tool_search_assembly: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -232,7 +236,6 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
-    # Determine which tool names the caller wants
     tools_to_include: set = set()
 
     if enabled_toolsets is not None:
@@ -275,25 +278,11 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
-    # Plugin-registered tools are now resolved through the normal toolset
-    # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
-    # all check the tool registry for plugin-provided toolsets.  No bypass
-    # needed; plugins respect enabled_toolsets / disabled_toolsets like any
-    # other toolset.
 
-    # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
-    # The set of tool names that actually passed check_fn filtering.
-    # Use this (not tools_to_include) for any downstream schema that references
-    # other tools by name — otherwise the model sees tools mentioned in
-    # descriptions that don't actually exist, and hallucinates calls to them.
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
 
-    # Rebuild execute_code schema to only list sandbox tools that are actually
-    # available.  Without this, the model sees "web_search is available in
-    # execute_code" even when the API key isn't configured or the toolset is
-    # disabled (#560-discord).
     if "execute_code" in available_tool_names:
         from tools.code_execution_tool import SANDBOX_ALLOWED_TOOLS, build_execute_code_schema
         sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
@@ -303,10 +292,6 @@ def get_tool_definitions(
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
 
-    # Strip web tool cross-references from browser_navigate description when
-    # web_search / web_extract are not available.  The static schema says
-    # "prefer web_search or web_extract" which causes the model to hallucinate
-    # those tools when they're missing.
     if "browser_navigate" in available_tool_names:
         web_tools_available = {"web_search", "web_extract"} & available_tool_names
         if not web_tools_available:
@@ -330,50 +315,36 @@ def get_tool_definitions(
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
 
-    global _last_resolved_tool_names
+    global _last_resolved_tool_names, _last_full_tool_defs
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
+    _last_full_tool_defs = list(filtered_tools)
 
-    # ── Tool Search (progressive disclosure, v0.20.0 parity) ──────────────
-    # Conditionally replace MCP + plugin (non-core) tools with three bridge
-    # tools (tool_search / tool_describe / tool_call) when the deferrable
-    # surface exceeds the configured threshold. Core daedalus tools are never
-    # deferred. Off by default (config tools.tool_search.enabled == "off").
     try:
         from tools.tool_search import assemble_tool_defs, load_config as _load_ts_config
         ts_cfg = _load_ts_config()
-        if ts_cfg.enabled != "off":
+        if ts_cfg.enabled != "off" and not skip_tool_search_assembly:
             assembly = assemble_tool_defs(
                 filtered_tools,
-                context_length=None,  # fork has no context-length resolver; fine
+                context_length=None,
                 config=ts_cfg,
             )
             if assembly.activated and not quiet_mode:
                 print(
-                    f"🔎 Tool Search (tier {assembly.tier}): {assembly.deferred_count} "
-                    f"MCP/plugin tools deferred"
+                    f"🔎 Tool Search: {assembly.deferred_count} tools deferred "
+                    f"(~{assembly.deferred_tokens} tokens off the prompt)"
                 )
             filtered_tools = assembly.tool_defs
-    except Exception as e:  # never break tool loading
+    except Exception as e:
         logger.warning("Tool search assembly skipped: %s", e)
 
     return filtered_tools
 
 
-# =============================================================================
-# handle_function_call  (the main dispatcher)
-# =============================================================================
 
-# Tools whose execution is intercepted by the agent loop (run_agent.py)
-# because they need agent-level state (TodoStore, MemoryStore, etc.).
-# The registry still holds their schemas; dispatch just returns a stub error
-# so if something slips through, the LLM sees a sensible message.
 _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
-# =========================================================================
-# Tool argument type coercion
-# =========================================================================
 
 def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce tool call arguments to match their JSON Schema types.
@@ -420,7 +391,6 @@ def _coerce_value(value: str, expected_type):
     Returns the original string when coercion is not applicable or fails.
     """
     if isinstance(expected_type, list):
-        # Union type — try each in order, return first successful coercion
         for t in expected_type:
             result = _coerce_value(value, t)
             if result is not value:
@@ -440,14 +410,11 @@ def _coerce_number(value: str, integer_only: bool = False):
         f = float(value)
     except (ValueError, OverflowError):
         return value
-    # Guard against inf/nan before int() conversion
     if f != f or f == float("inf") or f == float("-inf"):
         return f
-    # If it looks like an integer (no fractional part), return int
     if f == int(f):
         return int(f)
     if integer_only:
-        # Schema wants an integer but value has decimals — keep as string
         return value
     return f
 
@@ -460,6 +427,55 @@ def _coerce_boolean(value: str):
     if low == "false":
         return False
     return value
+
+
+def _dispatch_bridge_tool(
+    function_name: str,
+    function_args: Dict[str, Any],
+    task_id: Optional[str],
+    tool_call_id: Optional[str],
+    session_id: Optional[str],
+    user_task: Optional[str],
+    enabled_tools: Optional[List[str]],
+) -> str:
+    from tools.tool_search import (
+        TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME,
+        dispatch_tool_search, dispatch_tool_describe,
+        resolve_underlying_call, validate_deferred_call_args,
+        scoped_deferrable_names,
+    )
+
+    scope = _last_full_tool_defs or registry.get_definitions(
+        set(_last_resolved_tool_names), quiet=True)
+
+    if function_name == TOOL_SEARCH_NAME:
+        return dispatch_tool_search(function_args, current_tool_defs=scope)
+    if function_name == TOOL_DESCRIBE_NAME:
+        described = dispatch_tool_describe(function_args, current_tool_defs=scope)
+        asked = str(function_args.get("name") or "").strip()
+        if asked and '"parameters"' in described:
+            _promote_deferred_tool(asked, scope)
+        return described
+
+    name, args, error = resolve_underlying_call(function_args)
+    if error:
+        return json.dumps({"error": error})
+    if name not in scoped_deferrable_names(scope):
+        return json.dumps({"error": (
+            f"'{name}' is not reachable in this session's toolset scope. "
+            "Run tool_search to see what is available.")})
+    invalid = validate_deferred_call_args(name, args)
+    if invalid:
+        return invalid
+    _promote_deferred_tool(name, scope)
+    return handle_function_call(
+        name, args,
+        task_id=task_id,
+        tool_call_id=tool_call_id,
+        session_id=session_id,
+        user_task=user_task,
+        enabled_tools=enabled_tools,
+    )
 
 
 def handle_function_call(
@@ -487,17 +503,21 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
-    # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+    from tools.tool_search import is_bridge_tool
+    if is_bridge_tool(function_name):
+        return _dispatch_bridge_tool(
+            function_name, function_args,
+            task_id, tool_call_id, session_id, user_task, enabled_tools,
+        )
+
     function_args = coerce_tool_args(function_name, function_args)
 
-    # Notify the read-loop tracker when a non-read/search tool runs,
-    # so the *consecutive* counter resets (reads after other work are fine).
     if function_name not in _READ_SEARCH_TOOLS:
         try:
             from tools.file_tools import notify_other_tool_call
             notify_other_tool_call(task_id or "default")
         except Exception:
-            pass  # file_tools may not be loaded yet
+            pass
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
@@ -517,8 +537,6 @@ def handle_function_call(
             pass
 
         if function_name == "execute_code":
-            # Prefer the caller-provided list so subagents can't overwrite
-            # the parent's tool set via the process-global.
             sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
             result = registry.dispatch(
                 function_name, function_args,
@@ -554,9 +572,6 @@ def handle_function_call(
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
-# =============================================================================
-# Backward-compat wrapper functions
-# =============================================================================
 
 def get_all_tool_names() -> List[str]:
     """Return all registered tool names."""

@@ -102,7 +102,7 @@ class TestBuildStickerInjection:
 
     def test_description_with_quotes(self):
         result = build_sticker_injection('A "happy" dog')
-        assert '"A \\"happy\\" dog"' not in result  # no escaping happens
+        assert '"A \\"happy\\" dog"' not in result
         assert 'A "happy" dog' in result
 
     def test_empty_description(self):

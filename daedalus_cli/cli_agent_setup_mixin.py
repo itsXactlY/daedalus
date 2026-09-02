@@ -46,7 +46,6 @@ class CLIAgentSetupMixin:
         except Exception as exc:
             _primary_exc = exc
 
-        # Primary provider auth failed — try fallback providers before giving up.
         if runtime is None and _primary_exc is not None:
             from daedalus_cli.auth import AuthError
             if isinstance(_primary_exc, AuthError):
@@ -90,17 +89,8 @@ class CLIAgentSetupMixin:
         resolved_acp_command = runtime.get("command")
         resolved_acp_args = list(runtime.get("args") or [])
         resolved_credential_pool = runtime.get("credential_pool")
-        # A callable api_key is a bearer-token provider (Azure Foundry
-        # Entra ID — ``azure_identity_adapter.build_token_provider``).
-        # The OpenAI SDK accepts ``Callable[[], str]`` for ``api_key`` and
-        # invokes it before every request. Skip the string-only validation
-        # and placeholder substitution for callables.
         _is_callable_provider = callable(api_key) and not isinstance(api_key, str)
         if not _is_callable_provider and (not isinstance(api_key, str) or not api_key):
-            # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
-            # don't require authentication.  When a base_url IS configured but
-            # no API key was found, use a placeholder so the OpenAI SDK
-            # doesn't reject the request and local servers just ignore it.
             _source = runtime.get("source", "")
             _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
             if _has_custom_base:
@@ -140,25 +130,16 @@ class CLIAgentSetupMixin:
         self.api_key = api_key
         self.base_url = base_url
 
-        # When a custom_provider entry carries an explicit `model` field,
-        # use it as the effective model name.  Without this, running
-        # `daedalus chat --model <provider-name>` sends the provider name
-        # (e.g. "my-provider") as the model string to the API instead of
-        # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
         runtime_model = runtime.get("model")
         if runtime_model and isinstance(runtime_model, str):
-            # Only use runtime model if: model is unset, or model equals provider name
             should_use_runtime_model = (
-                not self.model or  # No model configured yet
-                self.model == self.provider or  # Model is the provider slug
-                self.model == runtime.get("name")  # Model matches provider display name
+                not self.model or
+                self.model == self.provider or
+                self.model == runtime.get("name")
             )
             if should_use_runtime_model:
                 self.model = runtime_model
 
-        # If model is still empty (e.g. user ran `daedalus auth add openai-codex`
-        # without `daedalus model`), fall back to the provider's first catalog
-        # model so the API call doesn't fail with "model must be non-empty".
         if not self.model and resolved_provider:
             try:
                 from daedalus_cli.models import get_default_model_for_provider
@@ -172,12 +153,8 @@ class CLIAgentSetupMixin:
             except Exception:
                 pass
 
-        # Normalize model for the resolved provider (e.g. swap non-Codex
-        # models when provider is openai-codex).  Fixes #651.
         model_changed = self._normalize_model_for_provider(resolved_provider)
 
-        # AIAgent/OpenAI client holds auth at init time, so rebuild if key,
-        # routing, or the effective model changed.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
             self.agent = None
             self._active_agent_route_signature = None
@@ -211,7 +188,6 @@ class CLIAgentSetupMixin:
             return bool(base_url)
         if isinstance(api_key, str) and api_key:
             return bool(base_url)
-        # Keyless custom/local endpoints (ollama, llama.cpp, vLLM…) are fine.
         return bool(
             isinstance(base_url, str)
             and base_url
@@ -256,8 +232,6 @@ class CLIAgentSetupMixin:
             _cprint("  Run 'daedalus model' to try again.")
             return False
 
-        # Re-sync CLI state from what the picker persisted so the very next
-        # turn uses the new provider without a restart.
         try:
             from daedalus_cli.config import load_config
             _model_cfg = (load_config().get("model") or {})
@@ -272,7 +246,6 @@ class CLIAgentSetupMixin:
                     self.model = _new_model
         except Exception as exc:
             logger.debug("first-run config re-sync failed: %s", exc)
-        # Force credential re-resolution + agent rebuild on next use.
         self.agent = None
         self._active_agent_route_signature = None
 
@@ -356,7 +329,6 @@ class CLIAgentSetupMixin:
             single_query=getattr(self, "_single_query_mode", False),
         )
 
-        # Initialize SQLite session store for CLI sessions (if not already done in __init__)
         if self._session_db is None:
             try:
                 from daedalus_state import SessionDB
@@ -364,17 +336,8 @@ class CLIAgentSetupMixin:
             except Exception as e:
                 logger.warning("SQLite session store not available — session will NOT be indexed: %s", e)
         
-        # If resuming, validate the session exists and load its history.
-        # _preload_resumed_session() may have already loaded it (called from
-        # run() for immediate display).  In that case, conversation_history
-        # is non-empty and we skip the DB round-trip.
         if self._resumed and self._session_db and not self.conversation_history:
             session_meta = self._session_db.get_session(self.session_id)
-            # In quiet mode (`daedalus chat -Q` / --quiet, surfaced via
-            # tool_progress_mode == "off"), resume status lines go to stderr
-            # so stdout stays machine-readable for automation wrappers that
-            # do `$(daedalus chat -Q --resume <id> -q "...")`. Without this,
-            # the resume banner pollutes captured stdout. See #11793.
             _quiet_mode = getattr(self, "tool_progress_mode", "full") == "off"
             if not session_meta:
                 if _quiet_mode:
@@ -387,9 +350,6 @@ class CLIAgentSetupMixin:
                     _cprint(f"\033[1;31mSession not found: {self.session_id}{_RST}")
                     _cprint(f"{_DIM}Use a session ID from a previous CLI run (daedalus sessions list).{_RST}")
                 return False
-            # If the requested session is the (empty) head of a compression
-            # chain, walk to the descendant that actually holds the messages.
-            # See #15000 and SessionDB.resolve_resume_session_id.
             try:
                 resolved_id = self._session_db.resolve_resume_session_id(self.session_id)
             except Exception:
@@ -440,7 +400,6 @@ class CLIAgentSetupMixin:
                     ChatConsole().print(
                         f"[bold {_accent_hex()}]Session {_escape(self.session_id)} found but has no messages. Starting fresh.[/]"
                     )
-            # Re-open the session (clear ended_at so it's active again)
             try:
                 self._session_db._conn.execute(
                     "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
@@ -517,24 +476,9 @@ class CLIAgentSetupMixin:
                 notice_clear_callback=self._on_notice_clear,
                 reaction_callback=self._on_reaction,
             )
-            # Store reference for atexit memory provider shutdown.
-            # NOTE: this MUST write to the ``cli`` module's global, not a
-            # local module global. ``_run_cleanup`` (in cli.py) reads
-            # ``cli._active_agent_ref`` to decide whether to fire the memory
-            # provider's ``on_session_end`` hook. When this code lived in
-            # cli.py a bare ``global _active_agent_ref`` worked; after the
-            # god-file extraction into this mixin a ``global`` here would bind
-            # *this module's* namespace, leaving ``cli._active_agent_ref`` None
-            # forever — so memory shutdown never ran on /exit (#49287).
             import cli as _cli
             _cli._active_agent_ref = self.agent
-            # Route agent status output through prompt_toolkit so ANSI escape
-            # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
-            # Hydrate credits notices at session OPEN (parity with the TUI), so a
-            # depletion / usage-band warning shows before the first message. The
-            # notice_callback is bound above → _on_notice renders the line. Idempotent
-            # + fail-open inside the helper; harmless for non-Nous providers.
             try:
                 from agent.credits_tracker import seed_credits_at_session_start
 
@@ -551,7 +495,6 @@ class CLIAgentSetupMixin:
                 tuple(runtime.get("args") or ()),
             )
 
-            # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db and self.agent:
                 try:
                     self.agent._ensure_db_session()
@@ -559,10 +502,8 @@ class CLIAgentSetupMixin:
                         self._session_db.set_session_title(self.session_id, self._pending_title)
                         _cprint(f"  Session title applied: {self._pending_title}")
                         self._pending_title = None
-                    # else: row creation failed transiently — keep _pending_title for retry
                 except (ValueError, Exception) as e:
                     _cprint(f"  Could not apply pending title: {e}")
-                    # Keep _pending_title so it can be retried after row creation succeeds
             return True
         except Exception as e:
             console = ChatConsole()
@@ -599,8 +540,6 @@ class CLIAgentSetupMixin:
             )
             return False
 
-        # If the requested session is the (empty) head of a compression chain,
-        # walk to the descendant that actually holds the messages. See #15000.
         try:
             resolved_id = self._session_db.resolve_resume_session_id(self.session_id)
         except Exception:
@@ -650,7 +589,6 @@ class CLIAgentSetupMixin:
             )
             return False
 
-        # Re-open the session (clear ended_at so it's active again)
         try:
             self._session_db._conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL "
@@ -677,11 +615,9 @@ class CLIAgentSetupMixin:
         if not display_history:
             return
 
-        # Check config: resume_display setting
         if self.resume_display == "minimal":
             return
 
-        # Read limits from config (with hardcoded defaults)
         _disp = CLI_CONFIG.get("display", {})
         MAX_DISPLAY_EXCHANGES = int(_disp.get("resume_exchanges", 10))
         MAX_USER_LEN = int(_disp.get("resume_max_user_chars", 300))
@@ -689,10 +625,9 @@ class CLIAgentSetupMixin:
         MAX_ASST_LINES = int(_disp.get("resume_max_assistant_lines", 3))
         SKIP_TOOL_ONLY = _disp.get("resume_skip_tool_only", True)
 
-        # Collect displayable entries (skip system, tool-result messages)
-        entries = []  # list of (role, display_text)
-        _last_asst_idx = None       # index of last assistant entry
-        _last_asst_full = None      # un-truncated display text for last assistant
+        entries = []
+        _last_asst_idx = None
+        _last_asst_full = None
         for msg in display_history:
             role = msg.get("role", "")
             display_kind = msg.get("display_kind")
@@ -718,7 +653,6 @@ class CLIAgentSetupMixin:
 
             if role == "user":
                 text = "" if content is None else str(content)
-                # Handle multimodal content (list of dicts)
                 if isinstance(content, list):
                     parts = []
                     for part in content:
@@ -727,10 +661,6 @@ class CLIAgentSetupMixin:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
-                # Stored history is untrusted for display: strip escape
-                # sequences/control chars so replaying a message can't
-                # clear the screen, retitle the window, or restyle the
-                # recap panel (see tools/ansi_strip.sanitize_display_text).
                 text = _sanitize_display_text(text)
                 if len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
@@ -740,7 +670,7 @@ class CLIAgentSetupMixin:
                 text = "" if content is None else str(content)
                 text = _sanitize_display_text(_strip_reasoning_tags(text))
                 parts = []
-                full_parts = []  # un-truncated version
+                full_parts = []
                 if text:
                     full_parts.append(text)
                     lines = text.splitlines()
@@ -751,7 +681,6 @@ class CLIAgentSetupMixin:
                     parts.append(text)
                 if tool_calls:
                     tc_count = len(tool_calls)
-                    # Extract tool names
                     names = []
                     for tc in tool_calls:
                         fn = tc.get("function", {})
@@ -766,9 +695,7 @@ class CLIAgentSetupMixin:
                     parts.append(tc_summary)
                     full_parts.append(tc_summary)
                 if not parts:
-                    # Skip pure-reasoning messages that have no visible output
                     continue
-                # Skip tool-call-only entries when SKIP_TOOL_ONLY is enabled
                 has_text = bool(text)
                 if SKIP_TOOL_ONLY and not has_text and tool_calls:
                     continue
@@ -779,20 +706,16 @@ class CLIAgentSetupMixin:
         if not entries:
             return
 
-        # Determine if we need to truncate
         skipped = 0
         if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
             skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
             entries = entries[skipped:]
 
-        # Replace last assistant entry with full (un-truncated) text
-        # so the user can see where they left off without wasting tokens.
         if _last_asst_idx is not None and _last_asst_full:
             adj_idx = _last_asst_idx - skipped
             if 0 <= adj_idx < len(entries):
                 entries[adj_idx] = ("assistant_last", _last_asst_full)
 
-        # Build the display using Rich
         from rich.panel import Panel
         from rich.text import Text
 
@@ -821,13 +744,11 @@ class CLIAgentSetupMixin:
                 lines.append(f"  ◈ {text}\n", style="dim italic")
             elif role == "user":
                 lines.append("  ● You: ", style=f"dim bold {_session_label_c}")
-                # Show first line inline, indent rest
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
             elif role == "assistant_last":
-                # Last assistant response shown in full, non-dim
                 lines.append("  ◆ Daedalus: ", style=f"bold {_assistant_label_c}")
                 msg_lines = text.splitlines()
                 lines.append(msg_lines[0] + "\n", style="")
@@ -840,7 +761,7 @@ class CLIAgentSetupMixin:
                 for ml in msg_lines[1:]:
                     lines.append(f"            {ml}\n", style="dim")
             if i < len(entries) - 1:
-                lines.append("")  # small gap
+                lines.append("")
 
         panel = Panel(
             lines,

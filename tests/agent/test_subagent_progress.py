@@ -19,9 +19,6 @@ from agent.display import KawaiiSpinner
 from tools.delegate_tool import _build_child_progress_callback
 
 
-# =========================================================================
-# KawaiiSpinner.print_above tests
-# =========================================================================
 
 class TestPrintAbove:
     """Tests for KawaiiSpinner.print_above method."""
@@ -30,7 +27,7 @@ class TestPrintAbove:
         """print_above should write to stdout even when spinner is not running."""
         buf = io.StringIO()
         spinner = KawaiiSpinner("test")
-        spinner._out = buf  # Redirect to buffer
+        spinner._out = buf
         
         spinner.print_above("hello world")
         output = buf.getvalue()
@@ -41,12 +38,12 @@ class TestPrintAbove:
         buf = io.StringIO()
         spinner = KawaiiSpinner("test")
         spinner._out = buf
-        spinner.running = True  # Pretend spinner is running (don't start thread)
+        spinner.running = True
         
         spinner.print_above("tool line")
         output = buf.getvalue()
         assert "tool line" in output
-        assert "\r" in output  # Should start with carriage return to clear spinner line
+        assert "\r" in output
 
     def test_print_above_uses_captured_stdout(self):
         """print_above should use self._out, not sys.stdout.
@@ -55,7 +52,6 @@ class TestPrintAbove:
         spinner = KawaiiSpinner("test")
         spinner._out = buf
         
-        # Simulate redirect_stdout(devnull)
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
         try:
@@ -66,9 +62,6 @@ class TestPrintAbove:
         assert "should go to buf" in buf.getvalue()
 
 
-# =========================================================================
-# _build_child_progress_callback tests
-# =========================================================================
 
 class TestBuildChildProgressCallback:
     """Tests for child progress callback builder."""
@@ -129,12 +122,10 @@ class TestBuildChildProgressCallback:
         
         cb = _build_child_progress_callback(0, parent)
         
-        # Send 4 tool calls — shouldn't flush yet (BATCH_SIZE = 5)
         for i in range(4):
             cb("tool.started", f"tool_{i}", f"arg_{i}", {})
         parent_cb.assert_not_called()
         
-        # 5th call should trigger flush
         cb("tool.started", "tool_4", "arg_4", {})
         parent_cb.assert_called_once()
         call_args = parent_cb.call_args
@@ -163,7 +154,6 @@ class TestBuildChildProgressCallback:
         cb0 = _build_child_progress_callback(0, parent)
         cb1 = _build_child_progress_callback(1, parent)
         
-        # Send 3 calls to each — neither should flush (batch size = 5)
         for i in range(3):
             cb0(f"tool_{i}")
             cb1(f"other_{i}")
@@ -181,13 +171,11 @@ class TestBuildChildProgressCallback:
         parent._delegate_spinner = spinner
         parent.tool_progress_callback = None
         
-        # task_index=0 in a batch of 3 → prefix "[1]"
         cb0 = _build_child_progress_callback(0, parent, task_count=3)
         cb0("web_search", "test")
         output = buf.getvalue()
         assert "[1]" in output
 
-        # task_index=2 in a batch of 3 → prefix "[3]"
         buf.truncate(0)
         buf.seek(0)
         cb2 = _build_child_progress_callback(2, parent, task_count=3)
@@ -213,9 +201,6 @@ class TestBuildChildProgressCallback:
         assert "[" not in output
 
 
-# =========================================================================
-# Integration: thinking callback in run_agent.py
-# =========================================================================
 
 class TestThinkingCallback:
     """Tests for the _thinking callback in AIAgent conversation loop."""
@@ -313,9 +298,6 @@ class TestThinkingCallback:
         assert len(calls) == 0
 
 
-# =========================================================================
-# Gateway batch flush tests
-# =========================================================================
 
 class TestBatchFlush:
     """Tests for gateway batch flush on subagent completion."""
@@ -329,13 +311,11 @@ class TestBatchFlush:
 
         cb = _build_child_progress_callback(0, parent)
 
-        # Send 3 tools (below batch size of 5)
         cb("tool.started", "web_search", "query1", {})
         cb("tool.started", "read_file", "file.txt", {})
         cb("tool.started", "write_file", "out.txt", {})
         parent_cb.assert_not_called()
 
-        # Flush should send the remaining 3
         cb._flush()
         parent_cb.assert_called_once()
         summary = parent_cb.call_args[0][1]
@@ -366,7 +346,7 @@ class TestBatchFlush:
 
         cb = _build_child_progress_callback(0, parent)
         cb("tool.started", "web_search", "test", {})
-        cb._flush()  # Should not crash
+        cb._flush()
 
 
 if __name__ == "__main__":

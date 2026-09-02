@@ -10,7 +10,6 @@ def _make_agent_with_compressor() -> AIAgent:
     """Build a minimal AIAgent with a context_compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
 
-    # Primary model settings
     agent.model = "primary-model"
     agent.provider = "openrouter"
     agent.base_url = "https://openrouter.ai/api/v1"
@@ -19,7 +18,6 @@ def _make_agent_with_compressor() -> AIAgent:
     agent.client = MagicMock()
     agent.quiet_mode = True
 
-    # Fallback config
     agent._fallback_activated = False
     agent._fallback_model = {
         "provider": "openai",
@@ -28,7 +26,6 @@ def _make_agent_with_compressor() -> AIAgent:
     agent._fallback_chain = [agent._fallback_model]
     agent._fallback_index = 0
 
-    # Context compressor with primary model values
     compressor = ContextCompressor(
         model="primary-model",
         threshold_percent=0.50,

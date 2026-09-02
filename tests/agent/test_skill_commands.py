@@ -105,7 +105,6 @@ class TestScanSkillCommands:
     def test_special_chars_stripped_from_cmd_key(self, tmp_path):
         """Skill names with +, /, or other special chars produce clean cmd keys."""
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            # Simulate a skill named "Jellyfin + Jellystat 24h Summary"
             skill_dir = tmp_path / "jellyfin-plus"
             skill_dir.mkdir()
             (skill_dir / "SKILL.md").write_text(
@@ -113,9 +112,7 @@ class TestScanSkillCommands:
                 "description: Test skill\n---\n\nBody.\n"
             )
             result = scan_skill_commands()
-        # The + should be stripped, not left as a literal character
         assert "/jellyfin-jellystat-24h-summary" in result
-        # The old buggy key should NOT exist
         assert "/jellyfin-+-jellystat-24h-summary" not in result
 
     def test_allspecial_name_skipped(self, tmp_path):
@@ -127,7 +124,6 @@ class TestScanSkillCommands:
                 "---\nname: +++\ndescription: Bad skill\n---\n\nBody.\n"
             )
             result = scan_skill_commands()
-        # Should not create a "/" key or any entry
         assert "/" not in result
         assert result == {}
 
@@ -142,7 +138,7 @@ class TestScanSkillCommands:
             )
             result = scan_skill_commands()
         assert "/sonarr-v3v4-api" in result
-        assert any("/" in k[1:] for k in result) is False  # no unescaped /
+        assert any("/" in k[1:] for k in result) is False
 
 
 class TestResolveSkillCommandKey:
@@ -188,7 +184,6 @@ class TestResolveSkillCommandKey:
             _make_skill(tmp_path, "foo-bar")
             scan_skill_commands()
             assert resolve_skill_command_key("foo-bar") == "/foo-bar"
-            # Underscore form also works (Telegram round-trip)
             assert resolve_skill_command_key("foo_bar") == "/foo-bar"
 
 

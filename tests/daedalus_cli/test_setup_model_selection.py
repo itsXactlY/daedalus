@@ -53,7 +53,6 @@ class TestSetupProviderModelSelection:
 
         def fake_prompt_choice(label, choices, default):
             captured_choices["choices"] = choices
-            # Select "Keep current" (last item)
             return len(choices) - 1
 
         with patch("daedalus_cli.auth.PROVIDER_REGISTRY", mock_provider_registry):
@@ -65,7 +64,6 @@ class TestSetupProviderModelSelection:
                 prompt_fn=lambda _: None,
             )
 
-        # The offered model list should start with the default models
         offered = captured_choices["choices"]
         for model in expected_defaults:
             assert model in offered, f"{model} not in choices for {provider_id}"
@@ -109,7 +107,7 @@ class TestSetupProviderModelSelection:
         from daedalus_cli.setup import _setup_provider_model_selection, _DEFAULT_PROVIDER_MODELS
 
         defaults = _DEFAULT_PROVIDER_MODELS["zai"]
-        custom_model_idx = len(defaults)  # "Custom model" is right after defaults
+        custom_model_idx = len(defaults)
 
         config = {"model": {}}
 

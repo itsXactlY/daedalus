@@ -44,10 +44,8 @@ class TestRegisterServerTools:
         assert "mcp_my_srv_my_tool" in registered
         assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
 
-        # Injected into daedalus-* toolsets
         assert "mcp_my_srv_my_tool" in mock_toolsets["daedalus-cli"]["tools"]
         assert "mcp_my_srv_my_tool" in mock_toolsets["daedalus-telegram"]["tools"]
-        # NOT into non-daedalus toolsets
         assert "mcp_my_srv_my_tool" not in mock_toolsets["custom-toolset"]["tools"]
 
 
@@ -72,7 +70,6 @@ class TestRefreshTools:
         server._refresh_lock = asyncio.Lock()
         server._config = {}
 
-        # Seed initial state: one old tool registered
         mock_registry.register(
             name="mcp_live_srv_old_tool", toolset="mcp-live_srv", schema={},
             handler=lambda x: x, check_fn=lambda: True, is_async=False,
@@ -81,7 +78,6 @@ class TestRefreshTools:
         server._registered_tool_names = ["mcp_live_srv_old_tool"]
         mock_toolsets["daedalus-cli"]["tools"].append("mcp_live_srv_old_tool")
 
-        # New tool list from server
         new_tool = _make_mcp_tool("new_tool", "new behavior")
         server.session = SimpleNamespace(
             list_tools=AsyncMock(
@@ -95,11 +91,9 @@ class TestRefreshTools:
 
             await server._refresh_tools()
 
-        # Old tool completely gone
         assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
         assert "mcp_live_srv_old_tool" not in mock_toolsets["daedalus-cli"]["tools"]
 
-        # New tool registered
         assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
         assert "mcp_live_srv_new_tool" in mock_toolsets["daedalus-cli"]["tools"]
         assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
@@ -130,9 +124,7 @@ class TestMessageHandler:
         server = MCPServerTask("notif_srv")
         with patch.object(MCPServerTask, "_refresh_tools", new_callable=AsyncMock) as mock_refresh:
             handler = server._make_message_handler()
-            # Exceptions should not trigger refresh
             await handler(RuntimeError("connection dead"))
-            # Unknown message types should not trigger refresh
             await handler({"jsonrpc": "2.0", "result": "ok"})
             mock_refresh.assert_not_awaited()
 
@@ -153,7 +145,6 @@ class TestDeregister:
         reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
         assert reg.is_toolset_available("ts1")
         reg.deregister("foo")
-        # Toolset check should be gone since no tools remain
         assert "ts1" not in reg._toolset_checks
 
     def test_preserves_toolset_check_if_other_tools_remain(self):
@@ -162,9 +153,8 @@ class TestDeregister:
         reg.register(name="foo", toolset="ts1", schema={}, handler=lambda x: x, check_fn=check)
         reg.register(name="bar", toolset="ts1", schema={}, handler=lambda x: x)
         reg.deregister("foo")
-        # bar still in ts1, so check should remain
         assert "ts1" in reg._toolset_checks
 
     def test_noop_for_unknown_tool(self):
         reg = ToolRegistry()
-        reg.deregister("nonexistent")  # Should not raise
+        reg.deregister("nonexistent")

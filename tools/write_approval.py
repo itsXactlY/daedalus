@@ -54,22 +54,13 @@ from daedalus_constants import get_daedalus_home
 
 logger = logging.getLogger(__name__)
 
-# Subsystem identifiers
 MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
 
-# Config key (per subsystem). A single boolean: the approval gate is OFF by
-# default (writes flow freely, the pre-gate behaviour), and ON means stage /
-# prompt every write for the user's approval. There is intentionally no third
-# "block all writes" state — to disable a subsystem entirely use its own
-# enable flag (e.g. ``memory.memory_enabled: false``).
 CONFIG_KEY = "write_approval"
 
 
-# ---------------------------------------------------------------------------
-# Config resolution
-# ---------------------------------------------------------------------------
 
 def write_approval_enabled(subsystem: str) -> bool:
     """Return whether the approval gate is enabled for ``subsystem``.
@@ -103,9 +94,6 @@ def _normalize_enabled(value: Any) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Pending store (file-backed)
-# ---------------------------------------------------------------------------
 
 def _pending_dir(subsystem: str) -> Path:
     return get_daedalus_home() / "pending" / subsystem
@@ -200,9 +188,6 @@ def pending_count(subsystem: str) -> int:
         return 0
 
 
-# ---------------------------------------------------------------------------
-# Write origin
-# ---------------------------------------------------------------------------
 
 def current_origin() -> str:
     """Return the active write origin: ``foreground`` or ``background_review``.
@@ -223,9 +208,6 @@ def is_background() -> bool:
     return current_origin() == "background_review"
 
 
-# ---------------------------------------------------------------------------
-# Gate decision
-# ---------------------------------------------------------------------------
 
 class GateDecision:
     """Result of evaluating the write gate for a single write attempt.
@@ -276,8 +258,6 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
 
     background = is_background()
 
-    # Skills always stage — a SKILL.md is too large to review inline, and a
-    # background skill write happens in a daemon thread with no user present.
     if subsystem == SKILLS or background:
         where = "/skills pending" if subsystem == SKILLS else "/memory pending"
         return GateDecision(
@@ -288,10 +268,6 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
             ),
         )
 
-    # Memory + foreground: if an interactive approval channel exists (a CLI
-    # approval callback registered on this thread), prompt inline — entries
-    # are small enough to show in full. Otherwise (gateway, script, batch,
-    # no listener) stage instead of forcing a blind deny.
     if _interactive_approval_available():
         granted = _prompt_inline_memory_approval(inline_summary, inline_detail)
         if granted is True:
@@ -301,7 +277,6 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
                 blocked=True,
                 message="Memory write denied by user. The change was not saved.",
             )
-        # granted is None → prompt failed; fall through to staging.
 
     return GateDecision(
         stage=True,
@@ -354,18 +329,12 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
 
     callback = _get_approval_callback()
     if callback is None:
-        # No interactive channel on this thread — stage rather than risk the
-        # input() fallback (deadlock under prompt_toolkit, EOF-deny in tests).
         return None
 
     header = summary.strip() or "Save to memory?"
     body = detail.strip()
     description = f"Save to memory: {header}"
     command = body if body else header
-    # Invoke the callback directly instead of via prompt_dangerous_approval:
-    # that wrapper swallows callback exceptions into "deny", which would
-    # silently refuse the write. Direct invocation lets a crashed prompt fall
-    # back to staging (the gate only ever delays a write, never drops it).
     try:
         choice = callback(command, description, allow_permanent=False)
     except Exception as e:
@@ -376,14 +345,9 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
         return True
     if choice == "deny":
         return False
-    # Any other outcome (e.g. timeout that returns "deny" already handled) →
-    # treat unknown as no-decision so we stage rather than silently drop.
     return None
 
 
-# ---------------------------------------------------------------------------
-# Skill-specific helpers (gist + diff for the review affordances)
-# ---------------------------------------------------------------------------
 
 def skill_gist(action: str, name: str, *, content: str = "",
                file_path: str = "", old_string: str = "",
@@ -442,7 +406,6 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
     if action == "create":
         return (payload.get("content") or "")
 
-    # Resolve current on-disk content for diffable actions.
     try:
         from tools.skill_manager_tool import _find_skill
     except Exception:

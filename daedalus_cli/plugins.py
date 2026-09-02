@@ -48,9 +48,6 @@ except ImportError:  # pragma: no cover – yaml is optional at import time
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
@@ -63,8 +60,6 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
-    # v0.20.0 additions (registration parity — invocation wired where the
-    # agent loop supports it):
     "transform_terminal_output",
     "transform_tool_result",
     "transform_llm_output",
@@ -96,23 +91,20 @@ def _get_disabled_plugins() -> set:
         return set()
 
 
-# ---------------------------------------------------------------------------
-# Data classes
-# ---------------------------------------------------------------------------
 
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
 
     name: str
-    key: str = ""           # dedup/load key (category-namespaced, e.g. "image_gen/openai")
+    key: str = ""
     version: str = ""
     description: str = ""
     author: str = ""
     requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
-    source: str = ""        # "user", "project", or "entrypoint"
+    source: str = ""
     path: Optional[str] = None
 
 
@@ -128,9 +120,6 @@ class LoadedPlugin:
     error: Optional[str] = None
 
 
-# ---------------------------------------------------------------------------
-# PluginContext  – handed to each plugin's ``register()`` function
-# ---------------------------------------------------------------------------
 
 class PluginContext:
     """Facade given to plugins so they can register tools and hooks."""
@@ -139,7 +128,6 @@ class PluginContext:
         self.manifest = manifest
         self._manager = manager
 
-    # -- tool registration --------------------------------------------------
 
     def register_tool(
         self,
@@ -170,7 +158,6 @@ class PluginContext:
         self._manager._plugin_tool_names.add(name)
         logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
 
-    # -- message injection --------------------------------------------------
 
     def inject_message(self, content: str, role: str = "user") -> bool:
         """Inject a message into the active conversation.
@@ -191,14 +178,11 @@ class PluginContext:
         msg = content if role == "user" else f"[{role}] {content}"
 
         if getattr(cli, "_agent_running", False):
-            # Agent is mid-turn — interrupt with the message
             cli._interrupt_queue.put(msg)
         else:
-            # Agent is idle — queue as next input
             cli._pending_input.put(msg)
         return True
 
-    # -- CLI command registration --------------------------------------------
 
     def register_cli_command(
         self,
@@ -224,7 +208,6 @@ class PluginContext:
         }
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
 
-    # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
         """Register a lifecycle hook callback.
@@ -243,13 +226,6 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
-    # -- provider registration (v0.20.0 parity — "ONE way" registration) -----
-    # These mirror upstream daedalus v0.20.0 (NousResearch, tag v2026.8.3):
-    # a plugin contributes a backend by calling ctx.register_*_provider(instance),
-    # which type-checks against the provider ABC in agent/ and registers into the
-    # matching agent/*_registry. The dispatcher (tools/web_tools.py etc.) consults
-    # the registry, so config (web.search_backend, browser.cloud_provider, ...)
-    # selects the active provider by name. Port 2026-08-09.
 
     def register_web_search_provider(self, provider) -> None:
         """Register a web search/extract backend (WebSearchProvider)."""
@@ -335,9 +311,6 @@ class PluginContext:
         logger.info("Plugin '%s' registered tts provider: %s",
                     self.manifest.name, provider.name)
 
-    # -- slash command / dashboard / platform / slack registration ------------
-    # v0.20.0 parity — see register_command, register_dashboard_auth_provider,
-    # register_platform, register_slack_action_handler in upstream plugins.py.
 
     def register_command(self, name: str, handler: Callable, description: str = "",
                          args_hint: str = "") -> None:
@@ -363,7 +336,7 @@ class PluginContext:
                     self.manifest.name, clean)
                 return
         except Exception:
-            pass  # If commands module isn't available, skip the check
+            pass
         self._manager._plugin_commands[clean] = {
             "handler": handler,
             "description": description or "Plugin command",
@@ -428,9 +401,6 @@ class PluginContext:
                      self.manifest.name, action_id)
 
 
-# ---------------------------------------------------------------------------
-# PluginManager
-# ---------------------------------------------------------------------------
 
 class PluginManager:
     """Central manager that discovers, loads, and invokes plugins."""
@@ -439,16 +409,13 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
-        self._cli_commands: Dict[str, dict] = {}       # `daedalus <subcommand>` (register_cli_command)
-        self._plugin_commands: Dict[str, dict] = {}    # in-session `/slash` commands (register_command, v0.20.0)
-        self._slack_action_handlers: List[tuple] = []  # (action_id, callback, plugin_name)
+        self._cli_commands: Dict[str, dict] = {}
+        self._plugin_commands: Dict[str, dict] = {}
+        self._slack_action_handlers: List[tuple] = []
         self._plugin_platform_names: Set[str] = set()
         self._discovered: bool = False
-        self._cli_ref = None  # Set by CLI after plugin discovery
+        self._cli_ref = None
 
-    # -----------------------------------------------------------------------
-    # Public
-    # -----------------------------------------------------------------------
 
     def discover_and_load(self) -> None:
         """Scan all plugin sources and load each plugin found."""
@@ -458,24 +425,17 @@ class PluginManager:
 
         manifests: List[PluginManifest] = []
 
-        # 1. User/bundled plugins (~/.daedalus/plugins/) — recursive (flat +
-        #    category layouts, v0.20.0). Categories with their own discovery
-        #    systems are skipped at the top level; platforms/ is scanned one
-        #    level deeper for its adapters.
         user_dir = get_daedalus_home() / "plugins"
         skip_top = {"memory", "context_engine", "platforms", "model-providers", "cron_providers"}
         manifests.extend(self._scan_directory(user_dir, source="user", skip_names=skip_top))
         manifests.extend(self._scan_directory(user_dir / "platforms", source="user"))
 
-        # 2. Project plugins (./.daedalus/plugins/)
         if _env_enabled("DAEDALUS_ENABLE_PROJECT_PLUGINS"):
             project_dir = Path.cwd() / ".daedalus" / "plugins"
             manifests.extend(self._scan_directory(project_dir, source="project"))
 
-        # 3. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())
 
-        # Load each manifest (skip user-disabled plugins)
         disabled = _get_disabled_plugins()
         for manifest in manifests:
             if manifest.name in disabled:
@@ -493,9 +453,6 @@ class PluginManager:
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
 
-    # -----------------------------------------------------------------------
-    # Directory scanning
-    # -----------------------------------------------------------------------
 
     def _scan_directory(self, path: Path, source: str,
                         skip_names: Optional[Set[str]] = None) -> List[PluginManifest]:
@@ -537,8 +494,6 @@ class PluginManager:
                 if manifest is not None:
                     manifests.append(manifest)
                 continue
-            # No manifest at this level: within the depth cap, treat as a
-            # category namespace and recurse one level in.
             if depth >= 1:
                 logger.debug("Skipping %s (no plugin.yaml, depth cap reached)", child)
                 continue
@@ -581,16 +536,12 @@ class PluginManager:
             logger.warning("Failed to parse %s: %s", manifest_file, exc)
             return None
 
-    # -----------------------------------------------------------------------
-    # Entry-point scanning
-    # -----------------------------------------------------------------------
 
     def _scan_entry_points(self) -> List[PluginManifest]:
         """Check ``importlib.metadata`` for pip-installed plugins."""
         manifests: List[PluginManifest] = []
         try:
             eps = importlib.metadata.entry_points()
-            # Python 3.12+ returns a SelectableGroups; earlier returns dict
             if hasattr(eps, "select"):
                 group_eps = eps.select(group=ENTRY_POINTS_GROUP)
             elif isinstance(eps, dict):
@@ -610,9 +561,6 @@ class PluginManager:
 
         return manifests
 
-    # -----------------------------------------------------------------------
-    # Loading
-    # -----------------------------------------------------------------------
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""
@@ -626,7 +574,6 @@ class PluginManager:
 
             loaded.module = module
 
-            # Call register()
             register_fn = getattr(module, "register", None)
             if register_fn is None:
                 loaded.error = "no register() function"
@@ -646,7 +593,7 @@ class PluginManager:
                     {
                         h
                         for h, cbs in self._hooks.items()
-                        if cbs  # non-empty
+                        if cbs
                     }
                     - {
                         h
@@ -669,7 +616,6 @@ class PluginManager:
         if not init_file.exists():
             raise FileNotFoundError(f"No __init__.py in {plugin_dir}")
 
-        # Ensure the namespace parent package exists
         if _NS_PARENT not in sys.modules:
             ns_pkg = types.ModuleType(_NS_PARENT)
             ns_pkg.__path__ = []  # type: ignore[attr-defined]
@@ -712,9 +658,6 @@ class PluginManager:
             f"Entry point '{manifest.name}' not found in group '{ENTRY_POINTS_GROUP}'"
         )
 
-    # -----------------------------------------------------------------------
-    # Hook invocation
-    # -----------------------------------------------------------------------
 
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
@@ -752,9 +695,6 @@ class PluginManager:
                 )
         return results
 
-    # -----------------------------------------------------------------------
-    # Introspection
-    # -----------------------------------------------------------------------
 
     def list_plugins(self) -> List[Dict[str, Any]]:
         """Return a list of info dicts for all discovered plugins."""
@@ -775,9 +715,6 @@ class PluginManager:
         return result
 
 
-# ---------------------------------------------------------------------------
-# Module-level singleton & convenience functions
-# ---------------------------------------------------------------------------
 
 _plugin_manager: Optional[PluginManager] = None
 
@@ -848,7 +785,6 @@ def get_plugin_toolsets() -> List[tuple]:
     except Exception:
         return []
 
-    # Group plugin tool names by their toolset
     toolset_tools: Dict[str, List[str]] = {}
     toolset_plugin: Dict[str, LoadedPlugin] = {}
     for tool_name in manager._plugin_tool_names:
@@ -858,7 +794,6 @@ def get_plugin_toolsets() -> List[tuple]:
         ts = entry.toolset
         toolset_tools.setdefault(ts, []).append(entry.name)
 
-    # Map toolsets back to the plugin that registered them
     for _name, loaded in manager._plugins.items():
         for tool_name in loaded.tools_registered:
             entry = registry._tools.get(tool_name)

@@ -53,9 +53,6 @@ def _mock_resolve(base_url="https://openrouter.ai/api/v1", api_key="test-key"):
     return mock_client
 
 
-# =============================================================================
-# _try_activate_fallback()
-# =============================================================================
 
 class TestTryActivateFallback:
     def test_returns_false_when_not_configured(self):
@@ -159,7 +156,6 @@ class TestTryActivateFallback:
             return_value=(mock_client, "anthropic/claude-sonnet-4"),
         ):
             assert agent._try_activate_fallback() is True
-            # Second attempt should return False
             assert agent._try_activate_fallback() is False
 
     def test_returns_false_when_no_api_key(self):
@@ -322,9 +318,6 @@ class TestTryActivateFallback:
             assert agent._fallback_activated is False
 
 
-# =============================================================================
-# Fallback config init
-# =============================================================================
 
 class TestFallbackInit:
     def test_fallback_stored_when_configured(self):
@@ -345,9 +338,6 @@ class TestFallbackInit:
         assert agent._fallback_model is None
 
 
-# =============================================================================
-# Provider credential resolution
-# =============================================================================
 
 class TestProviderCredentials:
     """Verify that each supported provider resolves via the centralized router."""

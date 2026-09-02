@@ -18,7 +18,7 @@ def _shared_find_ffmpeg():
     """Delegate to the repo-wide ffmpeg discovery helper when importable."""
     try:
         from tools.transcription_tools import _find_ffmpeg_binary
-    except ImportError:  # standalone plugin import (tests / sandboxes)
+    except ImportError:
         return shutil.which("ffmpeg")
     return _find_ffmpeg_binary()
 

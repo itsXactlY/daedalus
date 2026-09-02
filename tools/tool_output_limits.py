@@ -33,15 +33,10 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-# Hardcoded defaults — these match the pre-existing values, so adding
-# this module is behaviour-preserving for users who don't set
-# ``tool_output`` in config.yaml.
-DEFAULT_MAX_BYTES = 50_000       # terminal_tool.MAX_OUTPUT_CHARS
-DEFAULT_MAX_LINES = 2000         # file_operations.MAX_LINES
-DEFAULT_MAX_LINE_LENGTH = 2000   # file_operations.MAX_LINE_LENGTH
+DEFAULT_MAX_BYTES = 50_000
+DEFAULT_MAX_LINES = 2000
+DEFAULT_MAX_LINE_LENGTH = 2000
 
-# Module-level cache — populated on first call.
-# Avoids repeated config file I/O on every tool call.
 _cached_limits: dict | None = None
 
 

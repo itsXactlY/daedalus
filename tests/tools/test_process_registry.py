@@ -65,9 +65,6 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
     return False
 
 
-# =========================================================================
-# Get / Poll
-# =========================================================================
 
 class TestGetAndPoll:
     def test_get_not_found(self, registry):
@@ -103,9 +100,6 @@ class TestGetAndPoll:
         assert result["exit_code"] == 0
 
 
-# =========================================================================
-# Read log
-# =========================================================================
 
 class TestReadLog:
     def test_not_found(self, registry):
@@ -124,7 +118,6 @@ class TestReadLog:
         s = _make_session(output=lines)
         registry._running[s.id] = s
         result = registry.read_log(s.id, limit=10)
-        # Default: last 10 lines
         assert "10 lines" in result["showing"]
 
     def test_read_with_offset(self, registry):
@@ -135,9 +128,6 @@ class TestReadLog:
         assert "5 lines" in result["showing"]
 
 
-# =========================================================================
-# List sessions
-# =========================================================================
 
 class TestListSessions:
     def test_empty(self, registry):
@@ -171,9 +161,6 @@ class TestListSessions:
         assert "output_preview" in entry
 
 
-# =========================================================================
-# Active process queries
-# =========================================================================
 
 class TestActiveQueries:
     def test_has_active_processes(self, registry):
@@ -195,9 +182,6 @@ class TestActiveQueries:
         assert registry.has_active_processes("t1") is False
 
 
-# =========================================================================
-# Pruning
-# =========================================================================
 
 class TestPruning:
     def test_prune_expired_finished(self, registry):
@@ -217,16 +201,14 @@ class TestPruning:
         assert "proc_recent" in registry._finished
 
     def test_prune_over_max_removes_oldest(self, registry):
-        # Fill up to MAX_PROCESSES
         for i in range(MAX_PROCESSES):
             s = _make_session(
                 sid=f"proc_{i}",
                 exited=True,
-                started_at=time.time() - i,  # older as i increases
+                started_at=time.time() - i,
             )
             registry._finished[s.id] = s
 
-        # Add one more running to trigger prune
         s = _make_session(sid="proc_new")
         registry._running[s.id] = s
         registry._prune_if_needed()
@@ -235,9 +217,6 @@ class TestPruning:
         assert total <= MAX_PROCESSES
 
 
-# =========================================================================
-# Spawn env sanitization
-# =========================================================================
 
 class TestSpawnEnvSanitization:
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
@@ -283,9 +262,6 @@ class TestSpawnEnvSanitization:
         assert env["PYTHONUNBUFFERED"] == "1"
 
 
-# =========================================================================
-# Checkpoint
-# =========================================================================
 
 class TestCheckpoint:
     def test_write_checkpoint(self, registry, tmp_path):
@@ -307,7 +283,7 @@ class TestCheckpoint:
         checkpoint.write_text(json.dumps([{
             "session_id": "proc_dead",
             "command": "sleep 999",
-            "pid": 999999999,  # almost certainly not running
+            "pid": 999999999,
             "task_id": "t1",
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
@@ -336,7 +312,7 @@ class TestCheckpoint:
         checkpoint.write_text(json.dumps([{
             "session_id": "proc_live",
             "command": "sleep 999",
-            "pid": os.getpid(),  # current process — guaranteed alive
+            "pid": os.getpid(),
             "task_id": "t1",
             "session_key": "sk1",
             "watcher_platform": "telegram",
@@ -452,9 +428,6 @@ class TestCheckpoint:
                     proc.wait(timeout=5)
 
 
-# =========================================================================
-# Kill process
-# =========================================================================
 
 class TestKillProcess:
     def test_kill_not_found(self, registry):
@@ -489,9 +462,6 @@ class TestKillProcess:
             registry._running.pop(s.id, None)
 
 
-# =========================================================================
-# Tool handler
-# =========================================================================
 
 class TestProcessToolHandler:
     def test_list_action(self):

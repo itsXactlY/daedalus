@@ -76,7 +76,6 @@ class TestGetExternalSkillsDirs:
         assert result == []
 
     def test_no_config_file(self, daedalus_home):
-        # No config.yaml at all
         with patch.dict(os.environ, {"DAEDALUS_HOME": str(daedalus_home)}):
             from agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()

@@ -19,9 +19,8 @@ from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
-# ── Module-level state ──
 
-_mazemaker_provider = None  # initialized MazemakerProvider instance
+_mazemaker_provider = None
 
 
 def _provider_initialized(provider) -> bool:
@@ -71,8 +70,6 @@ def _load_mazemaker_provider():
     if provider and provider.is_available():
         return provider
     if name != "mazemaker":
-        # Fall back to the in-process provider so the four mazemaker_* tools
-        # still work even when the MCP daemon is down.
         provider = load_memory_provider("mazemaker")
         if provider and provider.is_available():
             return provider
@@ -137,7 +134,6 @@ def _check_mazemaker_available() -> bool:
         return False
 
 
-# ── Tool schemas ──
 
 _MAZEMAKER_REMEMBER_SCHEMA = {
     "name": "mazemaker_remember",
@@ -219,7 +215,6 @@ _MAZEMAKER_GRAPH_SCHEMA = {
 }
 
 
-# ── Tool handlers ──
 
 def _handle_mazemaker_remember(args: Dict[str, Any], **kwargs) -> str:
     """Handle mazemaker_remember tool call."""
@@ -269,7 +264,6 @@ def _handle_mazemaker_graph(args: Dict[str, Any], **kwargs) -> str:
         return tool_error(f"mazemaker_graph failed: {e}")
 
 
-# ── Register tools ──
 
 registry.register(
     name="mazemaker_remember",

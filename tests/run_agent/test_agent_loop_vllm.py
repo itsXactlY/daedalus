@@ -29,7 +29,6 @@ from unittest.mock import patch
 import pytest
 import requests
 
-# Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -40,9 +39,6 @@ except ImportError:
     pytest.skip("atroposlib not installed", allow_module_level=True)
 
 
-# =========================================================================
-# Configuration
-# =========================================================================
 
 VLLM_HOST = "localhost"
 VLLM_PORT = 9001
@@ -59,7 +55,6 @@ def _vllm_is_running() -> bool:
         return False
 
 
-# Skip all tests in this module if vLLM is not running
 pytestmark = pytest.mark.skipif(
     not _vllm_is_running(),
     reason=(
@@ -71,9 +66,6 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-# =========================================================================
-# Server setup
-# =========================================================================
 
 def _make_server_manager():
     """Create a ServerManager pointing to the local vLLM server."""
@@ -99,9 +91,6 @@ def _get_tokenizer():
     return AutoTokenizer.from_pretrained(VLLM_MODEL)
 
 
-# =========================================================================
-# Fake tools
-# =========================================================================
 
 WEATHER_TOOL = {
     "type": "function",
@@ -160,9 +149,6 @@ def _fake_tool_handler(tool_name: str, args: Dict[str, Any], **kwargs) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
-# =========================================================================
-# Tests
-# =========================================================================
 
 @pytest.mark.asyncio
 async def test_vllm_single_tool_call():
@@ -190,7 +176,6 @@ async def test_vllm_single_tool_call():
     assert isinstance(result, AgentResult)
     assert result.turns_used >= 2, f"Expected at least 2 turns, got {result.turns_used}"
 
-    # Verify tool call happened
     tool_calls_found = False
     for msg in result.messages:
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
@@ -201,7 +186,6 @@ async def test_vllm_single_tool_call():
                     assert "city" in args
     assert tool_calls_found, "Model should have called get_weather"
 
-    # Verify tool results in conversation
     tool_results = [m for m in result.messages if m.get("role") == "tool"]
     assert len(tool_results) >= 1
 
@@ -233,7 +217,6 @@ async def test_vllm_multi_tool_calls():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-    # Both tools should be called
     tools_called = set()
     for msg in result.messages:
         if msg.get("role") == "assistant" and msg.get("tool_calls"):
@@ -267,7 +250,6 @@ async def test_vllm_managed_server_produces_nodes():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-        # Get the managed state — should have SequenceNodes
         state = managed.get_state()
 
     assert state is not None, "ManagedServer should return state"
@@ -341,8 +323,6 @@ async def test_vllm_thinking_content_extracted():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-    # Qwen3-Thinking should generate <think> blocks
-    # Check if any content contains thinking markers
     has_thinking = False
     for msg in result.messages:
         content = msg.get("content", "") or ""
@@ -350,10 +330,8 @@ async def test_vllm_thinking_content_extracted():
             has_thinking = True
             break
 
-    # Also check reasoning_per_turn
     has_reasoning = any(r for r in result.reasoning_per_turn if r)
 
-    # At least one of these should be true for a thinking model
     assert has_thinking or has_reasoning, (
         "Qwen3-Thinking should produce <think> blocks or reasoning content"
     )

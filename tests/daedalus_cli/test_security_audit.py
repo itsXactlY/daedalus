@@ -14,7 +14,6 @@ from unittest.mock import patch
 from daedalus_cli import security_audit as sa
 
 
-# ─── Parsers ──────────────────────────────────────────────────────────────────
 
 
 class TestRequirementsParser:
@@ -46,14 +45,12 @@ class TestMCPComponentExtraction:
 
 
     def test_docker_returns_none(self):
-        # We don't currently parse docker image refs.
         assert sa._extract_mcp_component("x", "docker", ["run", "-i", "mcp/foo:1.0"]) is None
 
     def test_empty_args(self):
         assert sa._extract_mcp_component("x", "npx", []) is None
 
 
-# ─── Plugin discovery ─────────────────────────────────────────────────────────
 
 
 class TestPluginDiscovery:
@@ -70,7 +67,6 @@ class TestPluginDiscovery:
         assert sa._discover_plugins(tmp_path) == []
 
 
-# ─── OSV severity extraction ──────────────────────────────────────────────────
 
 
 class TestSeverityExtraction:
@@ -98,7 +94,6 @@ class TestSeverityExtraction:
         assert sa._osv_fixed_versions(rec) == ["2.0.0", "1.9.5"]
 
 
-# ─── End-to-end orchestration with mocked OSV ─────────────────────────────────
 
 
 class TestRunAudit:
@@ -131,12 +126,10 @@ class TestRunAudit:
                 skip_venv=True, skip_plugins=False, skip_mcp=True, daedalus_home=tmp_path
             )
         assert len(findings) == 2
-        # CRITICAL must come first
         assert findings[0].vuln.osv_id == "CRIT-1"
         assert findings[1].vuln.osv_id == "LOW-1"
 
 
-# ─── CLI subcommand exit codes ────────────────────────────────────────────────
 
 
 class TestExitCodes:
@@ -207,7 +200,6 @@ class TestExitCodes:
             self._build_args(skip_venv=False, json=True, fail_on="critical")
         )
         payload = capsys.readouterr().out
-        # The bitwarden banner can leak above the json; pick the first { line.
         lines = payload.splitlines()
         json_start = next(i for i, l in enumerate(lines) if l.startswith("{"))
         data = json.loads("\n".join(lines[json_start:]))

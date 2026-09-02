@@ -50,42 +50,39 @@ from daedalus_cli.config import get_daedalus_home
 logger = logging.getLogger(__name__)
 
 
-# Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_daedalus_home() / "processes.json"
 
-# Limits
-MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
-FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
-MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+MAX_OUTPUT_CHARS = 200_000
+FINISHED_TTL_SECONDS = 1800
+MAX_PROCESSES = 64
 
 
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
-    id: str                                     # Unique session ID ("proc_xxxxxxxxxxxx")
-    command: str                                 # Original command string
-    task_id: str = ""                           # Task/sandbox isolation key
-    session_key: str = ""                       # Gateway session key (for reset protection)
-    pid: Optional[int] = None                   # OS process ID
-    process: Optional[subprocess.Popen] = None  # Popen handle (local only)
-    env_ref: Any = None                         # Reference to the environment object
-    cwd: Optional[str] = None                   # Working directory
-    started_at: float = 0.0                     # time.time() of spawn
-    exited: bool = False                        # Whether the process has finished
-    exit_code: Optional[int] = None             # Exit code (None if still running)
-    output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
+    id: str
+    command: str
+    task_id: str = ""
+    session_key: str = ""
+    pid: Optional[int] = None
+    process: Optional[subprocess.Popen] = None
+    env_ref: Any = None
+    cwd: Optional[str] = None
+    started_at: float = 0.0
+    exited: bool = False
+    exit_code: Optional[int] = None
+    output_buffer: str = ""
     max_output_chars: int = MAX_OUTPUT_CHARS
-    detached: bool = False                      # True if recovered from crash (no pipe)
-    pid_scope: str = "host"                     # "host" for local/PTY PIDs, "sandbox" for env-local PIDs
-    # Watcher/notification metadata (persisted for crash recovery)
+    detached: bool = False
+    pid_scope: str = "host"
     watcher_platform: str = ""
     watcher_chat_id: str = ""
     watcher_thread_id: str = ""
-    watcher_interval: int = 0                   # 0 = no watcher configured
-    notify_on_complete: bool = False             # Queue agent notification on exit
+    watcher_interval: int = 0
+    notify_on_complete: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
-    _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
+    _pty: Any = field(default=None, repr=False)
 
 
 class ProcessRegistry:
@@ -111,12 +108,8 @@ class ProcessRegistry:
         self._finished: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
 
-        # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
 
-        # Completion notifications — processes with notify_on_complete push here
-        # on exit.  CLI process_loop and gateway drain this after each agent turn
-        # to auto-trigger a new agent turn with the process results.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
@@ -151,8 +144,6 @@ class ProcessRegistry:
             if session.exited:
                 return session
             session.exited = True
-            # Recovered sessions no longer have a waitable handle, so the real
-            # exit code is unavailable once the original process object is gone.
             session.exit_code = None
 
         self._move_to_finished(session)
@@ -170,7 +161,6 @@ class ProcessRegistry:
         except (OSError, ProcessLookupError, PermissionError):
             os.kill(pid, signal.SIGTERM)
 
-    # ----- Spawn -----
 
     def spawn_local(
         self,
@@ -201,7 +191,6 @@ class ProcessRegistry:
         )
 
         if use_pty:
-            # Try PTY mode for interactive CLI tools
             try:
                 if _IS_WINDOWS:
                     from winpty import PtyProcess as _PtyProcessCls
@@ -217,10 +206,8 @@ class ProcessRegistry:
                     dimensions=(30, 120),
                 )
                 session.pid = pty_proc.pid
-                # Store the pty handle on the session for read/write
                 session._pty = pty_proc
 
-                # PTY reader thread
                 reader = threading.Thread(
                     target=self._pty_reader_loop,
                     args=(session,),
@@ -242,13 +229,7 @@ class ProcessRegistry:
             except Exception as e:
                 logger.warning("PTY spawn failed (%s), falling back to pipe mode", e)
 
-        # Standard Popen path (non-PTY or PTY fallback)
-        # Use the user's login shell for consistency with LocalEnvironment --
-        # ensures rc files are sourced and user tools are available.
         user_shell = _find_shell()
-        # Force unbuffered output for Python scripts so progress is visible
-        # during background execution (libraries like tqdm/datasets buffer when
-        # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
@@ -267,7 +248,6 @@ class ProcessRegistry:
         session.process = proc
         session.pid = proc.pid
 
-        # Start output reader thread
         reader = threading.Thread(
             target=self._reader_loop,
             args=(session,),
@@ -315,7 +295,6 @@ class ProcessRegistry:
             pid_scope="sandbox",
         )
 
-        # Run the command in the sandbox with output capture
         log_path = f"/tmp/daedalus_bg_{session.id}.log"
         pid_path = f"/tmp/daedalus_bg_{session.id}.pid"
         quoted_command = shlex.quote(command)
@@ -327,7 +306,6 @@ class ProcessRegistry:
         try:
             result = env.execute(bg_command, timeout=timeout)
             output = result.get("output", "").strip()
-            # Try to extract the PID from the output
             for line in output.splitlines():
                 line = line.strip()
                 if line.isdigit():
@@ -339,7 +317,6 @@ class ProcessRegistry:
             session.output_buffer = f"Failed to start: {e}"
 
         if not session.exited:
-            # Start a poller thread that periodically reads the log file
             reader = threading.Thread(
                 target=self._env_poller_loop,
                 args=(session, env, log_path, pid_path),
@@ -356,7 +333,6 @@ class ProcessRegistry:
         self._write_checkpoint()
         return session
 
-    # ----- Reader / Poller Threads -----
 
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
@@ -376,7 +352,6 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
 
-        # Process exited
         try:
             session.process.wait(timeout=5)
         except Exception as e:
@@ -390,9 +365,8 @@ class ProcessRegistry:
     ):
         """Background thread: poll a sandbox log file for non-local backends."""
         while not session.exited:
-            time.sleep(2)  # Poll every 2 seconds
+            time.sleep(2)
             try:
-                # Read new output from the log file
                 result = env.execute(f"cat {log_path} 2>/dev/null", timeout=10)
                 new_output = result.get("output", "")
                 if new_output:
@@ -401,14 +375,12 @@ class ProcessRegistry:
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
 
-                # Check if process is still running
                 check = env.execute(
                     f"kill -0 $(cat {pid_path} 2>/dev/null) 2>/dev/null; echo $?",
                     timeout=5,
                 )
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Process has exited -- get exit code
                     exit_result = env.execute(
                         f"wait $(cat {pid_path} 2>/dev/null) 2>/dev/null; echo $?",
                         timeout=5,
@@ -423,7 +395,6 @@ class ProcessRegistry:
                     return
 
             except Exception:
-                # Environment might be gone (sandbox reaped, etc.)
                 session.exited = True
                 session.exit_code = -1
                 self._move_to_finished(session)
@@ -437,7 +408,6 @@ class ProcessRegistry:
                 try:
                     chunk = pty.read(4096)
                     if chunk:
-                        # ptyprocess returns bytes
                         text = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
                         with session._lock:
                             session.output_buffer += text
@@ -450,7 +420,6 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("PTY stdout reader ended: %s", e)
 
-        # Process exited
         try:
             pty.wait()
         except Exception as e:
@@ -466,8 +435,6 @@ class ProcessRegistry:
             self._finished[session.id] = session
         self._write_checkpoint()
 
-        # If the caller requested agent notification, enqueue the completion
-        # so the CLI/gateway can auto-trigger a new agent turn.
         if session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
@@ -478,7 +445,6 @@ class ProcessRegistry:
                 "output": output_tail,
             })
 
-    # ----- Query Methods -----
 
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Get a session by ID (running or finished)."""
@@ -526,7 +492,6 @@ class ProcessRegistry:
         lines = full_output.splitlines()
         total_lines = len(lines)
 
-        # Default: last N lines
         if offset == 0 and limit > 0:
             selected = lines[-limit:]
         else:
@@ -621,17 +586,14 @@ class ProcessRegistry:
                 "exit_code": session.exit_code,
             }
 
-        # Kill via PTY, Popen (local), or env execute (non-local)
         try:
             if session._pty:
-                # PTY process -- terminate via ptyprocess
                 try:
                     session._pty.terminate(force=True)
                 except Exception:
                     if session.pid:
                         os.kill(session.pid, signal.SIGTERM)
             elif session.process:
-                # Local process -- kill the process group
                 try:
                     if _IS_WINDOWS:
                         session.process.terminate()
@@ -640,7 +602,6 @@ class ProcessRegistry:
                 except (ProcessLookupError, PermissionError):
                     session.process.kill()
             elif session.env_ref and session.pid:
-                # Non-local -- kill inside sandbox
                 session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
             elif session.detached and session.pid_scope == "host" and session.pid:
                 if not self._is_host_pid_alive(session.pid):
@@ -662,7 +623,7 @@ class ProcessRegistry:
                     ),
                 }
             session.exited = True
-            session.exit_code = -15  # SIGTERM
+            session.exit_code = -15
             self._move_to_finished(session)
             self._write_checkpoint()
             return {"status": "killed", "session_id": session.id}
@@ -677,7 +638,6 @@ class ProcessRegistry:
         if session.exited:
             return {"status": "already_exited", "error": "Process has already finished"}
 
-        # PTY mode -- write through pty handle (expects bytes)
         if hasattr(session, '_pty') and session._pty:
             try:
                 pty_data = data.encode("utf-8") if isinstance(data, str) else data
@@ -686,7 +646,6 @@ class ProcessRegistry:
             except Exception as e:
                 return {"status": "error", "error": str(e)}
 
-        # Popen mode -- write through stdin pipe
         if not session.process or not session.process.stdin:
             return {"status": "error", "error": "Process stdin not available (non-local backend or stdin closed)"}
         try:
@@ -729,7 +688,6 @@ class ProcessRegistry:
             result.append(entry)
         return result
 
-    # ----- Session/Task Queries (for gateway integration) -----
 
     def has_active_processes(self, task_id: str) -> bool:
         """Check if there are active (running) processes for a task_id."""
@@ -774,11 +732,9 @@ class ProcessRegistry:
                 killed += 1
         return killed
 
-    # ----- Cleanup / Pruning -----
 
     def _prune_if_needed(self):
         """Remove oldest finished sessions if over MAX_PROCESSES. Must hold _lock."""
-        # First prune expired finished sessions
         now = time.time()
         expired = [
             sid for sid, s in self._finished.items()
@@ -787,13 +743,11 @@ class ProcessRegistry:
         for sid in expired:
             del self._finished[sid]
 
-        # If still over limit, remove oldest finished
         total = len(self._running) + len(self._finished)
         if total >= MAX_PROCESSES and self._finished:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
 
-    # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self):
         """Write running process metadata to checkpoint file atomically."""
@@ -818,7 +772,6 @@ class ProcessRegistry:
                             "notify_on_complete": s.notify_on_complete,
                         })
             
-            # Atomic write to avoid corruption on crash
             from utils import atomic_json_write
             atomic_json_write(CHECKPOINT_PATH, entries)
         except Exception as e:
@@ -846,9 +799,6 @@ class ProcessRegistry:
 
             pid_scope = entry.get("pid_scope", "host")
             if pid_scope != "host":
-                # Sandbox-backed processes keep only in-sandbox PIDs in the
-                # checkpoint, which are not meaningful to the restarted host
-                # process once the original environment handle is gone.
                 logger.info(
                     "Skipping recovery for non-host process: %s (pid=%s, scope=%s)",
                     entry.get("command", "unknown")[:60],
@@ -857,7 +807,6 @@ class ProcessRegistry:
                 )
                 continue
 
-            # Check if PID is still alive
             alive = self._is_host_pid_alive(pid)
 
             if alive:
@@ -870,7 +819,7 @@ class ProcessRegistry:
                     pid_scope=pid_scope,
                     cwd=entry.get("cwd"),
                     started_at=entry.get("started_at", time.time()),
-                    detached=True,  # Can't read output, but can report status + kill
+                    detached=True,
                     watcher_platform=entry.get("watcher_platform", ""),
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
@@ -882,7 +831,6 @@ class ProcessRegistry:
                 recovered += 1
                 logger.info("Recovered detached process: %s (pid=%d)", session.command[:60], pid)
 
-                # Re-enqueue watcher so gateway can resume notifications
                 if session.watcher_interval > 0:
                     self.pending_watchers.append({
                         "session_id": session.id,
@@ -899,13 +847,9 @@ class ProcessRegistry:
         return recovered
 
 
-# Module-level singleton
 process_registry = ProcessRegistry()
 
 
-# ---------------------------------------------------------------------------
-# Registry -- the "process" tool schema + handler
-# ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {
@@ -957,7 +901,6 @@ def _handle_process(args, **kw):
     import json as _json
     task_id = kw.get("task_id")
     action = args.get("action", "")
-    # Coerce to string — some models send session_id as an integer
     session_id = str(args.get("session_id", "")) if args.get("session_id") is not None else ""
 
     if action == "list":

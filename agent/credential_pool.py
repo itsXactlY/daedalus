@@ -42,7 +42,6 @@ def _load_config_safe() -> Optional[dict]:
         return None
 
 
-# --- Status and type constants ---
 
 STATUS_OK = "ok"
 STATUS_EXHAUSTED = "exhausted"
@@ -63,19 +62,12 @@ SUPPORTED_POOL_STRATEGIES = {
     STRATEGY_LEAST_USED,
 }
 
-# Cooldown before retrying an exhausted credential.
-# 429 (rate-limited) cools down faster since quotas reset frequently.
-# 402 (billing/quota) and other codes use a longer default.
-EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
-EXHAUSTED_TTL_DEFAULT_SECONDS = 24 * 60 * 60 # 24 hours
+EXHAUSTED_TTL_429_SECONDS = 60 * 60
+EXHAUSTED_TTL_DEFAULT_SECONDS = 24 * 60 * 60
 
-# Pool key prefix for custom OpenAI-compatible endpoints.
-# Custom endpoints all share provider='custom' but are keyed by their
-# custom_providers name: 'custom:<normalized_name>'.
 CUSTOM_POOL_PREFIX = "custom:"
 
 
-# Fields that are only round-tripped through JSON — never used for logic as attributes.
 _EXTRA_KEYS = frozenset({
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
@@ -425,7 +417,6 @@ class CredentialPool:
             file_refresh = creds.get("refreshToken", "")
             file_access = creds.get("accessToken", "")
             file_expires = creds.get("expiresAt", 0)
-            # If the credentials file has a different token pair, sync it
             if file_refresh and file_refresh != entry.refresh_token:
                 logger.debug("Pool entry %s: syncing tokens from credentials file (refresh token changed)", entry.id)
                 updated = replace(
@@ -497,9 +488,6 @@ class CredentialPool:
                     refresh_token=refreshed["refresh_token"],
                     expires_at_ms=refreshed["expires_at_ms"],
                 )
-                # Keep ~/.claude/.credentials.json in sync so that the
-                # fallback path (resolve_anthropic_token) and other profiles
-                # see the latest tokens.
                 if entry.source == "claude_code":
                     try:
                         from agent.anthropic_adapter import _write_claude_code_credentials
@@ -542,7 +530,6 @@ class CredentialPool:
                     force_refresh=force,
                     force_mint=force,
                 )
-                # Apply returned fields: dataclass fields via replace, extras via dict update
                 field_updates = {}
                 extra_updates = dict(entry.extra)
                 _field_names = {f.name for f in fields(entry)}
@@ -556,9 +543,6 @@ class CredentialPool:
                 return entry
         except Exception as exc:
             logger.debug("Credential refresh failed for %s/%s: %s", self.provider, entry.id, exc)
-            # For anthropic claude_code entries: the refresh token may have been
-            # consumed by another process. Check if ~/.claude/.credentials.json
-            # has a newer token pair and retry once.
             if self.provider == "anthropic" and entry.source == "claude_code":
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
                 if synced.refresh_token != entry.refresh_token:
@@ -593,7 +577,6 @@ class CredentialPool:
                     except Exception as retry_exc:
                         logger.debug("Retry refresh also failed: %s", retry_exc)
                 elif not self._entry_needs_refresh(synced):
-                    # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
             self._mark_exhausted(entry, None)
@@ -625,9 +608,6 @@ class CredentialPool:
                 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
             )
         if self.provider == "nous":
-            # Nous refresh/mint can require network access and should happen when
-            # runtime credentials are actually resolved, not merely when the pool
-            # is enumerated for listing, migration, or selection.
             return False
         return False
 
@@ -657,18 +637,12 @@ class CredentialPool:
         cleared_any = False
         available: List[PooledCredential] = []
         for entry in self._entries:
-            # For anthropic claude_code entries, sync from the credentials file
-            # before any status/refresh checks. This picks up tokens refreshed
-            # by other processes (Claude Code CLI, other Daedalus profiles).
             if (self.provider == "anthropic" and entry.source == "claude_code"
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
-            # For openai-codex entries, sync from ~/.codex/auth.json before
-            # any status/refresh checks.  This picks up tokens refreshed by
-            # the Codex CLI or another Daedalus profile.
             if (self.provider == "openai-codex"
                     and entry.last_status == STATUS_EXHAUSTED
                     and entry.refresh_token):
@@ -1123,7 +1097,6 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     changed = False
     active_sources: Set[str] = set()
 
-    # Seed from the custom_providers config entry's api_key field
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
         api_key = str(cp_config.get("api_key") or "").strip()
@@ -1145,7 +1118,6 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                 },
             )
 
-    # Seed from model.api_key if model.provider=='custom' and model.base_url matches
     try:
         config = _load_config_safe()
         model_cfg = config.get("model") if config else None
@@ -1159,7 +1131,6 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
                     model_api_key = v.strip()
                     break
             if model_provider == "custom" and model_base_url and model_api_key:
-                # Check if this model's base_url matches our custom provider
                 matched_key = get_custom_provider_pool_key(model_base_url)
                 if matched_key == pool_key:
                     source = "model_config"
@@ -1188,7 +1159,6 @@ def load_pool(provider: str) -> CredentialPool:
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
-        # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
         changed = custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)

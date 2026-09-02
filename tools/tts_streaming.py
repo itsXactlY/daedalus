@@ -33,10 +33,6 @@ from daedalus_cli.config import get_env_value
 
 logger = logging.getLogger(__name__)
 
-# Upper bound on the PCM bytes accepted from one provider stream for one
-# sentence. Mirrors the 16 MiB bounded-upstream-body invariant of the sync
-# providers (``_read_tts_response_bytes`` in tools.tts_tool): a buggy or
-# hostile endpoint must not be able to feed us unbounded audio.
 _STREAM_SENTENCE_BYTE_CAP = 16 * 1024 * 1024
 
 
@@ -55,14 +51,6 @@ def _resolve_key(env_var: str, provider_id: str) -> str:
         return get_env_value(env_var) or ""
 
 
-# ---------------------------------------------------------------------------
-# Interruption latch — lets the model know it was cut off mid-speech
-# ---------------------------------------------------------------------------
-# When the user barges in on a spoken reply (talks over it, types, hits the
-# record key), the surface marks the latch; the next turn's submit path takes
-# it and prepends SPEECH_INTERRUPTED_NOTE to the model-bound message (API-call
-# local — never persisted, same as the CLI's model-switch notes). The TTL
-# keeps a stale barge from annotating an unrelated message minutes later.
 
 SPEECH_INTERRUPTED_NOTE = (
     "[Note: the user interrupted your previous spoken reply before it finished.]"
@@ -82,7 +70,6 @@ def take_speech_interrupted() -> bool:
     at, _interrupted_at = _interrupted_at, None
     return at is not None and time.monotonic() - at < _INTERRUPT_TTL_S
 
-# Sentence boundary: after .!? followed by whitespace, or a blank line.
 SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])(?:\s|\n)|(?:\n\n)")
 _THINK_BLOCK_RE = re.compile(r"<think[\s>].*?</think>", flags=re.DOTALL)
 
@@ -105,9 +92,9 @@ class SentenceChunker:
         """Absorb *delta*; return every complete sentence now ready to speak."""
         self.buf = _THINK_BLOCK_RE.sub("", self.buf + delta)
         if "<think" in self.buf and "</think>" not in self.buf:
-            return []  # open think tag — the closing tag may arrive next delta
+            return []
         out: List[str] = []
-        start = 0  # skip boundaries that would leave the head too short
+        start = 0
         while m := SENTENCE_BOUNDARY_RE.search(self.buf, start):
             head = self.buf[: m.end()]
             if len(head.strip()) < self.min_len:
@@ -125,16 +112,13 @@ class SentenceChunker:
         return [tail] if tail else []
 
 
-# ---------------------------------------------------------------------------
-# ABC + registry
-# ---------------------------------------------------------------------------
 
 class StreamingTTSProvider(ABC):
     """Yields raw int16, little-endian, mono PCM chunks at ``sample_rate``."""
 
     sample_rate: int = 24000
     channels: int = 1
-    sample_width: int = 2  # bytes/sample (int16)
+    sample_width: int = 2
 
     def __init__(self, tts_config: Dict, section: Dict):
         self.tts_config = tts_config
@@ -173,10 +157,6 @@ def _try_instantiate(name: str, tts_config: Dict) -> Optional[StreamingTTSProvid
         return None
 
 
-# Fallback priority for ``tts.streaming.provider: auto`` — best chunked
-# latency/quality first. Deliberately hard-coded (a UX decision, not a
-# config knob); edge is absent because it has no chunked-PCM API — the
-# dispatcher's per-sentence sync path keeps it conversational instead.
 _PROVIDER_PRIORITY: List[str] = ["elevenlabs", "gemini", "openai", "xai"]
 
 
@@ -214,9 +194,6 @@ def resolve_streaming_provider(
     return _try_instantiate(name, tts_config)
 
 
-# ---------------------------------------------------------------------------
-# Providers
-# ---------------------------------------------------------------------------
 
 @register("elevenlabs")
 class ElevenLabsStreamer(StreamingTTSProvider):
@@ -364,8 +341,6 @@ class GeminiStreamer(StreamingTTSProvider):
                 },
             },
         }
-        # ``?alt=sse`` flips the response from a single JSON blob to an SSE
-        # feed of base64 PCM chunks — the whole point of this provider.
         url = f"{base_url}/models/{model}:streamGenerateContent"
 
         def _sse_chunks() -> Iterator[bytes]:
@@ -425,7 +400,6 @@ class XAIStreamer(StreamingTTSProvider):
     def stream(self, text: str) -> Iterator[bytes]:
         yield from _capped(iter(self._collect_async(text)), "xAI streaming TTS")
 
-    # -- async→sync bridge (test seam) ------------------------------------
 
     def _collect_async(self, text: str) -> List[bytes]:
         import asyncio

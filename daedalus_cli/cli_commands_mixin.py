@@ -75,12 +75,10 @@ class CLICommandsMixin:
         args = parts[1:] if len(parts) > 1 else []
 
         if not args:
-            # List checkpoints
             checkpoints = mgr.list_checkpoints(cwd)
             print(format_checkpoint_list(checkpoints, cwd))
             return
 
-        # Handle /rollback diff <N>
         if args[0].lower() == "diff":
             if len(args) < 2:
                 print("  Usage: /rollback diff <N>")
@@ -102,7 +100,6 @@ class CLICommandsMixin:
                     if stat:
                         print(f"\n{stat}")
                     if diff:
-                        # Limit diff output to avoid terminal flood
                         diff_lines = diff.splitlines()
                         if len(diff_lines) > 80:
                             print("\n".join(diff_lines[:80]))
@@ -113,7 +110,6 @@ class CLICommandsMixin:
                 print(f"  ❌ {result['error']}")
             return
 
-        # Resolve checkpoint reference (number or hash)
         checkpoints = mgr.list_checkpoints(cwd)
         if not checkpoints:
             print(f"  No checkpoints found for {cwd}")
@@ -123,7 +119,6 @@ class CLICommandsMixin:
         if not target_hash:
             return
 
-        # Check for file-level restore: /rollback <N> <file>
         file_path = args[1] if len(args) > 1 else None
 
         result = mgr.restore(cwd, target_hash, file_path=file_path)
@@ -134,8 +129,6 @@ class CLICommandsMixin:
                 print(f"  ✅ Restored to checkpoint {result['restored_to']}: {result['reason']}")
             print("  A pre-rollback snapshot was saved automatically.")
 
-            # Also undo the last conversation turn so the agent's context
-            # matches the restored filesystem state
             if self.conversation_history:
                 self.undo_last(prefill=False)
                 print("  Chat turn undone to match restored file state.")
@@ -156,7 +149,7 @@ class CLICommandsMixin:
         import shlex
 
         try:
-            parts = shlex.split(command)[1:]  # preserves quoted paths
+            parts = shlex.split(command)[1:]
         except ValueError:
             parts = command.split()[1:]
 
@@ -325,13 +318,11 @@ class CLICommandsMixin:
         elif subcmd in {"restore", "rewind"}:
             if len(parts) < 3:
                 print("  Usage: /snapshot restore <snapshot-id>")
-                # Show hint with most recent snapshot
                 snaps = list_quick_snapshots(limit=1)
                 if snaps:
                     print(f"  Most recent: {snaps[0]['id']}")
                 return
             snap_id = parts[2]
-            # Allow restore by number (1-indexed)
             try:
                 idx = int(snap_id)
                 snaps = list_quick_snapshots()
@@ -418,7 +409,7 @@ class CLICommandsMixin:
             print("  Usage: /import <archive.tar.gz> [--name <name>]")
             return
 
-        archive = " ".join(parts)  # paths may contain spaces
+        archive = " ".join(parts)
 
         try:
             profile_dir = import_profile(archive, name=name)
@@ -449,8 +440,6 @@ class CLICommandsMixin:
         processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 
-        # Background subagents dispatched via delegate_task(background=true)
-        # live in their own registry, not the process registry.
         try:
             from tools.async_delegation import active_count, interrupt_all
             n_async = active_count()
@@ -488,7 +477,6 @@ class CLICommandsMixin:
         if finished:
             _cprint(f"  Recently finished: {len(finished)}")
 
-        # Background (async) delegations — delegate_task(background=true)
         try:
             from tools.async_delegation import list_async_delegations
             delegations = list_async_delegations()
@@ -507,7 +495,6 @@ class CLICommandsMixin:
                     f"    {d.get('delegation_id', '?')} · "
                     f"{status} · {goal}"
                 )
-                # Live-status detail for in-flight delegations (#51690).
                 if status == "stalling":
                     quiet = d.get("stalled_after_quiet_seconds")
                     if quiet is not None:
@@ -638,9 +625,6 @@ class CLICommandsMixin:
                 write_clipboard_text,
             )
             if is_remote_shell_session():
-                # Over SSH, native tools would write the REMOTE clipboard
-                # (or an X-forwarded one) — OSC 52 reaches the terminal
-                # the user is actually sitting at. Fixes #31528.
                 self._write_osc52_clipboard(text)
                 _cprint(
                     f"  Copied assistant response #{idx + 1} via OSC 52 "
@@ -650,8 +634,6 @@ class CLICommandsMixin:
             if write_clipboard_text(text):
                 _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
                 return
-            # Native tools unavailable/failed — fall back to OSC 52 so
-            # SSH/tmux sessions can still copy via the terminal emulator.
             self._write_osc52_clipboard(text)
             _cprint(
                 f"  Copied assistant response #{idx + 1} via OSC 52 "
@@ -710,14 +692,10 @@ class CLICommandsMixin:
             Outside the TUI (standalone mode, tests), call straight through
             so real stdout / pytest capture works as expected.
             """
-            # Standalone/tests, run as usual
             if getattr(self, "_app", None) is None:
                 tools_disable_enable_command(ns)
                 return
 
-            # Buffer reports isatty()=True so color() in daedalus_cli/colors.py
-            # still emits ANSI escapes. StringIO.isatty() is False, which
-            # would otherwise strip all colors before we re-render them.
             class _TTYBuf(StringIO):
                 def isatty(self) -> bool:
                     return True
@@ -749,16 +727,12 @@ class CLICommandsMixin:
             print(f"  MCP tool:          /tools {subcommand} github:create_issue")
             return
 
-        # Apply the change directly — the user typing the command is implicit
-        # consent.  Do NOT use input() here; it hangs inside prompt_toolkit's
-        # TUI event loop (known pitfall).
         verb = "Disabling" if subcommand == "disable" else "Enabling"
         label = ", ".join(names)
         _cprint(f"{_ACCENT}{verb} {label}...{_RST}")
 
         _run_capture(Namespace(tools_action=subcommand, names=names, platform="cli"))
 
-        # Reset session so the new tool config is picked up from a clean state
         from daedalus_cli.tools_config import _get_platform_tools
         from daedalus_cli.config import load_config
         self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
@@ -807,7 +781,6 @@ class CLICommandsMixin:
 
         platform_name = parts[1].strip().lower()
 
-        # Validate platform name + home channel via the live gateway config.
         try:
             from gateway.config import load_gateway_config, Platform
         except Exception as exc:  # pragma: no cover — gateway pkg always shipped
@@ -828,14 +801,6 @@ class CLICommandsMixin:
 
         pcfg = gw_config.platforms.get(platform)
         if not pcfg or not pcfg.enabled:
-            # Relay aliasing: a relay-fronted gateway has no per-platform
-            # config block for the logical platform ("discord" etc.) — only a
-            # RELAY entry — yet /handoff discord is deliverable when the relay
-            # fronts it. The fronted set is deploy config
-            # (GATEWAY_RELAY_PLATFORMS), readable here without the live
-            # adapter; the gateway watcher re-checks against the authenticated
-            # transport (resolve_delivery_transport) before dispatch, so this
-            # is a UX pre-check, not the security gate.
             relay_fronts = False
             try:
                 from gateway.relay import relay_platform_identities
@@ -855,13 +820,10 @@ class CLICommandsMixin:
             _cprint("  Set one with /sethome on the destination chat first.")
             return True
 
-        # Refuse mid-turn: an in-flight agent run would race with the
-        # gateway's switch_session and the synthetic turn dispatch.
         if getattr(self, "_agent_running", False):
             _cprint("  Agent is busy. Wait for the current turn to finish, then retry /handoff.")
             return True
 
-        # Make sure we have a SessionDB handle.
         if not self._session_db:
             try:
                 from daedalus_state import SessionDB
@@ -872,24 +834,15 @@ class CLICommandsMixin:
             _cprint(f"  {format_session_db_unavailable()}")
             return True
 
-        # Make sure the session row exists in state.db. Most CLI sessions
-        # are written via _flush_messages_to_session_db on the first turn
-        # already, but if the user tries to hand off an empty session we
-        # still want a row to mark.
         try:
             row = self._session_db.get_session(self.session_id)
             if not row:
-                # Nothing has flushed yet. Create a stub so the gateway has
-                # something to switch_session onto. Inserting via title-set
-                # is the simplest path because set_session_title's INSERT OR
-                # IGNORE creates the row.
                 placeholder_title = f"handoff-{self.session_id[:8]}"
                 self._session_db.set_session_title(self.session_id, placeholder_title)
         except Exception as exc:
             _cprint(f"  Could not ensure session row in state.db: {exc}")
             return True
 
-        # Display title for messaging.
         session_title = ""
         try:
             row = self._session_db.get_session(self.session_id)
@@ -900,7 +853,6 @@ class CLICommandsMixin:
         if not session_title:
             session_title = self.session_id[:8]
 
-        # Mark pending — gateway watcher will pick this up.
         ok = self._session_db.request_handoff(self.session_id, platform_name)
         if not ok:
             _cprint("  Session is already in flight for handoff. Wait for it to settle, then retry.")
@@ -909,7 +861,6 @@ class CLICommandsMixin:
         _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
         _cprint("  Waiting for the gateway to pick it up...")
 
-        # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
         import time as _time
         deadline = _time.time() + 60.0
         last_state = "pending"
@@ -928,7 +879,6 @@ class CLICommandsMixin:
                 _cprint(f"  ↻ Handoff complete. The session is now active on {platform_name}.")
                 _cprint(f"  Resume it on this CLI later with: /resume {session_title}")
                 _cprint("")
-                # End the CLI cleanly — same exit semantics as /quit.
                 self._should_exit = True
                 return False
             if current == "failed":
@@ -938,7 +888,6 @@ class CLICommandsMixin:
                 return True
             _time.sleep(0.5)
 
-        # Timed out. Clear the pending flag so the user can retry.
         try:
             self._session_db.fail_handoff(self.session_id, "timed out waiting for gateway")
         except Exception:
@@ -953,11 +902,6 @@ class CLICommandsMixin:
         parts = cmd_original.split(None, 1)
         target = parts[1].strip() if len(parts) > 1 else ""
 
-        # Strip common outer brackets/quotes users may type literally from the
-        # usage hint (e.g. ``/resume <abc123>`` or ``/resume [abc123]``).  The
-        # `/resume` help text shows angle brackets as a placeholder and a few
-        # users copy them through verbatim.  Stripping them keeps the lookup
-        # working without changing the help string.
         if len(target) >= 2 and (
             (target[0] == "<" and target[-1] == ">")
             or (target[0] == "[" and target[-1] == "]")
@@ -969,19 +913,11 @@ class CLICommandsMixin:
         if not target:
             _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot pending-resume selection so the user can type
-                # just the number (`3`) on the next line instead of having to
-                # retype `/resume 3`. The list here must match the one shown by
-                # _show_recent_sessions and used for index resolution below —
-                # all three go through _list_recent_sessions(limit=10). See
-                # #34584.
                 self._pending_resume_sessions = self._list_recent_sessions(limit=10)
                 return
             _cprint("  Tip:   Use /history or `daedalus sessions list` to find sessions.")
             return
 
-        # Any explicit /resume <target> supersedes a previously-armed bare
-        # numbered prompt.
         self._pending_resume_sessions = None
 
         if not self._session_db:
@@ -989,7 +925,6 @@ class CLICommandsMixin:
             _cprint(f"  {format_session_db_unavailable()}")
             return
 
-        # Resolve numbered selection, title, or ID
         if target.isdigit():
             sessions = self._list_recent_sessions(limit=10)
             index = int(target)
@@ -1010,8 +945,6 @@ class CLICommandsMixin:
             _cprint("  Use /history or `daedalus sessions list` to see available sessions.")
             return
 
-        # If the target is the empty head of a compression chain, redirect to
-        # the descendant that actually holds the transcript. See #15000.
         try:
             resolved_id = self._session_db.resolve_resume_session_id(target_id)
         except Exception:
@@ -1031,7 +964,6 @@ class CLICommandsMixin:
             return
 
         old_session_id = self.session_id
-        # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
@@ -1040,29 +972,16 @@ class CLICommandsMixin:
                 )
             except Exception:
                 pass
-        # End current session
         try:
             self._session_db.end_session(self.session_id, "resumed_other")
         except Exception:
             pass
 
-        # Switch to the target session
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
         _sync_process_session_id(target_id)
 
-        # Load conversation history (strip transcript-only metadata entries).
-        # repair_alternation: this /resume feeds LIVE REPLAY — ``restored``
-        # becomes ``self.conversation_history`` for subsequent turns. Heal a
-        # durable ``user;user`` violation once here instead of re-firing the
-        # pre-request repair on every request for the rest of the session.
-        #
-        # Both projections come from one lineage SELECT: model_history is
-        # alternation-repaired for live replay; display_history is the full
-        # lineage verbatim, used by _display_resumed_history() so timeline
-        # events and ancestor rows render correctly (matching the startup
-        # --resume path in _preload_resumed_session).
         model_history, display_history = self._session_db.get_resume_conversations(
             target_id
         )
@@ -1072,13 +991,11 @@ class CLICommandsMixin:
             m for m in (display_history or []) if m.get("role") != "session_meta"
         ]
 
-        # Re-open the target session so it's not marked as ended
         try:
             self._session_db.reopen_session(target_id)
         except Exception:
             pass
 
-        # Sync the agent if already initialised
         if self.agent:
             self.agent.session_id = target_id
             self.agent.reset_session_state()
@@ -1093,10 +1010,6 @@ class CLICommandsMixin:
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
 
-            # Notify memory providers that session_id rotated to a resumed
-            # session. reset=False — the provider's accumulated state is
-            # still valid; it just needs to target the new session_id for
-            # subsequent writes. See #6672.
             try:
                 _mm = getattr(self.agent, "_memory_manager", None)
                 if _mm is not None:
@@ -1121,18 +1034,8 @@ class CLICommandsMixin:
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
-        # Retarget the process + tool cwd to where the session was started, so a
-        # mid-chat /resume (and /sessions <id>, which delegates here) lands in the
-        # same directory as a startup `daedalus -c`/`--resume`. The startup resume
-        # paths already call this; without it, the terminal/code-exec tools and
-        # relative-path resolution keep operating in the wrong repo. Idempotent
-        # and a no-op when the session recorded no cwd. See #38562.
         self._restore_session_cwd(session_meta)
 
-        # Restore the target session's persisted YOLO bypass. Any bypass the
-        # PREVIOUS session had toggled on stops applying automatically because
-        # the approval session key just changed. Same contract as a startup
-        # --resume.
         self._restore_session_yolo(session_meta)
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
@@ -1155,7 +1058,6 @@ class CLICommandsMixin:
         arg = parts[1].strip() if len(parts) > 1 else ""
         sub = arg.lower()
 
-        # Bare /sessions or /sessions list — show recent sessions inline.
         if not arg or sub in {"list", "ls", "browse"}:
             if not self._session_db:
                 from daedalus_state import format_session_db_unavailable
@@ -1165,7 +1067,6 @@ class CLICommandsMixin:
                 _cprint("  (._.) No previous sessions yet.")
             return
 
-        # /sessions <id_or_title> behaves the same as /resume <id_or_title>.
         self._handle_resume_command(f"/resume {arg}")
 
     def _handle_branch_command(self, cmd_original: str) -> None:
@@ -1188,27 +1089,22 @@ class CLICommandsMixin:
         parts = cmd_original.split(None, 1)
         branch_name = parts[1].strip() if len(parts) > 1 else ""
 
-        # Generate the new session ID
         now = datetime.now()
         timestamp_str = now.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
         new_session_id = f"{timestamp_str}_{short_uuid}"
 
-        # Determine branch title
         if branch_name:
             branch_title = branch_name
         else:
-            # Auto-generate from the current session title
             current_title = None
             if self._session_db:
                 current_title = self._session_db.get_session_title(self.session_id)
             base = current_title or "branch"
             branch_title = self._session_db.get_next_title_in_lineage(base)
 
-        # Save the current session's state before branching
         parent_session_id = self.session_id
 
-        # Flush un-persisted messages before ending the old session (#47202).
         if self.agent:
             try:
                 self.agent._flush_messages_to_session_db(
@@ -1218,17 +1114,11 @@ class CLICommandsMixin:
             except Exception:
                 pass
 
-        # End the old session
         try:
             self._session_db.end_session(self.session_id, "branched")
         except Exception:
             pass
 
-        # Create the new session with parent link.
-        # Persist a stable ``_branched_from`` marker in model_config so
-        # list_sessions_rich() can keep the branch visible in /resume and
-        # /sessions even after the parent is reopened and re-ended with a
-        # different end_reason (e.g. tui_shutdown overwriting 'branched').
         try:
             self._session_db.create_session(
                 session_id=new_session_id,
@@ -1245,9 +1135,6 @@ class CLICommandsMixin:
             _cprint(f"  Failed to create branch session: {e}")
             return
 
-        # Copy conversation history to the new session in bounded-chunk
-        # transactions (see #23254) instead of one txn per row. Best-effort
-        # like the old loop — a failed copy still yields a usable branch.
         try:
             self._session_db.append_messages_batch(
                 new_session_id,
@@ -1259,9 +1146,6 @@ class CLICommandsMixin:
                         "tool_calls": msg.get("tool_calls"),
                         "tool_call_id": msg.get("tool_call_id"),
                         "reasoning": msg.get("reasoning"),
-                        # Keep the api_content sidecar so the branch's first turn
-                        # replays the parent's exact wire bytes (warm provider
-                        # prompt cache) instead of a full cold prefill.
                         "api_content": extract_api_content_sidecar(msg),
                         "timestamp": msg.get("timestamp"),
                     }
@@ -1270,23 +1154,20 @@ class CLICommandsMixin:
                 chunk_rows=500,
             )
         except Exception:
-            pass  # Best-effort copy
+            pass
 
-        # Set title on the branch
         try:
             self._session_db.set_session_title(new_session_id, branch_title)
         except Exception:
             pass
 
-        # Switch to the new session
         self._transfer_session_yolo(self.session_id, new_session_id)
         self.session_id = new_session_id
         self.session_start = now
         self._pending_title = None
-        self._resumed = True  # Prevents auto-title generation
+        self._resumed = True
         _sync_process_session_id(new_session_id)
 
-        # Sync the agent
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
@@ -1302,10 +1183,6 @@ class CLICommandsMixin:
             if hasattr(self.agent, "_invalidate_system_prompt"):
                 self.agent._invalidate_system_prompt()
 
-            # Notify memory providers that session_id forked to a new branch.
-            # reset=False — the branched session carries the transcript
-            # forward, so provider state tracks the lineage. parent_session_id
-            # links the branch back to the original. See #6672.
             try:
                 _mm = getattr(self.agent, "_memory_manager", None)
                 if _mm is not None:
@@ -1332,12 +1209,11 @@ class CLICommandsMixin:
         parts = cmd.split(maxsplit=1)
         
         if len(parts) > 1:
-            # Set personality
             personality_name = parts[1].strip().lower()
             
             if personality_name in {"none", "default", "neutral"}:
                 self.system_prompt = ""
-                self.agent = None  # Force re-init
+                self.agent = None
                 if save_config_value("agent.system_prompt", ""):
                     print("(^_^)b Personality cleared (saved to config)")
                 else:
@@ -1345,7 +1221,7 @@ class CLICommandsMixin:
                 print("  No personality overlay — using base agent behavior.")
             elif personality_name in self.personalities:
                 self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
-                self.agent = None  # Force re-init
+                self.agent = None
                 if save_config_value("agent.system_prompt", self.system_prompt):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
@@ -1355,7 +1231,6 @@ class CLICommandsMixin:
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")
         else:
-            # Show available personalities
             print()
             print("+" + "-" * 50 + "+")
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
@@ -1458,7 +1333,6 @@ class CLICommandsMixin:
             print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")
             return
 
-        # A short, friendly display name from the first few words of the concept.
         display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
         slug = store.slugify(display_name) or store.slugify(concept) or "pet"
 
@@ -1475,7 +1349,6 @@ class CLICommandsMixin:
 
         def _progress(event: str, detail: str) -> None:
             if event == "row":
-                # detail is "<state>:<done>:<total>"; show the state name.
                 state = detail.split(":", 1)[0]
                 print(f"  ┊ drawing {state}…")
             elif event == "compose":
@@ -1791,8 +1664,6 @@ class CLICommandsMixin:
         self._console_print(result.text)
         seed = getattr(result, "agent_seed", None)
         if seed:
-            # One-shot: the interactive loop picks this up right after the
-            # slash command returns and runs it as a normal agent turn.
             self._pending_agent_seed = seed
 
     def _handle_curator_command(self, cmd: str):
@@ -1811,8 +1682,6 @@ class CLICommandsMixin:
             from daedalus_cli.curator import cli_main
             cli_main(tokens)
         except SystemExit:
-            # argparse calls sys.exit() on --help or errors; swallow so we
-            # don't kill the interactive session.
             pass
         except Exception as exc:
             print(f"(._.) curator: {exc}")
@@ -1841,8 +1710,6 @@ class CLICommandsMixin:
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to daedalus_cli.skills_hub."""
         from cli import ChatConsole
-        # Intercept write-approval review subcommands first (pending/approve/
-        # reject/diff/mode); everything else goes to the skills hub.
         parts = cmd.strip().split()
         args = parts[1:] if len(parts) > 1 else []
         if args and args[0].lower() in {"pending", "approve", "apply", "reject",
@@ -1871,7 +1738,6 @@ class CLICommandsMixin:
         """
         from agent.learn_prompt import build_learn_prompt
 
-        # Everything after the command word is the open-ended request.
         parts = cmd.strip().split(None, 1)
         user_request = parts[1].strip() if len(parts) > 1 else ""
 
@@ -1897,7 +1763,6 @@ class CLICommandsMixin:
         """
         from daedalus_cli.init_command import build_init_prompt_for_cwd
 
-        # Everything after the command word is optional user emphasis.
         parts = cmd.strip().split(None, 1)
         extra = parts[1].strip() if len(parts) > 1 else ""
 
@@ -1919,14 +1784,6 @@ class CLICommandsMixin:
         args = parts[1:] if len(parts) > 1 else []
         store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
         if store is None:
-            # No live agent store (e.g. /memory approve invoked from the Desktop
-            # GUI, or any context without an active agent). Apply against a freshly
-            # loaded on-disk store, mirroring the gateway path
-            # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md
-            # and creates MEMORY.md on the first approved write. Without this the
-            # shared handler returns "memory store unavailable". See #46783.
-            # load_on_disk_store() honors the user's configured char limits, so
-            # an approval here enforces the same caps as the live agent would.
             from tools.memory_tool import load_on_disk_store
             store = load_on_disk_store()
         out = handle_pending_subcommand(
@@ -1964,7 +1821,6 @@ class CLICommandsMixin:
         task_num = self._background_task_counter
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
 
-        # Make sure we have valid credentials
         if not self._ensure_runtime_credentials():
             _cprint("  (>_<) Cannot start background task: no valid credentials.")
             return
@@ -2011,11 +1867,9 @@ class CLICommandsMixin:
                     openrouter_min_coding_score=self._openrouter_min_coding_score,
                     fallback_model=self._fallback_model,
                 )
-                # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
 
                 def _bg_thinking(text: str) -> None:
-                    # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
                     if not self._agent_running:
                         self._spinner_text = text
                         if self._app:
@@ -2032,12 +1886,9 @@ class CLICommandsMixin:
                 if not response and result and result.get("error"):
                     response = f"Error: {result['error']}"
 
-                # Display result in the CLI (thread-safe via patch_stdout).
-                # Force a TUI refresh first so spinner/status bar don't overlap
-                # with the output (fixes #2718).
                 if self._app:
                     self._app.invalidate()
-                    time.sleep(0.05)  # brief pause for refresh
+                    time.sleep(0.05)
                 print()
                 ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
                 _cprint(f"  ✅ Background task #{task_num} complete")
@@ -2069,13 +1920,11 @@ class CLICommandsMixin:
                 else:
                     _cprint("  (No response generated)")
 
-                # Play bell if enabled
                 if self.bell_on_complete:
                     sys.stdout.write("\a")
                     sys.stdout.flush()
 
             except Exception as e:
-                # Same TUI refresh pattern as success path (#2718)
                 if self._app:
                     self._app.invalidate()
                     time.sleep(0.05)
@@ -2089,7 +1938,6 @@ class CLICommandsMixin:
                 except Exception:
                     pass
                 self._background_tasks.pop(task_id, None)
-                # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
                     self._spinner_text = ""
                 if self._app:
@@ -2150,8 +1998,7 @@ class CLICommandsMixin:
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
-            # Optionally accept a custom CDP URL: /browser connect ws://host:port
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
+            connect_parts = cmd.strip().split(None, 2)
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
             parsed_cdp = urlparse(cdp_url if "://" in cdp_url else f"http://{cdp_url}")
             if parsed_cdp.scheme not in {"http", "https", "ws", "wss"}:
@@ -2185,7 +2032,6 @@ class CLICommandsMixin:
                     fragment="",
                 ).geturl()
 
-            # Clear any existing browser sessions so the next tool call uses the new backend
             try:
                 from tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
@@ -2194,10 +2040,6 @@ class CLICommandsMixin:
 
             print()
 
-            # Check if a Chromium-family browser is already serving CDP on the debug port.
-            # For the default-local URL, probe both loopbacks (IPv4 + IPv6): a
-            # squatter on 127.0.0.1:<port> (e.g. an IDE's JS debugger) can push
-            # the debug browser to bind [::1] only.
             _is_default = cdp_url == _DEFAULT_CDP
             if _is_default:
                 _found = discover_local_cdp_url(_port, timeout=1.0)
@@ -2220,11 +2062,9 @@ class CLICommandsMixin:
                         f"     (an IDE debugger or dev server may be using it) — launching on port {_launch_port} instead..."
                     )
                 else:
-                    # Try to auto-launch a Chromium-family browser with remote debugging
                     print("   Chromium-family browser isn't running with remote debugging — attempting to launch...")
                 _launch = launch_chrome_debug(_launch_port, _plat.system())
                 if _launch.launched:
-                    # Wait for the DevTools discovery endpoint to come up
                     for _wait in range(10):
                         _found = discover_local_cdp_url(_launch_port, timeout=1.0)
                         if _found:
@@ -2259,8 +2099,6 @@ class CLICommandsMixin:
                 return
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
-            # Eagerly start the CDP supervisor so pending_dialogs + frame_tree
-            # show up in the next browser_snapshot.  No-op if already started.
             try:
                 from tools.browser_tool import _ensure_cdp_supervisor  # type: ignore[import-not-found]
                 _ensure_cdp_supervisor("default")
@@ -2271,8 +2109,6 @@ class CLICommandsMixin:
             print(f"   Endpoint: {cdp_url}")
             print()
 
-            # Inject context message so the model knows this slash command
-            # intentionally makes the dev/debug CDP browser available for use.
             if hasattr(self, '_pending_input'):
                 self._pending_input.put(
                     "[System note: The user invoked /browser connect and connected your browser tools to "
@@ -2340,7 +2176,6 @@ class CLICommandsMixin:
                 if provider is not None:
                     print(f"🌐 Browser: {provider.provider_name()} (cloud)")
                 else:
-                    # Show engine info for local mode
                     try:
                         from tools.browser_tool import _get_browser_engine
                         engine = _get_browser_engine()
@@ -2416,7 +2251,6 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No heartbeat set.{_RST}")
             return
 
-        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
         tokens = arg.split(None, 2)
         interval = None
         prompt = ""
@@ -2507,22 +2341,15 @@ class CLICommandsMixin:
 
         lower = arg.lower()
 
-        # Bare /goal or /goal status → show current state
         if not arg or lower == "status":
             _cprint(f"  {mgr.status_line()}")
             return
 
-        # /goal show → print the active goal's completion contract
         if lower == "show":
             _cprint(f"  {mgr.status_line()}")
             _cprint(f"  {mgr.render_contract()}")
             return
 
-        # /goal draft <objective> → expand plain text into a structured
-        # completion contract (outcome / verification / constraints /
-        # boundaries / stop_when) and set it as the active goal. Adapted
-        # from Codex's "let the agent draft the goal" guidance: the contract
-        # makes "done" evidence-based instead of a loose vibe check.
         if lower.startswith("draft"):
             objective = arg[len("draft"):].strip()
             if not objective:
@@ -2560,9 +2387,6 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
-        # /goal wait <pid> [reason] — park the loop on a background process so
-        # it stops re-poking the agent every turn while it waits on CI / a
-        # build / a long job. The barrier auto-clears when the PID exits.
         if lower == "wait" or lower.startswith("wait "):
             wait_arg = arg[len("wait"):].strip()
             if not wait_arg:
@@ -2584,7 +2408,6 @@ class CLICommandsMixin:
             _cprint(f"  ⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits.")
             return
 
-        # /goal unwait — drop the wait barrier and resume normal looping.
         if lower == "unwait":
             if mgr.stop_waiting():
                 _cprint("  ▶ Wait barrier cleared — goal loop resumes.")
@@ -2592,9 +2415,6 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No wait barrier set.{_RST}")
             return
 
-        # /goal gate ... — manage deterministic quality gates. A gate is a
-        # shell command that must pass before the judge may declare the goal
-        # done; a failing gate's output becomes the continuation prompt.
         if lower == "gate" or lower.startswith("gate "):
             gate_arg = arg[len("gate"):].strip()
             gate_lower = gate_arg.lower()
@@ -2635,10 +2455,6 @@ class CLICommandsMixin:
             _cprint("  Usage: /goal gate [list | add <command> | remove <N> | clear]")
             return
 
-        # Otherwise treat the arg as the goal text. Inline `field: value`
-        # lines (verify:, constraints:, boundaries:, stop when:) are parsed
-        # into a completion contract; the remaining prose is the headline.
-        # A plain free-form goal with no such lines behaves exactly as before.
         from daedalus_cli.goals import parse_contract
 
         headline, contract = parse_contract(arg)
@@ -2660,8 +2476,6 @@ class CLICommandsMixin:
             f"Daedalus keeps working until it is, you pause/clear it, or the budget is "
             f"exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.{_RST}"
         )
-        # Kick the loop off immediately so the user doesn't have to send a
-        # separate message after setting the goal.
         try:
             self._pending_input.put(state.goal)
         except Exception:
@@ -2741,7 +2555,6 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}No active goal. Set one with /goal <text>.{_RST}")
             return
 
-        # No args → list current subgoals.
         if not arg:
             _cprint(f"  {mgr.status_line()}")
             _cprint(f"  {mgr.render_subgoals()}")
@@ -2780,7 +2593,6 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No subgoals to clear.{_RST}")
             return
 
-        # Otherwise — append the whole arg as a new subgoal.
         try:
             text = mgr.add_subgoal(arg)
         except (ValueError, RuntimeError) as exc:
@@ -2800,7 +2612,6 @@ class CLICommandsMixin:
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
-            # Show current skin and list available
             current = get_active_skin_name()
             skins = list_skins()
             print(f"\n  Current skin: {current}")
@@ -2821,9 +2632,7 @@ class CLICommandsMixin:
             return
 
         set_active_skin(new_skin)
-        _ACCENT.reset()  # Re-resolve ANSI color for the new skin
-        # _DIM is now a fixed dim+italic ANSI escape (terminal-default fg)
-        # so it doesn't need re-resolving on skin switch.
+        _ACCENT.reset()
         if save_config_value("display.skin", new_skin):
             print(f"  Skin set to: {new_skin} (saved)")
         else:
@@ -2862,8 +2671,6 @@ class CLICommandsMixin:
             try:
                 subprocess.call([*shlex.split(editor), path])
             except Exception:
-                # Fall back to a bare invocation (editor value may not be a
-                # simple argv-splittable string on some platforms).
                 subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
             with open(path, "r", encoding="utf-8") as fh:
                 raw = fh.read()
@@ -2901,8 +2708,6 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}(._.) Empty prompt — nothing sent.{_RST}")
             return
 
-        # One-shot seed: the interactive loop runs this as the next agent turn
-        # right after process_command() returns (see cli.py main loop).
         self._pending_agent_seed = composed
 
     def _handle_focus_command(self, cmd_original: str) -> None:
@@ -2952,8 +2757,6 @@ class CLICommandsMixin:
             _cprint("  Usage: /focus [on|off|status]")
             return
 
-        # The mode /focus off will restore. While focus is ON the live
-        # tool_progress_mode is "off", so the pre-focus mode is the stash.
         restore_mode = normalize_tool_progress_mode(
             getattr(self, "_focus_saved_tool_progress", None)
             if current
@@ -2973,13 +2776,10 @@ class CLICommandsMixin:
             return
 
         if target == current:
-            # Idempotent explicit set — report without rewriting config.
             _cprint(f"  {format_focus_toggle_message(current, restore_mode)}")
             return
 
         if target:
-            # Stash the user's configured mode, then reuse the EXISTING
-            # suppression path by snapping to "off".
             self._focus_saved_tool_progress = restore_mode
             self._set_tool_progress_mode(FOCUS_TOOL_PROGRESS_MODE)
         else:
@@ -2995,7 +2795,6 @@ class CLICommandsMixin:
             else f"{_Colors.DIM}disabled{_Colors.RESET}"
         )
         message = format_focus_toggle_message(bool(target), restore_mode)
-        # Re-colour just the enabled/disabled word so the line matches siblings.
         for word in ("enabled", "disabled"):
             if word in message:
                 message = message.replace(word, state, 1)
@@ -3079,7 +2878,6 @@ class CLICommandsMixin:
         from daedalus_cli.config import load_config
         from daedalus_cli.colors import Colors as _Colors
 
-        # Parse arg
         arg = ""
         try:
             parts = (cmd_original or "").strip().split(None, 1)
@@ -3186,7 +2984,6 @@ class CLICommandsMixin:
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
-            # Show current state
             rc = self.reasoning_config
             if rc is None:
                 level = "medium (default)"
@@ -3203,9 +3000,6 @@ class CLICommandsMixin:
 
         arg = parts[1].strip().lower()
         arg_tokens = arg.split()
-        # Session scope is the default; --global opts into persisting to
-        # config.yaml. --session is accepted as an explicit no-op for parity
-        # with /model and the gateway /reasoning handler.
         explicit_global = "--global" in arg_tokens
         if explicit_global or "--session" in arg_tokens:
             arg = " ".join(
@@ -3213,7 +3007,6 @@ class CLICommandsMixin:
                 if token not in ("--global", "--session")
             )
 
-        # Display toggle
         if arg in {"show", "on"}:
             self.show_reasoning = True
             if self.agent:
@@ -3230,7 +3023,6 @@ class CLICommandsMixin:
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
             return
 
-        # Full / clamped recap toggle
         if arg in {"full", "all"}:
             self.reasoning_full = True
             save_config_value("display.reasoning_full", True)
@@ -3245,7 +3037,6 @@ class CLICommandsMixin:
             _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
             return
 
-        # Effort level change
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
@@ -3255,7 +3046,7 @@ class CLICommandsMixin:
             return
 
         self.reasoning_config = parsed
-        self.agent = None  # Force agent re-init with new reasoning config
+        self.agent = None
 
         if explicit_global and save_config_value("agent.reasoning_effort", arg):
             agent_cfg = CLI_CONFIG.get("agent")
@@ -3363,7 +3154,6 @@ class CLICommandsMixin:
             _cprint("  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode).")
             return
 
-        # Determine the branding for the current model
         try:
             from daedalus_cli.models import _is_anthropic_fast_model
             agent = getattr(self, "agent", None)
@@ -3399,7 +3189,7 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Usage: /fast [normal|fast|status] [--global]{_RST}")
             return
 
-        self.agent = None  # Force agent re-init with new service-tier config
+        self.agent = None
         if explicit_global and save_config_value("agent.service_tier", saved_value):
             _cprint(f"  {_ACCENT}✓ {feature_name} set to {label} (saved to config){_RST}")
         elif explicit_global:
@@ -3425,9 +3215,6 @@ class CLICommandsMixin:
         words = {w.lower() for w in cmd_original.split()[1:]}
         local = "local" in words
         nous = "nous" in words and not local
-        # Typing the /debug slash command is itself the explicit consent to
-        # upload, so we pass yes=True to skip run_debug_share's [y/N] prompt.
-        # input() would hang inside prompt_toolkit's event loop anyway.
         args = SimpleNamespace(
             lines=200, expire=7, local=local, nous=nous, yes=True
         )
@@ -3451,10 +3238,6 @@ class CLICommandsMixin:
             print(f"  ✗ {format_managed_message('update Daedalus Agent')}")
             return False
 
-        # Use the prompt_toolkit-native modal so the confirmation panel
-        # renders properly above the composer and avoids raw input() races
-        # with the prompt_toolkit event loop (same pattern as
-        # _confirm_destructive_slash).
         choices = [
             ("once", "Update Now", "exit the current session and update Daedalus Agent"),
             ("cancel", "Cancel", "keep the current session"),
@@ -3476,12 +3259,6 @@ class CLICommandsMixin:
         print("  ⚕ Launching update...")
         print()
 
-        # Store the relaunch args so run() can exec them from the main thread
-        # after prompt_toolkit exits and restores terminal modes.  Calling
-        # relaunch() directly here (from the process_loop daemon thread) would
-        # skip terminal cleanup on POSIX (execvp replaces the process mid-TUI)
-        # and only exit the worker thread on Windows (subprocess.run +
-        # sys.exit inside a non-main thread does not exit the process).
         self._pending_relaunch = ["update"]
         return True
 
@@ -3500,7 +3277,6 @@ class CLICommandsMixin:
         elif subcommand == "status":
             self._show_voice_status()
         elif subcommand == "":
-            # Toggle
             if self._voice_mode:
                 self._disable_voice_mode()
             else:
@@ -3528,7 +3304,6 @@ class CLICommandsMixin:
             self._persist_wake_word_enabled(False)
         elif subcommand in ("", "status"):
             if subcommand == "":
-                # Bare /wake toggles.
                 if getattr(self, "_wake_word_active", False):
                     self._stop_wake_word_listener(announce=True)
                     self._persist_wake_word_enabled(False)
@@ -3548,7 +3323,7 @@ class CLICommandsMixin:
             from tools.wake_word import load_wake_word_config
 
             if bool(load_wake_word_config().get("enabled")) == enabled:
-                return  # already persisted — don't rewrite config or re-announce
+                return
         except Exception:
             pass
         if save_config_value("wake_word.enabled", enabled):

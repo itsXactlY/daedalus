@@ -121,10 +121,7 @@ def _resolve_spill_dir(directory_override: Optional[str], session_id: Optional[s
 
         base = Path(get_daedalus_home()) / "hook_outputs"
 
-    # Group by session so spills are contained per conversation.
     session_segment = session_id or "no-session"
-    # Defensive: strip path separators so a weird session id can't
-    # escape the directory.
     session_segment = session_segment.replace("/", "_").replace("\\", "_").replace("..", "_")
     return base / session_segment
 
@@ -203,16 +200,12 @@ def spill_if_oversized(
     tail = int(cfg.get("preview_tail") or 0)
     directory_override = cfg.get("directory")
 
-    # Try to write the spill file. If that fails we still need to return
-    # something bounded — never let a disk failure blow up the turn.
     saved_path: Optional[str] = None
     try:
         spill_dir = _resolve_spill_dir(directory_override, session_id)
         spill_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{uuid.uuid4().hex}.txt"
         spill_path = spill_dir / filename
-        # Write the raw text plus a trailing newline so tail readers
-        # (``tail -f``, editors) don't report "missing newline".
         spill_path.write_text(text if text.endswith("\n") else text + "\n", encoding="utf-8")
         saved_path = str(spill_path)
     except Exception as exc:

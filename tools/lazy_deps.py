@@ -84,84 +84,38 @@ from daedalus_cli._subprocess_compat import windows_hide_flags
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Allowlist of lazy-installable backends.
-#
-# Keys are dot-separated feature names ("namespace.backend"). Values are
-# tuples of pip-installable specs that match the corresponding extra in
-# pyproject.toml. The framework enforces that only specs from this map
-# can flow into the pip install command.
-# =============================================================================
 
 
 LAZY_DEPS: dict[str, tuple[str, ...]] = {
-    # ─── Inference providers ───────────────────────────────────────────────
-    # Native Anthropic SDK — needed when provider=anthropic (not via
-    # OpenRouter / aggregators which use the openai SDK).
-    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
-    # AWS Bedrock provider
+    "provider.anthropic": ("anthropic==0.87.0",),
     "provider.bedrock": ("boto3==1.42.89",),
-    # Google Vertex AI provider — OAuth2 token minting for the Gemini
-    # OpenAI-compatible endpoint. Only loaded when provider=vertex is selected;
-    # google-auth is NOT in [all] so plain installs don't carry it.
     "provider.vertex": (
         "google-auth==2.55.1",
         "pyasn1==0.6.4",
     ),
-    # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
-    # service principal, az login, VS Code, azd, PowerShell). Only loaded
-    # when model.auth_mode=entra_id is selected; key-based azure-foundry
-    # users never pay this import.
     "provider.azure_identity": ("azure-identity==1.25.3",),
 
-    # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),
 
-    # ─── Monitoring ─────────────────────────────────────────────────────────
-    # OTLP gateway monitoring export. Lazily installed on first use of
-    # monitoring.gateway_health_export / monitoring.export.otlp. Tracks the
-    # `otlp` extra in pyproject.toml — bump both together.
     "export.otlp": (
         "opentelemetry-sdk==1.39.1",
         "opentelemetry-exporter-otlp-proto-http==1.39.1",
     ),
 
-    # ─── TTS providers ─────────────────────────────────────────────────────
-    # Pinned to exact versions to match pyproject.toml's no-ranges policy
-    # (see comment at top of [project.dependencies]). When bumping, update
-    # both this map AND the corresponding extra in pyproject.toml.
-    #
-    # mistralai pin tracks the `mistral` extra in pyproject.toml. PyPI
-    # quarantined the project 2026-05-12 (malicious 2.4.6, Mini Shai-Hulud);
-    # 2.4.6 was removed and clean releases resumed (2.4.7, 2.4.8). Voxtral
-    # STT + TTS share the same SDK.
     "tts.mistral": ("mistralai==2.4.8",),
     "tts.edge": ("edge-tts==7.2.7",),
     "tts.elevenlabs": ("elevenlabs==1.59.0",),
 
-    # ─── Speech-to-text providers ──────────────────────────────────────────
     "stt.mistral": ("mistralai==2.4.8",),
     "stt.faster_whisper": (
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
-    # SILK voice-note decoding (WeChat/QQ .silk voice messages). pilk is a
-    # small silk-v3 codec binding; installed on first .silk transcription.
     "stt.silk": ("pilk==0.2.4",),
 
-    # ─── Wake word ("Hey Daedalus") engines ──────────────────────────────────
-    # Keep in sync with the `wake` extra in pyproject.toml. openWakeWord is the
-    # free, local default (ONNX runtime); Porcupine is the premium engine.
-    # openWakeWord's ONNX embedding model returns near-zero scores on macOS
-    # ARM64 (dscripka/openWakeWord#336), so the wake word runs on the tflite
-    # backend there. Upstream declares tflite-runtime for Linux only;
-    # ai-edge-litert is the macOS equivalent, bridged in tools/wake_word.py.
-    # It lives in its own feature because lazy-dep specs cannot carry PEP 508
-    # environment markers (_spec_is_safe rejects ";"), so the platform gate is
-    # applied by the caller instead.
     "wake.openwakeword.tflite": (
         "ai-edge-litert==2.1.6",
     ),
@@ -171,9 +125,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),
-    # Open-vocabulary keyword spotting: any typed phrase, zero training.
-    # sentencepiece is required by sherpa_onnx.text2token (runtime phrase
-    # tokenization) even though sherpa-onnx doesn't declare it.
     "wake.sherpa": (
         "sherpa-onnx==1.13.4",
         "sentencepiece==0.2.2",
@@ -186,52 +137,31 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "numpy==2.4.3",
     ),
 
-    # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 
-    # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
-    # supermemory + mem0 are opt-in cloud memory providers with their own
-    # SDKs. On the published Docker image the agent venv is sealed
-    # (DAEDALUS_DISABLE_LAZY_INSTALLS=1) and lazy installs are redirected to the
-    # durable target — so, like honcho/hindsight, these MUST go through
-    # ensure() to be installable there. Without an allowlist entry + an
-    # ensure() call at the import site, the SDK never installs on a hosted
-    # instance and the provider silently reports itself unavailable.
     "memory.supermemory": ("supermemory==3.50.0",),
     "memory.mem0": ("mem0ai==2.0.10",),
 
-    # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
-    # brotlicffi gives aiohttp a working 2-arg Decompressor.process() for
-    # Discord CDN's Brotli-encoded attachments. Without it, aiohttp falls
-    # back to google's `Brotli` package (1-arg API), and any .txt/.md/.doc
-    # uploaded to the Discord gateway fails to decode at att.read() with
     # "Can not decode content-encoding: br" — see #12511 / #15744.
     "platform.discord": (
         "discord.py[voice]==2.7.1",
         "brotlicffi==1.2.0.1",
-        # discord.py pulls aiohttp transitively (>=3.7.4,<4) as its HTTP
-        # backbone. Pin the patched floor here too so the lazy Discord path
-        # can't keep an already-installed vulnerable aiohttp satisfying that
-        # range — mirrors the messaging extra and platform.slack.
-        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+        "aiohttp==3.14.3",
     ),
     "platform.slack": (
         "slack-bolt==1.29.0",
         "slack-sdk==3.43.0",
-        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+        "aiohttp==3.14.3",
     ),
     "platform.matrix": (
         "mautrix[encryption]==0.21.0",
         "aiosqlite==0.22.1",
         "asyncpg==0.31.0",
         "aiohttp-socks==0.11.0",
-        # mautrix (aiohttp>=3,<4) and aiohttp-socks (aiohttp>=3.10.0) only cap
-        # aiohttp transitively, so a vulnerable already-installed aiohttp still
-        # satisfies both — pin the patched floor here too, like platform.discord.
-        "aiohttp==3.14.3",  # prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+        "aiohttp==3.14.3",
     ),
     "platform.dingtalk": (
         "dingtalk-stream==0.24.3",
@@ -242,94 +172,44 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "lark-oapi==1.6.8",
         "qrcode==7.4.2",
     ),
-    # WeCom callback-mode adapter — parses untrusted XML POST bodies. Pulls
-    # defusedxml only; aiohttp/httpx are core dependencies of every messaging
-    # adapter and ship via `platform.discord` / `platform.slack` / etc.
     "platform.wecom_callback": ("defusedxml==0.7.1",),
-    # Microsoft Teams adapter — microsoft-teams-apps pulls a heavy tree
-    # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
-    # installed on demand like every other messaging platform; also exposed
-    # as the `teams` extra in pyproject for packagers / explicit installs.
-    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
 
-    # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
     "terminal.daytona": ("daytona==0.155.0",),
     "terminal.vercel": ("vercel==0.7.2",),
 
-    # ─── Skills ────────────────────────────────────────────────────────────
     "skill.google_workspace": (
         "google-api-python-client==2.194.0",
         "google-auth==2.55.1",
         "google-auth-oauthlib==1.3.1",
         "google-auth-httplib2==0.3.1",
-        # Transitive via google-api-python-client/google-auth-httplib2; keep explicit
-        # so lazy installs do not resolve vulnerable transitives: httplib2 0.31.2
-        # (GHSA-j5g9-f88f-gfj3 decompression bomb DoS), stale pyasn1/google-auth.
         "httplib2==0.32.0",
         "pyasn1==0.6.4",
     ),
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
-    # ─── Tools ─────────────────────────────────────────────────────────────
-    # ACP adapter (VS Code / Zed / JetBrains integration)
     "tool.acp": ("agent-client-protocol==0.9.0",),
-    # Dashboard (`daedalus dashboard`)
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.3.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.32",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "starlette==1.3.1",
+        "python-multipart==0.0.32",
     ),
-    # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
-    # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
-    # for stripped/source-build installs that somehow dropped it. The vision
-    # call site uses prompt=False so it can never raise a blocking input()
-    # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.3.0",),
-    # Document-to-Markdown extraction for read_file (firecrawl-anydoc, Rust
-    # core, imports as `anydoc`). Widens read_file's auto-extraction beyond
-    # the stdlib .ipynb/.docx/.xlsx to PDF, legacy Office (.doc/.ppt/.xls),
-    # OpenDocument, RTF, and EPUB. Installed on first read of such a file;
-    # the call site uses prompt=False so read_file never blocks on a prompt.
-    # NOTE: lazy-only for now — no pyproject `doc-extract` extra until the
-    # package clears the uv exclude-newer 14-day quarantine (first release
-    # 2026-08-04); add the mirrored extra then.
     "tool.doc_extract": ("firecrawl-anydoc==0.1.6",),
-    # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
-    # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
-    # extras in pyproject.toml. The one-liner installer pulls this in via
-    # `[all]`; lazy-installing here covers lean / partial / broken-extra
-    # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==1.28.1",
-        "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        "starlette==1.3.1",
     ),
-    # HF Agent Trace Viewer upload (daedalus trace upload / /upload-trace).
-    #
-    # huggingface-hub is a SHARED dependency: transformers (pulled by
-    # sentence-transformers for local Hindsight embeddings) requires
-    # >=1.5.0,<2, and faster-whisper/tokenizers depend on it transitively.
-    # Because active_features() marks a feature active from mere package
-    # presence, the `daedalus update` lazy-refresh pass re-asserts THIS pin on
-    # every install where hub is present — so an exact pin below 1.5.0
-    # force-downgrades the shared package and breaks Hindsight startup
-    # (#60783). Policy: keep the exact pin (no ranges — security posture),
-    # but it MUST stay inside transformers' accepted window and MUST match
-    # uv.lock so the whole tree converges on ONE hub version
-    # (tests/test_project_metadata.py enforces both). When bumping: update
-    # here AND `uv lock --upgrade-package huggingface-hub` in lockstep.
     "tool.trace_upload": ("huggingface-hub==1.24.0",),
 }
 
 
-# Conservative regex for spec validation — package name plus optional
-# version range. Reject anything that looks like a URL, file path, or shell
-# metacharacter.
 _SAFE_SPEC = re.compile(
-    r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*"        # package name
-    r"(?:\[[A-Za-z0-9_,\-]+\])?"            # optional [extras]
-    r"(?:[<>=!~]=?[A-Za-z0-9_.\-+,*<>=!~]+)?"  # optional version specifier
+    r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*"
+    r"(?:\[[A-Za-z0-9_,\-]+\])?"
+    r"(?:[<>=!~]=?[A-Za-z0-9_.\-+,*<>=!~]+)?"
     r"$"
 )
 
@@ -363,24 +243,10 @@ class _InstallResult:
     stderr: str
 
 
-# =============================================================================
-# Internals
-# =============================================================================
 
 
-# Environment variable that redirects lazy installs away from the (sealed)
-# agent venv and into a writable directory on a durable volume. Set by the
-# Docker image to /opt/data/lazy-packages. This is an internal bridge var,
-# not user-facing config: the user-facing knob remains
-# security.allow_lazy_installs in config.yaml. When unset, lazy installs go
-# into the active venv as before.
 _LAZY_TARGET_ENV = "DAEDALUS_LAZY_INSTALL_TARGET"
 
-# Name of the stamp file written into the target dir recording the Python
-# X.Y + ABI it was populated for. If a container rebuild bumps the
-# interpreter, compiled wheels (.so) in the durable store would be ABI-
-# incompatible; we detect the mismatch and wipe the store so packages get
-# re-resolved against the new interpreter rather than importing a stale .so.
 _TARGET_STAMP_NAME = ".python-abi"
 
 
@@ -460,18 +326,12 @@ def _activate_target_on_syspath(target: Path) -> None:
     append ordering — ``addsitedir`` would otherwise insert near the front.
     """
     target_str = str(target)
-    # Snapshot existing entries so we can restore precedence afterwards.
     before = list(sys.path)
     if target_str not in before:
         site.addsitedir(target_str)
-    # site.addsitedir may have inserted target (and any .pth-added dirs) at
-    # the front. Move every newly-added entry to the end, preserving the
-    # core venv's precedence. New entries are those not present `before`.
     new_entries = [p for p in sys.path if p not in before]
     if new_entries:
         sys.path[:] = [p for p in sys.path if p not in new_entries] + new_entries
-    # importlib.metadata caches the path-based distribution finder; clear it
-    # so a just-activated dir is visible to version() checks this process.
     try:
         import importlib
         importlib.invalidate_caches()
@@ -515,7 +375,6 @@ def _allow_lazy_installs() -> bool:
     refusing to install would lock people out of their own backends; the
     decision to block is an explicit user opt-in.
     """
-    # (1) Config kill switch wins in every mode.
     try:
         from daedalus_cli.config import load_config
         cfg = load_config()
@@ -526,9 +385,6 @@ def _allow_lazy_installs() -> bool:
         if not bool(sec.get("allow_lazy_installs", True)):
             return False
 
-    # (2) Sealed-venv env var: blocks ONLY when there is no safe durable
-    # target to redirect into. With a target set, the install goes to the
-    # data volume (append-only on sys.path), so the seal is preserved.
     if os.environ.get("DAEDALUS_DISABLE_LAZY_INSTALLS") == "1":
         return _lazy_install_target() is not None
 
@@ -579,7 +435,6 @@ def _specifier_from_spec(spec: str) -> str:
     ``"mautrix[encryption]>=0.20,<1"`` → ``">=0.20,<1"``
     ``"package"`` → ``""`` (no version constraint)
     """
-    # Strip the package name + optional [extras] block.
     m = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:\[[A-Za-z0-9_,\-]+\])?", spec)
     if not m:
         return ""
@@ -613,20 +468,17 @@ def _is_satisfied(spec: str) -> bool:
 
     spec_tail = _specifier_from_spec(spec)
     if not spec_tail:
-        # Bare ``"package"`` — no version constraint, presence is enough.
         return True
 
     try:
         from packaging.specifiers import InvalidSpecifier, SpecifierSet
         from packaging.version import InvalidVersion, Version
     except ImportError:
-        # packaging unavailable — fall back to "installed counts as satisfied".
         return True
 
     try:
         return Version(installed) in SpecifierSet(spec_tail)
     except (InvalidSpecifier, InvalidVersion, Exception):
-        # Malformed spec or installed version we can't parse — don't churn.
         return True
 
 
@@ -728,7 +580,6 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
 
     target_args: list[str] = []
     if target is not None:
-        # --target tells both uv and pip to install into an arbitrary dir.
         target_args = ["--target", str(target)]
     constraint_args: list[str] = []
     if constraints is not None:
@@ -740,13 +591,6 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         uv_env = daedalus_subprocess_env(inherit_credentials=False)
         uv_env["VIRTUAL_ENV"] = str(venv_root)
 
-        # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-        # Managed uv first: $DAEDALUS_HOME/bin is never on PATH, so a bare
-        # which() misses the uv Daedalus installed and falls through to the
-        # slower pip tier. Deliberately a lookup and not ensure_uv(): this runs
-        # mid-turn to install an optional dependency, and downloading uv +
-        # migrating the Python runtime as a side effect of that is a far bigger
-        # action than the caller asked for. Tier 2 pip covers the no-uv case.
         try:
             from daedalus_cli.managed_uv import resolve_uv
 
@@ -766,20 +610,13 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                         _activate_target_on_syspath(target)
                     return _InstallResult(True, r.stdout or "", r.stderr or "")
                 logger.debug("uv pip install failed: %s", r.stderr)
-                # A resolver failure is authoritative. Falling through to pip
-                # here would silently discard uv policy such as exclude-newer
-                # and could install a release that the project quarantined.
                 return _InstallResult(False, r.stdout or "", r.stderr or "")
             except subprocess.TimeoutExpired as e:
                 logger.debug("uv invocation failed: %s", e)
                 return _InstallResult(False, "", f"uv pip install timed out: {e}")
             except FileNotFoundError as e:
-                # The resolved uv path disappeared between lookup and spawn.
-                # In that narrow availability failure, the pip tier remains a
-                # valid fallback because uv never evaluated the requirements.
                 logger.debug("uv invocation failed: %s", e)
 
-        # Tier 2: python -m pip (with ensurepip bootstrap if needed)
         pip_cmd = [sys.executable, "-m", "pip"]
         try:
             probe = subprocess.run(
@@ -824,9 +661,6 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 pass
 
 
-# =============================================================================
-# Public API
-# =============================================================================
 
 
 def feature_specs(feature: str) -> tuple[str, ...]:
@@ -866,26 +700,13 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     if unsupported:
         raise FeatureUnavailable(feature, missing, unsupported)
 
-    # Package-manager installs (NixOS, and any other distro that ships Daedalus
-    # from a read-only store) cannot receive lazy pip installs: the venv's
-    # site-packages lives in the store, so the uv -> pip -> ensurepip ladder
-    # below burns ~15s bootstrapping ensurepip only to fail on a read-only
-    # target. Fail fast with an actionable message instead.
-    #
-    # Skipped when a durable install target is configured: the container
-    # deployment sets DAEDALUS_MANAGED=true *and* DAEDALUS_LAZY_INSTALL_TARGET
-    # (a writable volume), where lazy installs legitimately work.
-    #
-    # The reason string starts with "unsupported " on purpose:
-    # refresh_active_features classifies FeatureUnavailable by that prefix and
-    # reports anything else as a hard failure rather than a skip.
     if _lazy_install_target() is None:
         try:
             from daedalus_cli.config import get_managed_system
 
             managed_by = get_managed_system()
         except Exception:
-            managed_by = ""  # config unreadable — proceed with the install
+            managed_by = ""
         if managed_by:
             raise FeatureUnavailable(
                 feature, missing,
@@ -895,8 +716,6 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
                 f"{managed_by} (or run a pip/uv install of Daedalus instead)."
             )
 
-    # Validate every spec against the allowlist + safety regex. Belt and
-    # braces — the keys-in-LAZY_DEPS check above already constrains this.
     for spec in missing:
         if not _spec_is_safe(spec):
             raise FeatureUnavailable(
@@ -910,13 +729,6 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "lazy installs disabled (security.allow_lazy_installs=false)"
         )
 
-    # Only show the interactive confirmation when we own a TTY and
-    # prompt_toolkit isn't running.  A bare input() deadlocks when a
-    # prompt_toolkit app owns the terminal because keystrokes route to
-    # its event loop rather than stdin, so the prompt blocks forever.
-    # Under the TUI we skip the prompt and proceed — lazy installs are
-    # gated by security.allow_lazy_installs, so reaching here is
-    # already user opt-in.
     _pt_active = False
     if "prompt_toolkit.application.current" in sys.modules:
         try:
@@ -943,19 +755,14 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
     logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
     result = _venv_pip_install(missing)
     if not result.success:
-        # Surface the actual pip error so the user can debug PyPI-side
-        # issues (404 quarantine, network down, etc.).
         snippet = (result.stderr or result.stdout or "").strip()
         if snippet:
-            # Clip to a readable size — pip can dump pages of resolution traces.
             snippet = snippet[-2000:]
         raise FeatureUnavailable(
             feature, missing,
             f"pip install failed: {snippet or 'no error output'}"
         )
 
-    # Verify post-install. importlib.metadata caches per-process, so if we
-    # just installed something the cache may not see it without a refresh.
     try:
         import importlib.metadata as _md
         if hasattr(_md, "_cache_clear"):
@@ -1080,8 +887,6 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
             ok=False, command=display, stderr=f"install failed: {exc}"
         )
 
-    # Freshly-installed dists must be visible to importers and metadata
-    # checks in this same process (dashboard rechecks availability inline).
     try:
         import importlib
         importlib.invalidate_caches()
@@ -1149,9 +954,6 @@ def refresh_active_features(*, prompt: bool = False) -> dict[str, str]:
             ensure(feature, prompt=prompt)
             results[feature] = "refreshed"
         except FeatureUnavailable as e:
-            # Distinguish "user opted out" or platform-incompatible features
-            # from install failures so the update command can render the
-            # right non-error message.
             if (
                 "lazy installs disabled" in str(e)
                 or "declined" in str(e)

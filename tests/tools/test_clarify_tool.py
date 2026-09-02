@@ -89,7 +89,7 @@ class TestClarifyToolChoicesValidation:
             return "answer"
 
         clarify_tool("Open question?", choices=[], callback=mock_callback)
-        assert choices_received == []  # Was cleared, nothing added
+        assert choices_received == []
 
     def test_choices_with_only_whitespace_stripped(self):
         """Whitespace-only choices should be stripped out."""

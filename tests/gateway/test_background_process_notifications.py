@@ -17,9 +17,6 @@ from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 class _FakeRegistry:
     """Return pre-canned sessions, then None once exhausted."""
@@ -62,9 +59,6 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
     return d
 
 
-# ---------------------------------------------------------------------------
-# _load_background_notifications_mode unit tests
-# ---------------------------------------------------------------------------
 
 class TestLoadBackgroundNotificationsMode:
 
@@ -111,25 +105,20 @@ class TestLoadBackgroundNotificationsMode:
         assert GatewayRunner._load_background_notifications_mode() == "all"
 
 
-# ---------------------------------------------------------------------------
-# _run_process_watcher integration tests
-# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("mode", "sessions", "expected_calls", "expected_fragment"),
     [
-        # all mode: running output → sends update
         (
             "all",
             [
                 SimpleNamespace(output_buffer="building...\n", exited=False, exit_code=None),
-                None,  # process disappears → watcher exits
+                None,
             ],
             1,
             "is still running",
         ),
-        # result mode: running output → no update
         (
             "result",
             [
@@ -139,35 +128,30 @@ class TestLoadBackgroundNotificationsMode:
             0,
             None,
         ),
-        # off mode: exited process → no notification
         (
             "off",
             [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
             0,
             None,
         ),
-        # result mode: exited → notifies
         (
             "result",
             [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
             1,
             "finished with exit code 0",
         ),
-        # error mode: exit 0 → no notification
         (
             "error",
             [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)],
             0,
             None,
         ),
-        # error mode: exit 1 → notifies
         (
             "error",
             [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1)],
             1,
             "finished with exit code 1",
         ),
-        # all mode: exited → notifies
         (
             "all",
             [SimpleNamespace(output_buffer="ok\n", exited=True, exit_code=0)],
@@ -183,7 +167,6 @@ async def test_run_process_watcher_respects_notification_mode(
 
     monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
 
-    # Patch asyncio.sleep to avoid real delays
     async def _instant_sleep(*_a, **_kw):
         pass
     monkeypatch.setattr(asyncio, "sleep", _instant_sleep)

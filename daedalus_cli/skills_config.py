@@ -23,7 +23,6 @@ PLATFORMS = {
     "webhook": "🔗 Webhook",
 }
 
-# ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def get_disabled_skills(config: dict, platform: Optional[str] = None) -> Set[str]:
     """Return disabled skill names. Platform-specific list falls back to global."""
@@ -48,7 +47,6 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
     save_config(config)
 
 
-# ─── Skill Discovery ─────────────────────────────────────────────────────────
 
 def _list_all_skills() -> List[dict]:
     """Return all installed skills (ignoring disabled state)."""
@@ -64,7 +62,6 @@ def _get_categories(skills: List[dict]) -> List[str]:
     return sorted({s["category"] or "uncategorized" for s in skills})
 
 
-# ─── Platform Selection ──────────────────────────────────────────────────────
 
 def _select_platform() -> Optional[str]:
     """Ask user which platform to configure, or global."""
@@ -79,7 +76,7 @@ def _select_platform() -> Optional[str]:
     except (KeyboardInterrupt, EOFError):
         return None
     if not raw:
-        return None  # global
+        return None
     try:
         idx = int(raw) - 1
         if 0 <= idx < len(options):
@@ -90,7 +87,6 @@ def _select_platform() -> Optional[str]:
     return None
 
 
-# ─── Category Toggle ─────────────────────────────────────────────────────────
 
 def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
     """Toggle all skills in a category at once."""
@@ -98,7 +94,6 @@ def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
 
     categories = _get_categories(skills)
     cat_labels = []
-    # A category is "enabled" (checked) when NOT all its skills are disabled
     pre_selected = set()
     for i, cat in enumerate(categories):
         cat_skills = [s["name"] for s in skills if (s["category"] or "uncategorized") == cat]
@@ -115,13 +110,12 @@ def _toggle_by_category(skills: List[dict], disabled: Set[str]) -> Set[str]:
     for i, cat in enumerate(categories):
         cat_skills = {s["name"] for s in skills if (s["category"] or "uncategorized") == cat}
         if i in chosen:
-            new_disabled -= cat_skills  # category enabled → remove from disabled
+            new_disabled -= cat_skills
         else:
-            new_disabled |= cat_skills  # category disabled → add to disabled
+            new_disabled |= cat_skills
     return new_disabled
 
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
 
 def skills_command(args=None):
     """Entry point for `daedalus skills`."""
@@ -134,11 +128,9 @@ def skills_command(args=None):
         print(color("  No skills installed.", Colors.DIM))
         return
 
-    # Step 1: Select platform
     platform = _select_platform()
     platform_label = PLATFORMS.get(platform, "All platforms") if platform else "All platforms"
 
-    # Step 2: Select mode — individual or by category
     print()
     print(color(f"  Configure for: {platform_label}", Colors.DIM))
     print()
@@ -155,18 +147,15 @@ def skills_command(args=None):
     if mode == "2":
         new_disabled = _toggle_by_category(skills, disabled)
     else:
-        # Build labels and map indices → skill names
         labels = [
             f"{s['name']}  ({s['category'] or 'uncategorized'})  —  {s['description'][:55]}"
             for s in skills
         ]
-        # "selected" = enabled (not disabled) — matches the [✓] convention
         pre_selected = {i for i, s in enumerate(skills) if s["name"] not in disabled}
         chosen = curses_checklist(
             f"Skills for {platform_label}",
             labels, pre_selected, cancel_returns=pre_selected,
         )
-        # Anything NOT chosen is disabled
         new_disabled = {skills[i]["name"] for i in range(len(skills)) if i not in chosen}
 
     if new_disabled == disabled:

@@ -38,15 +38,11 @@ from typing import List, Dict, Any, Optional, Literal
 
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 
 
 
-# ============================================================================
-# Terminal Tool Definition (matches Daedalus-Agent format)
-# ============================================================================
 
 TERMINAL_TOOL_DEFINITION = {
     "type": "function",
@@ -93,9 +89,6 @@ TERMINAL_TOOL_DEFINITION = {
 }
 
 
-# ============================================================================
-# Environment Factory
-# ============================================================================
 
 def create_environment(
     env_type: str = "local",
@@ -129,9 +122,6 @@ def create_environment(
         raise ValueError(f"Unknown environment type: {env_type}. Use 'local' or 'modal'")
 
 
-# ============================================================================
-# Mini-SWE Runner with Daedalus Trajectory Format
-# ============================================================================
 
 class MiniSWERunner:
     """
@@ -173,7 +163,6 @@ class MiniSWERunner:
         self.image = image
         self.cwd = cwd
         
-        # Setup logging
         logging.basicConfig(
             level=logging.DEBUG if verbose else logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
@@ -181,9 +170,6 @@ class MiniSWERunner:
         )
         self.logger = logging.getLogger(__name__)
         
-        # Initialize LLM client via centralized provider router.
-        # If explicit api_key/base_url are provided (e.g. from CLI args),
-        # construct directly.  Otherwise use the router for OpenRouter.
         if api_key or base_url:
             from openai import OpenAI
             client_kwargs = {
@@ -198,7 +184,6 @@ class MiniSWERunner:
             from agent.auxiliary_client import resolve_provider_client
             self.client, _ = resolve_provider_client("openrouter", model=model)
             if self.client is None:
-                # Fallback: try auto-detection
                 self.client, _ = resolve_provider_client("auto", model=model)
             if self.client is None:
                 from openai import OpenAI
@@ -206,10 +191,8 @@ class MiniSWERunner:
                     base_url="https://openrouter.ai/api/v1",
                     api_key=os.getenv("OPENROUTER_API_KEY", ""))
         
-        # Environment will be created per-task
         self.env = None
         
-        # Tool definition
         self.tools = [TERMINAL_TOOL_DEFINITION]
         
         print("🤖 Mini-SWE Runner initialized")
@@ -293,7 +276,6 @@ class MiniSWERunner:
         """
         trajectory = []
         
-        # System message with tool definitions
         system_msg = (
             "You are a function calling AI model. You are provided with function signatures within <tools> </tools> XML tags. "
             "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
@@ -311,24 +293,20 @@ class MiniSWERunner:
         trajectory.append({"from": "system", "value": system_msg})
         trajectory.append({"from": "human", "value": user_query})
         
-        # Process messages (skip first user message as we already added it)
         i = 1
         while i < len(messages):
             msg = messages[i]
             
             if msg["role"] == "assistant":
                 if "tool_calls" in msg and msg["tool_calls"]:
-                    # Assistant message with tool calls
                     content = ""
                     
-                    # Add reasoning if present
                     if msg.get("reasoning"):
                         content = f"<think>{msg['reasoning']}</think>"
                     
                     if msg.get("content"):
                         content += msg["content"] + "\n"
                     
-                    # Add tool calls in XML format
                     for tool_call in msg["tool_calls"]:
                         if not tool_call or not isinstance(tool_call, dict): continue
                         try:
@@ -346,14 +324,12 @@ class MiniSWERunner:
                     
                     trajectory.append({"from": "gpt", "value": content.rstrip()})
                     
-                    # Collect subsequent tool responses
                     tool_responses = []
                     j = i + 1
                     while j < len(messages) and messages[j]["role"] == "tool":
                         tool_msg = messages[j]
                         tool_content = tool_msg["content"]
                         
-                        # Try to parse as JSON
                         try:
                             if tool_content.strip().startswith(("{", "[")):
                                 tool_content = json.loads(tool_content)
@@ -376,7 +352,6 @@ class MiniSWERunner:
                         i = j - 1
                 
                 else:
-                    # Regular assistant message (no tool calls)
                     content = ""
                     if msg.get("reasoning"):
                         content = f"<think>{msg['reasoning']}</think>"
@@ -404,13 +379,10 @@ class MiniSWERunner:
         print(f"📝 Task: {task[:80]}{'...' if len(task) > 80 else ''}")
         print(f"{'='*60}")
         
-        # Initialize environment
         self._create_env()
         
-        # Message history
         messages = [{"role": "user", "content": task}]
         
-        # System prompt for the LLM (ephemeral - not saved to trajectory)
         system_prompt = """You are an AI agent that can execute bash commands to complete tasks.
 
 When you need to run commands, use the 'terminal' tool with your bash command.
@@ -432,10 +404,8 @@ Complete the user's task step by step."""
                 api_call_count += 1
                 print(f"\n🔄 API call #{api_call_count}/{self.max_iterations}")
                 
-                # Prepare API messages
                 api_messages = [{"role": "system", "content": system_prompt}] + messages
                 
-                # Make API call
                 try:
                     response = self.client.chat.completions.create(
                         model=self.model,
@@ -449,15 +419,12 @@ Complete the user's task step by step."""
                 
                 assistant_message = response.choices[0].message
                 
-                # Log assistant response
                 if assistant_message.content:
                     print(f"🤖 Assistant: {assistant_message.content[:100]}...")
                 
-                # Check for tool calls
                 if assistant_message.tool_calls:
                     print(f"🔧 Tool calls: {len(assistant_message.tool_calls)}")
                     
-                    # Add assistant message with tool calls
                     messages.append({
                         "role": "assistant",
                         "content": assistant_message.content,
@@ -474,7 +441,6 @@ Complete the user's task step by step."""
                         ]
                     })
                     
-                    # Execute each tool call
                     for tc in assistant_message.tool_calls:
                         try:
                             args = json.loads(tc.function.arguments)
@@ -486,10 +452,8 @@ Complete the user's task step by step."""
                         
                         print(f"   📞 terminal: {command[:60]}...")
                         
-                        # Execute command
                         result = self._execute_command(command, timeout)
                         
-                        # Format result
                         result_json = json.dumps({
                             "content": {
                                 "output": result["output"],
@@ -498,12 +462,10 @@ Complete the user's task step by step."""
                             }
                         }, ensure_ascii=False)
                         
-                        # Check for task completion signal
                         if "MINI_SWE_AGENT_FINAL_OUTPUT" in result["output"]:
                             print("   ✅ Task completion signal detected!")
                             completed = True
                         
-                        # Add tool response
                         messages.append({
                             "role": "tool",
                             "content": result_json,
@@ -512,13 +474,11 @@ Complete the user's task step by step."""
                         
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")
                     
-                    # If task completed, we can stop
                     if completed:
                         final_response = assistant_message.content
                         break
                 
                 else:
-                    # No tool calls - final response
                     final_response = assistant_message.content or ""
                     messages.append({
                         "role": "assistant",
@@ -532,10 +492,8 @@ Complete the user's task step by step."""
                 print(f"⚠️  Reached max iterations ({self.max_iterations})")
         
         finally:
-            # Cleanup environment
             self._cleanup_env()
         
-        # Convert to Daedalus trajectory format
         trajectory = self._convert_to_daedalus_format(messages, task, completed)
         
         return {
@@ -579,7 +537,6 @@ Complete the user's task step by step."""
                     result = self.run_task(prompt)
                     results.append(result)
                     
-                    # Write to file immediately
                     f.write(json.dumps(result, ensure_ascii=False) + "\n")
                     f.flush()
                     
@@ -602,9 +559,6 @@ Complete the user's task step by step."""
         return results
 
 
-# ============================================================================
-# CLI Interface
-# ============================================================================
 
 def main(
     task: str = None,
@@ -650,7 +604,6 @@ def main(
     print("🚀 Mini-SWE Runner with Daedalus Trajectory Format")
     print("=" * 60)
     
-    # Initialize runner
     runner = MiniSWERunner(
         model=model,
         base_url=base_url,
@@ -664,10 +617,8 @@ def main(
     )
     
     if task:
-        # Single task mode
         result = runner.run_task(task)
         
-        # Save to file
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(json.dumps(result, ensure_ascii=False) + "\n")
         
@@ -677,7 +628,6 @@ def main(
         print(f"💬 Turns: {len(result['conversations'])}")
         
     elif prompts_file:
-        # Batch mode
         prompts = []
         with open(prompts_file, 'r', encoding='utf-8') as f:
             for line in f:

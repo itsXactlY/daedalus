@@ -33,9 +33,6 @@ def event_loop_fixture():
     loop.close()
 
 
-# ---------------------------------------------------------------------------
-# Tool progress callback
-# ---------------------------------------------------------------------------
 
 
 class TestToolProgressCallback:
@@ -46,7 +43,6 @@ class TestToolProgressCallback:
 
         cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids)
 
-        # Run callback in the event loop context
         with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
             future = MagicMock(spec=Future)
             future.result.return_value = None
@@ -54,13 +50,10 @@ class TestToolProgressCallback:
 
             cb("tool.started", "terminal", "$ ls -la", {"command": "ls -la"})
 
-        # Should have tracked the tool call ID
         assert "terminal" in tool_call_ids
 
-        # Should have called run_coroutine_threadsafe
         mock_rcts.assert_called_once()
         coro = mock_rcts.call_args[0][0]
-        # The coroutine should be conn.session_update
         assert mock_conn.session_update.called or coro is not None
 
     def test_handles_string_args(self, mock_conn, event_loop_fixture):
@@ -119,9 +112,6 @@ class TestToolProgressCallback:
             assert "terminal" not in tool_call_ids
 
 
-# ---------------------------------------------------------------------------
-# Thinking callback
-# ---------------------------------------------------------------------------
 
 
 class TestThinkingCallback:
@@ -152,9 +142,6 @@ class TestThinkingCallback:
         mock_rcts.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Step callback
-# ---------------------------------------------------------------------------
 
 
 class TestStepCallback:
@@ -172,7 +159,6 @@ class TestStepCallback:
 
             cb(1, [{"name": "terminal", "result": "success"}])
 
-        # Tool should have been removed from tracking
         assert "terminal" not in tool_call_ids
         mock_rcts.assert_called_once()
 
@@ -220,7 +206,6 @@ class TestStepCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            # Provide a result string in the tool info dict
             cb(1, [{"name": "terminal", "result": '{"output": "hello"}'}])
 
         mock_btc.assert_called_once_with(
@@ -247,9 +232,6 @@ class TestStepCallback:
         mock_btc.assert_called_once_with("tc-aaa", "web_search", result=None)
 
 
-# ---------------------------------------------------------------------------
-# Message callback
-# ---------------------------------------------------------------------------
 
 
 class TestMessageCallback:

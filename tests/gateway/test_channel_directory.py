@@ -110,7 +110,6 @@ class TestResolveChannelName:
             ]
         }
         with self._setup(tmp_path, platforms):
-            # "engineering" prefix matches only one channel
             assert resolve_channel_name("slack", "engineering") == "C01"
 
     def test_prefix_match_ambiguous_returns_none(self, tmp_path):

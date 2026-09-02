@@ -12,7 +12,6 @@ from agent.redact import redact_sensitive_text, RedactingFormatter
 def _ensure_redaction_enabled(monkeypatch):
     """Ensure DAEDALUS_REDACT_SECRETS is not disabled by prior test imports."""
     monkeypatch.delenv("DAEDALUS_REDACT_SECRETS", raising=False)
-    # Also patch the module-level snapshot so it reflects the cleared env var
     monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
 
@@ -83,31 +82,26 @@ class TestEnvAssignments:
         assert result == text
 
     def test_lowercase_python_variable_token_unchanged(self):
-        # Regression: #4367 — lowercase 'token' assignment must not be redacted
         text = "before_tokens = response.usage.prompt_tokens"
         result = redact_sensitive_text(text)
         assert result == text
 
     def test_lowercase_python_variable_api_key_unchanged(self):
-        # Regression: #4367 — lowercase 'api_key' must not be redacted
         text = "api_key = config.get('api_key')"
         result = redact_sensitive_text(text)
         assert result == text
 
     def test_typescript_await_token_unchanged(self):
-        # Regression: #4367 — 'await' keyword must not be redacted as a secret value
         text = "const token = await getToken();"
         result = redact_sensitive_text(text)
         assert result == text
 
     def test_typescript_await_secret_unchanged(self):
-        # Regression: #4367 — similar pattern with 'secret' variable
         text = "const secret = await fetchSecret();"
         result = redact_sensitive_text(text)
         assert result == text
 
     def test_export_whitespace_preserved(self):
-        # Regression: #4367 — whitespace before uppercase env var must be preserved
         text = "export SECRET_TOKEN=mypassword"
         result = redact_sensitive_text(text)
         assert result.startswith("export ")
@@ -215,11 +209,9 @@ TELEGRAM_BOT_TOKEN=bot987654321:ABCDEfghij-KLMNopqrst_UVWXyz12345
 SHELL=/bin/bash
 USER=teknium"""
         result = redact_sensitive_text(env_dump)
-        # Secrets should be masked
         assert "abc123def456" not in result
         assert "reallyLongSecretKey" not in result
         assert "ABCDEfghij" not in result
-        # Non-secrets should survive
         assert "HOME=/home/user" in result
         assert "SHELL=/bin/bash" in result
         assert "USER=teknium" in result

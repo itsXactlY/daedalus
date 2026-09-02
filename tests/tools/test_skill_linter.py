@@ -13,7 +13,6 @@ from tools.skill_linter import (
     lint_skill,
 )
 
-# A clean, peer-shaped SKILL.md that should produce zero findings.
 CLEAN = """---
 name: my-skill
 description: Search arXiv papers by keyword, author, or ID.
@@ -73,7 +72,6 @@ def test_shell_utility_reference_in_prose_flagged():
 
 
 def test_shell_utility_inside_code_block_not_flagged():
-    # A fenced code block legitimately shows grep; prose check must skip it.
     content = CLEAN + "\n```bash\ngrep -r foo .\n```\n"
     findings = lint_content(content)
     assert "shell-utility-reference" not in _rules(findings)
@@ -111,7 +109,7 @@ def test_bad_name_format_is_error():
 def test_name_dir_mismatch_is_error(tmp_path):
     skill_dir = tmp_path / "actual-dir"
     skill_dir.mkdir()
-    findings = lint_content(CLEAN, skill_dir=skill_dir)  # name is my-skill
+    findings = lint_content(CLEAN, skill_dir=skill_dir)
     assert "name-dir-mismatch" in _rules(findings)
     assert has_errors(findings)
 

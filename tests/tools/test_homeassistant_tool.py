@@ -21,9 +21,6 @@ from tools.homeassistant_tool import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Sample HA state data (matches real HA /api/states response shape)
-# ---------------------------------------------------------------------------
 
 SAMPLE_STATES = [
     {"entity_id": "light.bedroom", "state": "on", "attributes": {"friendly_name": "Bedroom Light", "brightness": 200}},
@@ -36,9 +33,6 @@ SAMPLE_STATES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Entity filtering and summarization
-# ---------------------------------------------------------------------------
 
 
 class TestFilterAndSummarize:
@@ -76,7 +70,6 @@ class TestFilterAndSummarize:
     def test_area_filter_by_area_attribute(self):
         result = _filter_and_summarize(SAMPLE_STATES, area="bedroom")
         ids = {e["entity_id"] for e in result["entities"]}
-        # "Bedroom Light" matches via friendly_name, "Bedroom Humidity" matches via area attr
         assert "light.bedroom" in ids
         assert "sensor.humidity" in ids
 
@@ -105,9 +98,6 @@ class TestFilterAndSummarize:
         assert result["entities"][0]["friendly_name"] == ""
 
 
-# ---------------------------------------------------------------------------
-# Service payload building
-# ---------------------------------------------------------------------------
 
 
 class TestBuildServicePayload:
@@ -137,13 +127,9 @@ class TestBuildServicePayload:
             entity_id="light.a",
             data={"entity_id": "light.b"},
         )
-        # explicit entity_id parameter wins over data["entity_id"]
         assert payload["entity_id"] == "light.a"
 
 
-# ---------------------------------------------------------------------------
-# Service response parsing
-# ---------------------------------------------------------------------------
 
 
 class TestParseServiceResponse:
@@ -164,7 +150,6 @@ class TestParseServiceResponse:
         assert result["affected_entities"] == []
 
     def test_non_list_response(self):
-        # Some HA services return a dict instead of a list
         result = _parse_service_response("script", "run", {"result": "ok"})
         assert result["success"] is True
         assert result["affected_entities"] == []
@@ -179,9 +164,6 @@ class TestParseServiceResponse:
         assert result["service"] == "climate.set_temperature"
 
 
-# ---------------------------------------------------------------------------
-# Handler validation (no mocks - these paths don't reach the network)
-# ---------------------------------------------------------------------------
 
 
 class TestHandlerValidation:
@@ -213,9 +195,6 @@ class TestHandlerValidation:
         assert "error" in result
 
 
-# ---------------------------------------------------------------------------
-# Security: domain blocklist
-# ---------------------------------------------------------------------------
 
 
 class TestDomainBlocklist:
@@ -231,12 +210,9 @@ class TestDomainBlocklist:
 
     def test_safe_domain_not_blocked(self):
         """Safe domains like 'light' should not be blocked (will fail on network, not blocklist)."""
-        # This will try to make a real HTTP call and fail, but the important thing
-        # is it does NOT return a "blocked" error
         result = json.loads(_handle_call_service({
             "domain": "light", "service": "turn_on", "entity_id": "light.test"
         }))
-        # Should fail with a network/connection error, not a "blocked" error
         if "error" in result:
             assert "blocked" not in result["error"].lower()
 
@@ -250,9 +226,6 @@ class TestDomainBlocklist:
         assert "rest_command" in _BLOCKED_DOMAINS
 
 
-# ---------------------------------------------------------------------------
-# Security: entity_id validation
-# ---------------------------------------------------------------------------
 
 
 class TestEntityIdValidation:
@@ -270,10 +243,10 @@ class TestEntityIdValidation:
         assert _ENTITY_ID_RE.match("../api/config") is None
 
     def test_special_chars_rejected(self):
-        assert _ENTITY_ID_RE.match("light.bed room") is None  # space
-        assert _ENTITY_ID_RE.match("light.bed;rm -rf") is None  # semicolon
-        assert _ENTITY_ID_RE.match("light.bed/room") is None  # slash
-        assert _ENTITY_ID_RE.match("LIGHT.BEDROOM") is None  # uppercase
+        assert _ENTITY_ID_RE.match("light.bed room") is None
+        assert _ENTITY_ID_RE.match("light.bed;rm -rf") is None
+        assert _ENTITY_ID_RE.match("light.bed/room") is None
+        assert _ENTITY_ID_RE.match("LIGHT.BEDROOM") is None
 
     def test_missing_domain_rejected(self):
         assert _ENTITY_ID_RE.match(".bedroom") is None
@@ -295,7 +268,6 @@ class TestEntityIdValidation:
 
     def test_call_service_allows_no_entity_id(self):
         """Some services (like scene.turn_on) don't need entity_id."""
-        # Will fail on network, but should NOT fail on entity_id validation
         result = json.loads(_handle_call_service({
             "domain": "scene", "service": "turn_on"
         }))
@@ -303,9 +275,6 @@ class TestEntityIdValidation:
             assert "Invalid entity_id" not in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Availability check
-# ---------------------------------------------------------------------------
 
 
 class TestCheckAvailable:
@@ -322,9 +291,6 @@ class TestCheckAvailable:
         assert _check_ha_available() is False
 
 
-# ---------------------------------------------------------------------------
-# Auth headers
-# ---------------------------------------------------------------------------
 
 
 class TestGetHeaders:
@@ -335,9 +301,6 @@ class TestGetHeaders:
         assert headers["Content-Type"] == "application/json"
 
 
-# ---------------------------------------------------------------------------
-# Registry integration
-# ---------------------------------------------------------------------------
 
 
 class TestRegistration:

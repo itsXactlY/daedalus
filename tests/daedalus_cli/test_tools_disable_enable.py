@@ -5,7 +5,6 @@ from unittest.mock import patch
 from daedalus_cli.tools_config import tools_disable_enable_command
 
 
-# ── Built-in toolset disable ────────────────────────────────────────────────
 
 
 class TestToolsDisableBuiltin:
@@ -38,7 +37,6 @@ class TestToolsDisableBuiltin:
         assert "web" not in saved["platform_toolsets"]["cli"]
 
 
-# ── Built-in toolset enable ─────────────────────────────────────────────────
 
 
 class TestToolsEnableBuiltin:
@@ -60,7 +58,6 @@ class TestToolsEnableBuiltin:
         assert saved["platform_toolsets"]["cli"].count("web") == 1
 
 
-# ── MCP tool disable ────────────────────────────────────────────────────────
 
 
 class TestToolsDisableMcp:
@@ -96,7 +93,6 @@ class TestToolsDisableMcp:
         assert "MCP server 'unknown' not found in config" in out
 
 
-# ── MCP tool enable ──────────────────────────────────────────────────────────
 
 
 class TestToolsEnableMcp:
@@ -113,7 +109,6 @@ class TestToolsEnableMcp:
         assert "delete_branch" in saved["mcp_servers"]["github"]["tools"]["exclude"]
 
 
-# ── Mixed targets ────────────────────────────────────────────────────────────
 
 
 class TestToolsMixedTargets:
@@ -152,7 +147,6 @@ class TestToolsMixedTargets:
         assert "exa" not in saved["platform_toolsets"]["cli"]
 
 
-# ── List output ──────────────────────────────────────────────────────────────
 
 
 class TestToolsList:
@@ -176,7 +170,6 @@ class TestToolsList:
         assert "create_issue" in out
 
 
-# ── Validation ───────────────────────────────────────────────────────────────
 
 
 class TestToolsValidation:

@@ -34,7 +34,6 @@ agent/prompt_builder.py for the salvaged hunks from PR #4562.
 
 from __future__ import annotations
 
-# Re-export the public surface so `from tools.computer_use import ...` works.
 from tools.computer_use.tool import (  # noqa: F401
     handle_computer_use,
     release_computer_use_session,

@@ -87,7 +87,7 @@ def test_get_nous_subscription_features_uses_direct_browserbase_when_no_managed_
     monkeypatch.setattr(
         ns,
         "is_managed_tool_gateway_ready",
-        lambda vendor: False,  # No managed gateway available
+        lambda vendor: False,
     )
 
     features = ns.get_nous_subscription_features({})

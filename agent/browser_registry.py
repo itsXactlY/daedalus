@@ -94,16 +94,8 @@ def get_provider(name: str) -> Optional[BrowserProvider]:
         return _providers.get(name.strip())
 
 
-# ---------------------------------------------------------------------------
-# Active-provider resolution
-# ---------------------------------------------------------------------------
 
 
-# Legacy auto-detect order — used when no ``browser.cloud_provider`` is set.
-# Matches the pre-migration walk in :func:`tools.browser_tool._get_cloud_provider`.
-# Firecrawl is intentionally absent so users with ``FIRECRAWL_API_KEY`` set
-# for web-extract don't get silently routed to a paid cloud browser. See
-# :func:`_resolve` for the full rationale.
 _LEGACY_PREFERENCE = (
     "browser-use",
     "browserbase",
@@ -157,13 +149,9 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
             )
             return False
 
-    # 1. Explicit "local" short-circuit.
     if configured == "local":
         return None
 
-    # 2. Explicit config wins — return regardless of is_available() so the
-    #    user gets a precise downstream error message rather than a silent
-    #    backend switch. Matches _get_cloud_provider() in browser_tool.py.
     if configured:
         provider = snapshot.get(configured)
         if provider is not None:
@@ -174,10 +162,6 @@ def _resolve(configured: Optional[str]) -> Optional[BrowserProvider]:
             configured,
         )
 
-    # 3. Legacy preference walk — only providers in _LEGACY_PREFERENCE are
-    #    auto-eligible. Filtered by availability so we don't surface a
-    #    provider the user has no credentials for. See docstring for why
-    #    we do NOT fall back to "any single-eligible registered provider".
     for legacy in _LEGACY_PREFERENCE:
         provider = snapshot.get(legacy)
         if provider is not None and _is_available_safe(provider):

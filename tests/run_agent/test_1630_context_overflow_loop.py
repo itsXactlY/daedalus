@@ -13,9 +13,6 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-# ---------------------------------------------------------------------------
-# Test 1: Agent heuristic — generic 400 with large session → compression
-# ---------------------------------------------------------------------------
 
 
 class TestGeneric400Heuristic:
@@ -48,10 +45,9 @@ class TestGeneric400Heuristic:
         as a non-retryable client error (not context overflow)."""
         error_msg = "error"
         status_code = 400
-        approx_tokens = 1000  # Small session
+        approx_tokens = 1000
         api_messages = [{"role": "user", "content": "hi"}]
 
-        # Simulate the phrase matching
         is_context_length_error = any(phrase in error_msg for phrase in [
             'context length', 'context size', 'maximum context',
             'token limit', 'too many tokens', 'reduce the length',
@@ -61,11 +57,10 @@ class TestGeneric400Heuristic:
         ])
         assert not is_context_length_error
 
-        # The heuristic should NOT trigger for small sessions
         ctx_len = 200000
         is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
         is_generic_error = len(error_msg.strip()) < 30
-        assert not is_large_session  # Small session → heuristic doesn't fire
+        assert not is_large_session
 
     def test_generic_400_with_large_token_count_triggers_heuristic(self):
         """A generic 400 with high token count should be treated as
@@ -73,7 +68,7 @@ class TestGeneric400Heuristic:
         error_msg = "error"
         status_code = 400
         ctx_len = 200000
-        approx_tokens = 100000  # > 40% of 200k
+        approx_tokens = 100000
         api_messages = [{"role": "user", "content": "hi"}] * 20
 
         is_context_length_error = any(phrase in error_msg for phrase in [
@@ -81,12 +76,10 @@ class TestGeneric400Heuristic:
         ])
         assert not is_context_length_error
 
-        # Heuristic check
         is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
         is_generic_error = len(error_msg.strip()) < 30
         assert is_large_session
         assert is_generic_error
-        # Both conditions true → should be treated as context overflow
 
     def test_generic_400_with_many_messages_triggers_heuristic(self):
         """A generic 400 with >80 messages should trigger the heuristic
@@ -94,8 +87,8 @@ class TestGeneric400Heuristic:
         error_msg = "error"
         status_code = 400
         ctx_len = 200000
-        approx_tokens = 5000  # Low token estimate
-        api_messages = [{"role": "user", "content": "x"}] * 100  # > 80 messages
+        approx_tokens = 5000
+        api_messages = [{"role": "user", "content": "x"}] * 100
 
         is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
         is_generic_error = len(error_msg.strip()) < 30
@@ -111,7 +104,7 @@ class TestGeneric400Heuristic:
         approx_tokens = 100000
 
         is_generic_error = len(error_msg.strip()) < 30
-        assert not is_generic_error  # Long specific message → heuristic doesn't fire
+        assert not is_generic_error
 
     def test_descriptive_context_error_caught_by_phrases(self):
         """Descriptive context-length errors should still be caught by
@@ -127,9 +120,6 @@ class TestGeneric400Heuristic:
         assert is_context_length_error
 
 
-# ---------------------------------------------------------------------------
-# Test 2: Gateway skips persistence on failed agent results
-# ---------------------------------------------------------------------------
 
 class TestGatewaySkipsPersistenceOnFailure:
     """When the agent returns failed=True with no final_response,
@@ -177,9 +167,6 @@ class TestGatewaySkipsPersistenceOnFailure:
         assert not agent_failed_early
 
 
-# ---------------------------------------------------------------------------
-# Test 3: Context-overflow error messages
-# ---------------------------------------------------------------------------
 
 class TestContextOverflowErrorMessages:
     """The gateway should produce helpful error messages when the failure
@@ -206,7 +193,7 @@ class TestContextOverflowErrorMessages:
         """A generic 400 error code in the string with a large history
         should be flagged as context failure."""
         error_str = "error code: 400 - {'type': 'error', 'message': 'Error'}"
-        history_len = 100  # Large session
+        history_len = 100
 
         _is_ctx_fail = any(p in error_str.lower() for p in (
             "context", "token", "too large", "too long",
@@ -232,9 +219,6 @@ class TestContextOverflowErrorMessages:
         assert not _is_ctx_fail
 
 
-# ---------------------------------------------------------------------------
-# Test 4: Agent skips persistence for large failed sessions
-# ---------------------------------------------------------------------------
 
 class TestAgentSkipsPersistenceForLargeFailedSessions:
     """When a 400 error occurs and the session is large, the agent
@@ -243,7 +227,7 @@ class TestAgentSkipsPersistenceForLargeFailedSessions:
     def test_large_session_400_skips_persistence(self):
         """Status 400 + high token count should skip persistence."""
         status_code = 400
-        approx_tokens = 60000  # > 50000 threshold
+        approx_tokens = 60000
         api_messages = [{"role": "user", "content": "x"}] * 10
 
         should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
@@ -252,16 +236,16 @@ class TestAgentSkipsPersistenceForLargeFailedSessions:
     def test_small_session_400_persists_normally(self):
         """Status 400 + small session should still persist."""
         status_code = 400
-        approx_tokens = 5000  # < 50000
-        api_messages = [{"role": "user", "content": "x"}] * 10  # < 80
+        approx_tokens = 5000
+        api_messages = [{"role": "user", "content": "x"}] * 10
 
         should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
         assert not should_skip
 
     def test_non_400_error_persists_normally(self):
         """Non-400 errors should always persist normally."""
-        status_code = 401  # Auth error
-        approx_tokens = 100000  # Large session, but not a 400
+        status_code = 401
+        approx_tokens = 100000
         api_messages = [{"role": "user", "content": "x"}] * 100
 
         should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)

@@ -63,7 +63,6 @@ def _make_runner():
     return runner
 
 
-# --- Startup queueing ---
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""
@@ -83,11 +82,9 @@ class TestStartupFailureQueuing:
     def test_failed_platform_not_queued_for_nonretryable(self):
         """Non-retryable errors should not be in the retry queue."""
         runner = _make_runner()
-        # Simulate: adapter had a non-retryable error, wasn't queued
         assert Platform.TELEGRAM not in runner._failed_platforms
 
 
-# --- Reconnect watcher ---
 
 class TestPlatformReconnectWatcher:
     """Test the _platform_reconnect_watcher background task."""
@@ -102,7 +99,7 @@ class TestPlatformReconnectWatcher:
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": platform_config,
             "attempts": 1,
-            "next_retry": time.monotonic() - 1,  # Already past retry time
+            "next_retry": time.monotonic() - 1,
         }
 
         succeed_adapter = StubAdapter(succeed=True)
@@ -110,10 +107,8 @@ class TestPlatformReconnectWatcher:
 
         with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
             with patch("gateway.run.build_channel_directory", create=True):
-                # Run one iteration of the watcher then stop
                 async def run_one_iteration():
                     runner._running = True
-                    # Patch the sleep to exit after first check
                     call_count = 0
 
                     async def fake_sleep(n):
@@ -215,7 +210,7 @@ class TestPlatformReconnectWatcher:
         platform_config = PlatformConfig(enabled=True, token="test")
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": platform_config,
-            "attempts": 20,  # At max
+            "attempts": 20,
             "next_retry": time.monotonic() - 1,
         }
 
@@ -239,7 +234,7 @@ class TestPlatformReconnectWatcher:
             await run_one_iteration()
 
         assert Platform.TELEGRAM not in runner._failed_platforms
-        mock_create.assert_not_called()  # Should give up without trying
+        mock_create.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reconnect_skips_when_not_time_yet(self):
@@ -250,7 +245,7 @@ class TestPlatformReconnectWatcher:
         runner._failed_platforms[Platform.TELEGRAM] = {
             "config": platform_config,
             "attempts": 1,
-            "next_retry": time.monotonic() + 9999,  # Far in the future
+            "next_retry": time.monotonic() + 9999,
         }
 
         real_sleep = asyncio.sleep
@@ -279,7 +274,6 @@ class TestPlatformReconnectWatcher:
     async def test_no_failed_platforms_watcher_idles(self):
         """When no platforms are failed, watcher should just idle."""
         runner = _make_runner()
-        # No failed platforms
 
         real_sleep = asyncio.sleep
 
@@ -336,7 +330,6 @@ class TestPlatformReconnectWatcher:
         assert Platform.TELEGRAM not in runner._failed_platforms
 
 
-# --- Runtime disconnection queueing ---
 
 class TestRuntimeDisconnectQueuing:
     """Test that _handle_adapter_fatal_error queues retryable disconnections."""
@@ -365,7 +358,6 @@ class TestRuntimeDisconnectQueuing:
         adapter._set_fatal_error("auth_error", "bad token", retryable=False)
         runner.adapters[Platform.TELEGRAM] = adapter
 
-        # Need to prevent stop() from running fully
         runner.stop = AsyncMock()
 
         await runner._handle_adapter_fatal_error(adapter)
@@ -388,7 +380,6 @@ class TestRuntimeDisconnectQueuing:
 
         await runner._handle_adapter_fatal_error(adapter)
 
-        # stop() SHOULD be called — gateway exits for systemd restart
         runner.stop.assert_called_once()
         assert runner._exit_with_failure is True
         assert Platform.TELEGRAM in runner._failed_platforms
@@ -403,13 +394,11 @@ class TestRuntimeDisconnectQueuing:
         failing_adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
         runner.adapters[Platform.TELEGRAM] = failing_adapter
 
-        # Another adapter is still connected
         healthy_adapter = StubAdapter(succeed=True)
         runner.adapters[Platform.DISCORD] = healthy_adapter
 
         await runner._handle_adapter_fatal_error(failing_adapter)
 
-        # stop() should NOT have been called — Discord is still up
         runner.stop.assert_not_called()
         assert Platform.TELEGRAM in runner._failed_platforms
 

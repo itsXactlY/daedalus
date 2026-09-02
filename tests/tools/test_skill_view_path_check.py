@@ -110,7 +110,5 @@ class TestOldCheckWouldFail:
         resolved = ref_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # Old check says it escapes (WRONG on Windows)
         assert self._old_path_escapes(resolved, skill_dir_resolved) is True
-        # New check correctly allows it
         assert _path_escapes_skill_dir(resolved, skill_dir_resolved) is False

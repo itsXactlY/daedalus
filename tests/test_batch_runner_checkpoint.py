@@ -8,7 +8,6 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-# batch_runner uses relative imports, ensure project root is on path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -108,7 +107,6 @@ class TestLoadCheckpoint:
         runner.checkpoint_file.write_text("{broken json!!")
 
         result = runner._load_checkpoint()
-        # Should return empty/default, not crash
         assert isinstance(result, dict)
 
 
@@ -116,7 +114,6 @@ class TestResumePreservesProgress:
     """Verify that initializing a run with resume=True loads prior checkpoint."""
 
     def test_completed_prompts_loaded_from_checkpoint(self, runner):
-        # Simulate a prior run that completed prompts 0-4
         prior = {
             "run_name": "test_run",
             "completed_prompts": [0, 1, 2, 3, 4],
@@ -125,7 +122,6 @@ class TestResumePreservesProgress:
         }
         runner.checkpoint_file.write_text(json.dumps(prior))
 
-        # Load checkpoint like run() does
         checkpoint_data = runner._load_checkpoint()
         if checkpoint_data.get("run_name") != runner.run_name:
             checkpoint_data = {

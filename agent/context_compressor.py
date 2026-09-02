@@ -36,17 +36,12 @@ SUMMARY_PREFIX = (
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
-# Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
-# Proportion of compressed content to allocate for summary
 _SUMMARY_RATIO = 0.20
-# Absolute ceiling for summary tokens (even on very large context windows)
 _SUMMARY_TOKENS_CEILING = 12_000
 
-# Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
-# Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
@@ -94,7 +89,6 @@ class ContextCompressor:
         self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
 
-        # Derive token budgets: ratio is relative to the threshold, not total context
         target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
         self.tail_token_budget = target_tokens
         self.max_summary_tokens = min(
@@ -111,12 +105,7 @@ class ContextCompressor:
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
             )
-        self._context_probed = False  # True after a step-down from context error
-        # Local inference servers (llama.cpp / Unsloth Studio / Ollama) restart
-        # with a different -c whenever the user switches model, quant or
-        # context settings. context_length was resolved once here and then only
-        # ever re-resolved by switch_model(), so a long-lived agent kept
-        # reporting the context its server had at boot. Re-detect on a timer.
+        self._context_probed = False
         self._config_context_length = config_context_length
         self._ctx_refreshed_at = time.monotonic()
 
@@ -126,11 +115,10 @@ class ContextCompressor:
 
         self.summary_model = summary_model_override or ""
 
-        # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
         self._summary_failure_cooldown_until: float = 0.0
 
-    CTX_REFRESH_INTERVAL = 300  # seconds; matches the endpoint metadata TTL
+    CTX_REFRESH_INTERVAL = 300
 
     def maybe_refresh_context_length(self) -> bool:
         """Re-detect context length from a local server that may have reloaded.
@@ -218,9 +206,6 @@ class ContextCompressor:
             "compression_count": self.compression_count,
         }
 
-    # ------------------------------------------------------------------
-    # Tool output pruning (cheap pre-pass, no LLM call)
-    # ------------------------------------------------------------------
 
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
@@ -247,16 +232,12 @@ class ContextCompressor:
             content = msg.get("content", "")
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
-            # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
                 result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
                 pruned += 1
 
         return result, pruned
 
-    # ------------------------------------------------------------------
-    # Summarization
-    # ------------------------------------------------------------------
 
     def _compute_summary_budget(self, turns_to_summarize: List[Dict[str, Any]]) -> int:
         """Scale summary token budget with the amount of content being compressed.
@@ -281,7 +262,6 @@ class ContextCompressor:
             role = msg.get("role", "unknown")
             content = msg.get("content") or ""
 
-            # Tool results: keep more content than before (3000 chars)
             if role == "tool":
                 tool_id = msg.get("tool_call_id", "")
                 if len(content) > 3000:
@@ -289,7 +269,6 @@ class ContextCompressor:
                 parts.append(f"[TOOL RESULT {tool_id}]: {content}")
                 continue
 
-            # Assistant messages: include tool call names AND arguments
             if role == "assistant":
                 if len(content) > 3000:
                     content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
@@ -301,7 +280,6 @@ class ContextCompressor:
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
                             args = fn.get("arguments", "")
-                            # Truncate long arguments but keep enough for context
                             if len(args) > 500:
                                 args = args[:400] + "..."
                             tc_parts.append(f"  {name}({args})")
@@ -313,7 +291,6 @@ class ContextCompressor:
                 parts.append(f"[ASSISTANT]: {content}")
                 continue
 
-            # User and other roles
             if len(content) > 3000:
                 content = content[:2000] + "\n...[truncated]...\n" + content[-800:]
             parts.append(f"[{role.upper()}]: {content}")
@@ -343,7 +320,6 @@ class ContextCompressor:
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
         if self._previous_summary:
-            # Iterative update: preserve existing info, add new progress
             prompt = f"""You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
@@ -384,7 +360,6 @@ Target ~{summary_budget} tokens. Be specific — include file paths, command out
 
 Write only the summary body. Do not include any preamble or prefix."""
         else:
-            # First compaction: summarize from scratch
             prompt = f"""Create a structured handoff summary for a later assistant that will continue this conversation after earlier turns are compacted.
 
 TURNS TO SUMMARIZE:
@@ -427,17 +402,14 @@ Write only the summary body. Do not include any preamble or prefix."""
                 "task": "compression",
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": summary_budget * 2,
-                # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
             response = call_llm(**call_kwargs)
             content = response.choices[0].message.content
-            # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
             summary = content.strip()
-            # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
             return self._with_summary_prefix(summary)
@@ -468,9 +440,6 @@ Write only the summary body. Do not include any preamble or prefix."""
                 break
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
-    # ------------------------------------------------------------------
-    # Tool-call / tool-result pair integrity helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _get_tool_call_id(tc) -> str:
@@ -508,7 +477,6 @@ Write only the summary body. Do not include any preamble or prefix."""
                 if cid:
                     result_call_ids.add(cid)
 
-        # 1. Remove tool results whose call_id has no matching assistant tool_call
         orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
             messages = [
@@ -518,7 +486,6 @@ Write only the summary body. Do not include any preamble or prefix."""
             if not self.quiet_mode:
                 logger.info("Compression sanitizer: removed %d orphaned tool result(s)", len(orphaned_results))
 
-        # 2. Add stub results for assistant tool_calls whose results were dropped
         missing_results = surviving_call_ids - result_call_ids
         if missing_results:
             patched: List[Dict[str, Any]] = []
@@ -563,19 +530,13 @@ Write only the summary body. Do not include any preamble or prefix."""
         """
         if idx <= 0 or idx >= len(messages):
             return idx
-        # Walk backward past consecutive tool results
         check = idx - 1
         while check >= 0 and messages[check].get("role") == "tool":
             check -= 1
-        # If we landed on the parent assistant with tool_calls, pull the
-        # boundary before it so the whole group gets summarised together.
         if check >= 0 and messages[check].get("role") == "assistant" and messages[check].get("tool_calls"):
             idx = check
         return idx
 
-    # ------------------------------------------------------------------
-    # Tail protection by token budget
-    # ------------------------------------------------------------------
 
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
@@ -596,13 +557,12 @@ Write only the summary body. Do not include any preamble or prefix."""
         n = len(messages)
         min_tail = self.protect_last_n
         accumulated = 0
-        cut_idx = n  # start from beyond the end
+        cut_idx = n
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             content = msg.get("content") or ""
-            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
+            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
@@ -612,25 +572,17 @@ Write only the summary body. Do not include any preamble or prefix."""
             accumulated += msg_tokens
             cut_idx = i
 
-        # Ensure we protect at least protect_last_n messages
         fallback_cut = n - min_tail
         if cut_idx > fallback_cut:
             cut_idx = fallback_cut
 
-        # If the token budget would protect everything (small conversations),
-        # fall back to the fixed protect_last_n approach so compression can
-        # still remove middle turns.
         if cut_idx <= head_end:
             cut_idx = fallback_cut
 
-        # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
 
         return max(cut_idx, head_end + 1)
 
-    # ------------------------------------------------------------------
-    # Main compression entry point
-    # ------------------------------------------------------------------
 
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
@@ -657,18 +609,15 @@ Write only the summary body. Do not include any preamble or prefix."""
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
 
-        # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n * 3,
         )
         if pruned_count and not self.quiet_mode:
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
-        # Phase 2: Determine boundaries
         compress_start = self.protect_first_n
         compress_start = self._align_boundary_forward(messages, compress_start)
 
-        # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
@@ -698,10 +647,8 @@ Write only the summary body. Do not include any preamble or prefix."""
                 tail_msgs,
             )
 
-        # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize)
 
-        # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
             msg = messages[i].copy()
@@ -716,23 +663,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         if summary:
             last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
             first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
-            # Pick a role that avoids consecutive same-role with both neighbors.
-            # Priority: avoid colliding with head (already committed), then tail.
             if last_head_role in ("assistant", "tool"):
                 summary_role = "user"
             else:
                 summary_role = "assistant"
-            # If the chosen role collides with the tail AND flipping wouldn't
-            # collide with the head, flip it.
             if summary_role == first_tail_role:
                 flipped = "assistant" if summary_role == "user" else "user"
                 if flipped != last_head_role:
                     summary_role = flipped
                 else:
-                    # Both roles would create consecutive same-role messages
-                    # (e.g. head=assistant, tail=user — neither role works).
-                    # Merge the summary into the first tail message instead
-                    # of inserting a standalone message that breaks alternation.
                     _merge_summary_into_tail = True
             if not _merge_summary_into_tail:
                 compressed.append({"role": summary_role, "content": summary})

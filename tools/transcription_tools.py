@@ -41,9 +41,6 @@ from daedalus_constants import get_daedalus_home
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Optional imports — graceful degradation
-# ---------------------------------------------------------------------------
 
 import importlib.util as _ilu
 
@@ -59,9 +56,6 @@ _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
@@ -78,19 +72,14 @@ OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
-MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
+MAX_FILE_SIZE = 25 * 1024 * 1024
 
-# Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
-# Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
 _local_model_name: Optional[str] = None
 
-# ---------------------------------------------------------------------------
-# Config helpers
-# ---------------------------------------------------------------------------
 
 
 def get_stt_model_from_config() -> Optional[str]:
@@ -188,7 +177,6 @@ def _get_provider(stt_config: dict) -> str:
     explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
 
-    # --- Explicit provider: respect the user's choice ----------------------
 
     if explicit:
         if provider == "local":
@@ -238,9 +226,8 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
-        return provider  # Unknown — let it fail downstream
+        return provider
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -257,9 +244,6 @@ def _get_provider(stt_config: dict) -> str:
         return "mistral"
     return "none"
 
-# ---------------------------------------------------------------------------
-# Shared validation
-# ---------------------------------------------------------------------------
 
 
 def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
@@ -289,9 +273,6 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 
     return None
 
-# ---------------------------------------------------------------------------
-# Provider: local (faster-whisper)
-# ---------------------------------------------------------------------------
 
 
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
@@ -303,13 +284,11 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
     try:
         from faster_whisper import WhisperModel
-        # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
             _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
             _local_model_name = model_name
 
-        # Language: config.yaml (stt.local.language) > env var > auto-detect.
         _forced_lang = (
             _load_stt_config().get("local", {}).get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
@@ -368,7 +347,6 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             ),
         }
 
-    # Language: config.yaml (stt.local.language) > env var > "en" default.
     language = (
         _load_stt_config().get("local", {}).get("language")
         or os.getenv(LOCAL_STT_LANGUAGE_ENV)
@@ -421,9 +399,6 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
         logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
 
-# ---------------------------------------------------------------------------
-# Provider: groq (Whisper API — free tier)
-# ---------------------------------------------------------------------------
 
 
 def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
@@ -435,7 +410,6 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
 
-    # Auto-correct model if caller passed an OpenAI-only model
     if model_name in OPENAI_MODELS:
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
@@ -473,9 +447,6 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.error("Groq transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
-# ---------------------------------------------------------------------------
-# Provider: openai (Whisper API)
-# ---------------------------------------------------------------------------
 
 
 def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
@@ -492,7 +463,6 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
     if not _HAS_OPENAI:
         return {"success": False, "transcript": "", "error": "openai package not installed"}
 
-    # Auto-correct model if caller passed a Groq-only model
     if model_name in GROQ_MODELS:
         logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
         model_name = DEFAULT_STT_MODEL
@@ -530,9 +500,6 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.error("OpenAI transcription failed: %s", e, exc_info=True)
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
-# ---------------------------------------------------------------------------
-# Provider: mistral (Voxtral Transcribe API)
-# ---------------------------------------------------------------------------
 
 
 def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
@@ -569,9 +536,6 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Mistral transcription failed: {type(e).__name__}"}
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
@@ -593,12 +557,10 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
           - "error" (str, optional): Error message if success is False
           - "provider" (str, optional): Which provider was used
     """
-    # Validate input
     error = _validate_audio_file(file_path)
     if error:
         return error
 
-    # Load config and determine provider
     stt_config = _load_stt_config()
     if not is_stt_enabled(stt_config):
         return {
@@ -635,7 +597,6 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
-    # No provider available
     return {
         "success": False,
         "transcript": "",

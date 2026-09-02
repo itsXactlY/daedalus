@@ -154,5 +154,4 @@ async def test_hook_error_does_not_break_reset(mock_invoke_hook):
 
     result = await runner._handle_reset_command(_make_event("/new"))
 
-    # Should still return a success message despite hook errors
     assert "Session reset" in result or "New session" in result

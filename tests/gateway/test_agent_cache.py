@@ -92,8 +92,6 @@ class TestAgentConfigSignature:
         from gateway.run import GatewayRunner
 
         runtime = {"api_key": "sk-test12345678", "base_url": "https://openrouter.ai/api/v1", "provider": "openrouter"}
-        # Same config — signature should be identical regardless of what
-        # reasoning_config the caller might have (it's not passed in)
         sig1 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["daedalus-telegram"], "")
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["daedalus-telegram"], "")
         assert sig1 == sig2
@@ -112,7 +110,6 @@ class TestAgentCacheLifecycle:
                     "provider": "openrouter", "api_mode": "chat_completions"}
         sig = runner._agent_config_signature("anthropic/claude-sonnet-4", runtime, ["daedalus-telegram"], "")
 
-        # First message — create and cache
         agent1 = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
             base_url="https://openrouter.ai/api/v1", provider="openrouter",
@@ -122,12 +119,11 @@ class TestAgentCacheLifecycle:
         with runner._agent_cache_lock:
             runner._agent_cache[session_key] = (agent1, sig)
 
-        # Second message — cache hit
         with runner._agent_cache_lock:
             cached = runner._agent_cache.get(session_key)
         assert cached is not None
         assert cached[1] == sig
-        assert cached[0] is agent1  # same instance
+        assert cached[0] is agent1
 
     def test_cache_miss_on_model_change(self):
         """Model change produces different signature → cache miss."""
@@ -148,13 +144,12 @@ class TestAgentCacheLifecycle:
         with runner._agent_cache_lock:
             runner._agent_cache[session_key] = (agent1, old_sig)
 
-        # New model → different signature
         new_sig = runner._agent_config_signature("anthropic/claude-opus-4.6", runtime, ["daedalus-telegram"], "")
         assert new_sig != old_sig
 
         with runner._agent_cache_lock:
             cached = runner._agent_cache.get(session_key)
-        assert cached[1] != new_sig  # signature mismatch → would create new agent
+        assert cached[1] != new_sig
 
     def test_evict_on_session_reset(self):
         """_evict_cached_agent removes the entry."""
@@ -202,16 +197,14 @@ class TestAgentCacheLifecycle:
             reasoning_config={"enabled": True, "effort": "medium"},
         )
 
-        # Simulate per-message reasoning update
         agent.reasoning_config = {"enabled": True, "effort": "high"}
         assert agent.reasoning_config["effort"] == "high"
 
-        # System prompt should not be affected by reasoning change
         prompt1 = agent._build_system_prompt()
-        agent._cached_system_prompt = prompt1  # simulate run_conversation caching
+        agent._cached_system_prompt = prompt1
         agent.reasoning_config = {"enabled": True, "effort": "low"}
         prompt2 = agent._cached_system_prompt
-        assert prompt1 is prompt2  # same object — not invalidated by reasoning change
+        assert prompt1 is prompt2
 
     def test_system_prompt_frozen_across_cache_reuse(self):
         """The cached agent's system prompt stays identical across turns."""
@@ -224,13 +217,11 @@ class TestAgentCacheLifecycle:
             skip_memory=True, platform="telegram",
         )
 
-        # Build system prompt (simulates first run_conversation)
         prompt1 = agent._build_system_prompt()
         agent._cached_system_prompt = prompt1
 
-        # Simulate second turn — prompt should be frozen
         prompt2 = agent._cached_system_prompt
-        assert prompt1 is prompt2  # same object, not rebuilt
+        assert prompt1 is prompt2
 
     def test_callbacks_update_without_cache_eviction(self):
         """Per-message callbacks can be set on cached agent."""
@@ -243,7 +234,6 @@ class TestAgentCacheLifecycle:
             skip_memory=True,
         )
 
-        # Set callbacks like the gateway does per-message
         cb1 = lambda *a: None
         cb2 = lambda *a: None
         agent.tool_progress_callback = cb1
@@ -254,7 +244,6 @@ class TestAgentCacheLifecycle:
         assert agent.tool_progress_callback is cb1
         assert agent.step_callback is cb2
 
-        # Update for next message
         cb3 = lambda *a: None
         agent.tool_progress_callback = cb3
         assert agent.tool_progress_callback is cb3

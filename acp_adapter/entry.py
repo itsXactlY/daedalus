@@ -34,7 +34,6 @@ def _setup_logging() -> None:
     root.addHandler(handler)
     root.setLevel(logging.INFO)
 
-    # Quiet down noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
@@ -63,7 +62,6 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting daedalus ACP adapter")
 
-    # Ensure the project root is on sys.path so ``from run_agent import AIAgent`` works
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)

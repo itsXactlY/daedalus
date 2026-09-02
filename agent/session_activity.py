@@ -18,14 +18,6 @@ from typing import Any, Mapping, Optional
 
 ACTIVITY_DESCRIPTION_MAX = 120
 
-# Durable SessionDB activity heartbeat cadence (seconds between writes per
-# session). Contract: MUST stay >= 30s — the SessionDB write path is
-# contended (deadline/patience retry, compression-lock patience), and the
-# heartbeat is an observation-only projection that never justifies extra
-# write pressure. This cadence is deliberately a code constant, independent
-# of any compression.* or agent.* config, so no configuration can turn the
-# heartbeat into a high-frequency writer. Matches the kanban auto-heartbeat
-# cadence. force_persist (terminal stamps) is the only bypass.
 SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS = 60.0
 
 
@@ -33,7 +25,6 @@ class ActivityProvenance(str, Enum):
     """Where a durable/in-memory activity stamp came from."""
 
     UNKNOWN = "unknown"
-    # Compression writers (#72424 / activity contract): heartbeat, host timeout, cooldown.
     AGENT_COMPRESSION = "agent.compression"
     AGENT_COMPRESSION_TIMEOUT = "agent.compression_timeout"
     AGENT_COMPRESSION_COOLDOWN = "agent.compression_cooldown"
@@ -95,7 +86,6 @@ def build_activity_snapshot(
         "last_activity_description": desc,
         "last_activity_provenance": prov.value,
         "seconds_since_activity": elapsed,
-        # Short aliases used by existing gateway/delegate readers.
         "last_activity_ts": when,
         "last_activity_desc": desc,
         "description": desc,

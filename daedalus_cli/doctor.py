@@ -14,9 +14,8 @@ from daedalus_constants import display_daedalus_home
 
 PROJECT_ROOT = get_project_root()
 DAEDALUS_HOME = get_daedalus_home()
-_DHH = display_daedalus_home()  # user-facing display path (e.g. ~/.daedalus or ~/.daedalus/profiles/coder)
+_DHH = display_daedalus_home()
 
-# Load environment variables from ~/.daedalus/.env so API key checks work
 from dotenv import load_dotenv
 _env_path = get_env_path()
 if _env_path.exists():
@@ -24,7 +23,6 @@ if _env_path.exists():
         load_dotenv(_env_path, encoding="utf-8")
     except UnicodeDecodeError:
         load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as dev fallback
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from daedalus_cli.colors import Colors, color
@@ -66,10 +64,6 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
 
 _SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
 
-# Minimal, self-contained list of Daedalus-managed SQLite databases this fork
-# actually creates. Upstream derives this from daedalus_cli.backup's
-# _QUICK_STATE_FILES, which does not exist in this fork -- kept deliberately
-# small (only files this codebase writes) rather than porting that module.
 _DAEDALUS_DB_FILENAMES = (
     "state.db",
     "gateway/discord_message_recovery.db",
@@ -207,9 +201,6 @@ def check_certificates(should_fix: bool = False, issues: list = None) -> None:
             )
         return
 
-    # --fix: force-reinstall certifi into the running interpreter's env and
-    # re-verify. importlib caches are invalidated so certifi.where() resolves
-    # the fresh install without a process restart.
     check_fail("SSL CA certificate bundle is broken", first_error)
     print("    \u2192 Repairing: force-reinstalling certifi...")
     try:
@@ -238,7 +229,6 @@ def check_certificates(should_fix: bool = False, issues: list = None) -> None:
             )
         return
 
-    # Drop any cached certifi module so where() re-resolves the new bundle.
     import importlib
     for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
         sys.modules.pop(mod_name, None)
@@ -295,13 +285,8 @@ def run_doctor(args):
     should_fix = getattr(args, 'fix', False)
     ack_target = getattr(args, 'ack', None)
 
-    # Doctor runs from the interactive CLI, so CLI-gated tool availability
-    # checks (like cronjob management) should see the same context as `daedalus`.
     os.environ.setdefault("DAEDALUS_INTERACTIVE", "1")
 
-    # Handle `daedalus doctor --ack <id>` as a fast path. Persist the ack and
-    # return without running the rest of the diagnostics — the user has
-    # already seen the advisory and just wants to silence it.
     if ack_target:
         from daedalus_cli.security_advisories import (
             ADVISORIES,
@@ -331,7 +316,7 @@ def run_doctor(args):
         return
 
     issues = []
-    manual_issues = []  # issues that can't be auto-fixed
+    manual_issues = []
     fixed_count = 0
     
     print()
@@ -339,9 +324,6 @@ def run_doctor(args):
     print(color("│                 🩺 Daedalus Doctor                        │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
     
-    # =========================================================================
-    # Check: Python version
-    # =========================================================================
     print()
     print(color("◆ Python Environment", Colors.CYAN, Colors.BOLD))
     
@@ -357,16 +339,12 @@ def run_doctor(args):
         check_fail(f"Python {py_version.major}.{py_version.minor}.{py_version.micro}", "(3.10+ required)")
         issues.append("Upgrade Python to 3.10+")
     
-    # Check if in virtual environment
     in_venv = sys.prefix != sys.base_prefix
     if in_venv:
         check_ok("Virtual environment active")
     else:
         check_warn("Not in virtual environment", "(recommended)")
     
-    # =========================================================================
-    # Check: Required packages
-    # =========================================================================
     print()
     print(color("◆ Required Packages", Colors.CYAN, Colors.BOLD))
     
@@ -399,18 +377,13 @@ def run_doctor(args):
         except ImportError:
             check_warn(name, "(optional, not installed)")
     
-    # =========================================================================
-    # Check: Configuration files
-    # =========================================================================
     print()
     print(color("◆ Configuration Files", Colors.CYAN, Colors.BOLD))
     
-    # Check ~/.daedalus/.env (primary location for user config)
     env_path = DAEDALUS_HOME / '.env'
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
         
-        # Check for common issues
         content = env_path.read_text()
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
@@ -418,7 +391,6 @@ def run_doctor(args):
             check_warn(f"No API key found in {_DHH}/.env")
             issues.append("Run 'daedalus setup' to configure API keys")
     else:
-        # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'
         if fallback_env.exists():
             check_ok(".env file exists (in project directory)")
@@ -434,7 +406,6 @@ def run_doctor(args):
                 check_info("Run 'daedalus setup' to create one")
                 issues.append("Run 'daedalus setup' to create .env")
     
-    # Check ~/.daedalus/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = DAEDALUS_HOME / 'config.yaml'
     if config_path.exists():
         check_ok(f"{_DHH}/config.yaml exists")
@@ -455,7 +426,6 @@ def run_doctor(args):
             else:
                 check_warn("config.yaml not found", "(using defaults)")
 
-    # Check config version and stale keys
     config_path = DAEDALUS_HOME / 'config.yaml'
     if config_path.exists():
         try:
@@ -481,7 +451,6 @@ def run_doctor(args):
         except Exception:
             pass
 
-        # Detect stale root-level model keys (known bug source — PR #4329)
         try:
             import yaml
             with open(config_path) as f:
@@ -508,7 +477,6 @@ def run_doctor(args):
         except Exception:
             pass
 
-        # Validate config structure (catches malformed custom_providers, etc.)
         try:
             from daedalus_cli.config import validate_config_structure
             config_issues = validate_config_structure()
@@ -520,16 +488,12 @@ def run_doctor(args):
                         check_fail(ci.message)
                     else:
                         check_warn(ci.message)
-                    # Show the hint indented
                     for hint_line in ci.hint.splitlines():
                         check_info(hint_line)
                     issues.append(ci.message)
         except Exception:
             pass
 
-    # =========================================================================
-    # Check: Auth providers
-    # =========================================================================
     print()
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
@@ -557,9 +521,6 @@ def run_doctor(args):
     else:
         check_warn("codex CLI not found", "(required for openai-codex login)")
 
-    # =========================================================================
-    # Check: Directory structure
-    # =========================================================================
     print()
     print(color("◆ Directory Structure", Colors.CYAN, Colors.BOLD))
     
@@ -574,7 +535,6 @@ def run_doctor(args):
         else:
             check_warn(f"{_DHH} not found", "(will be created on first use)")
     
-    # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
     for subdir_name in expected_subdirs:
         subdir_path = daedalus_home / subdir_name
@@ -588,11 +548,9 @@ def run_doctor(args):
             else:
                 check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
-    # Check for SOUL.md persona file
     soul_path = daedalus_home / "SOUL.md"
     if soul_path.exists():
         content = soul_path.read_text(encoding="utf-8").strip()
-        # Check if it's just the template comments (no real content)
         lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith(("<!--", "-->", "#"))]
         if lines:
             check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
@@ -611,7 +569,6 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
-    # Check memory directory
     memories_dir = daedalus_home / "memories"
     if memories_dir.exists():
         check_ok(f"{_DHH}/memories/ directory exists")
@@ -634,7 +591,6 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/memories/")
             fixed_count += 1
     
-    # Check SQLite session store
     state_db_path = daedalus_home / "state.db"
     if state_db_path.exists():
         try:
@@ -649,12 +605,11 @@ def run_doctor(args):
     else:
         check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
 
-    # Check WAL file size (unbounded growth indicates missed checkpoints)
     wal_path = daedalus_home / "state.db-wal"
     if wal_path.exists():
         try:
             wal_size = wal_path.stat().st_size
-            if wal_size > 50 * 1024 * 1024:  # 50 MB
+            if wal_size > 50 * 1024 * 1024:
                 check_warn(
                     f"WAL file is large ({wal_size // (1024*1024)} MB)",
                     "(may indicate missed checkpoints)"
@@ -669,14 +624,11 @@ def run_doctor(args):
                     fixed_count += 1
                 else:
                     issues.append("Large WAL file — run 'daedalus doctor --fix' to checkpoint")
-            elif wal_size > 10 * 1024 * 1024:  # 10 MB
+            elif wal_size > 10 * 1024 * 1024:
                 check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
         except Exception:
             pass
 
-    # Check SQLite journal modes against the WAL-reset corruption bug
-    # (https://sqlite.org/wal.html#walresetbug) -- daedalus_state.py's runtime
-    # warning for this points users at "daedalus doctor"; this is that check.
     try:
         _report_database_journal_modes(daedalus_home)
     except Exception as e:
@@ -684,31 +636,24 @@ def run_doctor(args):
 
     _check_gateway_service_linger(issues)
     
-    # =========================================================================
-    # Check: External tools
-    # =========================================================================
     print()
     print(color("◆ External Tools", Colors.CYAN, Colors.BOLD))
     
-    # Git
     if shutil.which("git"):
         check_ok("git")
     else:
         check_warn("git not found", "(optional)")
     
-    # ripgrep (optional, for faster file search)
     if shutil.which("rg"):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
         check_info("Install for faster search: sudo apt install ripgrep")
     
-    # SSH (if using ssh backend)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST")
         if ssh_host:
-            # Try to connect
             try:
                 result = subprocess.run(
                     ["ssh", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes", ssh_host, "echo ok"],
@@ -727,7 +672,6 @@ def run_doctor(args):
             check_fail("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)")
             issues.append("Set TERMINAL_SSH_HOST in .env")
     
-    # Daytona (if using daytona backend)
     if terminal_env == "daytona":
         daytona_key = os.getenv("DAYTONA_API_KEY")
         if daytona_key:
@@ -742,10 +686,8 @@ def run_doctor(args):
             check_fail("daytona SDK not installed", "(pip install daytona)")
             issues.append("Install daytona SDK: pip install daytona")
 
-    # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):
         check_ok("Node.js")
-        # Check if agent-browser is installed
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
@@ -754,7 +696,6 @@ def run_doctor(args):
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
     
-    # npm audit for all Node.js packages
     if shutil.which("npm"):
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
@@ -789,9 +730,6 @@ def run_doctor(args):
             except Exception:
                 pass
 
-    # =========================================================================
-    # Check: API connectivity
-    # =========================================================================
     print()
     print(color("◆ API Connectivity", Colors.CYAN, Colors.BOLD))
     
@@ -846,16 +784,12 @@ def run_doctor(args):
         except Exception as e:
             print(f"\r  {color('⚠', Colors.YELLOW)} Anthropic API {color(f'({e})', Colors.DIM)}                 ")
 
-    # -- API-key providers --
-    # Tuple: (name, env_vars, default_url, base_env, supports_models_endpoint)
-    # If supports_models_endpoint is False, we skip the health check and just show "configured"
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
-        # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/daedalus/issues/811
         ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
         ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
         ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
@@ -871,7 +805,6 @@ def run_doctor(args):
                 break
         if _key:
             _label = _pname.ljust(20)
-            # Some providers (like MiniMax) don't support /models endpoint
             if not _supports_health_check:
                 print(f"  {color('✓', Colors.GREEN)} {_label} {color('(key configured)', Colors.DIM)}")
                 continue
@@ -879,7 +812,6 @@ def run_doctor(args):
             try:
                 import httpx
                 _base = os.getenv(_base_env, "")
-                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
@@ -901,13 +833,9 @@ def run_doctor(args):
             except Exception as _e:
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
 
-    # =========================================================================
-    # Check: Submodules
-    # =========================================================================
     print()
     print(color("◆ Submodules", Colors.CYAN, Colors.BOLD))
     
-    # tinker-atropos (RL training backend)
     tinker_dir = PROJECT_ROOT / "tinker-atropos"
     if tinker_dir.exists() and (tinker_dir / "pyproject.toml").exists():
         if py_version >= (3, 11):
@@ -922,14 +850,10 @@ def run_doctor(args):
     else:
         check_warn("tinker-atropos not found", "(run: git submodule update --init --recursive)")
     
-    # =========================================================================
-    # Check: Tool Availability
-    # =========================================================================
     print()
     print(color("◆ Tool Availability", Colors.CYAN, Colors.BOLD))
     
     try:
-        # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
         
@@ -948,16 +872,12 @@ def run_doctor(args):
             else:
                 check_warn(item["name"], "(system dependency not met)")
 
-        # Count disabled tools with API key requirements
         api_disabled = [u for u in unavailable if (u.get("missing_vars") or u.get("env_vars"))]
         if api_disabled:
             issues.append("Run 'daedalus setup' to configure missing API keys for full tool access")
     except Exception as e:
         check_warn("Could not check tool availability", f"({e})")
     
-    # =========================================================================
-    # Check: Skills Hub
-    # =========================================================================
     print()
     print(color("◆ Skills Hub", Colors.CYAN, Colors.BOLD))
 
@@ -987,9 +907,6 @@ def run_doctor(args):
     else:
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
-    # =========================================================================
-    # Memory Provider (only check the active provider, if any)
-    # =========================================================================
     print()
     print(color("◆ Memory Provider", Colors.CYAN, Colors.BOLD))
 
@@ -1007,7 +924,6 @@ def run_doctor(args):
     if not _active_memory_provider:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
     else:
-        # Generic check for the configured provider (builtin is always available)
         try:
             from plugins.memory import load_memory_provider
             _provider = load_memory_provider(_active_memory_provider)
@@ -1022,9 +938,6 @@ def run_doctor(args):
         except Exception as _e:
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
-    # =========================================================================
-    # Profiles
-    # =========================================================================
     try:
         from daedalus_cli.profiles import list_profiles, _get_wrapper_dir, profile_exists
         import re as _re
@@ -1051,7 +964,6 @@ def run_doctor(args):
                 status = ", ".join(parts) if parts else "configured"
                 check_ok(f"  {p.name}: {status}")
 
-            # Check for orphan wrappers
             if wrapper_dir.is_dir():
                 for wrapper in wrapper_dir.iterdir():
                     if not wrapper.is_file():
@@ -1069,9 +981,6 @@ def run_doctor(args):
     except Exception:
         pass
 
-    # =========================================================================
-    # Security Advisories
-    # =========================================================================
     print()
     print(color("◆ Security Advisories", Colors.CYAN, Colors.BOLD))
     try:
@@ -1089,23 +998,17 @@ def run_doctor(args):
                     f"{hit.advisory.title}",
                     f"({hit.package}=={hit.installed_version})",
                 )
-                # Print the full remediation block, indented under the
-                # check_fail header so it reads as a single section.
                 for line in full_remediation_text(hit):
                     if line:
                         print(f"    {color(line, Colors.YELLOW)}")
                     else:
                         print()
-                # Funnel into the action list so the summary block surfaces it
-                # for users who scroll past the section.
                 manual_issues.append(
                     f"Resolve security advisory {hit.advisory.id}: "
                     f"uninstall {hit.package}=={hit.installed_version} and "
                     f"rotate credentials, then run "
                     f"`daedalus doctor --ack {hit.advisory.id}`."
                 )
-            # Acked-but-still-installed: show as informational so the user
-            # knows the package is still on disk after the ack.
             acked_ids = get_acked_ids()
             for h in all_hits:
                 if h.advisory.id in acked_ids:
@@ -1116,12 +1019,8 @@ def run_doctor(args):
         else:
             check_ok("No active security advisories")
     except Exception as e:
-        # Never let a bug in the advisory check block the rest of doctor.
         check_warn("Security advisory check failed", f"({e})")
 
-    # =========================================================================
-    # Check: SSL/TLS CA certificate bundle
-    # =========================================================================
     print()
     print(color("◆ SSL Certificates", Colors.CYAN, Colors.BOLD))
     try:
@@ -1129,9 +1028,6 @@ def run_doctor(args):
     except Exception as e:
         check_warn("SSL certificate check failed", f"({e})")
 
-    # =========================================================================
-    # Summary
-    # =========================================================================
     print()
     remaining_issues = issues + manual_issues
     if should_fix and fixed_count > 0:

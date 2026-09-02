@@ -651,7 +651,7 @@ class TestNormalizationBypass:
 
     def test_fullwidth_unicode_rm(self):
         """Fullwidth Unicode 'ｒｍ -ｒｆ /' must be caught after NFKC normalization."""
-        cmd = "\uff52\uff4d -\uff52\uff46 /"  # ｒｍ -ｒｆ /
+        cmd = "\uff52\uff4d -\uff52\uff46 /"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True, f"Fullwidth 'rm -rf /' was not detected: {cmd!r}"
 

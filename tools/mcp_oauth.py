@@ -48,9 +48,6 @@ from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Lazy imports -- MCP SDK with OAuth support is optional
-# ---------------------------------------------------------------------------
 
 _OAUTH_AVAILABLE = False
 try:
@@ -67,27 +64,16 @@ except ImportError:
     logger.debug("MCP OAuth types not available -- OAuth MCP auth disabled")
 
 
-# ---------------------------------------------------------------------------
-# Exceptions
-# ---------------------------------------------------------------------------
 
 
 class OAuthNonInteractiveError(RuntimeError):
     """Raised when OAuth requires browser interaction in a non-interactive env."""
 
 
-# ---------------------------------------------------------------------------
-# Module-level state
-# ---------------------------------------------------------------------------
 
-# Port used by the most recent build_oauth_auth() call.  Exposed so that
-# tests can verify the callback server and the redirect_uri share a port.
 _oauth_port: int | None = None
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _get_token_dir() -> Path:
@@ -126,10 +112,8 @@ def _is_interactive() -> bool:
 
 def _can_open_browser() -> bool:
     """Return True if opening a browser is likely to work."""
-    # Explicit SSH session → no local display
     if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
         return False
-    # macOS and Windows usually have a display
     if os.name == "nt":
         return True
     try:
@@ -137,7 +121,6 @@ def _can_open_browser() -> bool:
             return True
     except AttributeError:
         pass
-    # Linux/other posix: need DISPLAY or WAYLAND_DISPLAY
     if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"):
         return True
     return False
@@ -167,9 +150,6 @@ def _write_json(path: Path, data: dict) -> None:
         raise
 
 
-# ---------------------------------------------------------------------------
-# DaedalusTokenStorage -- persistent token/client-info on disk
-# ---------------------------------------------------------------------------
 
 
 class DaedalusTokenStorage:
@@ -190,7 +170,6 @@ class DaedalusTokenStorage:
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
 
-    # -- tokens ------------------------------------------------------------
 
     async def get_tokens(self) -> "OAuthToken | None":
         data = _read_json(self._tokens_path())
@@ -206,7 +185,6 @@ class DaedalusTokenStorage:
         _write_json(self._tokens_path(), tokens.model_dump(exclude_none=True))
         logger.debug("OAuth tokens saved for %s", self._server_name)
 
-    # -- client info -------------------------------------------------------
 
     async def get_client_info(self) -> "OAuthClientInformationFull | None":
         data = _read_json(self._client_info_path())
@@ -222,7 +200,6 @@ class DaedalusTokenStorage:
         _write_json(self._client_info_path(), client_info.model_dump(exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
-    # -- cleanup -----------------------------------------------------------
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
@@ -234,9 +211,6 @@ class DaedalusTokenStorage:
         return self._tokens_path().exists()
 
 
-# ---------------------------------------------------------------------------
-# Callback handler factory -- each invocation gets its own result dict
-# ---------------------------------------------------------------------------
 
 
 def _make_callback_handler() -> tuple[type, dict]:
@@ -278,9 +252,6 @@ def _make_callback_handler() -> tuple[type, dict]:
     return _Handler, result
 
 
-# ---------------------------------------------------------------------------
-# Async redirect + callback handlers for OAuthClientProvider
-# ---------------------------------------------------------------------------
 
 
 async def _redirect_handler(authorization_url: str) -> None:
@@ -322,16 +293,11 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     """
     assert _oauth_port is not None, "OAuth callback port not set"
 
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
     handler_cls, result = _make_callback_handler()
 
-    # Start a temporary server on the known port
     try:
         server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
     except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
         raise OAuthNonInteractiveError(
             "OAuth callback timed out — could not bind callback port. "
             "Complete the authorization in a browser first, then retry."
@@ -362,9 +328,6 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     return result["auth_code"], result["state"]
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 
 def remove_oauth_tokens(server_name: str) -> None:
@@ -404,10 +367,8 @@ def build_oauth_auth(
 
     cfg = oauth_config or {}
 
-    # --- Storage ---
     storage = DaedalusTokenStorage(server_name)
 
-    # --- Non-interactive warning ---
     if not _is_interactive() and not storage.has_cached_tokens():
         logger.warning(
             "MCP OAuth for '%s': non-interactive environment and no cached tokens found. "
@@ -416,13 +377,11 @@ def build_oauth_auth(
             server_name,
         )
 
-    # --- Pick callback port ---
     redirect_port = int(cfg.get("redirect_port", 0))
     if redirect_port == 0:
         redirect_port = _find_free_port()
     _oauth_port = redirect_port
 
-    # --- Client metadata ---
     client_name = cfg.get("client_name", "Daedalus Agent")
     scope = cfg.get("scope")
     redirect_uri = f"http://127.0.0.1:{redirect_port}/callback"
@@ -443,7 +402,6 @@ def build_oauth_auth(
 
     client_metadata = OAuthClientMetadata.model_validate(metadata_kwargs)
 
-    # --- Pre-registered client ---
     client_id = cfg.get("client_id")
     if client_id:
         info_dict: dict[str, Any] = {
@@ -464,11 +422,9 @@ def build_oauth_auth(
         _write_json(storage._client_info_path(), client_info.model_dump(exclude_none=True))
         logger.debug("Pre-registered client_id=%s for '%s'", client_id, server_name)
 
-    # --- Base URL for discovery ---
     parsed = urlparse(server_url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-    # --- Build provider ---
     provider = OAuthClientProvider(
         server_url=base_url,
         client_metadata=client_metadata,

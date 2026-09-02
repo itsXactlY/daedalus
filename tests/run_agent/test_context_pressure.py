@@ -17,9 +17,6 @@ from agent.display import format_context_pressure, format_context_pressure_gatew
 from run_agent import AIAgent
 
 
-# ---------------------------------------------------------------------------
-# Display formatting tests
-# ---------------------------------------------------------------------------
 
 
 class TestFormatContextPressure:
@@ -110,9 +107,6 @@ class TestFormatContextPressureGateway:
         assert msg.count("▰") == 20
 
 
-# ---------------------------------------------------------------------------
-# AIAgent context pressure flag tests
-# ---------------------------------------------------------------------------
 
 
 def _make_tool_defs(*names):
@@ -160,7 +154,7 @@ class TestContextPressureFlags:
 
         compressor = MagicMock()
         compressor.context_length = 200_000
-        compressor.threshold_tokens = 100_000  # 50%
+        compressor.threshold_tokens = 100_000
 
         agent._emit_context_pressure(0.85, compressor)
 
@@ -177,7 +171,6 @@ class TestContextPressureFlags:
         compressor.context_length = 200_000
         compressor.threshold_tokens = 100_000
 
-        # Should not raise
         agent._emit_context_pressure(0.60, compressor)
 
     def test_emit_prints_for_cli_platform(self, agent, capsys):
@@ -244,5 +237,4 @@ class TestContextPressureFlags:
         compressor.context_length = 200_000
         compressor.threshold_tokens = 100_000
 
-        # Should not raise
         agent._emit_context_pressure(0.85, compressor)

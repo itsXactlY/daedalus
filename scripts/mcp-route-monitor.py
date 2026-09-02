@@ -41,7 +41,6 @@ def read_enabled_servers():
             in_block = True
             continue
         if in_block:
-            # end of block: next top-level key (no leading space)
             if s and not s.startswith(" "):
                 break
             m = re.match(r"^  ([a-z0-9_-]+):", s)
@@ -79,7 +78,6 @@ def mcp_initialize(url):
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             raw = resp.read().decode()
             dt = (time.monotonic() - t0) * 1000.0
-        # SSE or JSON
         info = {}
         for line in raw.splitlines():
             line = line.strip()
@@ -114,7 +112,6 @@ def owner_of_listener(port):
                                          capture_output=True, text=True, timeout=5).stdout.strip()
                 except Exception:  # noqa: BLE001
                     cmd = "?"
-                # map PID -> container name via podman (exact PID match)
                 cont = "?"
                 try:
                     cp = subprocess.run(["podman", "ps", "--format", "{{.Names}} {{.Pid}}"],

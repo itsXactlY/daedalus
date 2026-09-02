@@ -25,9 +25,6 @@ def _make_store(tmp_path):
         return PairingStore()
 
 
-# ---------------------------------------------------------------------------
-# _secure_write
-# ---------------------------------------------------------------------------
 
 
 class TestSecureWrite:
@@ -44,9 +41,6 @@ class TestSecureWrite:
         assert mode == "0o600"
 
 
-# ---------------------------------------------------------------------------
-# Code generation
-# ---------------------------------------------------------------------------
 
 
 class TestCodeGeneration:
@@ -80,9 +74,6 @@ class TestCodeGeneration:
         assert pending[0]["user_name"] == "Alice"
 
 
-# ---------------------------------------------------------------------------
-# Rate limiting
-# ---------------------------------------------------------------------------
 
 
 class TestRateLimiting:
@@ -92,7 +83,7 @@ class TestRateLimiting:
             code1 = store.generate_code("telegram", "user1")
             code2 = store.generate_code("telegram", "user1")
         assert isinstance(code1, str) and len(code1) == CODE_LENGTH
-        assert code2 is None  # rate limited
+        assert code2 is None
 
     def test_different_users_not_rate_limited(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
@@ -108,7 +99,6 @@ class TestRateLimiting:
             code1 = store.generate_code("telegram", "user1")
             assert isinstance(code1, str) and len(code1) == CODE_LENGTH
 
-            # Simulate rate limit expiry
             limits = store._load_json(store._rate_limit_path())
             limits["telegram:user1"] = time.time() - RATE_LIMIT_SECONDS - 1
             store._save_json(store._rate_limit_path(), limits)
@@ -118,9 +108,6 @@ class TestRateLimiting:
         assert code2 != code1
 
 
-# ---------------------------------------------------------------------------
-# Max pending limit
-# ---------------------------------------------------------------------------
 
 
 class TestMaxPending:
@@ -132,9 +119,7 @@ class TestMaxPending:
                 code = store.generate_code("telegram", f"user{i}")
                 codes.append(code)
 
-        # First MAX_PENDING_PER_PLATFORM should succeed
         assert all(isinstance(c, str) and len(c) == CODE_LENGTH for c in codes[:MAX_PENDING_PER_PLATFORM])
-        # Next one should be blocked
         assert codes[MAX_PENDING_PER_PLATFORM] is None
 
     def test_different_platforms_independent(self, tmp_path):
@@ -142,14 +127,10 @@ class TestMaxPending:
             store = PairingStore()
             for i in range(MAX_PENDING_PER_PLATFORM):
                 store.generate_code("telegram", f"user{i}")
-            # Different platform should still work
             code = store.generate_code("discord", "user0")
         assert isinstance(code, str) and len(code) == CODE_LENGTH
 
 
-# ---------------------------------------------------------------------------
-# Approval flow
-# ---------------------------------------------------------------------------
 
 
 class TestApprovalFlow:
@@ -210,23 +191,17 @@ class TestApprovalFlow:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Lockout after failed attempts
-# ---------------------------------------------------------------------------
 
 
 class TestLockout:
     def test_lockout_after_max_failures(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
-            # Generate a valid code so platform has data
             store.generate_code("telegram", "user1")
 
-            # Exhaust failed attempts
             for _ in range(MAX_FAILED_ATTEMPTS):
                 store.approve_code("telegram", "WRONGCODE")
 
-            # Platform should now be locked out — can't generate new codes
             assert store._is_locked_out("telegram") is True
 
     def test_lockout_blocks_code_generation(self, tmp_path):
@@ -244,18 +219,14 @@ class TestLockout:
             for _ in range(MAX_FAILED_ATTEMPTS):
                 store.approve_code("telegram", "WRONG")
 
-            # Simulate lockout expiry
             limits = store._load_json(store._rate_limit_path())
             lockout_key = "_lockout:telegram"
-            limits[lockout_key] = time.time() - 1  # expired
+            limits[lockout_key] = time.time() - 1
             store._save_json(store._rate_limit_path(), limits)
 
             assert store._is_locked_out("telegram") is False
 
 
-# ---------------------------------------------------------------------------
-# Code expiry
-# ---------------------------------------------------------------------------
 
 
 class TestCodeExpiry:
@@ -264,12 +235,10 @@ class TestCodeExpiry:
             store = PairingStore()
             code = store.generate_code("telegram", "user1")
 
-            # Manually expire the code
             pending = store._load_json(store._pending_path("telegram"))
             pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
             store._save_json(store._pending_path("telegram"), pending)
 
-            # Cleanup happens on next operation
             remaining = store.list_pending("telegram")
         assert len(remaining) == 0
 
@@ -278,7 +247,6 @@ class TestCodeExpiry:
             store = PairingStore()
             code = store.generate_code("telegram", "user1")
 
-            # Expire it
             pending = store._load_json(store._pending_path("telegram"))
             pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
             store._save_json(store._pending_path("telegram"), pending)
@@ -287,9 +255,6 @@ class TestCodeExpiry:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Revoke
-# ---------------------------------------------------------------------------
 
 
 class TestRevoke:
@@ -311,9 +276,6 @@ class TestRevoke:
             assert store.revoke("telegram", "nobody") is False
 
 
-# ---------------------------------------------------------------------------
-# List & clear
-# ---------------------------------------------------------------------------
 
 
 class TestListAndClear:

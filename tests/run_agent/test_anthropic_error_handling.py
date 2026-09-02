@@ -29,9 +29,6 @@ from gateway.config import Platform
 from gateway.session import SessionSource
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _patch_agent_bootstrap(monkeypatch):
@@ -199,9 +196,6 @@ def _run_with_agent(monkeypatch, agent_cls):
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 def test_429_rate_limit_is_retried_and_recovers(monkeypatch):
@@ -226,7 +220,7 @@ def test_429_exhausts_all_retries_before_raising(monkeypatch):
     fallback-provider feature was added (the agent tries a fallback before
     giving up, and returns a result dict either way).
     """
-    agent_cls = _make_agent_cls(_RateLimitError)  # always fails
+    agent_cls = _make_agent_cls(_RateLimitError)
     result = _run_with_agent(monkeypatch, agent_cls)
     resp = str(result.get("final_response", ""))
     assert "429" in resp or "retries" in resp.lower()
@@ -270,7 +264,7 @@ def test_401_credential_refresh_recovers(monkeypatch):
 
         def _try_refresh_anthropic_client_credentials(self) -> bool:
             refresh_count["n"] += 1
-            return True  # Simulate successful credential refresh
+            return True
 
         def run_conversation(self, user_message, conversation_history=None, task_id=None):
             calls = {"n": 0}
@@ -282,8 +276,6 @@ def test_401_credential_refresh_recovers(monkeypatch):
                 return _anthropic_response("Auth refreshed")
 
             self._interruptible_api_call = _fake_api_call
-            # Also patch streaming path — run_conversation now prefers
-            # streaming for health checking even without stream consumers.
             self._interruptible_streaming_api_call = lambda api_kwargs, **kw: _fake_api_call(api_kwargs)
             return super().run_conversation(
                 user_message, conversation_history=conversation_history, task_id=task_id
@@ -351,7 +343,7 @@ def test_401_refresh_fails_is_non_retryable(monkeypatch):
             self._save_session_log = lambda messages: None
 
         def _try_refresh_anthropic_client_credentials(self) -> bool:
-            return False  # Simulate failed credential refresh
+            return False
 
         def run_conversation(self, user_message, conversation_history=None, task_id=None):
             def _fake_api_call(api_kwargs):
@@ -400,7 +392,6 @@ def test_401_refresh_fails_is_non_retryable(monkeypatch):
         )
     )
 
-    # 401 after failed refresh → non-retryable (falls through to is_client_error)
     assert result["api_calls"] == 1
     assert "401" in str(result.get("final_response", "")) or "unauthorized" in str(result.get("final_response", "")).lower()
 
@@ -428,7 +419,6 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
 
         def _compress_context(self, messages, system_message, approx_tokens=0, task_id=None):
             type(self).compress_called += 1
-            # Simulate compression by dropping oldest non-system message
             if len(messages) > 2:
                 compressed = [messages[0]] + messages[2:]
             else:
@@ -492,10 +482,6 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
     assert _PromptTooLongThenSuccessAgent.compress_called >= 1
 
 
-# ---------------------------------------------------------------------------
-# Transient failures that look like local validation errors by isinstance()
-# but are actually retryable provider/network/shape failures.
-# ---------------------------------------------------------------------------
 
 
 class _TransientJSONDecodeError(json.JSONDecodeError):

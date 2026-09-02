@@ -26,9 +26,6 @@ from tools.read_extract import (
 from tools.file_tools import read_file_tool
 
 
-# ---------------------------------------------------------------------------
-# Fixture builders — construct minimal valid OOXML / notebook files.
-# ---------------------------------------------------------------------------
 
 def _write_notebook(path, cells, nbformat=4):
     nb = {"cells": cells, "metadata": {}, "nbformat": nbformat, "nbformat_minor": 5}
@@ -57,9 +54,6 @@ _NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _NS_S = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
 
-# ---------------------------------------------------------------------------
-# is_extractable_document
-# ---------------------------------------------------------------------------
 
 class TestIsExtractable(unittest.TestCase):
     def test_recognized_extensions(self):
@@ -83,9 +77,6 @@ class TestIsExtractable(unittest.TestCase):
         self.assertEqual(is_extractable_document("a.epub"), available)
 
 
-# ---------------------------------------------------------------------------
-# Optional anydoc-backed formats (PDF, legacy Office, ODF, RTF, EPUB)
-# ---------------------------------------------------------------------------
 
 class TestAnydocExtraction(unittest.TestCase):
     """Real-binding tests — skipped when firecrawl-anydoc is not installed."""
@@ -294,8 +285,6 @@ class TestAnydocInitLifecycle(unittest.TestCase):
         with mock.patch("importlib.import_module", side_effect=fake_import):
             self.assertIsNone(self.rex._anydoc())
             self.assertIsNone(self.rex._anydoc())
-        # One import attempt total, and the handle stays UNSET so a retry
-        # remains possible once the cooldown expires.
         self.assertEqual(calls, ["anydoc"])
         self.assertIs(self.rex._anydoc_module, self.rex._ANYDOC_UNSET)
 
@@ -326,9 +315,6 @@ class TestAnydocInitLifecycle(unittest.TestCase):
         self.assertEqual(results, [fake, fake, fake])
 
 
-# ---------------------------------------------------------------------------
-# Notebooks (.ipynb) — #10733
-# ---------------------------------------------------------------------------
 
 class TestNotebookExtraction(unittest.TestCase):
     def setUp(self):
@@ -349,10 +335,8 @@ class TestNotebookExtraction(unittest.TestCase):
         text = extract_document_text(p)
         self.assertIn("# Title", text)
         self.assertIn("print(x)", text)
-        # Output payloads must NOT leak into the extracted text.
         self.assertNotIn("output_type", text)
         self.assertNotIn("execution_count", text)
-        # Order preserved: markdown before code.
         self.assertLess(text.index("Title"), text.index("print(x)"))
 
 
@@ -386,7 +370,7 @@ class TestNotebookExtraction(unittest.TestCase):
         self.assertNotIn("\x1b", text)
 
     def test_image_output_replaced_with_placeholder(self):
-        payload = "A" * 4096  # ~3 KB decoded
+        payload = "A" * 4096
         p = os.path.join(self.tmp, "nb_img.ipynb")
         _write_notebook(p, [
             {"cell_type": "code", "source": "plot()",
@@ -488,9 +472,6 @@ class TestNotebookExtraction(unittest.TestCase):
         self.assertNotIn("Output (cell", text)
 
 
-# ---------------------------------------------------------------------------
-# Word documents (.docx) — #10737
-# ---------------------------------------------------------------------------
 
 class TestDocxExtraction(unittest.TestCase):
     def setUp(self):
@@ -522,9 +503,6 @@ class TestDocxExtraction(unittest.TestCase):
             extract_document_text(p)
 
 
-# ---------------------------------------------------------------------------
-# Excel workbooks (.xlsx) — #10740
-# ---------------------------------------------------------------------------
 
 class TestXlsxExtraction(unittest.TestCase):
     def setUp(self):
@@ -565,9 +543,9 @@ class TestXlsxExtraction(unittest.TestCase):
         p = os.path.join(self.tmp, "wb.xlsx")
         self._build(p)
         text = extract_document_text(p)
-        self.assertIn("Data", text)        # sheet label
-        self.assertIn("Name\tScore", text)  # shared-string header row
-        self.assertIn("Alice\t95", text)    # string + numeric cells
+        self.assertIn("Data", text)
+        self.assertIn("Name\tScore", text)
+        self.assertIn("Alice\t95", text)
 
 
     def test_not_a_zip_raises(self):
@@ -578,9 +556,6 @@ class TestXlsxExtraction(unittest.TestCase):
             extract_document_text(p)
 
 
-# ---------------------------------------------------------------------------
-# read_file_tool integration
-# ---------------------------------------------------------------------------
 
 class TestReadFileToolIntegration(unittest.TestCase):
     def setUp(self):
@@ -598,7 +573,7 @@ class TestReadFileToolIntegration(unittest.TestCase):
         ])
         res = json.loads(read_file_tool(p))
         self.assertTrue(res.get("extracted_document"))
-        self.assertIn("1|", res["content"])  # line-number gutter
+        self.assertIn("1|", res["content"])
         self.assertIn("print(1)", res["content"])
 
 
@@ -607,8 +582,6 @@ class TestReadFileToolIntegration(unittest.TestCase):
         with open(p, "wb") as fh:
             fh.write(b"not a zip")
         res = json.loads(read_file_tool(p))
-        # Should NOT crash; the binary guard fires but surfaces the
-        # specific extraction failure instead of the generic message.
         self.assertIn("error", res)
         self.assertIn("extraction failed", res["error"].lower())
         self.assertIn("docx", res["error"].lower())
@@ -632,7 +605,6 @@ class TestReadFileToolIntegration(unittest.TestCase):
             res = json.loads(read_file_tool(p))
             self.assertIn("error", res)
             self.assertIn("too large", res["error"].lower())
-            # The size hint reaches the agent instead of a generic binary error.
             self.assertNotIn("cannot read binary file", res["error"].lower())
         finally:
             rex.MAX_ANYDOC_BYTES = saved_cap
@@ -645,9 +617,6 @@ class TestReadFileToolIntegration(unittest.TestCase):
 
         saved_module = rex._anydoc_module
         saved_failed_at = rex._anydoc_failed_at
-        # Simulate "converter unavailable and in cooldown": _anydoc() returns
-        # None, the .pdf is not treated as extractable, and read_file keeps
-        # its historical raw-read fallthrough (no extraction error surfaced).
         rex._anydoc_module = None
         rex._anydoc_failed_at = time.monotonic()
         try:
@@ -718,9 +687,6 @@ class TestReadFileToolIntegration(unittest.TestCase):
         self.assertEqual(fake_ops.path, "/workspace/remote.rtf")
 
 
-# ---------------------------------------------------------------------------
-# Scanned-PDF coverage warning
-# ---------------------------------------------------------------------------
 
 class TestPdfCoverageNote(unittest.TestCase):
     """The coverage footer flags PDFs whose pages yielded no text."""
@@ -735,13 +701,12 @@ class TestPdfCoverageNote(unittest.TestCase):
             return read_extract._pdf_coverage_note("/x/doc.pdf")
 
     def test_mostly_scanned_pdf_warns_with_page_ranges(self):
-        # 3 text pages then 6 empty ones (scanned) — well past the ratio.
         note = self._note_with_counts([900, 800, 700, 0, 0, 3, 0, 0, 0])
         self.assertIn("EXTRACTION COVERAGE WARNING", note)
         self.assertIn("6 of 9 pages", note)
-        self.assertIn("pages 4-9", note)        # contiguous empty gap
-        self.assertIn("(6 pages)", note)        # gap size stated
-        self.assertIn("vision_analyze", note)   # recovery path is named
+        self.assertIn("pages 4-9", note)
+        self.assertIn("(6 pages)", note)
+        self.assertIn("vision_analyze", note)
         self.assertIn("ocr-and-documents", note)
         self.assertIn("do NOT OCR or render everything", note)
 
@@ -770,7 +735,7 @@ class TestPdfCoverageNote(unittest.TestCase):
         warning — gaps beyond the cap collapse to one summary line."""
         from tools import read_extract
         texts = []
-        for i in range(60):  # 60 gaps of 1 page each
+        for i in range(60):
             texts.extend([f"Divider page number {i} with enough text", ""])
         with mock.patch.object(read_extract, "_pdf_page_texts",
                                return_value=texts):
@@ -786,24 +751,20 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertEqual(self._note_with_counts([500] * 20), "")
 
     def test_one_blank_page_is_tolerated(self):
-        # A single separator/blank page in a text PDF should not warn.
         self.assertEqual(self._note_with_counts([500, 0, 500, 500]), "")
 
     def test_small_share_below_ratio_and_absolute_is_silent(self):
-        # 3 empty of 40 (7.5% < 20%, and < absolute threshold of 10).
         counts = [400] * 37 + [0, 0, 0]
         self.assertEqual(self._note_with_counts(counts), "")
 
     def test_large_absolute_count_warns_even_below_ratio(self):
-        # 12 empty of 100 (12% < 20% ratio) still warns: 12 lost pages
-        # is real data loss regardless of document size.
         counts = [400] * 88 + [0] * 12
         note = self._note_with_counts(counts)
         self.assertIn("12 of 100 pages", note)
 
     def test_undeterminable_counts_are_silent(self):
         self.assertEqual(self._note_with_counts(None), "")
-        self.assertEqual(self._note_with_counts([0]), "")  # single page
+        self.assertEqual(self._note_with_counts([0]), "")
 
     def test_page_ranges_compact(self):
         from tools.read_extract import _page_ranges
@@ -823,8 +784,6 @@ class TestPdfCoverageNote(unittest.TestCase):
              mock.patch.object(read_extract.subprocess, "run",
                                return_value=fake):
             counts = read_extract._pdf_page_char_counts("/x/doc.pdf")
-        # Trailing empty segment after the final \f is dropped; the real
-        # empty page between the two \f markers is preserved.
         self.assertEqual(counts, [len("alpha beta"), len("gamma"), 0])
 
     def test_extract_anydoc_prepends_note_for_pdf(self):
@@ -888,7 +847,6 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertTrue(text.startswith("[EXTRACTION COVERAGE WARNING"))
         self.assertIn("/workspace/remote.pdf", text)
         self.assertEqual(seen["display_path"], "/workspace/remote.pdf")
-        # The scanned file is a host temp materialization, already removed.
         self.assertNotEqual(seen["scan_path"], "/workspace/remote.pdf")
         self.assertFalse(os.path.exists(seen["scan_path"]))
 

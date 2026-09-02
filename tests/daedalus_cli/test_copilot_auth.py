@@ -80,7 +80,6 @@ class TestResolveToken:
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.setenv("GITHUB_TOKEN", "gho_valid_oauth")
         token, source = resolve_copilot_token()
-        # Should skip the ghp_ token and find the gho_ one
         assert token == "gho_valid_oauth"
         assert source == "GITHUB_TOKEN"
 
@@ -197,7 +196,6 @@ class TestEnvVarOrder:
         from daedalus_cli.auth import PROVIDER_REGISTRY
         copilot = PROVIDER_REGISTRY["copilot"]
         assert "COPILOT_GITHUB_TOKEN" in copilot.api_key_env_vars
-        # COPILOT_GITHUB_TOKEN should be first
         assert copilot.api_key_env_vars[0] == "COPILOT_GITHUB_TOKEN"
 
     def test_copilot_env_vars_order_matches_docs(self):

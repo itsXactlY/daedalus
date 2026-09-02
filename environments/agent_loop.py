@@ -24,12 +24,6 @@ from model_tools import handle_function_call
 from tools.terminal_tool import get_active_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 
-# Thread pool for running sync tool calls that internally use asyncio.run()
-# (e.g., the Modal/Docker/Daytona terminal backends). Running them in a separate
-# thread gives them a clean event loop so they don't deadlock inside Atropos's loop.
-# Size must be large enough for concurrent eval tasks (e.g., 89 TB2 tasks all
-# making tool calls). Too small = thread pool starvation, tasks queue for minutes.
-# Resized at runtime by DaedalusAgentBaseEnv.__init__ via resize_tool_pool().
 _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=128)
 
 
@@ -53,28 +47,22 @@ logger = logging.getLogger(__name__)
 class ToolError:
     """Record of a tool execution error during the agent loop."""
 
-    turn: int                  # Which turn the error occurred on
-    tool_name: str             # Which tool was called
-    arguments: str             # The arguments passed (truncated)
-    error: str                 # The error message
-    tool_result: str           # The raw result returned to the model
+    turn: int
+    tool_name: str
+    arguments: str
+    error: str
+    tool_result: str
 
 
 @dataclass
 class AgentResult:
     """Result of running the agent loop."""
 
-    # Full conversation history in OpenAI message format
     messages: List[Dict[str, Any]]
-    # ManagedServer.get_state() if available (Phase 2), None otherwise
     managed_state: Optional[Dict[str, Any]] = None
-    # How many LLM calls were made
     turns_used: int = 0
-    # True if model stopped calling tools naturally (vs hitting max_turns)
     finished_naturally: bool = False
-    # Extracted reasoning content per turn (from PR #297 helpers)
     reasoning_per_turn: List[Optional[str]] = field(default_factory=list)
-    # Tool errors encountered during the loop
     tool_errors: List[ToolError] = field(default_factory=list)
 
 
@@ -97,15 +85,12 @@ def _extract_reasoning_from_message(message) -> Optional[str]:
     Returns:
         Extracted reasoning text, or None if not found
     """
-    # Check reasoning_content field (common across providers)
     if hasattr(message, "reasoning_content") and message.reasoning_content:
         return message.reasoning_content
 
-    # Check reasoning field
     if hasattr(message, "reasoning") and message.reasoning:
         return message.reasoning
 
-    # Check reasoning_details (OpenRouter style)
     if hasattr(message, "reasoning_details") and message.reasoning_details:
         for detail in message.reasoning_details:
             if hasattr(detail, "text") and detail.text:
@@ -186,17 +171,15 @@ class DaedalusAgentLoop:
         reasoning_per_turn = []
         tool_errors: List[ToolError] = []
 
-        # Per-loop TodoStore for the todo tool (ephemeral, dies with the loop)
         from tools.todo_tool import TodoStore, todo_tool as _todo_tool
         _todo_store = TodoStore()
 
-        # Extract user task from first user message for browser_snapshot context
         _user_task = None
         for msg in messages:
             if msg.get("role") == "user":
                 content = msg.get("content", "")
                 if isinstance(content, str) and content.strip():
-                    _user_task = content.strip()[:500]  # Cap to avoid huge strings
+                    _user_task = content.strip()[:500]
                 break
 
         import time as _time
@@ -204,27 +187,21 @@ class DaedalusAgentLoop:
         for turn in range(self.max_turns):
             turn_start = _time.monotonic()
 
-            # Build the chat_completion kwargs
             chat_kwargs = {
                 "messages": messages,
                 "n": 1,
                 "temperature": self.temperature,
             }
 
-            # Only pass tools if we have them
             if self.tool_schemas:
                 chat_kwargs["tools"] = self.tool_schemas
 
-            # Only pass max_tokens if explicitly set
             if self.max_tokens is not None:
                 chat_kwargs["max_tokens"] = self.max_tokens
 
-            # Inject extra_body for provider-specific params (e.g., OpenRouter
-            # provider preferences like banned/preferred providers, transforms)
             if self.extra_body:
                 chat_kwargs["extra_body"] = self.extra_body
 
-            # Make the API call -- standard OpenAI spec
             api_start = _time.monotonic()
             try:
                 response = await self.server.chat_completion(**chat_kwargs)
@@ -255,16 +232,9 @@ class DaedalusAgentLoop:
 
             assistant_msg = response.choices[0].message
 
-            # Extract reasoning content from the response (all provider formats)
             reasoning = _extract_reasoning_from_message(assistant_msg)
             reasoning_per_turn.append(reasoning)
 
-            # Check for tool calls -- standard OpenAI spec.
-            # Fallback: if response has no structured tool_calls but content
-            # contains raw tool call tags (e.g. <tool_call>), parse them using
-            # daedalus's standalone parsers. This handles the case where
-            # ManagedServer's ToolCallTranslator couldn't parse because vLLM
-            # isn't installed.
             if (
                 not assistant_msg.tool_calls
                 and assistant_msg.content
@@ -286,11 +256,9 @@ class DaedalusAgentLoop:
                             len(parsed_calls),
                         )
                 except Exception:
-                    pass  # Fall through to no tool calls
+                    pass
 
             if assistant_msg.tool_calls:
-                # Normalize tool calls to dicts — they may come as objects
-                # (OpenAI API) or dicts (vLLM ToolCallTranslator).
                 def _tc_to_dict(tc):
                     if isinstance(tc, dict):
                         return {
@@ -310,24 +278,18 @@ class DaedalusAgentLoop:
                         },
                     }
 
-                # Build the assistant message dict for conversation history
                 msg_dict: Dict[str, Any] = {
                     "role": "assistant",
                     "content": assistant_msg.content or "",
                     "tool_calls": [_tc_to_dict(tc) for tc in assistant_msg.tool_calls],
                 }
 
-                # Preserve reasoning_content for multi-turn chat template handling
-                # (e.g., Kimi-K2's template renders <think> blocks differently
-                # for history vs. the latest turn based on this field)
                 if reasoning:
                     msg_dict["reasoning_content"] = reasoning
 
                 messages.append(msg_dict)
 
-                # Execute each tool call via daedalus's dispatch
                 for tc in assistant_msg.tool_calls:
-                    # Handle both object (OpenAI) and dict (vLLM) formats
                     if isinstance(tc, dict):
                         tool_name = tc.get("function", {}).get("name", tc.get("name", ""))
                         tool_args_raw = tc.get("function", {}).get("arguments", tc.get("arguments", "{}"))
@@ -335,7 +297,6 @@ class DaedalusAgentLoop:
                         tool_name = tc.function.name
                         tool_args_raw = tc.function.arguments
 
-                    # Validate tool name
                     if tool_name not in self.valid_tool_names:
                         tool_result = json.dumps(
                             {
@@ -354,7 +315,6 @@ class DaedalusAgentLoop:
                             tool_name, turn + 1,
                         )
                     else:
-                        # Parse arguments
                         try:
                             args = json.loads(tool_args_raw)
                         except json.JSONDecodeError as e:
@@ -373,7 +333,6 @@ class DaedalusAgentLoop:
                                 tool_name, tool_args_raw[:200],
                             )
 
-                        # Dispatch tool only if arguments parsed successfully
                         if args is not None:
                             try:
                                 if tool_name == "terminal":
@@ -385,7 +344,6 @@ class DaedalusAgentLoop:
 
                                 tool_submit_time = _time.monotonic()
 
-                                # Todo tool -- handle locally (needs per-loop TodoStore)
                                 if tool_name == "todo":
                                     tool_result = _todo_tool(
                                         todos=args.get("todos"),
@@ -400,11 +358,7 @@ class DaedalusAgentLoop:
                                     tool_result = json.dumps({"error": "Session search is not available in RL environments."})
                                     tool_elapsed = _time.monotonic() - tool_submit_time
                                 else:
-                                    # Run tool calls in a thread pool so backends that
-                                    # use asyncio.run() internally (modal, docker, daytona) get
-                                    # a clean event loop instead of deadlocking.
                                     loop = asyncio.get_event_loop()
-                                    # Capture current tool_name/args for the lambda
                                     _tn, _ta, _tid = tool_name, args, self.task_id
                                     tool_result = await loop.run_in_executor(
                                         _tool_executor,
@@ -415,7 +369,6 @@ class DaedalusAgentLoop:
                                     )
                                     tool_elapsed = _time.monotonic() - tool_submit_time
 
-                                # Log slow tools and thread pool stats for debugging
                                 pool_active = _tool_executor._work_queue.qsize()
                                 if tool_elapsed > 30:
                                     logger.warning(
@@ -438,7 +391,6 @@ class DaedalusAgentLoop:
                                     tool_name, turn + 1, e,
                                 )
 
-                        # Also check if the tool returned an error in its JSON result
                         try:
                             result_data = json.loads(tool_result)
                             if isinstance(result_data, dict):
@@ -487,7 +439,6 @@ class DaedalusAgentLoop:
                 )
 
             else:
-                # No tool calls -- model is done
                 msg_dict = {
                     "role": "assistant",
                     "content": assistant_msg.content or "",
@@ -511,7 +462,6 @@ class DaedalusAgentLoop:
                     tool_errors=tool_errors,
                 )
 
-        # Hit max turns without the model stopping
         logger.info("Agent hit max_turns (%d) without finishing", self.max_turns)
         return AgentResult(
             messages=messages,

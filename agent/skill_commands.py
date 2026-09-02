@@ -16,20 +16,9 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
-# Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
-# ---------------------------------------------------------------------------
-# Skill-scaffold instruction extraction (ported from nousresearch/main 0.20.0
-# for the daedalus_state.py memory-phase port — daedalus_state.py needs
-# SKILL_EXCERPT_JOINT/SKILL_SCAFFOLD_SQL_LIKE, and agent/memory_manager.py
-# needs extract_user_instruction_from_skill_message, so a memory provider
-# stores the user's actual instruction instead of the whole expanded skill
-# body. These markers MUST stay byte-identical to whatever builds the
-# scaffolding (_build_skill_message here, build_bundle_invocation_message in
-# agent/skill_bundles.py) — self-contained, no other cross-file deps.
-# ---------------------------------------------------------------------------
 _SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
 _SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
 _SINGLE_SKILL_INSTRUCTION = (
@@ -40,19 +29,10 @@ _BUNDLE_MARKER = " skill bundle,"
 _BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
 _BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
 
-# The skill name sits in the first quoted span of the activation note, for both
-# the single-skill and the bundle header ("work" / "/clean /work").
 _SKILL_NAME_RE = re.compile(re.escape(_SKILL_INVOCATION_PREFIX) + r'"([^"]*)"')
 
-# SQL LIKE pattern matching a skill-expanded turn, for listing queries that
-# have to recognize scaffolding before the row reaches Python. The prefix
-# contains no LIKE wildcards (`%`, `_`), so it needs no ESCAPE clause.
 SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
 
-# Marks where a preview query joined the head and tail of a long scaffolded
-# message. describe_skill_invocation may hand back a span that runs across
-# the joint (a bundle instruction cut off by the head window); callers cut the
-# description there rather than show the skill body on the far side.
 SKILL_EXCERPT_JOINT = "\x1e"
 
 
@@ -205,7 +185,6 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
             resolve_skill_config_values,
         )
 
-        # The loaded_skill dict contains the raw content which includes frontmatter
         raw_content = str(loaded_skill.get("raw_content") or loaded_skill.get("content") or "")
         if not raw_content:
             return
@@ -226,7 +205,7 @@ def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None
         lines.append("]")
         parts.extend(lines)
     except Exception:
-        pass  # Non-critical — skill still loads without config injection
+        pass
 
 
 def _build_skill_message(
@@ -244,7 +223,6 @@ def _build_skill_message(
 
     parts = [activation_note, "", content.strip()]
 
-    # ── Inject resolved skill config values ──
     _inject_skill_config(loaded_skill, parts)
 
     if loaded_skill.get("setup_skipped"):
@@ -288,7 +266,6 @@ def _build_skill_message(
         try:
             skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
         except ValueError:
-            # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
         parts.append("")
         parts.append("[This skill has supporting files you can load with the skill_view tool:]")
@@ -323,7 +300,6 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
         dirs_to_scan = []
         if SKILLS_DIR.exists():
             dirs_to_scan.append(SKILLS_DIR)
@@ -336,13 +312,11 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                 try:
                     content = skill_md.read_text(encoding='utf-8')
                     frontmatter, body = _parse_frontmatter(content)
-                    # Skip skills incompatible with the current OS platform
                     if not skill_matches_platform(frontmatter):
                         continue
                     name = frontmatter.get('name', skill_md.parent.name)
                     if name in seen_names:
                         continue
-                    # Respect user's disabled skills config
                     if name in disabled:
                         continue
                     description = frontmatter.get('description', '')
@@ -353,9 +327,6 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 description = line[:80]
                                 break
                     seen_names.add(name)
-                    # Normalize to hyphen-separated slug, stripping
-                    # non-alnum chars (e.g. +, /) to avoid invalid
-                    # Telegram command names downstream.
                     cmd_name = name.lower().replace(' ', '-').replace('_', '-')
                     cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')

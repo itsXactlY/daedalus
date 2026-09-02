@@ -51,7 +51,6 @@ class TestCronSessionBypass:
     def test_cron_session_skipped(self):
         runner = _make_runner()
         runner._flush_memories_for_session("cron_job123_20260323_120000")
-        # session_store.load_transcript should never be called
         runner.session_store.load_transcript.assert_not_called()
 
     def test_cron_session_with_prefix_skipped(self):
@@ -133,7 +132,7 @@ class TestMemoryInjection:
         memory_dir = tmp_path / "memories"
         memory_dir.mkdir()
         (memory_dir / "MEMORY.md").write_text("")
-        (memory_dir / "USER.md").write_text("  \n  ")  # whitespace only
+        (memory_dir / "USER.md").write_text("  \n  ")
 
         runner, tmp_agent, _ = _make_flush_context(monkeypatch)
 
@@ -177,7 +176,6 @@ class TestFlushAgentSilenced:
 
         agent = captured_agent["instance"]
         assert agent._print_fn is not None, "_print_fn should be overridden to suppress output"
-        # Confirm it is callable and produces no output (no exception)
         agent._print_fn("should be silenced")
 
     def test_kawaii_spinner_respects_print_fn(self):
@@ -189,7 +187,6 @@ class TestFlushAgentSilenced:
         spinner._write("hello")
         assert written == [("hello",)], "spinner should route through print_fn"
 
-        # A no-op print_fn must produce no output to stdout
         import io, sys
         buf = io.StringIO()
         old_stdout = sys.stdout

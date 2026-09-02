@@ -41,14 +41,6 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# Prompts that carry no semantic signal — trivial acknowledgements, greetings,
-# slash commands, empty input. Single source of truth shared by the core
-# per-turn prefetch gate (agent/turn_context.py, run_agent.py) and provider-
-# side classifiers (plugins/memory/honcho) so the two can never drift apart.
-# The alternation is anchored and may only be followed by whitespace or
-# punctuation, so words that merely START with a trivial word ("k8s", "yolo",
-# "note", "hindsight") do NOT match, while trailing-punctuation variants
-# ("hi!", "hey.", "thanks :)", "done???") do.
 TRIVIAL_PROMPT_RE = re.compile(
     r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
     r'hi|hey|hello|yo|sup|'
@@ -86,7 +78,6 @@ class MemoryProvider(ABC):
     def name(self) -> str:
         """Short identifier for this provider (e.g. 'builtin', 'honcho', 'hindsight')."""
 
-    # -- Core lifecycle (implement these) ------------------------------------
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -209,7 +200,6 @@ class MemoryProvider(ABC):
     def shutdown(self) -> None:
         """Clean shutdown — flush queues, close connections."""
 
-    # -- Optional hooks (override to opt in) ---------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Called at the start of each turn with the user message.

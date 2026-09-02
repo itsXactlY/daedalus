@@ -58,15 +58,12 @@ class TestEmitsOnRealProblems:
                             lambda name: None if name == "uv" else "/usr/bin/" + name)
 
         line = env_probe.get_environment_probe_line()
-        assert line  # not silent
-        # Single line — must not blow up the system prompt.
+        assert line
         assert "\n" not in line
-        # Names the real toolchain state
         assert "3.11.15" in line
         assert "no pip module" in line
         assert "mismatch" in line
         assert "PEP 668" in line
-        # Points at the right escape hatch
         assert "venv" in line or "uv" in line
 
 
@@ -82,8 +79,6 @@ class TestEmitsOnRealProblems:
                             lambda name: None if name == "uv" else "/usr/bin/" + name)
 
         line = env_probe.get_environment_probe_line()
-        # `python=missing` only matters in the non-silent path; PEP 668 (without
-        # uv) is what brings us off-silent here, so check both signals.
         assert "PEP 668" in line
         assert "python=missing" in line
 
@@ -93,7 +88,6 @@ class TestSkipsRemoteBackends:
 
     def test_docker_returns_empty(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
-        # Even with a broken local env, docker must emit nothing.
         monkeypatch.setattr(env_probe, "_python_version_of", lambda b: None)
         monkeypatch.setattr(env_probe, "_has_pip_module", lambda b: False)
         assert env_probe.get_environment_probe_line() == ""
@@ -125,8 +119,6 @@ class TestCaching:
         env_probe.get_environment_probe_line()
         env_probe.get_environment_probe_line()
 
-        # Only the first call probes — caller-counting confirms it.
-        # Two calls (python3 + python) on first invocation, zero after.
         assert len(calls) == 2
 
 
@@ -139,9 +131,7 @@ class TestRobustness:
             raise OSError("simulated")
         monkeypatch.setattr(env_probe.subprocess, "run", boom)
         monkeypatch.setattr(env_probe.subprocess, "Popen", boom)
-        # Should not raise, should just return ""
         result = env_probe.get_environment_probe_line()
-        # Whatever the result is, it must be a string
         assert isinstance(result, str)
 
 
@@ -161,12 +151,10 @@ class TestStuckProbeNeverBlocksCallers:
         release = _threading.Event()
 
         def stuck_probe():
-            # Simulate the wedged pipe read: blocks until released.
             release.wait(timeout=30)
             return "Python toolchain: late-result."
 
         monkeypatch.setattr(env_probe, "_build_probe_line", stuck_probe)
-        # Keep the test fast — the bound just has to exist, not be 10s.
         monkeypatch.setattr(env_probe, "_PROBE_WAIT_TIMEOUT", 0.5)
 
         env_probe.warm_environment_probe_async()
@@ -191,9 +179,7 @@ class TestStuckProbeNeverBlocksCallers:
         try:
             assert not errors
             assert all(not t.is_alive() for t in threads), "caller blocked on stuck probe"
-            # All callers failed open with the empty line.
             assert results == ["", "", "", ""]
-            # Bounded: nowhere near the 30s the probe is stuck for.
             assert elapsed < 8
         finally:
             release.set()
@@ -213,14 +199,11 @@ class TestStuckProbeNeverBlocksCallers:
         monkeypatch.setattr(env_probe, "_build_probe_line", slow_probe)
         monkeypatch.setattr(env_probe, "_PROBE_WAIT_TIMEOUT", 0.2)
 
-        # First caller times out and fails open.
         assert env_probe.get_environment_probe_line() == ""
 
-        # Worker un-wedges (the operator killed the orphan).
         release.set()
         assert env_probe._PROBE_DONE.wait(timeout=10)
 
-        # Later callers see the published line.
         assert env_probe.get_environment_probe_line() == "Python toolchain: recovered."
 
     def test_repeat_callers_do_not_pay_full_wait_after_first_timeout(self, monkeypatch):
@@ -240,14 +223,12 @@ class TestStuckProbeNeverBlocksCallers:
         monkeypatch.setattr(env_probe, "_PROBE_WAIT_TIMEOUT", 0.5)
 
         try:
-            assert env_probe.get_environment_probe_line() == ""  # pays 0.5s
+            assert env_probe.get_environment_probe_line() == ""
 
-            # Crank the timeout way up: if the peek short-circuit is broken,
-            # the next call blocks ~30s; if it works, it returns in ~0.05s.
             monkeypatch.setattr(env_probe, "_PROBE_WAIT_TIMEOUT", 30.0)
             start = time.monotonic()
             assert env_probe.get_environment_probe_line() == ""
-            assert time.monotonic() - start < 5  # peek, not a full wait
+            assert time.monotonic() - start < 5
         finally:
             release.set()
 
@@ -261,8 +242,6 @@ class TestRunTimeoutIsBounded:
     def test_run_returns_promptly_despite_pipe_holding_descendant(self):
         import time
 
-        # Child exits quickly; grandchild inherits stdout/stderr and sleeps
-        # far beyond the timeout, keeping the pipe write-ends open.
         script = (
             "import subprocess, sys, time\n"
             "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])\n"
@@ -274,8 +253,6 @@ class TestRunTimeoutIsBounded:
 
         assert rc == -1
         assert err == "timeout"
-        # stdlib subprocess.run on Windows would hang here for the full 20s
-        # (unbounded post-kill communicate).  Our bound: timeout + reap slack.
         assert elapsed < 6
 
 
@@ -299,9 +276,7 @@ class TestRunBoundedByTimeout:
     def test_returns_before_inheriting_grandchild_exits(self):
         import time
 
-        grandchild_sleep = 20  # far longer than _run's timeout
-        # Direct child: emit "ok", spawn a detached grandchild that inherits
-        # this process's stdout (no stdout= redirect), then exit right away.
+        grandchild_sleep = 20
         child_code = (
             "import subprocess, sys; "
             "subprocess.Popen([sys.executable, '-c', "
@@ -313,7 +288,6 @@ class TestRunBoundedByTimeout:
         rc, out, err = env_probe._run([sys.executable, "-c", child_code], timeout=3.0)
         elapsed = time.monotonic() - start
 
-        # Must not wait on the grandchild, and must not have hit the timeout.
         assert elapsed < 3.0, f"_run blocked on grandchild for {elapsed:.1f}s"
         assert rc == 0, f"expected clean exit, got rc={rc} err={err!r}"
         assert out == "ok"

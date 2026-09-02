@@ -61,10 +61,8 @@ class TestSampleToolsetsFromDistribution:
             sample_toolsets_from_distribution("nonexistent")
 
     def test_default_returns_all_toolsets(self):
-        # default has all at 100%, so all should be selected
         result = sample_toolsets_from_distribution("default")
         assert len(result) > 0
-        # With 100% probability, all valid toolsets should be present
         dist = get_distribution("default")
         for ts in dist["toolsets"]:
             assert ts in result
@@ -80,7 +78,6 @@ class TestSampleToolsetsFromDistribution:
             assert isinstance(item, str)
 
     def test_fallback_guarantees_at_least_one(self):
-        # Even with low probabilities, at least one toolset should be selected
         for _ in range(20):
             result = sample_toolsets_from_distribution("reasoning")
             assert len(result) >= 1

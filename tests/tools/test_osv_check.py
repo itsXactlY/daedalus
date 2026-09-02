@@ -73,8 +73,6 @@ class TestParsePackageFromArgs:
 
     def test_pypi_skips_flags(self):
         name, ver = _parse_package_from_args(["--from", "mcp[cli]"], "PyPI")
-        # --from is a flag, mcp[cli] is the package
-        # Actually --from is a flag so it gets skipped, mcp[cli] is found
         assert name == "mcp"
 
     def test_empty_args(self):
@@ -102,7 +100,7 @@ class TestCheckPackageForMalware:
         mock_response.read.return_value = json.dumps({
             "vulns": [
                 {"id": "MAL-2023-7938", "summary": "Malicious code in evil-pkg"},
-                {"id": "CVE-2023-1234", "summary": "Regular vulnerability"},  # should be filtered
+                {"id": "CVE-2023-1234", "summary": "Regular vulnerability"},
             ]
         }).encode()
         mock_response.__enter__ = lambda s: s
@@ -113,7 +111,7 @@ class TestCheckPackageForMalware:
         assert result is not None
         assert "BLOCKED" in result
         assert "MAL-2023-7938" in result
-        assert "CVE-2023-1234" not in result  # regular CVEs filtered
+        assert "CVE-2023-1234" not in result
 
     def test_network_error_fails_open(self):
         """Network errors allow the package (fail-open)."""
@@ -135,7 +133,6 @@ class TestCheckPackageForMalware:
 
         with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
             check_package_for_malware("uvx", ["mcp-server-fetch"])
-            # Verify PyPI ecosystem was sent
             call_data = json.loads(mock_url.call_args[0][0].data)
             assert call_data["package"]["ecosystem"] == "PyPI"
             assert call_data["package"]["name"] == "mcp-server-fetch"

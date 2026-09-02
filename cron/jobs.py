@@ -29,9 +29,6 @@ try:
 except ImportError:
     HAS_CRONITER = False
 
-# =============================================================================
-# Configuration
-# =============================================================================
 
 DAEDALUS_DIR = get_daedalus_home().resolve()
 CRON_DIR = DAEDALUS_DIR / "cron"
@@ -71,7 +68,7 @@ def _secure_dir(path: Path):
     try:
         os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
-        pass  # Windows or other platforms where chmod is not supported
+        pass
 
 
 def _secure_file(path: Path):
@@ -91,9 +88,6 @@ def ensure_dirs():
     _secure_dir(OUTPUT_DIR)
 
 
-# =============================================================================
-# Schedule Parsing
-# =============================================================================
 
 def parse_duration(s: str) -> int:
     """
@@ -110,7 +104,7 @@ def parse_duration(s: str) -> int:
         raise ValueError(f"Invalid duration: '{s}'. Use format like '30m', '2h', or '1d'")
     
     value = int(match.group(1))
-    unit = match.group(2)[0]  # First char: m, h, or d
+    unit = match.group(2)[0]
     
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
@@ -138,7 +132,6 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     original = schedule
     schedule_lower = schedule.lower()
     
-    # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
@@ -148,15 +141,12 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "display": f"every {minutes}m"
         }
     
-    # Check for cron expression (5 or 6 space-separated fields)
-    # Cron fields: minute hour day month weekday [year]
     parts = schedule.split()
     if len(parts) >= 5 and all(
         re.match(r'^[\d\*\-,/]+$', p) for p in parts[:5]
     ):
         if not HAS_CRONITER:
             raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
-        # Validate cron expression
         try:
             croniter(schedule)
         except Exception as e:
@@ -167,15 +157,11 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "display": schedule
         }
     
-    # ISO timestamp (contains T or looks like date)
     if 'T' in schedule or re.match(r'^\d{4}-\d{2}-\d{2}', schedule):
         try:
-            # Parse and validate
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
-            # Make naive timestamps timezone-aware at parse time so the stored
-            # value doesn't depend on the system timezone matching at check time.
             if dt.tzinfo is None:
-                dt = dt.astimezone()  # Interpret as local timezone
+                dt = dt.astimezone()
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -184,7 +170,6 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         except ValueError as e:
             raise ValueError(f"Invalid timestamp '{schedule}': {e}")
     
-    # Duration like "30m", "2h", "1d" → one-shot from now
     try:
         minutes = parse_duration(schedule)
         run_at = _daedalus_now() + timedelta(minutes=minutes)
@@ -259,7 +244,7 @@ def _compute_grace_seconds(schedule: dict) -> int:
     while frequent jobs (every 5-10 min) still fast-forward quickly.
     """
     MIN_GRACE = 120
-    MAX_GRACE = 7200  # 2 hours
+    MAX_GRACE = 7200
 
     kind = schedule.get("kind")
 
@@ -297,11 +282,9 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     elif schedule["kind"] == "interval":
         minutes = schedule["minutes"]
         if last_run_at:
-            # Next run is last_run + interval
             last = _ensure_aware(datetime.fromisoformat(last_run_at))
             next_run = last + timedelta(minutes=minutes)
         else:
-            # First run is now + interval
             next_run = now + timedelta(minutes=minutes)
         return next_run.isoformat()
 
@@ -315,9 +298,6 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     return None
 
 
-# =============================================================================
-# Job CRUD Operations
-# =============================================================================
 
 _jobs_thread_lock = threading.Lock()
 
@@ -347,13 +327,11 @@ def load_jobs() -> List[Dict[str, Any]]:
             data = json.load(f)
             return data.get("jobs", [])
     except json.JSONDecodeError:
-        # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
                 if jobs:
-                    # Auto-repair: rewrite with proper escaping
                     save_jobs(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs
@@ -422,15 +400,12 @@ def create_job(
     """
     parsed_schedule = parse_schedule(schedule)
 
-    # Normalize repeat: treat 0 or negative values as None (infinite)
     if repeat is not None and repeat <= 0:
         repeat = None
 
-    # Auto-set repeat=1 for one-shot schedules if not specified
     if parsed_schedule["kind"] == "once" and repeat is None:
         repeat = 1
 
-    # Default delivery to origin if available, otherwise local
     if deliver is None:
         deliver = "origin" if origin else "local"
 
@@ -461,7 +436,7 @@ def create_job(
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
-            "times": repeat,  # None = forever
+            "times": repeat,
             "completed": 0
         },
         "enabled": True,
@@ -474,9 +449,8 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
-        # Delivery configuration
         "deliver": deliver,
-        "origin": origin,  # Tracks where job was created for "origin" delivery
+        "origin": origin,
     }
 
     jobs = load_jobs()
@@ -614,26 +588,20 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
-            # Track delivery failures separately — cleared on successful delivery
             job["last_delivery_error"] = delivery_error
             
-            # Increment completed count
             if job.get("repeat"):
                 job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
                 
-                # Check if we've hit the repeat limit
                 times = job["repeat"].get("times")
                 completed = job["repeat"]["completed"]
                 if times is not None and times > 0 and completed >= times:
-                    # Remove the job (limit reached)
                     jobs.pop(i)
                     save_jobs(jobs)
                     return
             
-            # Compute next run
             job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-            # If no next run (one-shot completed), disable
             if job["next_run_at"] is None:
                 job["enabled"] = False
                 job["state"] = "completed"
@@ -720,13 +688,8 @@ def get_due_jobs() -> List[Dict[str, Any]]:
             schedule = job.get("schedule", {})
             kind = schedule.get("kind")
 
-            # For recurring jobs, check if the scheduled time is stale
-            # (gateway was down and missed the window). Fast-forward to
-            # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
             if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(
@@ -737,13 +700,12 @@ def get_due_jobs() -> List[Dict[str, Any]]:
                         grace,
                         new_next,
                     )
-                    # Update the job in storage
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
-                    continue  # Skip this run
+                    continue
 
             due.append(job)
 
@@ -781,8 +743,6 @@ def save_job_output(job_id: str, output: str):
     return output_file
 
 
-# Skill reference rewriting (curator integration)
-# =============================================================================
 
 def _canonical_skill_ref(raw: Any) -> str:
     """Reduce one job skill reference to the bare name the curator matches on.
@@ -895,8 +855,6 @@ def rewrite_skill_refs(
     """
     consolidated = dict(consolidated or {})
     pruned_set = set(pruned or [])
-    # A skill listed in both wins as "consolidated" — it has a target,
-    # which is the more useful of the two outcomes.
     pruned_set -= set(consolidated.keys())
 
     if not consolidated and not pruned_set:

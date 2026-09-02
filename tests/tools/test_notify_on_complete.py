@@ -50,9 +50,6 @@ def _make_session(
     return s
 
 
-# =========================================================================
-# ProcessSession field
-# =========================================================================
 
 class TestProcessSessionField:
     def test_default_false(self):
@@ -64,9 +61,6 @@ class TestProcessSessionField:
         assert s.notify_on_complete is True
 
 
-# =========================================================================
-# Completion queue
-# =========================================================================
 
 class TestCompletionQueue:
     def test_queue_exists(self, registry):
@@ -158,9 +152,6 @@ class TestCompletionQueue:
         assert ids == {"proc_0", "proc_1", "proc_2"}
 
 
-# =========================================================================
-# Checkpoint persistence
-# =========================================================================
 
 class TestCheckpointNotify:
     def test_checkpoint_includes_notify(self, registry, tmp_path):
@@ -233,9 +224,6 @@ class TestCheckpointNotify:
             assert s.notify_on_complete is False
 
 
-# =========================================================================
-# Terminal tool schema
-# =========================================================================
 
 class TestTerminalSchema:
     def test_schema_has_notify_on_complete(self):
@@ -257,9 +245,6 @@ class TestTerminalSchema:
             assert kwargs["notify_on_complete"] is True
 
 
-# =========================================================================
-# Code execution blocked params
-# =========================================================================
 
 class TestCodeExecutionBlocked:
     def test_notify_on_complete_blocked_in_sandbox(self):

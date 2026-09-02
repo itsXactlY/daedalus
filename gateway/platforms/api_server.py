@@ -44,11 +44,10 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-# Default settings
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
+MAX_REQUEST_BYTES = 1_000_000
 
 
 def check_api_server_requirements() -> bool:
@@ -118,7 +117,6 @@ class ResponseStore:
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()),
         )
-        # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
             self._conn.execute(
@@ -163,9 +161,6 @@ class ResponseStore:
         return row[0] if row else 0
 
 
-# ---------------------------------------------------------------------------
-# CORS middleware
-# ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
@@ -303,11 +298,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
-        # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
-        # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
-        self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_db: Optional[Any] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -354,9 +347,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return "*" in self._cors_origins or origin in self._cors_origins
 
-    # ------------------------------------------------------------------
-    # Auth helper
-    # ------------------------------------------------------------------
 
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
@@ -366,22 +356,19 @@ class APIServerAdapter(BasePlatformAdapter):
         If no API key is configured, all requests are allowed.
         """
         if not self._api_key:
-            return None  # No key configured — allow all (local-only use)
+            return None
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
+                return None
 
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
 
-    # ------------------------------------------------------------------
-    # Session DB helper
-    # ------------------------------------------------------------------
 
     def _ensure_session_db(self):
         """Lazily initialise and return the shared SessionDB instance.
@@ -397,9 +384,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
-    # ------------------------------------------------------------------
-    # Agent creation helper
-    # ------------------------------------------------------------------
 
     def _create_agent(
         self,
@@ -428,8 +412,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         max_iterations = int(os.getenv("DAEDALUS_MAX_ITERATIONS", "90"))
 
-        # Load fallback provider chain so the API server platform has the
-        # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         from gateway.run import GatewayRunner
         fallback_model = GatewayRunner._load_fallback_model()
 
@@ -450,9 +432,6 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return agent
 
-    # ------------------------------------------------------------------
-    # HTTP Handlers
-    # ------------------------------------------------------------------
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
@@ -485,7 +464,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        # Parse request body
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
@@ -500,7 +478,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = body.get("stream", False)
 
-        # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
 
@@ -508,7 +485,6 @@ class APIServerAdapter(BasePlatformAdapter):
             role = msg.get("role", "")
             content = msg.get("content", "")
             if role == "system":
-                # Accumulate system messages
                 if system_prompt is None:
                     system_prompt = content
                 else:
@@ -516,7 +492,6 @@ class APIServerAdapter(BasePlatformAdapter):
             elif role in ("user", "assistant"):
                 conversation_messages.append({"role": role, "content": content})
 
-        # Extract the last user message as the primary input
         user_message = ""
         history = []
         if conversation_messages:
@@ -529,8 +504,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        # Allow caller to continue an existing session by passing X-Daedalus-Session-Id.
-        # When provided, history is loaded from state.db instead of from the request body.
         provided_session_id = request.headers.get("X-Daedalus-Session-Id", "").strip()
         if provided_session_id:
             session_id = provided_session_id
@@ -543,7 +516,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 history = []
         else:
             session_id = str(uuid.uuid4())
-            # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", "daedalus")
@@ -554,29 +526,20 @@ class APIServerAdapter(BasePlatformAdapter):
             _stream_q: _q.Queue = _q.Queue()
 
             def _on_delta(delta):
-                # Filter out None — the agent fires stream_delta_callback(None)
-                # to signal the CLI display to close its response box before
-                # tool execution, but the SSE writer uses None as end-of-stream
-                # sentinel.  Forwarding it would prematurely close the HTTP
-                # response, causing Open WebUI (and similar frontends) to miss
-                # the final answer after tool calls.  The SSE loop detects
-                # completion via agent_task.done() instead.
                 if delta is not None:
                     _stream_q.put(delta)
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 """Inject tool progress into the SSE stream for Open WebUI."""
                 if event_type != "tool.started":
-                    return  # Only show tool start events in chat stream
+                    return
                 if name.startswith("_"):
-                    return  # Skip internal events (_thinking)
+                    return
                 from agent.display import get_tool_emoji
                 emoji = get_tool_emoji(name)
                 label = preview or name
                 _stream_q.put(f"\n`{emoji} {label}`\n")
 
-            # Start agent in background.  agent_ref is a mutable container
-            # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -593,7 +556,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_task, agent_ref, session_id=session_id,
             )
 
-        # Non-streaming: run the agent (with optional Idempotency-Key)
         async def _compute_completion():
             return await self._run_agent(
                 user_message=user_message,
@@ -664,8 +626,6 @@ class APIServerAdapter(BasePlatformAdapter):
         import queue as _q
 
         sse_headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache"}
-        # CORS middleware can't inject headers into StreamResponse after
-        # prepare() flushes them, so resolve CORS headers up front.
         origin = request.headers.get("Origin", "")
         cors = self._cors_headers_for_origin(origin) if origin else None
         if cors:
@@ -676,7 +636,6 @@ class APIServerAdapter(BasePlatformAdapter):
         await response.prepare(request)
 
         try:
-            # Role chunk
             role_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
@@ -684,14 +643,12 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
 
-            # Stream content chunks as they arrive from the agent
             loop = asyncio.get_event_loop()
             while True:
                 try:
                     delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
                 except _q.Empty:
                     if agent_task.done():
-                        # Drain any remaining items
                         while True:
                             try:
                                 delta = stream_q.get_nowait()
@@ -708,7 +665,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         break
                     continue
 
-                if delta is None:  # End of stream sentinel
+                if delta is None:
                     break
 
                 content_chunk = {
@@ -718,7 +675,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
                 await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
 
-            # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
             try:
                 result, agent_usage = await agent_task
@@ -726,7 +682,6 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-            # Finish chunk
             finish_chunk = {
                 "id": completion_id, "object": "chat.completion.chunk",
                 "created": created, "model": model,
@@ -740,9 +695,6 @@ class APIServerAdapter(BasePlatformAdapter):
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            # Client disconnected mid-stream.  Interrupt the agent so it
-            # stops making LLM API calls at the next loop iteration, then
-            # cancel the asyncio task wrapper.
             agent = agent_ref[0] if agent_ref else None
             if agent is not None:
                 try:
@@ -765,7 +717,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        # Parse request body
         try:
             body = await request.json()
         except (json.JSONDecodeError, Exception):
@@ -783,16 +734,12 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation = body.get("conversation")
         store = body.get("store", True)
 
-        # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
             return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
 
-        # Resolve conversation name to latest response_id
         if conversation:
             previous_response_id = self._response_store.get_conversation(conversation)
-            # No error if conversation doesn't exist yet — it's a new conversation
 
-        # Normalize input to message list
         input_messages: List[Dict[str, str]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
@@ -803,7 +750,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 elif isinstance(item, dict):
                     role = item.get("role", "user")
                     content = item.get("content", "")
-                    # Handle content that may be a list of content parts
                     if isinstance(content, list):
                         text_parts = []
                         for part in content:
@@ -818,10 +764,6 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
 
-        # Accept explicit conversation_history from the request body.
-        # This lets stateless clients supply their own history instead of
-        # relying on server-side response chaining via previous_response_id.
-        # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
@@ -845,24 +787,19 @@ class APIServerAdapter(BasePlatformAdapter):
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
-            # If no instructions provided, carry forward from previous
             if instructions is None:
                 instructions = stored.get("instructions")
 
-        # Append new input messages to history (all but the last become history)
         for msg in input_messages[:-1]:
             conversation_history.append(msg)
 
-        # Last input message is the user_message
         user_message = input_messages[-1].get("content", "") if input_messages else ""
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
-        # Truncation support
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
             conversation_history = conversation_history[-100:]
 
-        # Run the agent (with Idempotency-Key support)
         session_id = str(uuid.uuid4())
 
         async def _compute_response():
@@ -904,18 +841,14 @@ class APIServerAdapter(BasePlatformAdapter):
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
 
-        # Build the full conversation history for storage
-        # (includes tool calls from the agent run)
         full_history = list(conversation_history)
         full_history.append({"role": "user", "content": user_message})
-        # Add agent's internal messages if available
         agent_messages = result.get("messages", [])
         if agent_messages:
             full_history.extend(agent_messages)
         else:
             full_history.append({"role": "assistant", "content": final_response})
 
-        # Build output items (includes tool calls + final message)
         output_items = self._extract_output_items(result)
 
         response_data = {
@@ -932,23 +865,17 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        # Store the complete response object for future chaining / GET retrieval
         if store:
             self._response_store.put(response_id, {
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
             })
-            # Update conversation mapping so the next request with the same
-            # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
         return web.json_response(response_data)
 
-    # ------------------------------------------------------------------
-    # GET / DELETE response endpoints
-    # ------------------------------------------------------------------
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
         """GET /v1/responses/{response_id} — retrieve a stored response."""
@@ -980,11 +907,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "deleted": True,
         })
 
-    # ------------------------------------------------------------------
-    # Cron jobs API
-    # ------------------------------------------------------------------
 
-    # Check cron module availability once (not per-request)
     _CRON_AVAILABLE = False
     try:
         from cron.jobs import (
@@ -997,10 +920,6 @@ class APIServerAdapter(BasePlatformAdapter):
             resume_job as _cron_resume,
             trigger_job as _cron_trigger,
         )
-        # Wrap as staticmethod to prevent descriptor binding — these are plain
-        # module functions, not instance methods.  Without this, self._cron_*()
-        # injects ``self`` as the first positional argument and every call
-        # raises TypeError.
         _cron_list = staticmethod(_cron_list)
         _cron_get = staticmethod(_cron_get)
         _cron_create = staticmethod(_cron_create)
@@ -1014,7 +933,6 @@ class APIServerAdapter(BasePlatformAdapter):
         pass
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
-    # Allowed fields for update — prevents clients injecting arbitrary keys
     _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
@@ -1131,11 +1049,9 @@ class APIServerAdapter(BasePlatformAdapter):
             return id_err
         try:
             body = await request.json()
-            # Whitelist allowed fields to prevent arbitrary key injection
             sanitized = {k: v for k, v in body.items() if k in self._UPDATE_ALLOWED_FIELDS}
             if not sanitized:
                 return web.json_response({"error": "No valid fields to update"}, status=400)
-            # Validate lengths if present
             if "name" in sanitized and len(sanitized["name"]) > self._MAX_NAME_LENGTH:
                 return web.json_response(
                     {"error": f"Name must be ≤ {self._MAX_NAME_LENGTH} characters"}, status=400,
@@ -1227,9 +1143,6 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
-    # ------------------------------------------------------------------
-    # Output extraction helper
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _extract_output_items(result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1262,7 +1175,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output": msg.get("content", ""),
                 })
 
-        # Final assistant message
         final = result.get("final_response", "")
         if not final:
             final = result.get("error", "(No response generated)")
@@ -1279,9 +1191,6 @@ class APIServerAdapter(BasePlatformAdapter):
         })
         return items
 
-    # ------------------------------------------------------------------
-    # Agent execution
-    # ------------------------------------------------------------------
 
     async def _run_agent(
         self,
@@ -1328,12 +1237,9 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return await loop.run_in_executor(None, _run)
 
-    # ------------------------------------------------------------------
-    # /v1/runs — structured event streaming
-    # ------------------------------------------------------------------
 
-    _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
-    _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
+    _MAX_CONCURRENT_RUNS = 10
+    _RUN_STREAM_TTL = 300
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -1372,7 +1278,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
 
         return _callback
 
@@ -1382,7 +1287,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        # Enforce concurrency limit
         if len(self._run_streams) >= self._MAX_CONCURRENT_RUNS:
             return web.json_response(
                 _openai_error(f"Too many concurrent runs (max {self._MAX_CONCURRENT_RUNS})", code="rate_limit_exceeded"),
@@ -1410,7 +1314,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
-        # Also wire stream_delta_callback so message.delta events flow through
         def _text_cb(delta: Optional[str]) -> None:
             if delta is None:
                 return
@@ -1427,8 +1330,6 @@ class APIServerAdapter(BasePlatformAdapter):
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
-        # Accept explicit conversation_history from the request body.
-        # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
@@ -1454,15 +1355,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 if instructions is None:
                     instructions = stored.get("instructions")
 
-        # When input is a multi-message array, extract all but the last
-        # message as conversation history (the last becomes user_message).
-        # Only fires when no explicit history was provided.
         if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
             for msg in raw_input[:-1]:
                 if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
                     content = msg["content"]
                     if isinstance(content, list):
-                        # Flatten multi-part content blocks to text
                         content = " ".join(
                             part.get("text", "") for part in content
                             if isinstance(part, dict) and part.get("type") == "text"
@@ -1513,7 +1410,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             finally:
-                # Sentinel: signal SSE stream to close
                 try:
                     q.put_nowait(None)
                 except Exception:
@@ -1537,7 +1433,6 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = request.match_info["run_id"]
 
-        # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
             if run_id in self._run_streams:
                 break
@@ -1565,7 +1460,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(b": keepalive\n\n")
                     continue
                 if event is None:
-                    # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
                 payload = f"data: {json.dumps(event)}\n\n"
@@ -1593,9 +1487,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_streams.pop(run_id, None)
                 self._run_streams_created.pop(run_id, None)
 
-    # ------------------------------------------------------------------
-    # BasePlatformAdapter interface
-    # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
         """Start the aiohttp web server."""
@@ -1614,7 +1505,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
-            # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
             self._app.router.add_get("/api/jobs/{job_id}", self._handle_get_job)
@@ -1623,10 +1513,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
-            # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
-            # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
                 self._background_tasks.add(sweep_task)
@@ -1635,7 +1523,6 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
-            # Port conflict detection — fail fast if port is already in use
             import socket as _socket
             try:
                 with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
@@ -1644,7 +1531,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
                 return False
             except (ConnectionRefusedError, OSError):
-                pass  # port is free
+                pass
 
             self._runner = web.AppRunner(self._app)
             await self._runner.setup()

@@ -37,14 +37,6 @@ from agent.tts_provider import TTSProvider
 logger = logging.getLogger(__name__)
 
 
-# Names reserved for native built-in TTS handlers. Plugins cannot
-# register a name in this set — the registration call is rejected with
-# a warning. **Kept in sync with ``BUILTIN_TTS_PROVIDERS`` in
-# :mod:`tools.tts_tool`** — a regression test in
-# ``tests/agent/test_tts_registry.py::TestBuiltinSync`` fails if the
-# two lists drift. Importing from ``tools.tts_tool`` directly would
-# create a circular dependency (``tools.tts_tool`` imports
-# ``agent.tts_registry`` for dispatch).
 _BUILTIN_NAMES = frozenset({
     "edge",
     "elevenlabs",

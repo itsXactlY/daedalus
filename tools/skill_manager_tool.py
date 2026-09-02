@@ -44,8 +44,6 @@ from typing import Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
-# Import security scanner — agent-created skills get the same scrutiny as
-# community hub installs.
 try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
@@ -64,10 +62,8 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
             report = format_scan_report(result)
             return f"Security scan blocked this skill ({reason}):\n{report}"
         if allowed is None:
-            # "ask" — allow but include the warning so the user sees the findings
             report = format_scan_report(result)
             logger.warning("Agent-created skill has security findings: %s", reason)
-            # Don't block — return None to allow, but log the warning
             return None
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
@@ -76,25 +72,19 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
 import yaml
 
 
-# All skills live in ~/.daedalus/skills/ (single source of truth)
 DAEDALUS_HOME = get_daedalus_home()
 SKILLS_DIR = DAEDALUS_HOME / "skills"
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
-MAX_SKILL_CONTENT_CHARS = 100_000   # ~36k tokens at 2.75 chars/token
-MAX_SKILL_FILE_BYTES = 1_048_576    # 1 MiB per supporting file
+MAX_SKILL_CONTENT_CHARS = 100_000
+MAX_SKILL_FILE_BYTES = 1_048_576
 
-# Characters allowed in skill names (filesystem-safe, URL-friendly)
 VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 
-# Subdirectories allowed for write_file/remove_file
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
-# =============================================================================
-# Validation helpers
-# =============================================================================
 
 def _validate_name(name: str) -> Optional[str]:
     """Validate a skill name. Returns error message or None if valid."""
@@ -224,16 +214,13 @@ def _validate_file_path(file_path: str) -> Optional[str]:
 
     normalized = Path(file_path)
 
-    # Prevent path traversal
     if ".." in normalized.parts:
         return "Path traversal ('..') is not allowed."
 
-    # Must be under an allowed subdirectory
     if not normalized.parts or normalized.parts[0] not in ALLOWED_SUBDIRS:
         allowed = ", ".join(sorted(ALLOWED_SUBDIRS))
         return f"File must be under one of: {allowed}. Got: '{file_path}'"
 
-    # Must have a filename (not just a directory)
     if len(normalized.parts) < 2:
         return f"Provide a file path, not just a directory. Example: '{normalized.parts[0]}/myfile.md'"
 
@@ -264,7 +251,6 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
             f.write(content)
         os.replace(temp_path, file_path)
     except Exception:
-        # Clean up temp file on error
         try:
             os.unlink(temp_path)
         except OSError:
@@ -272,13 +258,9 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         raise
 
 
-# =============================================================================
-# Core actions
-# =============================================================================
 
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
-    # Validate name
     err = _validate_name(name)
     if err:
         return {"success": False, "error": err}
@@ -287,7 +269,6 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Validate content
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
@@ -296,7 +277,6 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if err:
         return {"success": False, "error": err}
 
-    # Check for name collisions across all directories
     existing = _find_skill(name)
     if existing:
         return {
@@ -304,15 +284,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
             "error": f"A skill named '{name}' already exists at {existing['path']}."
         }
 
-    # Create the skill directory
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write SKILL.md atomically
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
         shutil.rmtree(skill_dir, ignore_errors=True)
@@ -348,11 +325,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
     skill_md = existing["path"] / "SKILL.md"
-    # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
@@ -390,13 +365,11 @@ def _patch_skill(
     skill_dir = existing["path"]
 
     if file_path:
-        # Patching a supporting file
         err = _validate_file_path(file_path)
         if err:
             return {"success": False, "error": err}
         target = skill_dir / file_path
     else:
-        # Patching SKILL.md
         target = skill_dir / "SKILL.md"
 
     if not target.exists():
@@ -404,17 +377,12 @@ def _patch_skill(
 
     content = target.read_text(encoding="utf-8")
 
-    # Use the same fuzzy matching engine as the file patch tool.
-    # This handles whitespace normalization, indentation differences,
-    # escape sequences, and block-anchor matching — saving the agent
-    # from exact-match failures on minor formatting mismatches.
     from tools.fuzzy_match import fuzzy_find_and_replace
 
     new_content, match_count, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all
     )
     if match_error:
-        # Show a short preview of the file so the model can self-correct
         preview = content[:500] + ("..." if len(content) > 500 else "")
         return {
             "success": False,
@@ -422,13 +390,11 @@ def _patch_skill(
             "file_preview": preview,
         }
 
-    # Check size limit on the result
     target_label = "SKILL.md" if not file_path else file_path
     err = _validate_content_size(new_content, label=target_label)
     if err:
         return {"success": False, "error": err}
 
-    # If patching SKILL.md, validate frontmatter is still intact
     if not file_path:
         err = _validate_frontmatter(new_content)
         if err:
@@ -437,10 +403,9 @@ def _patch_skill(
                 "error": f"Patch would break SKILL.md structure: {err}",
             }
 
-    original_content = content  # for rollback
+    original_content = content
     _atomic_write_text(target, new_content)
 
-    # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
         _atomic_write_text(target, original_content)
@@ -461,7 +426,6 @@ def _delete_skill(name: str) -> Dict[str, Any]:
     skill_dir = existing["path"]
     shutil.rmtree(skill_dir)
 
-    # Clean up empty category directories (don't remove SKILLS_DIR itself)
     parent = skill_dir.parent
     if parent != SKILLS_DIR and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
@@ -481,7 +445,6 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not file_content and file_content != "":
         return {"success": False, "error": "file_content is required."}
 
-    # Check size limits
     content_bytes = len(file_content.encode("utf-8"))
     if content_bytes > MAX_SKILL_FILE_BYTES:
         return {
@@ -502,11 +465,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
 
     target = existing["path"] / file_path
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
     _atomic_write_text(target, file_content)
 
-    # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
     if scan_error:
         if original_content is not None:
@@ -535,7 +496,6 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     target = skill_dir / file_path
     if not target.exists():
-        # List what's actually there for the model to see
         available = []
         for subdir in ALLOWED_SUBDIRS:
             d = skill_dir / subdir
@@ -551,7 +511,6 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
     target.unlink()
 
-    # Clean up empty subdirectories
     parent = target.parent
     if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
@@ -562,9 +521,6 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     }
 
 
-# =============================================================================
-# Main entry point
-# =============================================================================
 
 def skill_manage(
     action: str,
@@ -627,9 +583,6 @@ def skill_manage(
     return json.dumps(result, ensure_ascii=False)
 
 
-# =============================================================================
-# OpenAI Function-Calling Schema
-# =============================================================================
 
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
@@ -709,7 +662,6 @@ SKILL_MANAGE_SCHEMA = {
 }
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

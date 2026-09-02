@@ -35,7 +35,6 @@ class TestSlashCommandPrefixMatching:
                 raise RecursionError("process_command called too many times")
             return original(self_inner, cmd)
 
-        # Mock show_config since the test is about recursion, not config display
         with patch.object(type(cli_obj), 'process_command', counting_process_command), \
              patch.object(cli_obj, 'show_config'):
             try:
@@ -43,7 +42,6 @@ class TestSlashCommandPrefixMatching:
             except RecursionError:
                 assert False, "process_command recursed infinitely"
 
-        # Should have been called at most twice: once for /con set..., once for /config set...
         assert len(dispatched) <= 2
 
     def test_exact_command_with_args_does_not_recurse(self):
@@ -59,7 +57,6 @@ class TestSlashCommandPrefixMatching:
                 raise RecursionError("Infinite recursion detected")
             return original_pc(self_inner, cmd)
 
-        # Mock show_config since the test is about recursion, not config display
         with patch.object(DaedalusCLI, 'process_command', guarded), \
              patch.object(cli_obj, 'show_config'):
             try:
@@ -103,21 +100,18 @@ class TestSlashCommandPrefixMatching:
         with patch.object(cli_mod, '_skill_commands', fake_skill):
             cli_obj.process_command("/test-skill-xy")
 
-        # Should NOT show "Unknown command" — should have dispatched or attempted skill
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected skill prefix to match, got: {printed}"
 
     def test_ambiguous_between_builtin_and_skill(self):
         """Ambiguous prefix spanning builtin + skill commands shows suggestions."""
         cli_obj = _make_cli()
-        # /help-extra is a fake skill that shares /hel prefix with /help
         fake_skill = {"/help-extra": {"name": "Help Extra", "description": "test"}}
 
         import cli as cli_mod
         with patch.object(cli_mod, '_skill_commands', fake_skill),              patch.object(cli_obj, 'show_help') as mock_help:
             cli_obj.process_command("/help")
 
-        # /help is an exact match so should work normally, not show ambiguous
         mock_help.assert_called_once()
         printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
         assert "Ambiguous" not in printed
@@ -129,10 +123,8 @@ class TestSlashCommandPrefixMatching:
 
         import cli as cli_mod
         with patch.object(cli_mod, '_skill_commands', fake_skill):
-            # /quit is caught by the exact "/quit" branch → process_command returns False
             result = cli_obj.process_command("/qui")
 
-        # Returns False because /quit was dispatched (exits chat loop)
         assert result is False
         printed = " ".join(str(c) for c in cli_obj.console.print.call_args_list)
         assert "Ambiguous" not in printed

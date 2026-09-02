@@ -18,9 +18,6 @@ Usage:
 import re
 import base64
 
-# ═══════════════════════════════════════════════════════════════════
-# Trigger words that commonly trip safety classifiers
-# ═══════════════════════════════════════════════════════════════════
 
 TRIGGER_WORDS = [
     'hack', 'exploit', 'bypass', 'crack', 'break', 'attack', 'penetrate',
@@ -35,9 +32,6 @@ TRIGGER_WORDS = [
     'act as', 'you are now', 'new identity',
 ]
 
-# ═══════════════════════════════════════════════════════════════════
-# Character maps
-# ═══════════════════════════════════════════════════════════════════
 
 LEET_MAP = {'a': '4', 'b': '8', 'c': '(', 'e': '3', 'g': '9', 'h': '#',
             'i': '1', 'l': '1', 'o': '0', 's': '5', 't': '7', 'z': '2'}
@@ -106,9 +100,6 @@ BRAILLE_MAP = {
     'z': '⠵', ' ': '⠀',
 }
 
-# ═══════════════════════════════════════════════════════════════════
-# 33 Obfuscation Techniques (3 tiers)
-# ═══════════════════════════════════════════════════════════════════
 
 def _apply_raw(word):
     """Raw — no transformation (baseline)."""
@@ -175,7 +166,6 @@ def _apply_underscored(word):
     """Under_score — underscores between characters."""
     return '_'.join(word)
 
-# ─── TIER 2: ENCODING + FRAMING (12–22) ─────────────────────────
 
 def _apply_reversed(word):
     """Reversed — reverse the characters."""
@@ -242,7 +232,6 @@ def _apply_hyphenated(word):
     """Hyphen — hyphens between characters."""
     return '-'.join(word)
 
-# ─── TIER 3: MULTI-LAYER COMBOS (23–33) ─────────────────────────
 
 def _apply_leetunicode(word):
     """L33t+Uni — alternating leet and unicode."""
@@ -338,12 +327,8 @@ def _apply_triplelayer(word):
     return '\u200D'.join(result)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Technique registry (ordered by tier)
-# ═══════════════════════════════════════════════════════════════════
 
 TECHNIQUES = [
-    # TIER 1: CORE OBFUSCATION (1-11)
     {'name': 'raw',          'label': 'Raw',         'tier': 1, 'fn': _apply_raw},
     {'name': 'leetspeak',    'label': 'L33t',        'tier': 1, 'fn': _apply_leetspeak},
     {'name': 'unicode',      'label': 'Unicode',     'tier': 1, 'fn': _apply_unicode},
@@ -356,7 +341,6 @@ TECHNIQUES = [
     {'name': 'dotted',       'label': 'Dotted',      'tier': 1, 'fn': _apply_dotted},
     {'name': 'underscored',  'label': 'Under_score', 'tier': 1, 'fn': _apply_underscored},
 
-    # TIER 2: ENCODING + FRAMING (12-22)
     {'name': 'reversed',     'label': 'Reversed',    'tier': 2, 'fn': _apply_reversed},
     {'name': 'superscript',  'label': 'Superscript', 'tier': 2, 'fn': _apply_superscript},
     {'name': 'smallcaps',    'label': 'SmallCaps',   'tier': 2, 'fn': _apply_smallcaps},
@@ -369,7 +353,6 @@ TECHNIQUES = [
     {'name': 'leetheavy',    'label': 'L33t+',       'tier': 2, 'fn': _apply_leetheavy},
     {'name': 'hyphenated',   'label': 'Hyphen',      'tier': 2, 'fn': _apply_hyphenated},
 
-    # TIER 3: MULTI-LAYER COMBOS (23-33)
     {'name': 'leetunicode',     'label': 'L33t+Uni',  'tier': 3, 'fn': _apply_leetunicode},
     {'name': 'spacedmixed',     'label': 'S p A c E d','tier': 3, 'fn': _apply_spacedmixed},
     {'name': 'reversedleet',    'label': 'Rev+L33t',  'tier': 3, 'fn': _apply_reversedleet},
@@ -385,9 +368,6 @@ TECHNIQUES = [
 
 TIER_SIZES = {'light': 11, 'standard': 22, 'heavy': 33}
 
-# ═══════════════════════════════════════════════════════════════════
-# Encoding escalation (for retry logic with GODMODE CLASSIC)
-# ═══════════════════════════════════════════════════════════════════
 
 def to_braille(text):
     """Convert text to braille Unicode characters."""
@@ -430,9 +410,6 @@ ENCODING_ESCALATION = [
 ]
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Core functions
-# ═══════════════════════════════════════════════════════════════════
 
 def detect_triggers(text, custom_triggers=None):
     """Detect trigger words in text. Returns list of found triggers."""
@@ -463,13 +440,11 @@ def obfuscate_query(query, technique_name, triggers=None):
     if not triggers or technique_name == 'raw':
         return query
     
-    # Find the technique function
     tech = next((t for t in TECHNIQUES if t['name'] == technique_name), None)
     if not tech:
         return query
     
     result = query
-    # Sort longest-first to avoid partial replacements
     sorted_triggers = sorted(triggers, key=len, reverse=True)
     for trigger in sorted_triggers:
         pattern = re.compile(r'\b(' + re.escape(trigger) + r')\b', re.IGNORECASE)
@@ -520,9 +495,6 @@ def escalate_encoding(query, level=0):
     return enc['fn'](query), enc['label']
 
 
-# ═══════════════════════════════════════════════════════════════════
-# CLI interface
-# ═══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
     import argparse

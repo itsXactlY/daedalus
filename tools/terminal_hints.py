@@ -28,13 +28,10 @@ from __future__ import annotations
 import re
 from typing import Callable, Optional
 
-# Bounded scan window: error headers appear early; deep output is noise.
 _SCAN_CHARS = 4000
 
 
 def _hint_gh_unknown_json_field(command: str, output: str) -> Optional[str]:
-    # ~9,175x: gh CLI version drift — model asks for fields the installed
-    # gh doesn't know. gh already prints the valid field list.
     m = re.search(r'Unknown JSON field: "?(\w+)', output)
     if not m:
         return None
@@ -46,7 +43,6 @@ def _hint_gh_unknown_json_field(command: str, output: str) -> Optional[str]:
 
 
 def _hint_command_not_found(command: str, output: str) -> Optional[str]:
-    # ~1,010x generic; 837x of them are bare `python` on python3-only distros.
     m = re.search(r"(?:bash: line \d+: |bash: |sh: \d*:? ?)?([\w.+-]+): command not found", output)
     if not m:
         return None
@@ -69,7 +65,6 @@ def _hint_command_not_found(command: str, output: str) -> Optional[str]:
 
 
 def _hint_module_not_found(command: str, output: str) -> Optional[str]:
-    # ~739x: almost always a venv-activation slip, not a missing dependency.
     m = re.search(r"(?:ModuleNotFoundError|ImportError): No module named '?([\w.]+)", output)
     if not m:
         return None
@@ -82,7 +77,6 @@ def _hint_module_not_found(command: str, output: str) -> Optional[str]:
 
 
 def _hint_merge_conflict(command: str, output: str) -> Optional[str]:
-    # ~1,172x: models sometimes re-run the failing merge/rebase verbatim.
     if not re.search(r"^CONFLICT |Automatic merge failed|needs merge", output, re.M):
         return None
     return (
@@ -94,7 +88,6 @@ def _hint_merge_conflict(command: str, output: str) -> Optional[str]:
 
 
 def _hint_already_exists(command: str, output: str) -> Optional[str]:
-    # ~633x: branch/dir/file already exists → retrying unchanged always fails.
     m = re.search(r"(?:fatal|error):.*?'([^']+)' already exists", output)
     if not m:
         return None
@@ -106,7 +99,6 @@ def _hint_already_exists(command: str, output: str) -> Optional[str]:
 
 
 def _hint_gh_rate_limit(command: str, output: str) -> Optional[str]:
-    # ~133x: immediate retries burn turns; the limit is time-based.
     if "API rate limit" not in output and "was submitted too quickly" not in output:
         return None
     return (
@@ -125,7 +117,6 @@ def _hint_permission_denied(command: str, output: str) -> Optional[str]:
     )
 
 
-# Ordered by production frequency — first match wins.
 _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     _hint_gh_unknown_json_field,
     _hint_merge_conflict,
@@ -136,8 +127,6 @@ _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     _hint_permission_denied,
 ]
 
-# Exit-code-only hints for codes the semantics table in terminal_tool does
-# not cover per-command. Checked after output patterns.
 _EXIT_CODE_HINTS: dict[int, str] = {
     126: "Exit 126: the file was found but is not executable — `chmod +x` it or invoke it via its interpreter (e.g. `bash script.sh`).",
     137: "Exit 137: the process was SIGKILLed — usually out-of-memory or an external kill. Reduce memory use or check `dmesg | tail` before retrying.",

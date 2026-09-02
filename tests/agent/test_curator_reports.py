@@ -68,7 +68,6 @@ def test_write_run_report_creates_both_files(curator_env):
     assert (run_dir / "run.json").exists()
     assert (run_dir / "REPORT.md").exists()
 
-    # The directory name is a timestamp under logs/curator/
     assert run_dir.parent == curator._reports_root()
 
 
@@ -96,7 +95,6 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
     b = curator._write_run_report(**kwargs)
     assert a != b
     assert a is not None and b is not None
-    # Second dir has a numeric disambiguator suffix
     assert b.name.startswith(a.name)
 
 
@@ -104,17 +102,6 @@ def test_same_second_reruns_get_unique_dirs(curator_env):
 
 
 
-# ---------------------------------------------------------------------------
-# Cron job skill reference rewriting (curator ↔ cron integration)
-# ---------------------------------------------------------------------------
-#
-# When the curator consolidates skill X into umbrella Y during a run, any
-# cron job that listed X in its ``skills`` field would fail to load X at
-# run time — the scheduler logs a warning and skips it, so the scheduled
-# job runs without the instructions it was scheduled to follow. These
-# tests verify that _write_run_report calls into cron.jobs to repair
-# those references and records what it did in both run.json and
-# cron_rewrites.json.
 
 
 @pytest.fixture
@@ -142,7 +129,6 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     curator = curator_env_with_cron["curator"]
     jobs = curator_env_with_cron["jobs"]
 
-    # Create a cron job that depends on a soon-to-be-consolidated skill
     job = jobs.create_job(
         prompt="",
         schedule="every 1h",
@@ -150,7 +136,6 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
         name="foo-watcher",
     )
 
-    # Simulate a curator pass that consolidated `foo` → `foo-umbrella`
     before = [{"name": "foo", "state": "active", "pinned": False}]
     after = [{"name": "foo-umbrella", "state": "active", "pinned": False}]
 
@@ -178,12 +163,10 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
         ),
     )
 
-    # Cron job is rewritten on disk
     loaded = jobs.get_job(job["id"])
     assert loaded["skills"] == ["foo-umbrella"]
     assert loaded["skill"] == "foo-umbrella"
 
-    # Rewrite is recorded in run.json
     payload = json.loads((run_dir / "run.json").read_text())
     assert payload["cron_rewrites"]["jobs_updated"] == 1
     assert payload["counts"]["cron_jobs_rewritten"] == 1
@@ -191,13 +174,11 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
     assert len(rewrites) == 1
     assert rewrites[0]["mapped"] == {"foo": "foo-umbrella"}
 
-    # Separate cron_rewrites.json is written for convenience
     cron_file = run_dir / "cron_rewrites.json"
     assert cron_file.exists()
     detail = json.loads(cron_file.read_text())
     assert detail["jobs_updated"] == 1
 
-    # Markdown surfaces the change
     md = (run_dir / "REPORT.md").read_text()
     assert "Cron job skill references rewritten" in md
     assert "foo-watcher" in md

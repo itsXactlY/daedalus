@@ -37,10 +37,10 @@ class DeliveryTarget:
     - "telegram:123456" → specific Telegram chat
     """
     platform: Platform
-    chat_id: Optional[str] = None  # None means use home channel
+    chat_id: Optional[str] = None
     thread_id: Optional[str] = None
     is_origin: bool = False
-    is_explicit: bool = False  # True if chat_id was explicitly specified
+    is_explicit: bool = False
     
     @classmethod
     def parse(cls, target: str, origin: Optional[SessionSource] = None) -> "DeliveryTarget":
@@ -64,13 +64,11 @@ class DeliveryTarget:
                     is_origin=True,
                 )
             else:
-                # Fallback to local if no origin
                 return cls(platform=Platform.LOCAL, is_origin=True)
         
         if target == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id or platform:chat_id:thread_id format
         if ":" in target:
             parts = target.split(":", 2)
             platform_str = parts[0]
@@ -80,15 +78,12 @@ class DeliveryTarget:
                 platform = Platform(platform_str)
                 return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
             except ValueError:
-                # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
         
-        # Just a platform name (use home channel)
         try:
             platform = Platform(target)
             return cls(platform=platform)
         except ValueError:
-            # Unknown platform, treat as local
             return cls(platform=Platform.LOCAL)
     
     def to_string(self) -> str:
@@ -148,22 +143,18 @@ class DeliveryRouter:
         for target_str in deliver:
             target = DeliveryTarget.parse(target_str, origin)
             
-            # Resolve home channel if needed
             if target.chat_id is None and target.platform != Platform.LOCAL:
                 home = self.config.get_home_channel(target.platform)
                 if home:
                     target.chat_id = home.chat_id
                 else:
-                    # No home channel configured, skip this platform
                     continue
             
-            # Deduplicate
             key = (target.platform, target.chat_id, target.thread_id)
             if key not in seen_platforms:
                 seen_platforms.add(key)
                 targets.append(target)
         
-        # Always include local if configured
         if self.config.always_log_local:
             local_key = (Platform.LOCAL, None, None)
             if local_key not in seen_platforms:
@@ -230,7 +221,6 @@ class DeliveryRouter:
         
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Build the output document
         lines = []
         if job_name:
             lines.append(f"# {job_name}")
@@ -283,7 +273,6 @@ class DeliveryRouter:
         if not target.chat_id:
             raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
-        # Guard: truncate oversized cron output to stay within platform limits
         if len(content) > MAX_PLATFORM_OUTPUT:
             job_id = (metadata or {}).get("job_id", "unknown")
             saved_path = self._save_full_output(content, job_id)

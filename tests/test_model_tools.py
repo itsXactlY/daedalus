@@ -15,9 +15,6 @@ from model_tools import (
 )
 
 
-# =========================================================================
-# handle_function_call
-# =========================================================================
 
 class TestHandleFunctionCall:
     def test_agent_loop_tool_returns_error(self):
@@ -32,8 +29,7 @@ class TestHandleFunctionCall:
         assert "totally_fake_tool_xyz" in result["error"]
 
     def test_exception_returns_json_error(self):
-        # Even if something goes wrong, should return valid JSON
-        result = handle_function_call("web_search", None)  # None args may cause issues
+        result = handle_function_call("web_search", None)
         parsed = json.loads(result)
         assert isinstance(parsed, dict)
         assert "error" in parsed
@@ -75,9 +71,6 @@ class TestHandleFunctionCall:
         ]
 
 
-# =========================================================================
-# Agent loop tools
-# =========================================================================
 
 class TestAgentLoopTools:
     def test_expected_tools_in_set(self):
@@ -91,9 +84,6 @@ class TestAgentLoopTools:
         assert "terminal" not in _AGENT_LOOP_TOOLS
 
 
-# =========================================================================
-# Legacy toolset map
-# =========================================================================
 
 class TestLegacyToolsetMap:
     def test_expected_legacy_names(self):
@@ -112,16 +102,12 @@ class TestLegacyToolsetMap:
                 assert isinstance(tool, str), f"{name} contains non-string: {tool}"
 
 
-# =========================================================================
-# Backward-compat wrappers
-# =========================================================================
 
 class TestBackwardCompat:
     def test_get_all_tool_names_returns_list(self):
         names = get_all_tool_names()
         assert isinstance(names, list)
         assert len(names) > 0
-        # Should contain well-known tools
         assert "web_search" in names
         assert "terminal" in names
 

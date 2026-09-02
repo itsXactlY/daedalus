@@ -20,9 +20,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _isolate_daedalus_home(tmp_path, monkeypatch):
@@ -183,7 +180,6 @@ def mock_session_db(tmp_path, populated_sessions_dir):
     ]
     _create_test_db(db_path, "20260329_120000_abc123", messages)
 
-    # Create a mock SessionDB that reads from our test DB
     class TestSessionDB:
         def __init__(self):
             self._db_path = db_path
@@ -207,9 +203,6 @@ def mock_session_db(tmp_path, populated_sessions_dir):
     return TestSessionDB()
 
 
-# ---------------------------------------------------------------------------
-# 1. UNIT TESTS — helpers, extraction, attachments
-# ---------------------------------------------------------------------------
 
 class TestImports:
     def test_import_module(self):
@@ -301,9 +294,6 @@ class TestAttachmentExtraction:
         assert att[0]["type"] == "image"
 
 
-# ---------------------------------------------------------------------------
-# 2. EVENT BRIDGE TESTS — queue, cursors, waiters, concurrency
-# ---------------------------------------------------------------------------
 
 class TestEventBridge:
     def test_create(self):
@@ -434,9 +424,6 @@ class TestEventBridge:
         assert "error" in r
 
 
-# ---------------------------------------------------------------------------
-# 3. END-TO-END TESTS — call MCP tools through FastMCP server
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
@@ -481,7 +468,6 @@ class TestE2EConversationsList:
         server, _ = mcp_server_e2e
         result = _run_tool(server, "conversations_list")
         keys = [c["session_key"] for c in result["conversations"]]
-        # Telegram (14:30) > Discord (13:00) > Slack (11:00)
         assert keys[0] == "agent:main:telegram:dm:123456"
         assert keys[1] == "agent:main:discord:group:789:456"
         assert keys[2] == "agent:main:slack:group:C1234:U5678"
@@ -537,7 +523,6 @@ class TestE2EMessagesRead:
         result = _run_tool(server, "messages_read",
                           {"session_key": "agent:main:telegram:dm:123456"})
         assert result["count"] > 0
-        # Should filter out tool messages — only user/assistant
         roles = {m["role"] for m in result["messages"]}
         assert "tool" not in roles
         assert "user" in roles
@@ -557,7 +542,7 @@ class TestE2EMessagesRead:
                           {"session_key": "agent:main:telegram:dm:123456"})
         for msg in result["messages"]:
             assert "id" in msg
-            assert msg["id"]  # non-empty
+            assert msg["id"]
 
     def test_read_with_limit(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
@@ -576,10 +561,8 @@ class TestE2EMessagesRead:
 class TestE2EAttachmentsFetch:
     def test_fetch_media_from_message(self, mcp_server_e2e, _event_loop):
         server, _ = mcp_server_e2e
-        # First get message IDs
         msgs = _run_tool(server, "messages_read",
                         {"session_key": "agent:main:telegram:dm:123456"})
-        # Find the message with MEDIA: tag
         media_msg = None
         for m in msgs["messages"]:
             if "MEDIA:" in m["content"]:
@@ -685,7 +668,6 @@ class TestE2EEventsWait:
         from mcp_serve import QueueEvent
         server, bridge = mcp_server_e2e
         bridge._enqueue(QueueEvent(cursor=0, type="message", session_key="t"))
-        # Even with huge timeout, should return immediately since event exists
         result = _run_tool(server, "events_wait", {"timeout_ms": 999999})
         assert result["event"] is not None
 
@@ -734,9 +716,7 @@ class TestE2EChannelsList:
                 {"id": "-100999", "name": "Dev Group", "type": "group"},
             ],
         })
-        # Need to recreate server to pick up the new mock
         server, bridge = mcp_server_e2e
-        # The tool closure already captured the old mock, so test the function directly
         directory = mcp_serve._load_channel_directory()
         assert len(directory["telegram"]) == 2
 
@@ -767,7 +747,6 @@ class TestE2EPermissions:
                           {"id": "a1", "decision": "allow-once"})
         assert result["resolved"] is True
         assert result["decision"] == "allow-once"
-        # Should be gone now
         check = _run_tool(server, "permissions_list_open")
         assert check["count"] == 0
 
@@ -792,9 +771,6 @@ class TestE2EPermissions:
         assert "error" in result
 
 
-# ---------------------------------------------------------------------------
-# 4. TOOL LISTING — verify all 10 tools are registered
-# ---------------------------------------------------------------------------
 
 class TestToolRegistration:
     def test_all_tools_registered(self, mcp_server_e2e, _event_loop):
@@ -816,9 +792,6 @@ class TestToolRegistration:
             assert tool.description, f"Tool {tool.name} has no description"
 
 
-# ---------------------------------------------------------------------------
-# 5. SERVER LIFECYCLE / CLI INTEGRATION
-# ---------------------------------------------------------------------------
 
 class TestServerCreation:
     def test_create_server(self, populated_sessions_dir, monkeypatch):
@@ -888,9 +861,6 @@ class TestCliIntegration:
         mock_run.assert_called_once_with(verbose=True)
 
 
-# ---------------------------------------------------------------------------
-# 6. EDGE CASES
-# ---------------------------------------------------------------------------
 
 class TestEdgeCases:
     def test_empty_sessions_json(self, sessions_dir, monkeypatch):
@@ -924,9 +894,6 @@ class TestEdgeCases:
         assert len(("x" * 5000)[:2000]) == 2000
 
 
-# ---------------------------------------------------------------------------
-# 7. EVENT BRIDGE POLL LOOP E2E — real SQLite DB, mtime optimization
-# ---------------------------------------------------------------------------
 
 class TestEventBridgePollE2E:
     """End-to-end tests for the EventBridge polling loop with real files."""
@@ -941,7 +908,6 @@ class TestEventBridgePollE2E:
         session_id = "20260329_150000_poll_test"
         db_path = tmp_path / "state.db"
 
-        # Write sessions.json
         sessions_data = {
             "agent:main:telegram:dm:poll_test": {
                 "session_key": "agent:main:telegram:dm:poll_test",
@@ -955,7 +921,6 @@ class TestEventBridgePollE2E:
         }
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
 
-        # Write messages to SQLite
         messages = [
             {"role": "user", "content": "First message",
              "timestamp": "2026-03-29T15:00:01"},
@@ -964,7 +929,6 @@ class TestEventBridgePollE2E:
         ]
         _create_test_db(db_path, session_id, messages)
 
-        # Create a mock SessionDB that reads our test DB
         class TestDB:
             def get_messages(self, sid):
                 conn = sqlite3.connect(str(db_path))
@@ -979,10 +943,8 @@ class TestEventBridgePollE2E:
         monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: TestDB())
 
         bridge = mcp_serve.EventBridge()
-        # Run one poll cycle manually
         bridge._poll_once(TestDB())
 
-        # Should have found the messages
         result = bridge.poll_events(after_cursor=0)
         assert len(result["events"]) == 2
         assert result["events"][0]["role"] == "user"
@@ -1031,12 +993,10 @@ class TestEventBridgePollE2E:
         db = TestDB()
         bridge = mcp_serve.EventBridge()
 
-        # First poll — should process
         bridge._poll_once(db)
         first_calls = db.call_count
         assert first_calls >= 1
 
-        # Second poll — files unchanged, should skip entirely
         bridge._poll_once(db)
         assert db.call_count == first_calls, \
             "Second poll should skip DB queries when files unchanged"
@@ -1079,12 +1039,10 @@ class TestEventBridgePollE2E:
         db = TestDB()
         bridge = mcp_serve.EventBridge()
 
-        # First poll
         bridge._poll_once(db)
         r1 = bridge.poll_events(after_cursor=0)
         assert len(r1["events"]) == 1
 
-        # Add a new message to the DB
         conn = sqlite3.connect(str(db_path))
         conn.execute(
             "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
@@ -1092,14 +1050,11 @@ class TestEventBridgePollE2E:
         )
         conn.commit()
         conn.close()
-        # Touch the DB file to update mtime (WAL mode may not update mtime on small writes)
         os.utime(db_path, None)
 
-        # Update sessions.json updated_at to trigger re-check
         sessions_data["agent:main:telegram:dm:new"]["updated_at"] = "2026-03-29T15:00:10"
         (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
 
-        # Second poll — should detect the new message
         bridge._poll_once(db)
         r2 = bridge.poll_events(after_cursor=r1["next_cursor"])
         assert len(r2["events"]) == 1

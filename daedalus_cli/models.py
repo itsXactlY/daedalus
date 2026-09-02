@@ -20,11 +20,9 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
-# Backward-compatible aliases for the earlier GitHub Models-backed Copilot work.
 GITHUB_MODELS_BASE_URL = COPILOT_BASE_URL
 GITHUB_MODELS_CATALOG_URL = COPILOT_MODELS_URL
 
-# (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.6",       "recommended"),
     ("anthropic/claude-sonnet-4.6",     ""),
@@ -118,7 +116,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-2.5-pro",
         "gemini-2.5-flash",
         "gemini-2.5-flash-lite",
-        # Gemma open models (also served via AI Studio)
         "gemma-4-31b-it",
         "gemma-4-26b-it",
     ],
@@ -241,22 +238,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ],
-    # Alibaba DashScope Coding platform (coding-intl) — default endpoint.
-    # Supports Qwen models + third-party providers (GLM, Kimi, MiniMax).
-    # Users with classic DashScope keys should override DASHSCOPE_BASE_URL
-    # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
-    # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
         "qwen3.5-plus",
         "qwen3-coder-plus",
         "qwen3-coder-next",
-        # Third-party models available on coding-intl
         "glm-5",
         "glm-4.7",
         "kimi-k2.5",
         "MiniMax-M2.5",
     ],
-    # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B",
         "Qwen/Qwen3.5-35B-A3B",
@@ -269,14 +259,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
 }
 
-# ---------------------------------------------------------------------------
-# Nous Portal free-model filtering
-# ---------------------------------------------------------------------------
-# Models that are ALLOWED to appear when priced as free on Nous Portal.
-# Any other free model is hidden — prevents promotional/temporary free models
-# from cluttering the selection when users are paying subscribers.
-# Models in this list are ALSO filtered out if they are NOT free (i.e. they
-# should only appear in the menu when they are genuinely free).
 _NOUS_ALLOWED_FREE_MODELS: frozenset[str] = frozenset({
     "xiaomi/mimo-v2-pro",
     "xiaomi/mimo-v2-omni",
@@ -307,25 +289,20 @@ def filter_nous_free_models(
       • Allowlist models that are NOT free → drop.
     """
     if not pricing:
-        return model_ids  # no pricing data — can't filter, show everything
+        return model_ids
 
     result: list[str] = []
     for mid in model_ids:
         free = _is_model_free(mid, pricing)
         if mid in _NOUS_ALLOWED_FREE_MODELS:
-            # Allowlist model: only show when it's actually free
             if free:
                 result.append(mid)
         else:
-            # Regular model: keep only when it's NOT free
             if not free:
                 result.append(mid)
     return result
 
 
-# ---------------------------------------------------------------------------
-# Nous Portal account tier detection
-# ---------------------------------------------------------------------------
 
 def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dict[str, Any]:
     """Fetch the user's Nous Portal account/subscription info.
@@ -396,7 +373,7 @@ def partition_nous_models_by_tier(
         return (model_ids, [])
 
     if not pricing:
-        return (model_ids, [])  # can't determine, show everything
+        return (model_ids, [])
 
     selectable: list[str] = []
     unavailable: list[str] = []
@@ -408,12 +385,8 @@ def partition_nous_models_by_tier(
     return (selectable, unavailable)
 
 
-# ---------------------------------------------------------------------------
-# TTL cache for free-tier detection — avoids repeated API calls within a
-# session while still picking up upgrades quickly.
-# ---------------------------------------------------------------------------
-_FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
-_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+_FREE_TIER_CACHE_TTL: int = 180
+_free_tier_cache: tuple[bool, float] | None = None
 
 
 def clear_nous_free_tier_cache() -> None:
@@ -443,7 +416,6 @@ def check_nous_free_tier() -> bool:
     try:
         from daedalus_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
 
-        # Ensure we have a fresh token (triggers refresh if needed)
         resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
 
         state = get_provider_auth_state("nous")
@@ -462,7 +434,7 @@ def check_nous_free_tier() -> bool:
         return result
     except Exception:
         _free_tier_cache = (False, now)
-        return False  # default to paid on error — don't block users
+        return False
 
 
 _PROVIDER_LABELS = {
@@ -543,11 +515,7 @@ def menu_labels() -> list[str]:
     return labels
 
 
-# ---------------------------------------------------------------------------
-# Pricing helpers — fetch live pricing from OpenRouter-compatible /v1/models
-# ---------------------------------------------------------------------------
 
-# Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
 
 
@@ -614,7 +582,6 @@ def format_model_pricing_table(
     if not models:
         return []
 
-    # Build rows: (model_id, input_price, output_price, cache_price, is_current)
     rows: list[tuple[str, str, str, str, bool]] = []
     has_cache = False
     for mid, _desc in models:
@@ -632,19 +599,17 @@ def format_model_pricing_table(
         rows.append((mid, inp, out, cache, is_cur))
 
     name_col = max(len(r[0]) for r in rows) + 2
-    # Compute price column widths from the actual data so decimals align
     price_col = max(
         max((len(r[1]) for r in rows if r[1]), default=4),
         max((len(r[2]) for r in rows if r[2]), default=4),
-        3,  # minimum: "In" / "Out" header
+        3,
     )
     cache_col = max(
         max((len(r[3]) for r in rows if r[3]), default=4),
-        5,  # minimum: "Cache" header
+        5,
     ) if has_cache else 0
     lines: list[str] = []
 
-    # Header
     if has_cache:
         lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  {'Cache':>{cache_col}}  /Mtok")
         lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}  {'-' * cache_col}")
@@ -738,8 +703,6 @@ def get_pricing_for_provider(provider: str) -> dict[str, dict[str, str]]:
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
-            # Nous base_url typically looks like https://inference-api.nousresearch.com/v1
-            # We need the part before /v1 for our fetch function
             stripped = base_url.rstrip("/")
             if stripped.endswith("/v1"):
                 stripped = stripped[:-3]
@@ -750,7 +713,6 @@ def get_pricing_for_provider(provider: str) -> dict[str, dict[str, str]]:
     return {}
 
 
-# All provider IDs and aliases that are valid for the provider:model syntax.
 _KNOWN_PROVIDER_NAMES: set[str] = (
     set(_PROVIDER_LABELS.keys())
     | set(_PROVIDER_ALIASES.keys())
@@ -764,7 +726,6 @@ def list_available_providers() -> list[dict[str, str]]:
     Each dict has ``id``, ``label``, and ``aliases``.
     Checks which providers have valid credentials configured.
     """
-    # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
@@ -773,7 +734,6 @@ def list_available_providers() -> list[dict[str, str]]:
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]
-    # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
         aliases_for.setdefault(canonical, []).append(alias)
@@ -782,7 +742,6 @@ def list_available_providers() -> list[dict[str, str]]:
     for pid in _PROVIDER_ORDER:
         label = _PROVIDER_LABELS.get(pid, pid)
         alias_list = aliases_for.get(pid, [])
-        # Check if this provider has credentials available
         has_creds = False
         try:
             from daedalus_cli.auth import get_auth_status, has_usable_secret
@@ -828,9 +787,6 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
         provider_part = stripped[:colon].strip().lower()
         model_part = stripped[colon + 1:].strip()
         if provider_part and model_part and provider_part in _KNOWN_PROVIDER_NAMES:
-            # Support custom:name:model triple syntax for named custom
-            # providers.  ``custom:local:qwen`` → ("custom:local", "qwen").
-            # Single colon ``custom:qwen`` → ("custom", "qwen") as before.
             if provider_part == "custom" and ":" in model_part:
                 second_colon = model_part.find(":")
                 custom_name = model_part[:second_colon].strip()
@@ -865,12 +821,10 @@ def curated_models_for_provider(provider: Optional[str]) -> list[tuple[str, str]
     if normalized == "openrouter":
         return list(OPENROUTER_MODELS)
 
-    # Try live API first (Codex, Nous, etc. all support /models)
     live = provider_model_ids(normalized)
     if live:
         return [(m, "") for m in live]
 
-    # Fallback to static catalog
     models = _PROVIDER_MODELS.get(normalized, [])
     return [(m, "") for m in models]
 
@@ -897,11 +851,6 @@ def detect_provider_for_model(
 
     name_lower = name.lower()
 
-    # --- Step 0: bare provider name typed as model ---
-    # If someone types `/model nous` or `/model anthropic`, treat it as a
-    # provider switch and pick the first model from that provider's catalog.
-    # Skip "custom" and "openrouter" — custom has no model catalog, and
-    # openrouter requires an explicit model name to be useful.
     resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
     if resolved_provider not in {"custom", "openrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
@@ -912,15 +861,12 @@ def detect_provider_for_model(
         ):
             return (resolved_provider, default_models[0])
 
-    # Aggregators list other providers' models — never auto-switch TO them
     _AGGREGATORS = {"nous", "openrouter"}
 
-    # If the model belongs to the current provider's catalog, don't suggest switching
     current_models = _PROVIDER_MODELS.get(current_provider, [])
     if any(name_lower == m.lower() for m in current_models):
         return None
 
-    # --- Step 1: check static provider catalogs for a direct match ---
     direct_match: Optional[str] = None
     for pid, models in _PROVIDER_MODELS.items():
         if pid == current_provider or pid in _AGGREGATORS:
@@ -930,7 +876,6 @@ def detect_provider_for_model(
             break
 
     if direct_match:
-        # Check if we have credentials for this provider
         has_creds = False
         try:
             from daedalus_cli.auth import PROVIDER_REGISTRY
@@ -947,24 +892,18 @@ def detect_provider_for_model(
         if has_creds:
             return (direct_match, name)
 
-        # No direct creds — try to find this model on OpenRouter instead
         or_slug = _find_openrouter_slug(name)
         if or_slug:
             return ("openrouter", or_slug)
-        # Still return the direct provider — credential resolution will
-        # give a clear error rather than silently using the wrong provider
         return (direct_match, name)
 
-    # --- Step 2: check OpenRouter catalog ---
-    # First try exact match (handles provider/model format)
     or_slug = _find_openrouter_slug(name)
     if or_slug:
         if current_provider != "openrouter":
             return ("openrouter", or_slug)
-        # Already on openrouter, just return the resolved slug
         if or_slug != name:
             return ("openrouter", or_slug)
-        return None  # already on openrouter with matching name
+        return None
 
     return None
 
@@ -981,12 +920,10 @@ def _find_openrouter_slug(model_name: str) -> Optional[str]:
     if not name_lower:
         return None
 
-    # Exact match (already has provider/ prefix)
     for mid, _ in OPENROUTER_MODELS:
         if name_lower == mid.lower():
             return mid
 
-    # Try matching just the model part (after the /)
     for mid, _ in OPENROUTER_MODELS:
         if "/" in mid:
             _, model_part = mid.split("/", 1)
@@ -1051,7 +988,6 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "nous":
-        # Try live Nous Portal /models endpoint
         try:
             from daedalus_cli.auth import fetch_nous_models, resolve_nous_runtime_credentials
             creds = resolve_nous_runtime_credentials()
@@ -1072,7 +1008,6 @@ def provider_model_ids(provider: Optional[str]) -> list[str]:
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
-            # Try common API key env vars for custom endpoints
             api_key = (
                 os.getenv("CUSTOM_API_KEY", "")
                 or os.getenv("OPENAI_API_KEY", "")
@@ -1115,12 +1050,11 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode())
             models = [m["id"] for m in data.get("data", []) if m.get("id")]
-            # Sort: latest/largest first (opus > sonnet > haiku, higher version first)
             return sorted(models, key=lambda m: (
-                "opus" not in m,      # opus first
-                "sonnet" not in m,    # then sonnet
-                "haiku" not in m,     # then haiku
-                m,                    # alphabetical within tier
+                "opus" not in m,
+                "sonnet" not in m,
+                "haiku" not in m,
+                m,
             ))
     except Exception as e:
         import logging
@@ -1357,11 +1291,9 @@ def copilot_model_api_mode(
     if not normalized:
         return "chat_completions"
 
-    # Primary: model ID pattern (matches opencode's shouldUseCopilotResponsesApi)
     if _should_use_copilot_responses_api(normalized):
         return "codex_responses"
 
-    # Secondary: check catalog for non-GPT-5 models (Claude via /v1/messages, etc.)
     if catalog is None and api_key:
         catalog = fetch_github_model_catalog(api_key=api_key)
 
@@ -1373,7 +1305,6 @@ def copilot_model_api_mode(
                 for endpoint in (catalog_entry.get("supported_endpoints") or [])
                 if str(endpoint).strip()
             }
-            # For non-GPT-5 models, check if they only support messages API
             if "/v1/messages" in supported_endpoints and "/chat/completions" not in supported_endpoints:
                 return "anthropic_messages"
 
@@ -1674,12 +1605,10 @@ def validate_requested_model(
             "message": message,
         }
 
-    # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:
         if requested_for_lookup in set(api_models):
-            # API confirmed the model exists
             return {
                 "accepted": True,
                 "persist": True,
@@ -1687,10 +1616,6 @@ def validate_requested_model(
                 "message": None,
             }
         else:
-            # API responded but model is not listed.  Accept anyway —
-            # the user may have access to models not shown in the public
-            # listing (e.g. Z.AI Pro/Max plans can use glm-5 on coding
-            # endpoints even though it's not in /models).  Warn but allow.
             suggestions = get_close_matches(requested, api_models, n=3, cutoff=0.5)
             suggestion_text = ""
             if suggestions:
@@ -1707,8 +1632,6 @@ def validate_requested_model(
                 ),
             }
 
-    # api_models is None — couldn't reach API.  Accept and persist,
-    # but warn so typos don't silently break things.
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
     return {
         "accepted": True,

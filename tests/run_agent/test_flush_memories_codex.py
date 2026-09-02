@@ -62,7 +62,6 @@ def _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
         skip_context_files=True,
         skip_memory=True,
     )
-    # Give it a valid memory store
     agent._memory_store = MagicMock()
     agent._memory_flush_min_turns = 1
     agent._user_turn_count = 5
@@ -167,9 +166,7 @@ class TestFlushMemoriesUsesAuxiliaryClient:
             with patch("tools.memory_tool.memory_tool", return_value="Saved."):
                 agent.flush_memories(messages)
 
-        # Messages should not grow from the flush
         assert len(messages) <= original_len
-        # No flush sentinel should remain
         for msg in messages:
             assert "_flush_sentinel" not in msg
 

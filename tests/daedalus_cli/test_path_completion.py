@@ -160,7 +160,6 @@ class TestIntegration:
         event = MagicMock()
         completions = list(completer.get_completions(doc, event))
         names = _display_names(completions)
-        # /etc/hosts should exist on Linux
         assert any("host" in n.lower() for n in names)
 
 

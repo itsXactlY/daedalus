@@ -20,9 +20,6 @@ from acp.schema import (
 )
 
 
-# ---------------------------------------------------------------------------
-# TOOL_KIND_MAP coverage
-# ---------------------------------------------------------------------------
 
 
 COMMON_DAEDALUS_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process"]
@@ -59,9 +56,6 @@ class TestToolKindMap:
         assert get_tool_kind("nonexistent_tool_xyz") == "other"
 
 
-# ---------------------------------------------------------------------------
-# make_tool_call_id
-# ---------------------------------------------------------------------------
 
 
 class TestMakeToolCallId:
@@ -78,9 +72,6 @@ class TestMakeToolCallId:
         assert len(ids) == 100
 
 
-# ---------------------------------------------------------------------------
-# build_tool_title
-# ---------------------------------------------------------------------------
 
 
 class TestBuildToolTitle:
@@ -115,9 +106,6 @@ class TestBuildToolTitle:
         assert title == "some_new_tool"
 
 
-# ---------------------------------------------------------------------------
-# build_tool_start
-# ---------------------------------------------------------------------------
 
 
 class TestBuildToolStart:
@@ -131,7 +119,6 @@ class TestBuildToolStart:
         result = build_tool_start("tc-1", "patch", args)
         assert isinstance(result, ToolCallStart)
         assert result.kind == "edit"
-        # The first content item should be a diff
         assert len(result.content) >= 1
         diff_item = result.content[0]
         assert isinstance(diff_item, FileEditToolCallContent)
@@ -159,7 +146,6 @@ class TestBuildToolStart:
         assert len(result.content) >= 1
         content_item = result.content[0]
         assert isinstance(content_item, ContentToolCallContent)
-        # The wrapped text block should contain the command
         text = content_item.content.text
         assert "ls -la /tmp" in text
 
@@ -190,9 +176,6 @@ class TestBuildToolStart:
         assert result.kind == "other"
 
 
-# ---------------------------------------------------------------------------
-# build_tool_complete
-# ---------------------------------------------------------------------------
 
 
 class TestBuildToolComplete:
@@ -216,9 +199,6 @@ class TestBuildToolComplete:
         assert "truncated" in display_text
 
 
-# ---------------------------------------------------------------------------
-# extract_locations
-# ---------------------------------------------------------------------------
 
 
 class TestExtractLocations:

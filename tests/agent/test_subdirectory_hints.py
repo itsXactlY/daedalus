@@ -10,28 +10,22 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 @pytest.fixture
 def project(tmp_path):
     """Create a mock project tree with hint files in subdirectories."""
-    # Root — already loaded at startup
     (tmp_path / "AGENTS.md").write_text("Root project instructions")
 
-    # backend/ — has its own AGENTS.md
     backend = tmp_path / "backend"
     backend.mkdir()
     (backend / "AGENTS.md").write_text("Backend-specific instructions:\n- Use FastAPI\n- Always add type hints")
 
-    # backend/src/ — no hints
     (backend / "src").mkdir()
     (backend / "src" / "main.py").write_text("print('hello')")
 
-    # frontend/ — has CLAUDE.md
     frontend = tmp_path / "frontend"
     frontend.mkdir()
     (frontend / "CLAUDE.md").write_text("Frontend rules:\n- Use TypeScript\n- No any types")
 
-    # docs/ — no hints
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs" / "README.md").write_text("Documentation")
 
-    # deep/nested/path/ — has .cursorrules
     deep = tmp_path / "deep" / "nested" / "path"
     deep.mkdir(parents=True)
     (deep / ".cursorrules").write_text("Cursor rules for nested path")
@@ -45,7 +39,6 @@ class TestSubdirectoryHintTracker:
     def test_working_dir_not_loaded(self, project):
         """Working dir is pre-marked as loaded (startup handles it)."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))
-        # Reading a file in the root should NOT trigger hints
         result = tracker.check_tool_call("read_file", {"path": str(project / "AGENTS.md")})
         assert result is None
 
@@ -55,14 +48,12 @@ class TestSubdirectoryHintTracker:
         result = tracker.check_tool_call(
             "read_file", {"path": str(project / "backend" / "src" / "main.py")}
         )
-        # backend/src/ has no hints, but ancestor walk finds backend/AGENTS.md
         assert result is not None
         assert "Backend-specific instructions" in result
-        # Second read in same subtree should not re-trigger
         result2 = tracker.check_tool_call(
             "read_file", {"path": str(project / "backend" / "AGENTS.md")}
         )
-        assert result2 is None  # backend/ already loaded
+        assert result2 is None
 
     def test_discovers_claude_md(self, project):
         """Frontend CLAUDE.md should be discovered."""
@@ -84,7 +75,7 @@ class TestSubdirectoryHintTracker:
         result2 = tracker.check_tool_call(
             "read_file", {"path": str(project / "frontend" / "b.ts")}
         )
-        assert result2 is None  # already loaded
+        assert result2 is None
 
     def test_no_hints_in_empty_directory(self, project):
         """Directories without hint files return None."""
@@ -173,7 +164,6 @@ class TestSubdirectoryHintTracker:
         )
         assert result is not None
         assert "truncated" in result.lower()
-        # Should be capped
         assert len(result) < 20_000
 
     def test_empty_args(self, project):

@@ -18,7 +18,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
@@ -60,7 +59,7 @@ class SlowFakeAgent(FakeAgent):
     def __init__(self, run_duration=0.5, idle_after=None, **kwargs):
         super().__init__(**kwargs)
         self._run_duration = run_duration
-        self._idle_after = idle_after  # seconds before becoming idle
+        self._idle_after = idle_after
         self._start_time = None
 
     def get_activity_summary(self):
@@ -68,7 +67,6 @@ class SlowFakeAgent(FakeAgent):
         if self._idle_after is not None and self._start_time:
             elapsed = time.time() - self._start_time
             if elapsed > self._idle_after:
-                # Agent has gone idle
                 idle_time = elapsed - self._idle_after
                 summary["seconds_since_activity"] = idle_time
                 summary["last_activity_desc"] = "api_call_streaming"
@@ -117,17 +115,16 @@ class TestInactivityTimeout:
 
     def test_idle_agent_triggers_timeout(self):
         """An agent that goes idle should be detected and interrupted."""
-        # Agent will run for 0.3s, then become idle after 0.1s of that
         agent = SlowFakeAgent(
-            run_duration=5.0,  # would run forever without timeout
-            idle_after=0.1,    # goes idle almost immediately
+            run_duration=5.0,
+            idle_after=0.1,
             activity_desc="api_call_streaming",
             current_tool="web_search",
             api_call_count=3,
             max_iterations=50,
         )
 
-        _cron_inactivity_limit = 0.5  # 0.5s inactivity triggers timeout
+        _cron_inactivity_limit = 0.5
         _POLL_INTERVAL = 0.1
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -153,17 +150,16 @@ class TestInactivityTimeout:
 
         pool.shutdown(wait=False, cancel_futures=True)
         assert _inactivity_timeout is True
-        assert result is None  # Never got a result — interrupted
+        assert result is None
 
     def test_unlimited_timeout(self):
         """DAEDALUS_CRON_TIMEOUT=0 means no timeout at all."""
         agent = FakeAgent(idle_seconds=0.0)
-        _cron_inactivity_limit = None  # unlimited
+        _cron_inactivity_limit = None
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(agent.run_conversation, "test prompt")
 
-        # With unlimited, we just await the result directly.
         result = future.result()
         pool.shutdown(wait=False)
 
@@ -221,7 +217,6 @@ class TestInactivityTimeout:
         pool.shutdown(wait=False, cancel_futures=True)
         assert _inactivity_timeout
 
-        # Build the diagnostic message like the scheduler does
         _activity = agent.get_activity_summary()
         _last_desc = _activity.get("last_activity_desc", "unknown")
         _secs_ago = _activity.get("seconds_since_activity", 0)
@@ -245,7 +240,7 @@ class TestInactivityTimeout:
                 return {"final_response": "no activity tracker", "messages": []}
 
         agent = BareAgent()
-        _cron_inactivity_limit = 0.1  # tiny limit
+        _cron_inactivity_limit = 0.1
         _POLL_INTERVAL = 0.1
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -269,7 +264,6 @@ class TestInactivityTimeout:
                 break
 
         pool.shutdown(wait=False)
-        # Should NOT have timed out — bare agent has no get_activity_summary
         assert not _inactivity_timeout
         assert result["final_response"] == "no activity tracker"
 
@@ -279,7 +273,6 @@ class TestSysPathOrdering:
 
     def test_daedalus_time_importable(self):
         """daedalus_time should be importable when cron.scheduler loads."""
-        # This import would fail if sys.path.insert comes after the import
         from cron.scheduler import _daedalus_now
         assert callable(_daedalus_now)
 

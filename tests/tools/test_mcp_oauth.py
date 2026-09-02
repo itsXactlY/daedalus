@@ -21,9 +21,6 @@ from tools.mcp_oauth import (
 )
 
 
-# ---------------------------------------------------------------------------
-# DaedalusTokenStorage
-# ---------------------------------------------------------------------------
 
 class TestDaedalusTokenStorage:
     def test_roundtrip_tokens(self, tmp_path, monkeypatch):
@@ -32,10 +29,8 @@ class TestDaedalusTokenStorage:
 
         import asyncio
 
-        # Initially empty
         assert asyncio.run(storage.get_tokens()) is None
 
-        # Save and retrieve
         mock_token = MagicMock()
         mock_token.model_dump.return_value = {
             "access_token": "abc123",
@@ -44,7 +39,6 @@ class TestDaedalusTokenStorage:
         }
         asyncio.run(storage.set_tokens(mock_token))
 
-        # File exists with correct permissions
         token_path = tmp_path / "mcp-tokens" / "test-server.json"
         assert token_path.exists()
         data = json.loads(token_path.read_text())
@@ -71,7 +65,6 @@ class TestDaedalusTokenStorage:
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
         storage = DaedalusTokenStorage("test-server")
 
-        # Create files
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
         (d / "test-server.json").write_text("{}")
@@ -116,9 +109,6 @@ class TestDaedalusTokenStorage:
         assert asyncio.run(storage.get_client_info()) is None
 
 
-# ---------------------------------------------------------------------------
-# build_oauth_auth
-# ---------------------------------------------------------------------------
 
 class TestBuildOAuthAuth:
     def test_returns_oauth_provider(self, tmp_path, monkeypatch):
@@ -170,9 +160,6 @@ class TestBuildOAuthAuth:
         assert provider.context.client_metadata.scope == "read write admin"
 
 
-# ---------------------------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------------------------
 
 class TestUtilities:
     def test_find_free_port_returns_int(self):
@@ -183,7 +170,6 @@ class TestUtilities:
     def test_find_free_port_unique(self):
         """Two consecutive calls should return different ports (usually)."""
         ports = {_find_free_port() for _ in range(5)}
-        # At least 2 different ports out of 5 attempts
         assert len(ports) >= 2
 
     def test_can_open_browser_false_in_ssh(self, monkeypatch):
@@ -195,7 +181,6 @@ class TestUtilities:
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("DISPLAY", raising=False)
         monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        # Mock os.name and uname for non-macOS, non-Windows
         monkeypatch.setattr(os, "name", "posix")
         monkeypatch.setattr(os, "uname", lambda: type("", (), {"sysname": "Linux"})())
         assert _can_open_browser() is False
@@ -208,9 +193,6 @@ class TestUtilities:
         assert _can_open_browser() is True
 
 
-# ---------------------------------------------------------------------------
-# Path traversal protection
-# ---------------------------------------------------------------------------
 
 class TestPathTraversal:
     """Verify server_name is sanitized to prevent path traversal."""
@@ -219,7 +201,6 @@ class TestPathTraversal:
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
         storage = DaedalusTokenStorage("../../.ssh/config")
         path = storage._tokens_path()
-        # Should stay within mcp-tokens directory
         assert "mcp-tokens" in str(path)
         assert ".ssh" not in str(path.resolve())
 
@@ -244,9 +225,6 @@ class TestPathTraversal:
         assert "/" not in path.stem
 
 
-# ---------------------------------------------------------------------------
-# Callback handler isolation
-# ---------------------------------------------------------------------------
 
 class TestCallbackHandlerIsolation:
     """Verify concurrent OAuth flows don't share state."""
@@ -265,7 +243,6 @@ class TestCallbackHandlerIsolation:
         HandlerClass, result = _make_callback_handler()
         assert result["auth_code"] is None
 
-        # Simulate a GET request
         handler = HandlerClass.__new__(HandlerClass)
         handler.path = "/callback?code=test123&state=mystate"
         handler.wfile = BytesIO()
@@ -292,9 +269,6 @@ class TestCallbackHandlerIsolation:
         assert result["error"] == "access_denied"
 
 
-# ---------------------------------------------------------------------------
-# Port sharing
-# ---------------------------------------------------------------------------
 
 class TestOAuthPortSharing:
     """Verify build_oauth_auth and _wait_for_callback use the same port."""
@@ -315,9 +289,6 @@ class TestOAuthPortSharing:
         assert 1024 <= mod._oauth_port <= 65535
 
 
-# ---------------------------------------------------------------------------
-# remove_oauth_tokens
-# ---------------------------------------------------------------------------
 
 class TestRemoveOAuthTokens:
     def test_removes_files(self, tmp_path, monkeypatch):
@@ -334,12 +305,9 @@ class TestRemoveOAuthTokens:
 
     def test_no_error_when_files_missing(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
-        remove_oauth_tokens("nonexistent")  # should not raise
+        remove_oauth_tokens("nonexistent")
 
 
-# ---------------------------------------------------------------------------
-# Non-interactive / startup-safety tests
-# ---------------------------------------------------------------------------
 
 class TestIsInteractive:
     """_is_interactive() detects headless/daemon/container environments."""
@@ -358,7 +326,7 @@ class TestIsInteractive:
 
     def test_false_when_stdin_has_no_isatty(self, monkeypatch):
         """Some environments replace stdin with an object without isatty()."""
-        mock_stdin = object()  # no isatty attribute
+        mock_stdin = object()
         monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
         assert _is_interactive() is False
 
@@ -417,7 +385,6 @@ class TestBuildOAuthAuthNonInteractive:
         mock_stdin.isatty.return_value = False
         monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
 
-        # Pre-populate cached tokens
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
         (d / "atlassian.json").write_text(json.dumps({

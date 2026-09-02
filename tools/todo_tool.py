@@ -18,7 +18,6 @@ import json
 from typing import Dict, Any, List, Optional
 
 
-# Valid status values for todo items
 VALID_STATUSES = {"pending", "in_progress", "completed", "cancelled"}
 
 
@@ -45,18 +44,15 @@ class TodoStore:
                    existing items by id and append new ones.
         """
         if not merge:
-            # Replace mode: new list entirely
             self._items = [self._validate(t) for t in todos]
         else:
-            # Merge mode: update existing items by id, append new ones
             existing = {item["id"]: item for item in self._items}
             for t in todos:
                 item_id = str(t.get("id", "")).strip()
                 if not item_id:
-                    continue  # Can't merge without an id
+                    continue
 
                 if item_id in existing:
-                    # Update only the fields the LLM actually provided
                     if "content" in t and t["content"]:
                         existing[item_id]["content"] = str(t["content"]).strip()
                     if "status" in t and t["status"]:
@@ -64,11 +60,9 @@ class TodoStore:
                         if status in VALID_STATUSES:
                             existing[item_id]["status"] = status
                 else:
-                    # New item -- validate fully and append to end
                     validated = self._validate(t)
                     existing[validated["id"]] = validated
                     self._items.append(validated)
-            # Rebuild _items preserving order for existing items
             seen = set()
             rebuilt = []
             for item in self._items:
@@ -97,7 +91,6 @@ class TodoStore:
         if not self._items:
             return None
 
-        # Status markers for compact display
         markers = {
             "completed": "[x]",
             "in_progress": "[>]",
@@ -105,8 +98,6 @@ class TodoStore:
             "cancelled": "[~]",
         }
 
-        # Only inject pending/in_progress items — completed/cancelled ones
-        # cause the model to re-do finished work after compression.
         active_items = [
             item for item in self._items
             if item["status"] in ("pending", "in_progress")
@@ -168,7 +159,6 @@ def todo_tool(
     else:
         items = store.read()
 
-    # Build summary counts
     pending = sum(1 for i in items if i["status"] == "pending")
     in_progress = sum(1 for i in items if i["status"] == "in_progress")
     completed = sum(1 for i in items if i["status"] == "completed")
@@ -191,11 +181,6 @@ def check_todo_requirements() -> bool:
     return True
 
 
-# =============================================================================
-# OpenAI Function-Calling Schema
-# =============================================================================
-# Behavioral guidance is baked into the description so it's part of the
-# static tool schema (cached, never changes mid-conversation).
 
 TODO_SCHEMA = {
     "name": "todo",
@@ -249,7 +234,6 @@ TODO_SCHEMA = {
 }
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

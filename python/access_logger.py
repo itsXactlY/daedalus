@@ -15,7 +15,7 @@ from logging.handlers import RotatingFileHandler
 
 class AccessLogger:
     LOG_DIR = "/var/log/daedalus"
-    MAX_BYTES = 100 * 1024 * 1024  # 100MB
+    MAX_BYTES = 100 * 1024 * 1024
     BACKUP_COUNT = 5
     RETENTION_DAYS = 30
 

@@ -84,9 +84,6 @@ def _cmd_status(args) -> int:
     print(f"curator: {status_line}")
     print(f"  runs:           {runs}")
     print(f"  last run:       {_fmt_ts(last_run)}")
-    # Summary may be multi-line when the curator archived skills (the rename
-    # map gets appended as `name → umbrella` lines). Indent continuation
-    # lines so the block reads as one logical field.
     if "\n" in summary:
         first, *rest = summary.splitlines()
         print(f"  last summary:   {first}")
@@ -141,12 +138,8 @@ def _cmd_status(args) -> int:
     if pinned:
         print(f"\npinned ({len(pinned)}): {', '.join(pinned)}")
 
-    # Surface the curation blind spot on the managed path too.
     _print_unmanaged_summary()
 
-    # Show top 5 least-recently-active skills. Views and edits are activity too:
-    # curator should not report a skill as "never used" right after skill_view()
-    # or skill_manage() touched it.
     active = sorted(
         by_state.get("active", []),
         key=lambda r: r.get("last_activity_at") or r.get("created_at") or "",
@@ -164,12 +157,6 @@ def _cmd_status(args) -> int:
                 f"last_activity={last}"
             )
 
-    # Show top 5 most-active and least-active skills by activity_count
-    # (use + view + patch). This is a different signal from
-    # least-recently-active: activity_count reflects frequency,
-    # last_activity_at reflects recency. A skill touched 30 times a year
-    # ago is high-frequency but stale; a skill touched once yesterday is
-    # recent but low-frequency. Both can matter.
     active_all = by_state.get("active", [])
     if active_all:
         most_active = sorted(
@@ -219,9 +206,6 @@ def _cmd_run(args) -> int:
     dry = bool(getattr(args, "dry_run", False))
     background = bool(getattr(args, "background", False))
     synchronous = bool(getattr(args, "synchronous", False)) or not background
-    # --consolidate forces the LLM umbrella-building pass on for this run,
-    # overriding the config default (off). When the flag is absent, pass None
-    # so run_curator_review reads curator.consolidate from config.
     consolidate = True if bool(getattr(args, "consolidate", False)) else None
     if dry:
         print("curator: running DRY-RUN (report only, no mutations)...")
@@ -373,8 +357,6 @@ def _cmd_adopt(args) -> int:
             print(f"  + {n}")
         return 0
 
-    # Bulk adoption is a real lifecycle change (adopted skills become
-    # archivable), so confirm unless the caller opted out.
     if adopt_all and not bool(getattr(args, "yes", False)):
         print(f"curator: adopt {len(names)} unmanaged skill(s) into curator management?")
         print("  they become eligible for automatic staleness + archival")
@@ -633,9 +615,8 @@ def _cmd_usage(args) -> int:
     if sort_key == "name":
         rows.sort(key=lambda r: r["name"])
     elif sort_key == "recent":
-        # Most-recently-active first; never-active sinks to the bottom.
         rows.sort(key=lambda r: r.get("last_activity_at") or "", reverse=True)
-    else:  # "activity" (default): most-used first
+    else:
         rows.sort(key=lambda r: r.get("activity_count", 0), reverse=True)
 
     if getattr(args, "json", False):
@@ -646,7 +627,6 @@ def _cmd_usage(args) -> int:
         print("curator: no skills found")
         return 0
 
-    # Provenance tallies for a quick header.
     counts = {"agent": 0, "bundled": 0, "hub": 0}
     for r in rows:
         counts[r.get("provenance", "agent")] = counts.get(r.get("provenance", "agent"), 0) + 1
@@ -673,9 +653,6 @@ def _cmd_usage(args) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# argparse wiring (called from daedalus_cli.main)
-# ---------------------------------------------------------------------------
 
 def register_cli(parent: argparse.ArgumentParser) -> None:
     """Attach `curator` subcommands to *parent*.

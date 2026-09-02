@@ -28,15 +28,6 @@ from agent.transcription_provider import TranscriptionProvider
 logger = logging.getLogger(__name__)
 
 
-# Names reserved for native built-in STT handlers. Plugins cannot
-# register a name in this set — the registration call is rejected with
-# a warning. **Kept in sync with ``BUILTIN_STT_PROVIDERS`` in
-# :mod:`tools.transcription_tools`** — a regression test in
-# ``tests/agent/test_transcription_registry.py::TestBuiltinSync``
-# fails if the two lists drift. Importing from
-# ``tools.transcription_tools`` directly would create a circular
-# dependency (``tools.transcription_tools`` imports
-# ``agent.transcription_registry`` for dispatch).
 _BUILTIN_NAMES = frozenset({
     "local",
     "local_command",

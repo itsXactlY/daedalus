@@ -46,9 +46,6 @@ description: Description for {name}.
     return skill_dir
 
 
-# ---------------------------------------------------------------------------
-# _parse_frontmatter
-# ---------------------------------------------------------------------------
 
 
 class TestParseFrontmatter:
@@ -81,13 +78,9 @@ class TestParseFrontmatter:
         """Malformed YAML falls back to simple key:value parsing."""
         content = "---\nname: test\ndescription: desc\n: invalid\n---\n\nBody.\n"
         fm, body = _parse_frontmatter(content)
-        # Should still parse what it can via fallback
         assert "name" in fm
 
 
-# ---------------------------------------------------------------------------
-# _parse_tags
-# ---------------------------------------------------------------------------
 
 
 class TestParseTags:
@@ -164,9 +157,6 @@ class TestRequiredEnvironmentVariablesNormalization:
         assert _is_env_var_persisted("FILLED_KEY", {}) is True
 
 
-# ---------------------------------------------------------------------------
-# _get_category_from_path
-# ---------------------------------------------------------------------------
 
 
 class TestGetCategoryFromPath:
@@ -190,9 +180,6 @@ class TestGetCategoryFromPath:
             assert _get_category_from_path(skill_md) is None
 
 
-# ---------------------------------------------------------------------------
-# _estimate_tokens
-# ---------------------------------------------------------------------------
 
 
 class TestEstimateTokens:
@@ -202,9 +189,6 @@ class TestEstimateTokens:
         assert _estimate_tokens("") == 0
 
 
-# ---------------------------------------------------------------------------
-# _find_all_skills
-# ---------------------------------------------------------------------------
 
 
 class TestFindAllSkills:
@@ -270,9 +254,6 @@ class TestFindAllSkills:
         assert skills[0]["name"] == "real-skill"
 
 
-# ---------------------------------------------------------------------------
-# skills_list
-# ---------------------------------------------------------------------------
 
 
 class TestSkillsList:
@@ -303,9 +284,6 @@ class TestSkillsList:
         assert result["skills"][0]["name"] == "skill-a"
 
 
-# ---------------------------------------------------------------------------
-# skill_view
-# ---------------------------------------------------------------------------
 
 
 class TestSkillView:
@@ -544,9 +522,6 @@ class TestSkillViewSecureSetupOnLoad:
         assert result["content"].startswith("---")
 
 
-# ---------------------------------------------------------------------------
-# skills_categories
-# ---------------------------------------------------------------------------
 
 
 class TestSkillsCategories:
@@ -570,9 +545,6 @@ class TestSkillsCategories:
         assert result["categories"] == []
 
 
-# ---------------------------------------------------------------------------
-# skill_matches_platform
-# ---------------------------------------------------------------------------
 
 
 class TestSkillMatchesPlatform:
@@ -648,9 +620,6 @@ class TestSkillMatchesPlatform:
             assert skill_matches_platform({"platforms": ["freebsd"]}) is False
 
 
-# ---------------------------------------------------------------------------
-# _find_all_skills — platform filtering integration
-# ---------------------------------------------------------------------------
 
 
 class TestFindAllSkillsPlatformFiltering:
@@ -711,9 +680,6 @@ class TestFindAllSkillsPlatformFiltering:
         assert len(skills_win) == 0
 
 
-# ---------------------------------------------------------------------------
-# _find_all_skills
-# ---------------------------------------------------------------------------
 
 
 class TestFindAllSkillsSecureSetup:
@@ -1046,3 +1012,75 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestSkillsListSessionVisibility:
+    def _seed(self, tmp_path):
+        gated = tmp_path / "iot" / "openhue"
+        gated.mkdir(parents=True)
+        (gated / "SKILL.md").write_text(
+            "---\nname: openhue\ndescription: Hue lights\n"
+            "metadata:\n  daedalus:\n    requires_toolsets: [browser]\n---\n"
+        )
+        plain = tmp_path / "general" / "notes"
+        plain.mkdir(parents=True)
+        (plain / "SKILL.md").write_text(
+            "---\nname: notes\ndescription: Take notes\n---\n"
+        )
+
+    def _names(self, payload):
+        return sorted(s["name"] for s in json.loads(payload)["skills"])
+
+    def test_a_skill_needing_an_absent_toolset_is_hidden_but_reachable(
+        self, monkeypatch, tmp_path
+    ):
+        import model_tools
+        import tools.skills_tool as ST
+
+        self._seed(tmp_path)
+        monkeypatch.setattr(ST, "SKILLS_DIR", tmp_path)
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names",
+                            ["read_file", "terminal"])
+
+        listed = ST.skills_list()
+        assert self._names(listed) == ["notes"]
+        assert json.loads(listed)["hidden_for_this_session"] == 1
+        assert "include_unavailable" in json.loads(listed)["hint"]
+
+        assert self._names(ST.skills_list(include_unavailable=True)) == ["notes", "openhue"]
+
+    def test_the_same_skill_appears_once_its_toolset_is_present(
+        self, monkeypatch, tmp_path
+    ):
+        import model_tools
+        import tools.skills_tool as ST
+
+        self._seed(tmp_path)
+        monkeypatch.setattr(ST, "SKILLS_DIR", tmp_path)
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names",
+                            ["read_file", "terminal", "browser_navigate"])
+
+        listed = ST.skills_list()
+        assert self._names(listed) == ["notes", "openhue"]
+        assert json.loads(listed)["hidden_for_this_session"] == 0
+
+    def test_no_session_scope_hides_nothing(self, monkeypatch, tmp_path):
+        import model_tools
+        import tools.skills_tool as ST
+
+        self._seed(tmp_path)
+        monkeypatch.setattr(ST, "SKILLS_DIR", tmp_path)
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names", [])
+
+        assert self._names(ST.skills_list()) == ["notes", "openhue"]
+
+    def test_frontmatter_never_leaks_into_the_listing(self, monkeypatch, tmp_path):
+        import model_tools
+        import tools.skills_tool as ST
+
+        self._seed(tmp_path)
+        monkeypatch.setattr(ST, "SKILLS_DIR", tmp_path)
+        monkeypatch.setattr(model_tools, "_last_resolved_tool_names", [])
+
+        for skill in json.loads(ST.skills_list())["skills"]:
+            assert set(skill) <= {"name", "description", "category"}

@@ -128,7 +128,6 @@ class TestIntegrationReadPagination:
         cfg = {"tool_output": {"max_lines": 50}}
         with patch("daedalus_cli.config.load_config", return_value=cfg):
             offset, limit = normalize_read_pagination(offset=1, limit=1000)
-        # limit should have been clamped to 50 (the configured max_lines)
         assert limit == 50
         assert offset == 1
 
@@ -136,6 +135,5 @@ class TestIntegrationReadPagination:
         from tools.file_operations import normalize_read_pagination
         with patch("daedalus_cli.config.load_config", return_value={}):
             offset, limit = normalize_read_pagination(offset=10, limit=100000)
-        # Clamped to default MAX_LINES (2000).
         assert limit == tol.DEFAULT_MAX_LINES
         assert offset == 10

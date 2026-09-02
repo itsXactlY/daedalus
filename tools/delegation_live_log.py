@@ -40,21 +40,14 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Live transcript directories older than this are pruned on new dispatches.
 LIVE_RETENTION_DAYS = 7
 
-# Per-line truncation budgets (chars). The .log is a compact operational
-# view, not the full-fidelity record — the child's SessionDB transcript and
-# the summary spill files carry complete text.
 _ASSISTANT_MAX = 600
 _THINKING_MAX = 300
 _ARGS_MAX = 220
 _RESULT_MAX = 400
 _KICKOFF_MAX = 500
 
-# Stream deltas are buffered and flushed as one assistant line when another
-# event type arrives (or on completion). Cap the buffer so a huge streamed
-# reply can't hold memory hostage.
 _STREAM_BUFFER_FLUSH_CHARS = 4000
 
 
@@ -73,7 +66,7 @@ def new_live_delegation_id() -> str:
 def _one_line(text: Any, limit: int) -> str:
     """Collapse to a single line and truncate with an elided-chars note."""
     s = str(text or "")
-    s = " ".join(s.split())  # collapse newlines/runs of whitespace
+    s = " ".join(s.split())
     if len(s) > limit:
         omitted = len(s) - limit
         s = s[:limit] + f" …(+{omitted} chars)"
@@ -132,8 +125,6 @@ class LiveTranscriptWriter:
             header = [
                 "=== Daedalus subagent live transcript ===",
                 f"delegation: {delegation_id}   task: {task_index}",
-                # Header bypasses event(), so redact here too — a goal string
-                # can carry a key the caller pasted into the task.
                 f"goal: {_redact(_one_line(goal, _KICKOFF_MAX))}",
                 f"started: {time.strftime('%Y-%m-%d %H:%M:%S')}",
                 "(append-only; streams while the subagent runs — tail -f me)",
@@ -148,26 +139,19 @@ class LiveTranscriptWriter:
             self._ok = False
             self.path = None
 
-    # ── low-level ────────────────────────────────────────────────────────
     def event(self, role: str, text: str) -> None:
         """Append one ``HH:MM:SS role ⟩ text`` line. Flushed per event."""
         if not self._ok or self.path is None:
             return
-        # Single choke point: every typed helper funnels through here, so
-        # redacting once covers args, results, thinking and streamed text —
-        # and a helper added later can't bypass it.
         line = f"{time.strftime('%H:%M:%S')} {role:<9}| {_redact(text)}\n"
         try:
             with self._lock:
-                # Append mode per write: no held handle, survives child crash,
-                # and the close() acts as the flush.
                 with open(self.path, "a", encoding="utf-8") as fh:
                     fh.write(line)
         except Exception as exc:
             self._ok = False
             logger.debug("Live transcript write failed (%s): %s", self.path, exc)
 
-    # ── typed helpers ────────────────────────────────────────────────────
     def assistant_text(self, text: str) -> None:
         t = _one_line(text, _ASSISTANT_MAX)
         if t:
@@ -200,7 +184,6 @@ class LiveTranscriptWriter:
         self.flush_stream()
         self.event("final", _one_line(text, _ASSISTANT_MAX))
 
-    # ── streamed reply buffering ─────────────────────────────────────────
     def add_stream_delta(self, delta: str) -> None:
         """Buffer streamed assistant reply text; flushed as one line."""
         if not delta or not self._ok:
@@ -218,7 +201,6 @@ class LiveTranscriptWriter:
         self._stream_len = 0
         self.assistant_text(text)
 
-    # ── event demux (the tool_progress_callback surface) ─────────────────
     def observe(self, event_type: Any, tool_name: Any = None,
                 preview: Any = None, args: Any = None, **kwargs: Any) -> None:
         """Map a child tool_progress_callback event onto transcript lines.
@@ -238,11 +220,8 @@ class LiveTranscriptWriter:
                 is_error=bool(kwargs.get("is_error")),
             )
         elif et == "_thinking":
-            # Fired as cb("_thinking", <text>) — the text rides in the
-            # tool_name positional slot (see conversation_loop.py).
             self.thinking(str(tool_name or preview or ""))
         elif et == "reasoning.available":
-            # cb("reasoning.available", "_thinking", <text>, None)
             self.thinking(str(preview or ""))
         elif et == "subagent.text":
             self.add_stream_delta(str(preview or ""))
@@ -307,7 +286,6 @@ def wrap_progress_callback(inner_cb, writer: LiveTranscriptWriter):
     return _cb
 
 
-# ── dispatch-time helpers ────────────────────────────────────────────────
 
 def create_live_transcripts(
     task_list: List[Dict[str, Any]],
@@ -360,11 +338,6 @@ def _write_manifest(delegation_id: str, task_list: List[Dict[str, Any]],
             "tasks": [
                 {
                     "index": i,
-                    # manifest.json sits in the same mounted
-                    # cache/delegation/live/<id>/ directory as the .log files,
-                    # so it needs the same treatment — redacting the header
-                    # while serialising the goal verbatim here would leave the
-                    # credential exposed one file over.
                     "goal": _redact(str(t.get("goal", ""))[:500]),
                     "log": paths[i] if i < len(paths) else None,
                     "status": "running",

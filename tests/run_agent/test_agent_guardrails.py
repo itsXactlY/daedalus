@@ -12,9 +12,6 @@ from run_agent import AIAgent
 from tools.delegate_tool import MAX_CONCURRENT_CHILDREN
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def make_tc(name: str, arguments: str = "{}") -> types.SimpleNamespace:
     """Create a minimal tool_call SimpleNamespace mirroring the OpenAI SDK object."""
@@ -32,9 +29,6 @@ def assistant_dict_call(call_id: str, name: str = "terminal") -> dict:
     return {"id": call_id, "function": {"name": name, "arguments": "{}"}}
 
 
-# ---------------------------------------------------------------------------
-# Phase 1 — _sanitize_api_messages
-# ---------------------------------------------------------------------------
 
 class TestSanitizeApiMessages:
 
@@ -107,9 +101,6 @@ class TestSanitizeApiMessages:
         assert out[1]["tool_call_id"] == "c6"
 
 
-# ---------------------------------------------------------------------------
-# Phase 2a — _cap_delegate_task_calls
-# ---------------------------------------------------------------------------
 
 class TestCapDelegateTaskCalls:
 
@@ -166,9 +157,6 @@ class TestCapDelegateTaskCalls:
             assert actual is exp, f"mismatch at index {i}"
 
 
-# ---------------------------------------------------------------------------
-# Phase 2b — _deduplicate_tool_calls
-# ---------------------------------------------------------------------------
 
 class TestDeduplicateToolCalls:
 
@@ -235,9 +223,6 @@ class TestDeduplicateToolCalls:
         assert len(tcs) == original_len
 
 
-# ---------------------------------------------------------------------------
-# _get_tool_call_id_static
-# ---------------------------------------------------------------------------
 
 class TestGetToolCallIdStatic:
 

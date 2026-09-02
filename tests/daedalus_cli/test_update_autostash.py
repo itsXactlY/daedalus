@@ -256,7 +256,6 @@ def test_restore_stashed_changes_user_declines_reset(monkeypatch, tmp_path, caps
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(daedalus_main.subprocess, "run", fake_run)
-    # First input: "y" to restore, second input: "n" to decline reset
     inputs = iter(["y", "n"])
     monkeypatch.setattr("builtins.input", lambda: next(inputs))
 
@@ -313,9 +312,6 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
         daedalus_main._stash_local_changes_if_needed(["git"], Path(tmp_path))
 
 
-# ---------------------------------------------------------------------------
-# Update uses .[all] with fallback to .
-# ---------------------------------------------------------------------------
 
 def _setup_update_mocks(monkeypatch, tmp_path):
     """Common setup for cmd_update tests."""
@@ -403,9 +399,6 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
-# ---------------------------------------------------------------------------
-# ff-only fallback to reset --hard on diverged history
-# ---------------------------------------------------------------------------
 
 def _make_update_side_effect(
     current_branch="main",
@@ -480,9 +473,6 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
     assert len(reset_calls) == 0
 
 
-# ---------------------------------------------------------------------------
-# Non-main branch → auto-checkout main
-# ---------------------------------------------------------------------------
 
 def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, capsys):
     """When on a feature branch, update checks out main before pulling."""
@@ -524,7 +514,6 @@ def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatc
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
-    # Enable stash so it returns a ref
     monkeypatch.setattr(
         daedalus_main, "_stash_local_changes_if_needed",
         lambda *a, **kw: "abc123deadbeef",
@@ -542,10 +531,8 @@ def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatc
 
     daedalus_main.cmd_update(SimpleNamespace())
 
-    # Stash should have been restored
     assert len(restore_calls) == 1
 
-    # Should have checked out back to the original branch
     checkout_back = [c for c in recorded if "checkout" in c and "fix/something" in c]
     assert len(checkout_back) == 1
 
@@ -567,9 +554,6 @@ def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
     assert len(checkout_calls) == 0
 
 
-# ---------------------------------------------------------------------------
-# Fetch failure — friendly error messages
-# ---------------------------------------------------------------------------
 
 def test_cmd_update_network_error_shows_friendly_message(monkeypatch, tmp_path, capsys):
     """Network failures during fetch show a user-friendly message."""
@@ -605,14 +589,10 @@ def test_cmd_update_auth_error_shows_friendly_message(monkeypatch, tmp_path, cap
     assert "Authentication failed" in out
 
 
-# ---------------------------------------------------------------------------
-# reset --hard failure — don't attempt stash restore
-# ---------------------------------------------------------------------------
 
 def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, capsys):
     """When reset --hard fails, stash restore is skipped with a helpful message."""
     _setup_update_mocks(monkeypatch, tmp_path)
-    # Re-enable stash so it actually returns a ref
     monkeypatch.setattr(
         daedalus_main, "_stash_local_changes_if_needed",
         lambda *a, **kw: "abc123deadbeef",
@@ -629,7 +609,6 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
     with pytest.raises(SystemExit, match="1"):
         daedalus_main.cmd_update(SimpleNamespace())
 
-    # Stash restore should NOT have been called
     assert len(restore_calls) == 0
 
     out = capsys.readouterr().out

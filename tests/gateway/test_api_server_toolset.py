@@ -85,7 +85,6 @@ class TestApiServerAdapterToolset:
                                         "provider": None, "api_mode": None,
                                         "command": None, "args": []}
             mock_model.return_value = "test/model"
-            # No platform_toolsets override — should fall back to daedalus-api-server default
             mock_config.return_value = {}
             mock_agent_cls.return_value = MagicMock()
 
@@ -115,7 +114,6 @@ class TestApiServerAdapterToolset:
                                         "provider": None, "api_mode": None,
                                         "command": None, "args": []}
             mock_model.return_value = "test/model"
-            # User overrides with just web and terminal
             mock_config.return_value = {
                 "platform_toolsets": {"api_server": ["web", "terminal"]}
             }

@@ -12,9 +12,6 @@ from gateway.session import (
 from gateway.config import Platform, HomeChannel
 
 
-# ---------------------------------------------------------------------------
-# Low-level helpers
-# ---------------------------------------------------------------------------
 
 class TestHashHelpers:
     def test_hash_id_deterministic(self):
@@ -27,7 +24,7 @@ class TestHashHelpers:
 
     def test_hash_sender_id_prefix(self):
         assert _hash_sender_id("12345").startswith("user_")
-        assert len(_hash_sender_id("12345")) == 17  # "user_" + 12
+        assert len(_hash_sender_id("12345")) == 17
 
     def test_hash_chat_id_preserves_prefix(self):
         result = _hash_chat_id("telegram:12345")
@@ -48,9 +45,6 @@ class TestHashHelpers:
         assert not _looks_like_phone("")
 
 
-# ---------------------------------------------------------------------------
-# Integration: build_session_context_prompt
-# ---------------------------------------------------------------------------
 
 def _make_context(
     user_id="user-123",
@@ -83,13 +77,12 @@ class TestBuildSessionContextPromptRedaction:
         ctx = _make_context(user_id="user-123")
         prompt = build_session_context_prompt(ctx, redact_pii=True)
         assert "user-123" not in prompt
-        assert "user_" in prompt  # hashed ID present
+        assert "user_" in prompt
 
     def test_user_name_not_redacted(self):
         ctx = _make_context(user_id="user-123", user_name="Alice")
         prompt = build_session_context_prompt(ctx, redact_pii=True)
         assert "Alice" in prompt
-        # user_id should not appear when user_name is present (name takes priority)
         assert "user-123" not in prompt
 
     def test_home_channel_id_hashed(self):
@@ -103,8 +96,8 @@ class TestBuildSessionContextPromptRedaction:
         ctx = _make_context(home_channels=hc)
         prompt = build_session_context_prompt(ctx, redact_pii=True)
         assert "99999" not in prompt
-        assert "telegram:" in prompt  # prefix preserved
-        assert "Home Chat" in prompt  # name not redacted
+        assert "telegram:" in prompt
+        assert "Home Chat" in prompt
 
     def test_home_channel_id_preserved_without_redaction(self):
         hc = {

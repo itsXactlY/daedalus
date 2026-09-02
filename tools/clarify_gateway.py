@@ -40,9 +40,6 @@ from typing import Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# =========================================================================
-# Module-level state
-# =========================================================================
 
 @dataclass
 class _ClarifyEntry:
@@ -54,7 +51,7 @@ class _ClarifyEntry:
     multi_select: bool = False
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
-    awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    awaiting_text: bool = False
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -67,15 +64,10 @@ class _ClarifyEntry:
 
 
 _lock = threading.RLock()
-# clarify_id → _ClarifyEntry  (primary lookup for button callbacks)
 _entries: Dict[str, _ClarifyEntry] = {}
-# session_key → list[clarify_id]  (FIFO; for text-fallback intercept and session cleanup)
 _session_index: Dict[str, List[str]] = {}
 
 
-# =========================================================================
-# Public API — agent-thread side
-# =========================================================================
 
 def register(
     clarify_id: str,
@@ -95,7 +87,6 @@ def register(
         question=question,
         choices=list(choices) if choices else None,
         multi_select=bool(multi_select) and bool(choices),
-        # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
     )
     with _lock:
@@ -128,7 +119,6 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     except Exception:  # pragma: no cover - optional
         touch_activity_if_due = None
 
-    # 0 / negative → unlimited: no deadline, poll forever in 1s slices.
     unlimited = timeout is None or float(timeout) <= 0.0
     deadline = None if unlimited else time.monotonic() + float(timeout)
     activity_state = {"last_touch": time.monotonic(), "start": time.monotonic()}
@@ -146,7 +136,6 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
 
     with _lock:
-        # Remove from indices regardless of resolution outcome.
         _entries.pop(clarify_id, None)
         ids = _session_index.get(entry.session_key)
         if ids and clarify_id in ids:
@@ -157,9 +146,6 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[str]:
     return entry.response
 
 
-# =========================================================================
-# Public API — gateway / adapter side
-# =========================================================================
 
 def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """Unblock the agent thread waiting on ``clarify_id``.
@@ -228,18 +214,14 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
     text = str(response).strip()
 
     if not entry.choices:
-        # Open-ended: accept any text
         return text
 
     if entry.multi_select:
         coerced = _coerce_multi_select_text(entry, text)
         if coerced is not None:
             return coerced
-        # Not a parseable selection — accept as custom text only in
-        # awaiting_text mode (the "Other" path); otherwise reject.
         return text if entry.awaiting_text else None
 
-    # Try numeric selection first (always valid for multi-choice)
     try:
         idx = int(text) - 1
     except ValueError:
@@ -248,13 +230,10 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
     if 0 <= idx < len(entry.choices):
         return entry.choices[idx]
 
-    # Try exact choice label match (always valid for multi-choice)
     for choice in entry.choices:
         if text.casefold() == str(choice).strip().casefold():
             return str(choice).strip()
 
-    # For text fallback or awaiting_text mode, accept custom text
-    # For native interactive multi-choice mode, reject arbitrary prose
     if entry.awaiting_text:
         return text
 
@@ -276,8 +255,6 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
         return None
     choices = entry.choices or []
 
-    # Split on commas first; if no commas and every whitespace-separated
-    # token is numeric, treat spaces as separators too ("1 3").
     if "," in text:
         tokens = [t.strip() for t in text.split(",") if t.strip()]
     else:
@@ -296,8 +273,7 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
                 if label not in selected:
                     selected.append(label)
                 continue
-            return None  # out-of-range number → reject whole reply
-        # Exact label match (case-insensitive)
+            return None
         matched = None
         for choice in choices:
             if token.casefold() == str(choice).strip().casefold():
@@ -325,7 +301,6 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
 
     coerced = _coerce_text_response(entry, response)
     if coerced is None:
-        # Response rejected: message should continue as a normal turn
         return False
 
     return resolve_gateway_clarify(
@@ -368,19 +343,12 @@ def clear_session(session_key: str) -> int:
     for entry in entries:
         if entry is None:
             continue
-        # Empty string sentinel — agent code can distinguish from a real
-        # response by inspecting the wait_for_response return value
-        # alongside its own timeout deadline.  Most callers just treat any
-        # falsy result as "user did not respond".
         entry.response = ""
         entry.event.set()
         cancelled += 1
     return cancelled
 
 
-# =========================================================================
-# Config
-# =========================================================================
 
 def resolve_clarify_timeout(config: dict) -> int:
     """Resolve the clarify timeout (seconds) from an already-loaded config dict.
@@ -428,13 +396,6 @@ def get_clarify_timeout() -> int:
         return 3600
 
 
-# =========================================================================
-# Per-session notify hook (gateway → adapter bridge)
-# =========================================================================
-# Mirrors tools.approval's _gateway_notify_cbs: the gateway registers a
-# per-session callback that sends the clarify prompt to the user.  The
-# callback bridges sync→async (runs on the agent thread; schedules the
-# adapter ``send_clarify`` call on the event loop).
 
 _notify_cbs: Dict[str, Callable[[_ClarifyEntry], None]] = {}
 
@@ -449,8 +410,6 @@ def unregister_notify(session_key: str) -> None:
     """Drop the per-session notify callback and cancel any pending clarify entries."""
     with _lock:
         _notify_cbs.pop(session_key, None)
-    # Cancel any pending entries so blocked threads unwind when the run
-    # ends (interrupt, completion, gateway shutdown).
     clear_session(session_key)
 
 

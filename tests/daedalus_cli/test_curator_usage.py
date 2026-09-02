@@ -43,7 +43,6 @@ def test_usage_lists_all_provenances(monkeypatch, capsys):
     args = SimpleNamespace(sort="activity", provenance=None, json=False)
     assert curator_cli._cmd_usage(args) == 0
     out = capsys.readouterr().out
-    # Header tally and all three skills present.
     assert "agent=1" in out and "bundled=1" in out and "hub=1" in out
     assert "agent-skill" in out
     assert "bundled-skill" in out

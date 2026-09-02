@@ -57,9 +57,6 @@ class BaseEnvironment(ABC):
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # Shared helpers (eliminate duplication across backends)
-    # ------------------------------------------------------------------
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
         """Transform sudo commands if SUDO_PASSWORD is available.

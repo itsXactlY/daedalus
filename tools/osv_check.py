@@ -20,7 +20,7 @@ from typing import Optional, Tuple
 logger = logging.getLogger(__name__)
 
 _OSV_ENDPOINT = os.getenv("OSV_ENDPOINT", "https://api.osv.dev/v1/query")
-_TIMEOUT = 10  # seconds
+_TIMEOUT = 10
 
 
 def check_package_for_malware(
@@ -37,7 +37,7 @@ def check_package_for_malware(
     """
     ecosystem = _infer_ecosystem(command)
     if not ecosystem:
-        return None  # not npx/uvx — skip
+        return None
 
     package, version = _parse_package_from_args(args, ecosystem)
     if not package:
@@ -46,7 +46,6 @@ def check_package_for_malware(
     try:
         malware = _query_osv(package, ecosystem, version)
     except Exception as exc:
-        # Fail-open: network errors, timeouts, parse failures → allow
         logger.debug("OSV check failed for %s/%s (allowing): %s", ecosystem, package, exc)
         return None
 
@@ -82,7 +81,6 @@ def _parse_package_from_args(
     if not args:
         return None, None
 
-    # Skip flags to find the package token
     package_token = None
     for arg in args:
         if not isinstance(arg, str):
@@ -105,12 +103,10 @@ def _parse_package_from_args(
 def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
     """Parse npm package: @scope/name@version or name@version."""
     if token.startswith("@"):
-        # Scoped: @scope/name@version
         match = re.match(r"^(@[^/]+/[^@]+)(?:@(.+))?$", token)
         if match:
             return match.group(1), match.group(2)
         return token, None
-    # Unscoped: name@version
     if "@" in token:
         parts = token.rsplit("@", 1)
         name = parts[0]
@@ -121,7 +117,6 @@ def _parse_npm_package(token: str) -> Tuple[Optional[str], Optional[str]]:
 
 def _parse_pypi_package(token: str) -> Tuple[Optional[str], Optional[str]]:
     """Parse PyPI package: name==version or name[extras]==version."""
-    # Strip extras: name[extra1,extra2]==version
     match = re.match(r"^([a-zA-Z0-9._-]+)(?:\[[^\]]*\])?(?:==(.+))?$", token)
     if match:
         return match.group(1), match.group(2)
@@ -151,5 +146,4 @@ def _query_osv(
         result = json.loads(resp.read())
 
     vulns = result.get("vulns", [])
-    # Only malware advisories — ignore regular CVEs
     return [v for v in vulns if v.get("id", "").startswith("MAL-")]

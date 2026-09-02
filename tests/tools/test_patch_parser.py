@@ -205,10 +205,8 @@ class TestAdditionOnlyHunks:
         assert len(ops[0].hunks) == 1
 
         hunk = ops[0].hunks[0]
-        # All lines should be additions
         assert all(l.prefix == '+' for l in hunk.lines)
 
-        # Apply to a file that contains the context hint
         class FakeFileOps:
             written = None
             def read_file(self, path, **kw):

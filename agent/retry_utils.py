@@ -9,9 +9,6 @@ import random
 import threading
 import time
 
-# Monotonic counter for jitter seed uniqueness within the same process.
-# Protected by a lock to avoid race conditions in concurrent retry paths
-# (e.g. multiple gateway sessions retrying simultaneously).
 _jitter_counter = 0
 _jitter_lock = threading.Lock()
 
@@ -49,7 +46,6 @@ def jittered_backoff(
     else:
         delay = min(base_delay * (2 ** exponent), max_delay)
 
-    # Seed from time + counter for decorrelation even with coarse clocks.
     seed = (time.time_ns() ^ (tick * 0x9E3779B9)) & 0xFFFFFFFF
     rng = random.Random(seed)
     jitter = rng.uniform(0, jitter_ratio * delay)

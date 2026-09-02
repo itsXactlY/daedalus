@@ -114,7 +114,6 @@ def _handle_send(args):
     else:
         is_explicit = False
 
-    # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
         try:
             from gateway.channel_directory import resolve_channel_name
@@ -192,7 +191,6 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
@@ -301,22 +299,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     media_files = media_files or []
 
-    # Platform message length limits (from adapter class attributes).
-    # Telegram/Slack/Feishu adapters were dropped in the Discord+ACP-only
-    # bare-bone strip; Discord is the sole platform with a known chunk limit.
     _MAX_LENGTHS = {
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
     }
 
-    # Smart-chunk the message to fit within platform limits.
-    # For short messages or platforms without a known limit this is a no-op.
     max_len = _MAX_LENGTHS.get(platform)
     if max_len:
         chunks = BasePlatformAdapter.truncate_message(message, max_len)
     else:
         chunks = [message]
 
-    # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
         last_result = None
         for i, chunk in enumerate(chunks):
@@ -333,7 +325,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
-    # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {
             "error": (
@@ -400,21 +391,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         from telegram import Bot
         from telegram.constants import ParseMode
 
-        # Auto-detect HTML tags — if present, skip MarkdownV2 and send as HTML.
-        # Inspired by github.com/ashaney — PR #1568.
         _has_html = bool(re.search(r'<[a-zA-Z/][^>]*>', message))
 
         if _has_html:
             formatted = message
             send_parse_mode = ParseMode.HTML
         else:
-            # Reuse the gateway adapter's format_message for markdown→MarkdownV2
             try:
                 from gateway.platforms.telegram import TelegramAdapter
                 _adapter = TelegramAdapter.__new__(TelegramAdapter)
                 formatted = _adapter.format_message(message)
             except Exception:
-                # Fallback: send as-is if formatting unavailable
                 formatted = message
             send_parse_mode = ParseMode.MARKDOWN_V2
 
@@ -435,7 +422,6 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     parse_mode=send_parse_mode, **thread_kwargs
                 )
             except Exception as md_error:
-                # Parse failed, fall back to plain text
                 if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                     logger.warning(
                         "Parse mode %s failed in _send_telegram, falling back to plain text: %s",
@@ -666,7 +652,6 @@ async def _send_sms(auth_token, chat_id, message):
     if not account_sid or not auth_token or not from_number:
         return {"error": "SMS not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER required)"}
 
-    # Strip markdown — SMS renders it as literal characters
     message = re.sub(r"\*\*(.+?)\*\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"\*(.+?)\*", r"\1", message, flags=re.DOTALL)
     message = re.sub(r"__(.+?)__", r"\1", message, flags=re.DOTALL)
@@ -744,12 +729,10 @@ async def _send_matrix(token, extra, chat_id, message):
         url = f"{homeserver}/_matrix/client/v3/rooms/{chat_id}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # Build message payload with optional HTML formatted_body.
         payload = {"msgtype": "m.text", "body": message}
         try:
             import markdown as _md
             html = _md.markdown(message, extensions=["fenced_code", "tables"])
-            # Convert h1-h6 to bold for Element X compatibility.
             html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
             payload["format"] = "org.matrix.custom.html"
             payload["formatted_body"] = html
@@ -917,7 +900,6 @@ def _check_send_message():
         return False
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

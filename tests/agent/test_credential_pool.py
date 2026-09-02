@@ -773,13 +773,12 @@ def test_thread_safety_concurrent_select(tmp_path, monkeypatch):
         t.join()
 
     assert not errors, f"Thread errors: {errors}"
-    assert len(results) == 80  # 4 threads * 20 selects
+    assert len(results) == 80
 
 
 def test_custom_endpoint_pool_keyed_by_name(tmp_path, monkeypatch):
     """Verify load_pool('custom:together.ai') works and returns entries from auth.json."""
     monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path / "daedalus"))
-    # Disable seeding so we only test stored entries
     monkeypatch.setattr(
         "agent.credential_pool._seed_custom_pool",
         lambda pool_key, entries: (False, set()),
@@ -822,7 +821,6 @@ def test_custom_endpoint_pool_keyed_by_name(tmp_path, monkeypatch):
     assert entries[0].access_token == "sk-together-xxx"
     assert entries[1].access_token == "sk-together-yyy"
 
-    # Select should return the first entry (fill_first default)
     entry = pool.select()
     assert entry is not None
     assert entry.id == "cred-1"
@@ -833,7 +831,6 @@ def test_custom_endpoint_pool_seeds_from_config(tmp_path, monkeypatch):
     monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path / "daedalus"))
     _write_auth_store(tmp_path, {"version": 1})
 
-    # Write config.yaml with a custom_providers entry
     config_path = tmp_path / "daedalus" / "config.yaml"
     import yaml
     config_path.write_text(yaml.dump({
@@ -882,7 +879,6 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     pool = load_pool("custom:together.ai")
     assert pool.has_credentials()
     entries = pool.entries()
-    # Should have the model_config entry
     model_entries = [e for e in entries if e.source == "model_config"]
     assert len(model_entries) == 1
     assert model_entries[0].access_token == "sk-model-key"
@@ -979,7 +975,6 @@ def test_list_custom_pool_providers(tmp_path, monkeypatch):
 
     result = list_custom_pool_providers()
     assert result == ["custom:fireworks", "custom:together.ai"]
-    # "custom:empty" not included because it's empty
 
 
 

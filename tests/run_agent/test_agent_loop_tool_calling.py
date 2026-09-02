@@ -28,9 +28,7 @@ from unittest.mock import patch
 
 import pytest
 
-# pytestmark removed — tests skip gracefully via OPENROUTER_API_KEY check on line 59
 
-# Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -42,11 +40,7 @@ except ImportError:
     pytest.skip("atroposlib not installed", allow_module_level=True)
 
 
-# =========================================================================
-# Test infrastructure
-# =========================================================================
 
-# Models to try, in order of preference (free first)
 _MODELS = [
     "stepfun/step-3.5-flash:free",
     "google/gemini-2.0-flash-001",
@@ -85,16 +79,12 @@ async def _try_models(test_fn):
         except Exception as e:
             last_error = e
             if "rate" in str(e).lower() or "limit" in str(e).lower():
-                continue  # Rate limited, try next model
-            raise  # Real error
+                continue
+            raise
     pytest.skip(f"All models failed. Last error: {last_error}")
 
 
-# =========================================================================
-# Fake tools for testing
-# =========================================================================
 
-# Simple calculator tool
 CALC_TOOL = {
     "type": "function",
     "function": {
@@ -113,7 +103,6 @@ CALC_TOOL = {
     },
 }
 
-# Weather lookup tool
 WEATHER_TOOL = {
     "type": "function",
     "function": {
@@ -132,7 +121,6 @@ WEATHER_TOOL = {
     },
 }
 
-# Lookup tool (always succeeds)
 LOOKUP_TOOL = {
     "type": "function",
     "function": {
@@ -151,7 +139,6 @@ LOOKUP_TOOL = {
     },
 }
 
-# Error tool (always fails)
 ERROR_TOOL = {
     "type": "function",
     "function": {
@@ -173,7 +160,6 @@ def _fake_tool_handler(tool_name: str, args: Dict[str, Any], **kwargs) -> str:
     if tool_name == "calculate":
         expr = args.get("expression", "0")
         try:
-            # Safe eval for simple math
             result = eval(expr, {"__builtins__": {}}, {})
             return json.dumps({"result": result})
         except Exception as e:
@@ -181,7 +167,6 @@ def _fake_tool_handler(tool_name: str, args: Dict[str, Any], **kwargs) -> str:
 
     elif tool_name == "get_weather":
         city = args.get("city", "Unknown")
-        # Return canned weather
         return json.dumps({
             "city": city,
             "temperature": 22,
@@ -199,9 +184,6 @@ def _fake_tool_handler(tool_name: str, args: Dict[str, Any], **kwargs) -> str:
     return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
 
-# =========================================================================
-# Tests
-# =========================================================================
 
 @pytest.mark.asyncio
 async def test_single_tool_call():
@@ -227,7 +209,6 @@ async def test_single_tool_call():
         assert isinstance(result, AgentResult)
         assert result.turns_used >= 2, f"Expected at least 2 turns (tool call + response), got {result.turns_used}"
 
-        # Verify a tool call happened
         tool_calls_found = False
         for msg in result.messages:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
@@ -238,11 +219,9 @@ async def test_single_tool_call():
                         assert "city" in args
         assert tool_calls_found, "Model should have called get_weather"
 
-        # Verify tool result is in conversation
         tool_results = [m for m in result.messages if m.get("role") == "tool"]
         assert len(tool_results) >= 1, "Should have at least one tool result"
 
-        # Verify the final response references the weather
         final_msg = result.messages[-1]
         assert final_msg["role"] == "assistant"
         assert final_msg["content"], "Final response should have content"
@@ -278,14 +257,12 @@ async def test_multi_tool_single_turn():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-        # Count distinct tools called
         tools_called = set()
         for msg in result.messages:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     tools_called.add(tc["function"]["name"])
 
-        # At minimum, both tools should have been called (maybe in different turns)
         assert "get_weather" in tools_called, f"get_weather not called. Called: {tools_called}"
         assert "calculate" in tools_called, f"calculate not called. Called: {tools_called}"
 
@@ -319,7 +296,6 @@ async def test_multi_turn_conversation():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-        # Should have used both tools
         tools_called = set()
         for msg in result.messages:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
@@ -329,7 +305,6 @@ async def test_multi_turn_conversation():
         assert "lookup" in tools_called, f"lookup not called. Called: {tools_called}"
         assert "calculate" in tools_called, f"calculate not called. Called: {tools_called}"
 
-        # Should finish naturally
         assert result.finished_naturally, "Should finish naturally after answering"
 
         return result
@@ -342,11 +317,10 @@ async def test_unknown_tool_rejected():
     """If the model calls a tool not in valid_tool_names, it gets an error."""
 
     async def _run(server, model):
-        # Only allow "calculate" but give schema for both
         agent = DaedalusAgentLoop(
             server=server,
             tool_schemas=[CALC_TOOL, WEATHER_TOOL],
-            valid_tool_names={"calculate"},  # weather NOT allowed
+            valid_tool_names={"calculate"},
             max_turns=5,
             temperature=0.0,
             max_tokens=500,
@@ -359,7 +333,6 @@ async def test_unknown_tool_rejected():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-        # Check if get_weather was called and rejected
         if result.tool_errors:
             weather_errors = [e for e in result.tool_errors if e.tool_name == "get_weather"]
             assert len(weather_errors) > 0, "get_weather should have been rejected"
@@ -379,7 +352,7 @@ async def test_max_turns_limit():
             server=server,
             tool_schemas=[LOOKUP_TOOL],
             valid_tool_names={"lookup"},
-            max_turns=2,  # Very low limit
+            max_turns=2,
             temperature=0.0,
             max_tokens=500,
         )
@@ -457,11 +430,9 @@ async def test_tool_error_handling():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-        # The tool error should be recorded
         assert len(result.tool_errors) >= 1, "Should have at least one tool error"
         assert "RuntimeError" in result.tool_errors[0].error or "always fails" in result.tool_errors[0].error
 
-        # The error should be in the conversation as a tool result
         tool_results = [m for m in result.messages if m.get("role") == "tool"]
         assert len(tool_results) >= 1
         error_result = json.loads(tool_results[0]["content"])
@@ -493,7 +464,6 @@ async def test_agent_result_structure():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-        # Structural checks
         assert isinstance(result, AgentResult)
         assert isinstance(result.messages, list)
         assert len(result.messages) >= 3, "Should have user + assistant(tool) + tool_result + assistant(final)"
@@ -503,7 +473,6 @@ async def test_agent_result_structure():
         assert isinstance(result.tool_errors, list)
         assert isinstance(result.reasoning_per_turn, list)
 
-        # Messages should follow OpenAI format
         for msg in result.messages:
             assert "role" in msg, f"Message missing 'role': {msg}"
             assert msg["role"] in ("system", "user", "assistant", "tool"), f"Invalid role: {msg['role']}"
@@ -535,15 +504,12 @@ async def test_conversation_history_preserved():
         with patch("environments.agent_loop.handle_function_call", side_effect=_fake_tool_handler):
             result = await agent.run(messages)
 
-        # System message should be preserved
         assert result.messages[0]["role"] == "system"
         assert "weather assistant" in result.messages[0]["content"]
 
-        # User message should be preserved
         assert result.messages[1]["role"] == "user"
         assert "Berlin" in result.messages[1]["content"]
 
-        # Should have assistant + tool + assistant sequence
         roles = [m["role"] for m in result.messages]
         assert "tool" in roles, "Should have tool results in conversation"
 

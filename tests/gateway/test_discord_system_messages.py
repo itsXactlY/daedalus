@@ -43,15 +43,13 @@ class TestDiscordSystemMessageFilter(unittest.TestCase):
             if message.type not in (discord.MessageType.default, discord.MessageType.reply):
                 return  # ignored
         """
-        # Own messages always ignored
         if message.author == client_user:
             return False
 
-        # System message filter (the fix being tested)
         if message.type not in (discord.MessageType.default, discord.MessageType.reply):
             return False
 
-        return True  # message accepted
+        return True
 
     def test_default_messages_accepted(self):
         """Regular user messages (type=default) should be accepted."""

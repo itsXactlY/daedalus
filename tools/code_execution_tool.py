@@ -45,13 +45,10 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional
 
-# Availability gate: UDS requires a POSIX OS
 logger = logging.getLogger(__name__)
 
 SANDBOX_AVAILABLE = sys.platform != "win32"
 
-# The 7 tools allowed inside the sandbox. The intersection of this list
-# and the session's enabled tools determines which stubs are generated.
 SANDBOX_ALLOWED_TOOLS = frozenset([
     "web_search",
     "web_extract",
@@ -62,11 +59,10 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
     "terminal",
 ])
 
-# Resource limit defaults (overridable via config.yaml → code_execution.*)
-DEFAULT_TIMEOUT = 300        # 5 minutes
+DEFAULT_TIMEOUT = 300
 DEFAULT_MAX_TOOL_CALLS = 50
-MAX_STDOUT_BYTES = 50_000    # 50 KB
-MAX_STDERR_BYTES = 10_000    # 10 KB
+MAX_STDOUT_BYTES = 50_000
+MAX_STDERR_BYTES = 10_000
 
 
 def check_sandbox_requirements() -> bool:
@@ -74,12 +70,7 @@ def check_sandbox_requirements() -> bool:
     return SANDBOX_AVAILABLE
 
 
-# ---------------------------------------------------------------------------
-# daedalus_tools.py code generator
-# ---------------------------------------------------------------------------
 
-# Per-tool stub templates: (function_name, signature, docstring, args_dict_expr)
-# The args_dict_expr builds the JSON payload sent over the RPC socket.
 _TOOL_STUBS = {
     "web_search": (
         "web_search",
@@ -161,7 +152,6 @@ def generate_daedalus_tools_module(enabled_tools: List[str],
     return header + "\n".join(stub_functions)
 
 
-# ---- Shared helpers section (embedded in both transport headers) ----------
 
 _COMMON_HELPERS = '''\
 
@@ -201,7 +191,6 @@ def retry(fn, max_attempts=3, delay=2):
 
 '''
 
-# ---- UDS transport (local backend) ---------------------------------------
 
 _UDS_TRANSPORT_HEADER = '''\
 """Auto-generated Daedalus tools RPC stubs."""
@@ -242,7 +231,6 @@ def _call(tool_name, args):
 
 '''
 
-# ---- File-based transport (remote backends) -------------------------------
 
 _FILE_TRANSPORT_HEADER = '''\
 """Auto-generated Daedalus tools RPC stubs (file-based transport)."""
@@ -295,11 +283,7 @@ def _call(tool_name, args):
 '''
 
 
-# ---------------------------------------------------------------------------
-# RPC server (runs in a thread inside the parent process)
-# ---------------------------------------------------------------------------
 
-# Terminal parameters that must not be used from ephemeral sandbox scripts
 _TERMINAL_BLOCKED_PARAMS = {"background", "check_interval", "pty", "notify_on_complete"}
 
 
@@ -307,7 +291,7 @@ def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
     tool_call_log: list,
-    tool_call_counter: list,   # mutable [int] so the thread can increment
+    tool_call_counter: list,
     max_tool_calls: int,
     allowed_tools: frozenset,
 ):
@@ -333,7 +317,6 @@ def _rpc_server_loop(
                 break
             buf += chunk
 
-            # Process all complete newline-delimited messages in the buffer
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 line = line.strip()
@@ -351,7 +334,6 @@ def _rpc_server_loop(
                 tool_name = request.get("tool", "")
                 tool_args = request.get("args", {})
 
-                # Enforce the allow-list
                 if tool_name not in allowed_tools:
                     available = ", ".join(sorted(allowed_tools))
                     resp = json.dumps({
@@ -363,7 +345,6 @@ def _rpc_server_loop(
                     conn.sendall((resp + "\n").encode())
                     continue
 
-                # Enforce tool call limit
                 if tool_call_counter[0] >= max_tool_calls:
                     resp = json.dumps({
                         "error": (
@@ -374,14 +355,10 @@ def _rpc_server_loop(
                     conn.sendall((resp + "\n").encode())
                     continue
 
-                # Strip forbidden terminal parameters
                 if tool_name == "terminal" and isinstance(tool_args, dict):
                     for param in _TERMINAL_BLOCKED_PARAMS:
                         tool_args.pop(param, None)
 
-                # Dispatch through the standard tool handler.
-                # Suppress stdout/stderr from internal tool handlers so
-                # their status prints don't leak into the CLI spinner.
                 try:
                     _real_stdout, _real_stderr = sys.stdout, sys.stderr
                     devnull = open(os.devnull, "w")
@@ -401,7 +378,6 @@ def _rpc_server_loop(
                 tool_call_counter[0] += 1
                 call_duration = time.monotonic() - call_start
 
-                # Log for observability
                 args_preview = str(tool_args)[:80]
                 tool_call_log.append({
                     "tool": tool_name,
@@ -423,9 +399,6 @@ def _rpc_server_loop(
                 logger.debug("RPC conn close error: %s", e)
 
 
-# ---------------------------------------------------------------------------
-# Remote execution support (file-based RPC via terminal backend)
-# ---------------------------------------------------------------------------
 
 def _get_or_create_env(task_id: str):
     """Get or create the terminal environment for *task_id*.
@@ -442,13 +415,11 @@ def _get_or_create_env(task_id: str):
 
     effective_task_id = task_id or "default"
 
-    # Fast path: environment already exists
     with _env_lock:
         if effective_task_id in _active_environments:
             _last_activity[effective_task_id] = time.time()
             return _active_environments[effective_task_id], _get_env_config()["env_type"]
 
-    # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
         if effective_task_id not in _creation_locks:
             _creation_locks[effective_task_id] = threading.Lock()
@@ -558,11 +529,10 @@ def _rpc_poll_loop(
     """
     from model_tools import handle_function_call
 
-    poll_interval = 0.1  # 100 ms
+    poll_interval = 0.1
 
     while not stop_event.is_set():
         try:
-            # List pending request files (skip .tmp partials)
             ls_result = env.execute_oneshot(
                 f"ls -1 {rpc_dir}/req_* 2>/dev/null || true",
                 cwd="/",
@@ -586,7 +556,6 @@ def _rpc_poll_loop(
 
                 call_start = time.monotonic()
 
-                # Read request
                 read_result = env.execute_oneshot(
                     f"cat {req_file}",
                     cwd="/",
@@ -596,7 +565,6 @@ def _rpc_poll_loop(
                     request = json.loads(read_result.get("output", ""))
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
-                    # Remove bad request to avoid infinite retry
                     env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
                     continue
 
@@ -606,7 +574,6 @@ def _rpc_poll_loop(
                 seq_str = f"{seq:06d}"
                 res_file = f"{rpc_dir}/res_{seq_str}"
 
-                # Enforce allow-list
                 if tool_name not in allowed_tools:
                     available = ", ".join(sorted(allowed_tools))
                     tool_result = json.dumps({
@@ -615,7 +582,6 @@ def _rpc_poll_loop(
                             f"Available: {available}"
                         )
                     })
-                # Enforce tool call limit
                 elif tool_call_counter[0] >= max_tool_calls:
                     tool_result = json.dumps({
                         "error": (
@@ -624,12 +590,10 @@ def _rpc_poll_loop(
                         )
                     })
                 else:
-                    # Strip forbidden terminal parameters
                     if tool_name == "terminal" and isinstance(tool_args, dict):
                         for param in _TERMINAL_BLOCKED_PARAMS:
                             tool_args.pop(param, None)
 
-                    # Dispatch through the standard tool handler
                     try:
                         _real_stdout, _real_stderr = sys.stdout, sys.stderr
                         devnull = open(os.devnull, "w")
@@ -655,9 +619,6 @@ def _rpc_poll_loop(
                         "duration": round(call_duration, 2),
                     })
 
-                # Write response atomically (tmp + rename).
-                # Use echo piping (not stdin_data) because Modal doesn't
-                # reliably deliver stdin to chained commands.
                 encoded_result = base64.b64encode(
                     tool_result.encode("utf-8")
                 ).decode("ascii")
@@ -668,7 +629,6 @@ def _rpc_poll_loop(
                     timeout=60,
                 )
 
-                # Remove the request file
                 env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
 
         except Exception as e:
@@ -713,7 +673,6 @@ def _execute_remote(
     rpc_thread = None
 
     try:
-        # Verify Python is available on the remote
         py_check = env.execute_oneshot(
             "command -v python3 >/dev/null 2>&1 && echo OK",
             cwd="/", timeout=15,
@@ -730,19 +689,16 @@ def _execute_remote(
                 "duration_seconds": 0,
             })
 
-        # Create sandbox directory on remote
         env.execute_oneshot(
             f"mkdir -p {sandbox_dir}/rpc", cwd="/", timeout=10,
         )
 
-        # Generate and ship files
         tools_src = generate_daedalus_tools_module(
             list(sandbox_tools), transport="file",
         )
         _ship_file_to_remote(env, f"{sandbox_dir}/daedalus_tools.py", tools_src)
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
 
-        # Start RPC polling thread
         rpc_thread = threading.Thread(
             target=_rpc_poll_loop,
             args=(
@@ -754,7 +710,6 @@ def _execute_remote(
         )
         rpc_thread.start()
 
-        # Build environment variable prefix for the script
         env_prefix = (
             f"DAEDALUS_RPC_DIR={sandbox_dir}/rpc "
             f"PYTHONDONTWRITEBYTECODE=1"
@@ -763,7 +718,6 @@ def _execute_remote(
         if tz:
             env_prefix += f" TZ={tz}"
 
-        # Execute the script on the remote backend
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
         script_result = env.execute(
@@ -775,7 +729,6 @@ def _execute_remote(
         exit_code = script_result.get("returncode", -1)
         status = "success"
 
-        # Check for timeout/interrupt from the backend
         if exit_code == 124:
             status = "timeout"
         elif exit_code == 130:
@@ -796,12 +749,10 @@ def _execute_remote(
         }, ensure_ascii=False)
 
     finally:
-        # Stop the polling thread
         stop_event.set()
         if rpc_thread is not None:
             rpc_thread.join(timeout=5)
 
-        # Clean up remote sandbox dir
         try:
             env.execute_oneshot(
                 f"rm -rf {sandbox_dir}", cwd="/", timeout=15,
@@ -811,9 +762,7 @@ def _execute_remote(
 
     duration = round(time.monotonic() - exec_start, 2)
 
-    # --- Post-process output (same as local path) ---
 
-    # Truncate stdout to cap
     if len(stdout_text) > MAX_STDOUT_BYTES:
         head_bytes = int(MAX_STDOUT_BYTES * 0.4)
         tail_bytes = MAX_STDOUT_BYTES - head_bytes
@@ -827,15 +776,12 @@ def _execute_remote(
             + tail
         )
 
-    # Strip ANSI escape sequences
     from tools.ansi_strip import strip_ansi
     stdout_text = strip_ansi(stdout_text)
 
-    # Redact secrets
     from agent.redact import redact_sensitive_text
     stdout_text = redact_sensitive_text(stdout_text)
 
-    # Build response
     result: Dict[str, Any] = {
         "status": status,
         "output": stdout_text,
@@ -856,9 +802,6 @@ def _execute_remote(
     return json.dumps(result, ensure_ascii=False)
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
 
 def execute_code(
     code: str,
@@ -889,55 +832,41 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided.")
 
-    # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
     env_type = _get_env_config()["env_type"]
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 
-    # --- Local execution path (UDS) --- below this line is unchanged ---
 
-    # Import interrupt event from terminal_tool (cooperative cancellation)
     from tools.terminal_tool import _interrupt_event
 
-    # Resolve config
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    # Determine which tools the sandbox can call
     session_tools = set(enabled_tools) if enabled_tools else set()
     sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
 
     if not sandbox_tools:
         sandbox_tools = SANDBOX_ALLOWED_TOOLS
 
-    # --- Set up temp directory with daedalus_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="daedalus_sandbox_")
-    # Use /tmp on macOS to avoid the long /var/folders/... path that pushes
-    # Unix domain socket paths past the 104-byte macOS AF_UNIX limit.
-    # On Linux, tempfile.gettempdir() already returns /tmp.
     _sock_tmpdir = "/tmp" if sys.platform == "darwin" else tempfile.gettempdir()
     sock_path = os.path.join(_sock_tmpdir, f"daedalus_rpc_{uuid.uuid4().hex}.sock")
 
     tool_call_log: list = []
-    tool_call_counter = [0]  # mutable so the RPC thread can increment
+    tool_call_counter = [0]
     exec_start = time.monotonic()
     server_sock = None
 
     try:
-        # Write the auto-generated daedalus_tools module
-        # sandbox_tools is already the correct set (intersection with session
-        # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
         tools_src = generate_daedalus_tools_module(list(sandbox_tools))
         with open(os.path.join(tmpdir, "daedalus_tools.py"), "w") as f:
             f.write(tools_src)
 
-        # Write the user's script
         with open(os.path.join(tmpdir, "script.py"), "w") as f:
             f.write(code)
 
-        # --- Start UDS server ---
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(sock_path)
         server_sock.listen(1)
@@ -952,13 +881,6 @@ def execute_code(
         )
         rpc_thread.start()
 
-        # --- Spawn child process ---
-        # Build a minimal environment for the child. We intentionally exclude
-        # API keys and tokens to prevent credential exfiltration from LLM-
-        # generated scripts. The child accesses tools via RPC, not direct API.
-        # Exception: env vars declared by loaded skills (via env_passthrough
-        # registry) or explicitly allowed by the user in config.yaml
-        # (terminal.env_passthrough) are passed through.
         _SAFE_ENV_PREFIXES = ("PATH", "HOME", "USER", "LANG", "LC_", "TERM",
                               "TMPDIR", "TMP", "TEMP", "SHELL", "LOGNAME",
                               "XDG_", "PYTHONPATH", "VIRTUAL_ENV", "CONDA")
@@ -970,25 +892,18 @@ def execute_code(
             _is_passthrough = lambda _: False  # noqa: E731
         child_env = {}
         for k, v in os.environ.items():
-            # Passthrough vars (skill-declared or user-configured) always pass.
             if _is_passthrough(k):
                 child_env[k] = v
                 continue
-            # Block vars with secret-like names.
             if any(s in k.upper() for s in _SECRET_SUBSTRINGS):
                 continue
-            # Allow vars with known safe prefixes.
             if any(k.startswith(p) for p in _SAFE_ENV_PREFIXES):
                 child_env[k] = v
         child_env["DAEDALUS_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        # Ensure the daedalus root is importable in the sandbox so
-        # repo-root modules are available to child scripts.
         _daedalus_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _existing_pp = child_env.get("PYTHONPATH", "")
         child_env["PYTHONPATH"] = _daedalus_root + (os.pathsep + _existing_pp if _existing_pp else "")
-        # Inject user's configured timezone so datetime.now() in sandboxed
-        # code reflects the correct wall-clock time.
         _tz_name = os.getenv("DAEDALUS_TIMEZONE", "").strip()
         if _tz_name:
             child_env["TZ"] = _tz_name
@@ -1003,16 +918,11 @@ def execute_code(
             preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
 
-        # --- Poll loop: watch for exit, timeout, and interrupt ---
         deadline = time.monotonic() + timeout
         stderr_chunks: list = []
 
-        # Background readers to avoid pipe buffer deadlocks.
-        # For stdout we use a head+tail strategy: keep the first HEAD_BYTES
-        # and a rolling window of the last TAIL_BYTES so the final print()
-        # output is never lost.  Stderr keeps head-only (errors appear early).
-        _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)   # 40% head
-        _STDOUT_TAIL_BYTES = MAX_STDOUT_BYTES - _STDOUT_HEAD_BYTES  # 60% tail
+        _STDOUT_HEAD_BYTES = int(MAX_STDOUT_BYTES * 0.4)
+        _STDOUT_TAIL_BYTES = MAX_STDOUT_BYTES - _STDOUT_HEAD_BYTES
 
         def _drain(pipe, chunks, max_bytes):
             """Simple head-only drain (used for stderr)."""
@@ -1029,7 +939,7 @@ def execute_code(
             except (ValueError, OSError) as e:
                 logger.debug("Error reading process output: %s", e, exc_info=True)
 
-        stdout_total_bytes = [0]  # mutable ref for total bytes seen
+        stdout_total_bytes = [0]
 
         def _drain_head_tail(pipe, head_chunks, tail_chunks, head_bytes, tail_bytes, total_ref):
             """Drain stdout keeping both head and tail data."""
@@ -1043,24 +953,20 @@ def execute_code(
                     if not data:
                         break
                     total_ref[0] += len(data)
-                    # Fill head buffer first
                     if head_collected < head_bytes:
                         keep = min(len(data), head_bytes - head_collected)
                         head_chunks.append(data[:keep])
                         head_collected += keep
-                        data = data[keep:]  # remaining goes to tail
+                        data = data[keep:]
                         if not data:
                             continue
-                    # Everything past head goes into rolling tail buffer
                     tail_buf.append(data)
                     tail_collected += len(data)
-                    # Evict old tail data to stay within tail_bytes budget
                     while tail_collected > tail_bytes and tail_buf:
                         oldest = tail_buf.popleft()
                         tail_collected -= len(oldest)
             except (ValueError, OSError):
                 pass
-            # Transfer final tail to output list
             tail_chunks.extend(tail_buf)
 
         stdout_head_chunks: list = []
@@ -1090,7 +996,6 @@ def execute_code(
                 break
             time.sleep(0.2)
 
-        # Wait for readers to finish draining
         stdout_reader.join(timeout=3)
         stderr_reader.join(timeout=3)
 
@@ -1098,7 +1003,6 @@ def execute_code(
         stdout_tail = b"".join(stdout_tail_chunks).decode("utf-8", errors="replace")
         stderr_text = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
-        # Assemble stdout with head+tail truncation
         total_stdout = stdout_total_bytes[0]
         if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
             omitted = total_stdout - len(stdout_head) - len(stdout_tail)
@@ -1113,26 +1017,18 @@ def execute_code(
         exit_code = proc.returncode if proc.returncode is not None else -1
         duration = round(time.monotonic() - exec_start, 2)
 
-        # Wait for RPC thread to finish
-        server_sock.close()  # break accept() so thread exits promptly
-        server_sock = None  # prevent double close in finally
+        server_sock.close()
+        server_sock = None
         rpc_thread.join(timeout=3)
 
-        # Strip ANSI escape sequences so the model never sees terminal
-        # formatting — prevents it from copying escapes into file writes.
         from tools.ansi_strip import strip_ansi
         stdout_text = strip_ansi(stdout_text)
         stderr_text = strip_ansi(stderr_text)
 
-        # Redact secrets (API keys, tokens, etc.) from sandbox output.
-        # The sandbox env-var filter (lines 434-454) blocks os.environ access,
-        # but scripts can still read secrets from disk (e.g. open('~/.daedalus/.env')).
-        # This ensures leaked secrets never enter the model context.
         from agent.redact import redact_sensitive_text
         stdout_text = redact_sensitive_text(stdout_text)
         stderr_text = redact_sensitive_text(stderr_text)
 
-        # Build response
         result: Dict[str, Any] = {
             "status": status,
             "output": stdout_text,
@@ -1147,7 +1043,6 @@ def execute_code(
         elif exit_code != 0:
             result["status"] = "error"
             result["error"] = stderr_text or f"Script exited with code {exit_code}"
-            # Include stderr in output so the LLM sees the traceback
             if stderr_text:
                 result["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
 
@@ -1171,7 +1066,6 @@ def execute_code(
         }, ensure_ascii=False)
 
     finally:
-        # Cleanup temp dir and socket
         if server_sock is not None:
             try:
                 server_sock.close()
@@ -1182,7 +1076,7 @@ def execute_code(
         try:
             os.unlink(sock_path)
         except OSError:
-            pass  # already cleaned up or never created
+            pass
 
 
 def _kill_process_group(proc, escalate: bool = False):
@@ -1200,7 +1094,6 @@ def _kill_process_group(proc, escalate: bool = False):
             logger.debug("Could not kill process: %s", e2, exc_info=True)
 
     if escalate:
-        # Give the process 5s to exit after SIGTERM, then SIGKILL
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -1226,12 +1119,7 @@ def _load_config() -> dict:
         return {}
 
 
-# ---------------------------------------------------------------------------
-# OpenAI Function-Calling Schema
-# ---------------------------------------------------------------------------
 
-# Per-tool documentation lines for the execute_code description.
-# Ordered to match the canonical display order.
 _TOOL_DOC_LINES = [
     ("web_search",
      "  web_search(query: str, limit: int = 5) -> dict  # {\"data\": {\"web\": [...]}}"),
@@ -1260,12 +1148,10 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
 
-    # Build tool documentation lines for only the enabled tools
     tool_lines = "\n".join(
         doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools
     )
 
-    # Build example import list from enabled tools
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
     if not import_examples:
         import_examples = sorted(enabled_sandbox_tools)[:2]
@@ -1310,11 +1196,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     }
 
 
-# Default schema used at registration time (all sandbox tools listed)
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

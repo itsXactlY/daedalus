@@ -28,9 +28,6 @@ from daedalus_cli.auth import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_qwen_tokens(
     access_token="test-access-token",
@@ -40,7 +37,6 @@ def _make_qwen_tokens(
 ):
     """Create a minimal Qwen CLI OAuth credential dict."""
     if expiry_date is None:
-        # 1 hour from now in milliseconds
         expiry_date = int((time.time() + 3600) * 1000)
     data = {
         "access_token": access_token,
@@ -74,18 +70,12 @@ def qwen_env(tmp_path, monkeypatch):
     return tmp_path
 
 
-# ---------------------------------------------------------------------------
-# _qwen_cli_auth_path
-# ---------------------------------------------------------------------------
 
 def test_qwen_cli_auth_path_returns_expected_location():
     path = _qwen_cli_auth_path()
     assert path == Path.home() / ".qwen" / "oauth_creds.json"
 
 
-# ---------------------------------------------------------------------------
-# _read_qwen_cli_tokens
-# ---------------------------------------------------------------------------
 
 def test_read_qwen_cli_tokens_success(qwen_env):
     tokens = _make_qwen_tokens(access_token="my-access")
@@ -119,9 +109,6 @@ def test_read_qwen_cli_tokens_non_dict(qwen_env):
     assert exc.value.code == "qwen_auth_invalid"
 
 
-# ---------------------------------------------------------------------------
-# _save_qwen_cli_tokens
-# ---------------------------------------------------------------------------
 
 def test_save_qwen_cli_tokens_roundtrip(qwen_env):
     tokens = _make_qwen_tokens(access_token="saved-token")
@@ -141,30 +128,24 @@ def test_save_qwen_cli_tokens_permissions(qwen_env):
     tokens = _make_qwen_tokens()
     saved_path = _save_qwen_cli_tokens(tokens)
     mode = saved_path.stat().st_mode
-    assert mode & stat.S_IRUSR  # owner read
-    assert mode & stat.S_IWUSR  # owner write
-    assert not (mode & stat.S_IRGRP)  # no group read
-    assert not (mode & stat.S_IROTH)  # no other read
+    assert mode & stat.S_IRUSR
+    assert mode & stat.S_IWUSR
+    assert not (mode & stat.S_IRGRP)
+    assert not (mode & stat.S_IROTH)
 
 
-# ---------------------------------------------------------------------------
-# _qwen_access_token_is_expiring
-# ---------------------------------------------------------------------------
 
 def test_expiring_token_not_expired():
-    # 1 hour from now in milliseconds
     future_ms = int((time.time() + 3600) * 1000)
     assert not _qwen_access_token_is_expiring(future_ms)
 
 
 def test_expiring_token_already_expired():
-    # 1 hour ago in milliseconds
     past_ms = int((time.time() - 3600) * 1000)
     assert _qwen_access_token_is_expiring(past_ms)
 
 
 def test_expiring_token_within_skew():
-    # Just inside the default skew window
     near_ms = int((time.time() + QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS - 5) * 1000)
     assert _qwen_access_token_is_expiring(near_ms)
 
@@ -177,9 +158,6 @@ def test_expiring_token_non_numeric_returns_true():
     assert _qwen_access_token_is_expiring("not-a-number")
 
 
-# ---------------------------------------------------------------------------
-# _refresh_qwen_cli_tokens
-# ---------------------------------------------------------------------------
 
 def test_refresh_qwen_cli_tokens_success(qwen_env):
     tokens = _make_qwen_tokens(refresh_token="old-refresh")
@@ -208,7 +186,6 @@ def test_refresh_qwen_cli_tokens_preserves_old_refresh_if_not_in_response(qwen_e
     resp.status_code = 200
     resp.json.return_value = {
         "access_token": "new-access",
-        # No refresh_token in response — should keep old one
         "expires_in": 3600,
     }
 
@@ -290,7 +267,6 @@ def test_refresh_qwen_cli_tokens_default_expires_in(qwen_env):
         mock_httpx.post.return_value = resp
         result = _refresh_qwen_cli_tokens(tokens)
 
-    # Verify expiry_date is roughly now + 6h (within 60s tolerance)
     expected_ms = int(time.time() * 1000) + 6 * 60 * 60 * 1000
     assert abs(result["expiry_date"] - expected_ms) < 60_000
 
@@ -309,16 +285,12 @@ def test_refresh_qwen_cli_tokens_saves_to_disk(qwen_env):
         mock_httpx.post.return_value = resp
         _refresh_qwen_cli_tokens(tokens)
 
-    # Verify it was persisted
     creds_path = qwen_env / ".qwen" / "oauth_creds.json"
     assert creds_path.exists()
     saved = json.loads(creds_path.read_text(encoding="utf-8"))
     assert saved["access_token"] == "disk-check"
 
 
-# ---------------------------------------------------------------------------
-# resolve_qwen_runtime_credentials
-# ---------------------------------------------------------------------------
 
 def test_resolve_qwen_runtime_credentials_fresh_token(qwen_env):
     tokens = _make_qwen_tokens(access_token="fresh-at")
@@ -332,7 +304,6 @@ def test_resolve_qwen_runtime_credentials_fresh_token(qwen_env):
 
 
 def test_resolve_qwen_runtime_credentials_triggers_refresh(qwen_env):
-    # Write an expired token
     expired_ms = int((time.time() - 3600) * 1000)
     tokens = _make_qwen_tokens(access_token="old", expiry_date=expired_ms)
     _write_qwen_creds(qwen_env, tokens)
@@ -379,9 +350,6 @@ def test_resolve_qwen_runtime_credentials_base_url_env_override(qwen_env, monkey
     assert creds["base_url"] == "https://custom.qwen.ai/v1"
 
 
-# ---------------------------------------------------------------------------
-# get_qwen_auth_status
-# ---------------------------------------------------------------------------
 
 def test_get_qwen_auth_status_logged_in(qwen_env):
     tokens = _make_qwen_tokens(access_token="status-at")
@@ -393,7 +361,6 @@ def test_get_qwen_auth_status_logged_in(qwen_env):
 
 
 def test_get_qwen_auth_status_not_logged_in(qwen_env):
-    # No credentials file
     status = get_qwen_auth_status()
     assert status["logged_in"] is False
     assert "error" in status

@@ -11,7 +11,6 @@ from gateway.config import PlatformConfig
 
 def _ensure_discord_mock():
     if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        # Real discord is installed — nothing to do.
         return
 
     if sys.modules.get("discord") is None:
@@ -22,8 +21,6 @@ def _ensure_discord_mock():
         discord_mod.ForumChannel = type("ForumChannel", (), {})
         discord_mod.Interaction = object
 
-        # Lightweight mock for app_commands.Group and Command used by
-        # _register_skill_group.
         class _FakeGroup:
             def __init__(self, *, name, description, parent=None):
                 self.name = name
@@ -61,10 +58,6 @@ def _ensure_discord_mock():
         sys.modules.setdefault("discord.ext", ext_mod)
         sys.modules.setdefault("discord.ext.commands", commands_mod)
 
-    # Whether we just installed the mock OR another test module installed
-    # it first via its own _ensure_discord_mock, force the decorators we
-    # need onto discord.app_commands — the flat /skill command uses
-    # @app_commands.autocomplete and not every other mock stub exposes it.
     _app = getattr(sys.modules["discord"], "app_commands", None)
     if _app is not None and not hasattr(_app, "autocomplete"):
         try:
@@ -106,25 +99,15 @@ def adapter():
         fetch_channel=AsyncMock(),
         user=SimpleNamespace(id=99999, name="DaedalusBot"),
     )
-    adapter._text_batch_delay_seconds = 0  # disable batching for tests
-    # Slash auth is exercised in test_discord_slash_auth.py — bypass it here
-    # so registration / dispatch / thread behavior tests don't have to
-    # construct a full auth context (allowlist / channel scope).
+    adapter._text_batch_delay_seconds = 0
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
 
 
-# ------------------------------------------------------------------
-# /thread slash command registration
-# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_registers_native_thread_slash_command(adapter):
-    # The /thread slash closure now delegates ALL the work — including
-    # defer() — to _handle_thread_create_slash so the auth gate can send
-    # an ephemeral rejection on the still-unresponded interaction. The
-    # closure should just forward.
     adapter._handle_thread_create_slash = AsyncMock()
     adapter._register_slash_commands()
 
@@ -135,8 +118,6 @@ async def test_registers_native_thread_slash_command(adapter):
 
     await command(interaction, name="Planning", message="", auto_archive_duration=1440)
 
-    # defer is now performed inside _handle_thread_create_slash, AFTER the
-    # auth check passes — not by the closure.
     interaction.response.defer.assert_not_awaited()
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
@@ -169,9 +150,6 @@ async def test_run_simple_slash_executes_when_defer_interaction_expired(adapter)
     interaction.delete_original_response.assert_not_awaited()
 
 
-# ------------------------------------------------------------------
-# Auto-registration from COMMAND_REGISTRY
-# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -221,10 +199,6 @@ async def test_plugin_command_name_conflict_skipped(adapter):
     ):
         adapter._register_slash_commands()
 
-    # Built-ins are registered via @tree.command as plain functions. A
-    # plugin-registered override would install a _FakeCommand instance
-    # (has .callback) via tree.add_command. If the conflict-skip logic
-    # fires, the slot remains a bare function.
     status_entry = adapter._client.tree.commands["status"]
     assert callable(status_entry) and not hasattr(status_entry, "callback"), (
         "plugin registration overrode the built-in /status command — "
@@ -232,9 +206,6 @@ async def test_plugin_command_name_conflict_skipped(adapter):
     )
 
 
-# ------------------------------------------------------------------
-# 100-command cap (Discord error 30032 guard)
-# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -252,7 +223,6 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
 
     adapter._run_simple_slash = AsyncMock()
 
-    # 200 plugin commands — way past Discord's limit on their own.
     many_plugins = {
         f"plug{i:03d}": {
             "handler": lambda _a: "ok",
@@ -268,25 +238,18 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
 
     tree_names = set(adapter._client.tree.commands.keys())
 
-    # Contract: never exceed Discord's hard cap.
     assert len(tree_names) <= _DISCORD_MAX_APP_COMMANDS, (
         f"registered {len(tree_names)} commands — exceeds Discord's "
         f"{_DISCORD_MAX_APP_COMMANDS} limit and would fail sync with 30032"
     )
 
-    # Native, high-priority commands are registered first and must survive
-    # the cap — they are the core UX, not droppable overflow.
     for native in ("status", "stop", "new", "model", "help"):
         assert native in tree_names, f"/{native} (native) was dropped by the cap"
 
-    # The cap must actually have dropped overflow — not every plugin fit.
     registered_plugins = [n for n in tree_names if n.startswith("plug")]
     assert len(registered_plugins) < 200, "cap did not drop any overflow commands"
 
 
-# ------------------------------------------------------------------
-# _handle_thread_create_slash — success, session dispatch, failure
-# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -311,7 +274,6 @@ async def test_handle_thread_create_slash_reports_success(adapter):
         reason="Requested by Jezza via /thread",
     )
     created_thread.send.assert_awaited_once_with("Kickoff")
-    # Thread link shown to user
     interaction.followup.send.assert_awaited()
     args, kwargs = interaction.followup.send.await_args
     assert "<#555>" in args[0]
@@ -346,9 +308,6 @@ async def test_handle_thread_create_slash_falls_back_to_seed_message(adapter):
     interaction.followup.send.assert_awaited()
 
 
-# ------------------------------------------------------------------
-# _dispatch_thread_session — builds correct event and routes it
-# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -377,9 +336,6 @@ async def test_dispatch_thread_session_builds_thread_event(adapter):
     assert "TestGuild" in event.source.chat_name
 
 
-# ------------------------------------------------------------------
-# _build_slash_event — preserve thread context for native slash commands
-# ------------------------------------------------------------------
 
 
 def test_build_slash_event_preserves_thread_context(adapter):
@@ -398,9 +354,6 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert "TestGuild" in event.source.chat_name
 
 
-# ------------------------------------------------------------------
-# Auto-thread: _auto_create_thread
-# ------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -449,9 +402,6 @@ async def test_rename_thread_edits_only_when_current_name_matches(adapter):
     )
 
 
-# ------------------------------------------------------------------
-# Auto-thread integration in _handle_message
-# ------------------------------------------------------------------
 
 
 import discord as _discord_mod  # noqa: E402 — mock or real, used below
@@ -478,7 +428,6 @@ class _FakeThreadChannel(_discord_mod.Thread):
     """isinstance(ch, discord.Thread) → True."""
 
     def __init__(self, channel_id=200, name="existing-thread", guild_name="TestGuild", parent_id=100):
-        # Don't call super().__init__ — mock Thread is just an empty type
         self.id = channel_id
         self.name = name
         self.guild = SimpleNamespace(name=guild_name, id=1)
@@ -506,14 +455,8 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
     )
 
 
-# ------------------------------------------------------------------
-# Config bridge
-# ------------------------------------------------------------------
 
 
-# ------------------------------------------------------------------
-# /skill command registration (flat + autocomplete)
-# ------------------------------------------------------------------
 
 
 def test_register_skill_command_callback_dispatches_by_name(adapter):
@@ -538,7 +481,6 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     skill_cmd = adapter._client.tree.commands["skill"]
     assert skill_cmd.callback is not None
 
-    # Stub out _run_simple_slash so we can verify the dispatched text.
     dispatched: list[str] = []
 
     async def fake_run(_interaction, text):
@@ -549,9 +491,7 @@ def test_register_skill_command_callback_dispatches_by_name(adapter):
     import asyncio
 
     fake_interaction = SimpleNamespace()
-    # gif-search → /gif-search with no args
     asyncio.run(skill_cmd.callback(fake_interaction, name="gif-search"))
-    # dogfood with args
     asyncio.run(skill_cmd.callback(fake_interaction, name="dogfood", args="my test"))
 
     assert dispatched == ["/gif-search", "/dogfood my test"]
@@ -568,8 +508,6 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
     """
     import json
 
-    # Simulate the largest catalog the collector will ever produce:
-    # 20 categories × 25 skills each, with verbose 100-char descriptions.
     large_categories: dict[str, list[tuple[str, str, str]]] = {}
     long_desc = "A verbose description padded to approximately 100 chars " + "." * 42
     for i in range(20):
@@ -586,8 +524,6 @@ def test_register_skill_command_payload_fits_discord_8kb_limit(adapter):
         adapter._register_slash_commands()
 
     skill_cmd = adapter._client.tree.commands["skill"]
-    # Approximate the serialized registration payload (name + description only).
-    # Autocomplete options are NOT registered — they're fetched dynamically.
     payload = json.dumps({
         "name": skill_cmd.name,
         "description": skill_cmd.description,

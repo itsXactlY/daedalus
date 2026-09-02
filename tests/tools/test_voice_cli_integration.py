@@ -38,9 +38,6 @@ def _make_voice_cli(**overrides):
     return cli
 
 
-# ============================================================================
-# Markdown stripping — import real function from tts_tool
-# ============================================================================
 
 from tools.tts_tool import _strip_markdown_for_tts
 
@@ -123,9 +120,6 @@ class TestMarkdownStripping:
         assert "docs" in result
 
 
-# ============================================================================
-# Voice command parsing
-# ============================================================================
 
 class TestVoiceCommandParsing:
     """Test _handle_voice_command logic without full CLI setup."""
@@ -146,9 +140,6 @@ class TestVoiceCommandParsing:
             assert subcommand == expected, f"Failed for {command!r}: got {subcommand!r}"
 
 
-# ============================================================================
-# Voice state thread safety
-# ============================================================================
 
 class TestVoiceStateLock:
     def test_lock_protects_state(self):
@@ -171,9 +162,6 @@ class TestVoiceStateLock:
         assert state["count"] == 4000
 
 
-# ============================================================================
-# Streaming TTS lazy import activation (Bug A fix)
-# ============================================================================
 
 class TestStreamingTTSActivation:
     """Verify streaming TTS uses lazy imports to check availability."""
@@ -294,9 +282,6 @@ class TestStreamingTTSActivation:
             "_HAS_AUDIO should not exist -- lazy imports replaced it"
 
 
-# ============================================================================
-# Voice mode user message prefix (Bug B fix)
-# ============================================================================
 
 class TestVoiceMessagePrefix:
     """Voice mode should inject instruction via user message prefix,
@@ -391,9 +376,6 @@ class TestVoiceMessagePrefix:
         assert cli.agent.ephemeral_system_prompt == original_ephemeral
 
 
-# ============================================================================
-# _vprint force parameter (Minor fix)
-# ============================================================================
 
 class TestVprintForceParameter:
     """_vprint should suppress output during streaming TTS unless force=True."""
@@ -487,9 +469,6 @@ class TestVprintForceParameter:
             f"Found {unforced_error_count} critical error _vprint calls without force=True"
 
 
-# ============================================================================
-# Bug fix regression tests
-# ============================================================================
 
 class TestEdgeTTSLazyImport:
     """Bug #3: _generate_edge_tts must use lazy import, not bare module name."""
@@ -504,7 +483,6 @@ class TestEdgeTTSLazyImport:
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.AsyncFunctionDef) and node.name == "_generate_edge_tts":
-                # Collect all Name references (bare identifiers)
                 bare_refs = [
                     n.id for n in _ast.walk(node)
                     if isinstance(n, _ast.Name) and n.id == "edge_tts"
@@ -514,7 +492,6 @@ class TestEdgeTTSLazyImport:
                     f"should use _import_edge_tts() lazy helper"
                 )
 
-                # Must have a call to _import_edge_tts
                 lazy_calls = [
                     n for n in _ast.walk(node)
                     if isinstance(n, _ast.Call)
@@ -542,7 +519,6 @@ class TestStreamingTTSOutputStreamCleanup:
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == "stream_tts_to_speaker":
-                # Find the outermost try that has a finally with tts_done_event.set()
                 for child in _ast.walk(node):
                     if isinstance(child, _ast.Try) and child.finalbody:
                         finally_text = "\n".join(
@@ -565,7 +541,6 @@ class TestCtrlCResetsContinuousMode:
         with open("cli.py") as f:
             source = f.read()
 
-        # Find the Ctrl+C handler's voice cancel block
         lines = source.split("\n")
         in_cancel_block = False
         found_continuous_reset = False
@@ -576,7 +551,6 @@ class TestCtrlCResetsContinuousMode:
                 if "_voice_continuous = False" in line:
                     found_continuous_reset = True
                     break
-                # Block ends at next comment section or return
                 if "return" in line and in_cancel_block:
                     break
 
@@ -658,7 +632,6 @@ class TestChatTTSCleanupOnException:
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == "chat":
-                # Find Try nodes with finally blocks
                 for child in _ast.walk(node):
                     if isinstance(child, _ast.Try) and child.finalbody:
                         finally_text = "\n".join(
@@ -692,7 +665,6 @@ class TestBrowserToolSignalHandlerRemoved:
         lines = source.split("\n")
         for i, line in enumerate(lines, 1):
             stripped = line.strip()
-            # Skip comments
             if stripped.startswith("#"):
                 continue
             assert "signal.signal(signal.SIGINT" not in stripped, (
@@ -723,10 +695,7 @@ class TestKeyHandlerNeverBlocks:
 
         for node in _ast.walk(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == "handle_voice_record":
-                # Collect all direct calls to _voice_start_recording in this function.
-                # They should ONLY appear inside a nested def (the _start_recording wrapper).
                 for child in _ast.iter_child_nodes(node):
-                    # Direct statements in the handler body (not nested defs)
                     if isinstance(child, _ast.Expr) and isinstance(child.value, _ast.Call):
                         call_src = _ast.dump(child.value)
                         assert "_voice_start_recording" not in call_src, (
@@ -785,7 +754,6 @@ class TestKeyHandlerNeverBlocks:
                     found_recording_false = True
                 if "_voice_processing = True" in stripped:
                     found_processing_true = True
-                # End of with block (dedent)
                 if stripped and not line.startswith("            ") and not line.startswith("\t\t\t"):
                     break
 
@@ -795,9 +763,6 @@ class TestKeyHandlerNeverBlocks:
         )
 
 
-# ============================================================================
-# Real behavior tests — CLI voice methods via _make_voice_cli()
-# ============================================================================
 
 class TestHandleVoiceCommandReal:
     """Tests _handle_voice_command routing with real CLI instance."""
@@ -854,7 +819,6 @@ class TestHandleVoiceCommandReal:
         cli._handle_voice_command("/voice foobar")
         cli._enable_voice_mode.assert_not_called()
         cli._disable_voice_mode.assert_not_called()
-        # Should print usage via _cprint
         assert any("Unknown" in str(c) or "unknown" in str(c)
                     for c in mock_cp.call_args_list)
 
@@ -1141,7 +1105,7 @@ class TestVoiceStopAndTranscribeReal:
         recorder = MagicMock()
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
-        cli._voice_stop_and_transcribe()  # Should not raise
+        cli._voice_stop_and_transcribe()
 
     @patch("cli._cprint")
     @patch("tools.voice_mode.play_beep")
@@ -1196,9 +1160,6 @@ class TestVoiceStopAndTranscribeReal:
         mock_tr.assert_called_once_with("/tmp/test.wav", model="whisper-large-v3")
 
 
-# ---------------------------------------------------------------------------
-# Bugfix: _refresh_level must read _voice_recording under lock
-# ---------------------------------------------------------------------------
 
 
 class TestRefreshLevelLock:

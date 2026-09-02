@@ -66,7 +66,6 @@ def fetch_transcript(video_id: str, languages: list = None):
     else:
         result = api.fetch(video_id)
 
-    # v1.x returns FetchedTranscriptSnippet objects; normalize to dicts
     return [
         {"text": seg.text, "start": seg.start, "duration": seg.duration}
         for seg in result

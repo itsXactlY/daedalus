@@ -40,9 +40,6 @@ from tools.skills_guard import (
 )
 
 
-# ---------------------------------------------------------------------------
-# _resolve_trust_level
-# ---------------------------------------------------------------------------
 
 
 class TestResolveTrustLevel:
@@ -67,9 +64,6 @@ class TestResolveTrustLevel:
         assert _resolve_trust_level("") == "community"
 
 
-# ---------------------------------------------------------------------------
-# _determine_verdict
-# ---------------------------------------------------------------------------
 
 
 class TestDetermineVerdict:
@@ -93,9 +87,6 @@ class TestDetermineVerdict:
         assert _determine_verdict([f]) == "caution"
 
 
-# ---------------------------------------------------------------------------
-# should_allow_install
-# ---------------------------------------------------------------------------
 
 
 class TestShouldAllowInstall:
@@ -161,7 +152,6 @@ class TestShouldAllowInstall:
         assert allowed is True
         assert "Force-installed" in reason
 
-    # -- agent-created policy --
 
     def test_safe_agent_created_allowed(self):
         allowed, _ = should_allow_install(self._result("agent-created", "safe"))
@@ -190,9 +180,6 @@ class TestShouldAllowInstall:
         assert "Force-installed" in reason
 
 
-# ---------------------------------------------------------------------------
-# scan_file — pattern detection
-# ---------------------------------------------------------------------------
 
 
 class TestScanFile:
@@ -255,13 +242,9 @@ class TestScanFile:
         f.write_text("rm -rf / && rm -rf /home\n")
         findings = scan_file(f, "dup.sh")
         root_rm = [fi for fi in findings if fi.pattern_id == "destructive_root_rm"]
-        # Same pattern on same line should appear only once
         assert len(root_rm) == 1
 
 
-# ---------------------------------------------------------------------------
-# scan_skill — directory scanning
-# ---------------------------------------------------------------------------
 
 
 class TestScanSkill:
@@ -304,9 +287,6 @@ class TestScanSkill:
 
 
 
-# ---------------------------------------------------------------------------
-# _check_structure
-# ---------------------------------------------------------------------------
 
 
 class TestCheckStructure:
@@ -383,9 +363,6 @@ class TestCheckStructure:
         assert findings == []
 
 
-# ---------------------------------------------------------------------------
-# format_scan_report
-# ---------------------------------------------------------------------------
 
 
 class TestFormatScanReport:
@@ -405,9 +382,6 @@ class TestFormatScanReport:
         assert "curl $KEY" in report
 
 
-# ---------------------------------------------------------------------------
-# content_hash
-# ---------------------------------------------------------------------------
 
 
 class TestContentHash:
@@ -439,9 +413,6 @@ class TestContentHash:
         assert h1 != h2
 
 
-# ---------------------------------------------------------------------------
-# _unicode_char_name
-# ---------------------------------------------------------------------------
 
 
 class TestUnicodeCharName:
@@ -450,13 +421,10 @@ class TestUnicodeCharName:
         assert "BOM" in _unicode_char_name("\ufeff")
 
     def test_unknown_char(self):
-        result = _unicode_char_name("\u0041")  # 'A'
+        result = _unicode_char_name("\u0041")
         assert "U+" in result
 
 
-# ---------------------------------------------------------------------------
-# Regression: symlink prefix confusion (Bug fix)
-# ---------------------------------------------------------------------------
 
 
 class TestSymlinkPrefixConfusionRegression:
@@ -479,9 +447,8 @@ class TestSymlinkPrefixConfusionRegression:
         resolved = sibling_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # Old check: startswith without trailing separator - WRONG
         old_escapes = not str(resolved).startswith(str(skill_dir_resolved))
-        assert old_escapes is False  # Bug: old check thinks it's inside
+        assert old_escapes is False
 
     def test_is_relative_to_catches_prefix_confusion(self, tmp_path):
         """New check catches: is_relative_to correctly rejects sibling dir."""
@@ -494,9 +461,8 @@ class TestSymlinkPrefixConfusionRegression:
         resolved = sibling_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # New check: is_relative_to - correctly detects escape
         new_escapes = not resolved.is_relative_to(skill_dir_resolved)
-        assert new_escapes is True  # Fixed: correctly flags as outside
+        assert new_escapes is True
 
     def test_legitimate_subpath_passes_both(self, tmp_path):
         """Both old and new checks correctly allow real subpaths."""
@@ -509,7 +475,6 @@ class TestSymlinkPrefixConfusionRegression:
         resolved = sub_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
 
-        # Both checks agree this is inside
         old_escapes = not str(resolved).startswith(str(skill_dir_resolved))
         new_escapes = not resolved.is_relative_to(skill_dir_resolved)
         assert old_escapes is False

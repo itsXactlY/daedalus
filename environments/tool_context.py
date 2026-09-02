@@ -37,7 +37,6 @@ from tools.browser_tool import cleanup_browser
 
 logger = logging.getLogger(__name__)
 
-# Thread pool for running sync tool calls that internally use asyncio.run()
 _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
 
@@ -52,7 +51,6 @@ def _run_tool_in_thread(tool_name: str, arguments: Dict[str, Any], task_id: str)
     """
     try:
         loop = asyncio.get_running_loop()
-        # We're in an async context -- need to run in thread
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(
@@ -60,7 +58,6 @@ def _run_tool_in_thread(tool_name: str, arguments: Dict[str, Any], task_id: str)
             )
             return future.result(timeout=300)
     except RuntimeError:
-        # No running event loop -- safe to call directly
         return handle_function_call(tool_name, arguments, task_id)
 
 
@@ -76,9 +73,6 @@ class ToolContext:
     def __init__(self, task_id: str):
         self.task_id = task_id
 
-    # -------------------------------------------------------------------------
-    # Terminal tools
-    # -------------------------------------------------------------------------
 
     def terminal(self, command: str, timeout: int = 180) -> Dict[str, Any]:
         """
@@ -95,7 +89,6 @@ class ToolContext:
         backend = os.getenv("TERMINAL_ENV", "local")
         logger.debug("ToolContext.terminal [%s backend] task=%s: %s", backend, self.task_id[:8], command[:100])
 
-        # Run via thread helper so modal/docker/daytona backends' asyncio.run() doesn't deadlock
         result = _run_tool_in_thread(
             "terminal",
             {"command": command, "timeout": timeout},
@@ -106,9 +99,6 @@ class ToolContext:
         except json.JSONDecodeError:
             return {"exit_code": -1, "output": result}
 
-    # -------------------------------------------------------------------------
-    # File tools
-    # -------------------------------------------------------------------------
 
     def read_file(self, path: str) -> Dict[str, Any]:
         """
@@ -178,22 +168,19 @@ class ToolContext:
         raw = local.read_bytes()
         b64 = base64.b64encode(raw).decode("ascii")
 
-        # Ensure parent directory exists in the sandbox
         parent = str(_Path(remote_path).parent)
         if parent not in (".", "/"):
             self.terminal(f"mkdir -p {parent}", timeout=10)
 
-        # For small files, single command is fine
-        chunk_size = 60_000  # ~60KB per chunk (well within shell limits)
+        chunk_size = 60_000
         if len(b64) <= chunk_size:
             result = self.terminal(
                 f"printf '%s' '{b64}' | base64 -d > {remote_path}",
                 timeout=30,
             )
         else:
-            # For larger files, write base64 in chunks then decode
             tmp_b64 = "/tmp/_daedalus_upload.b64"
-            self.terminal(f": > {tmp_b64}", timeout=5)  # truncate
+            self.terminal(f": > {tmp_b64}", timeout=5)
             for i in range(0, len(b64), chunk_size):
                 chunk = b64[i : i + chunk_size]
                 self.terminal(f"printf '%s' '{chunk}' >> {tmp_b64}", timeout=15)
@@ -249,7 +236,6 @@ class ToolContext:
         import base64
         from pathlib import Path as _Path
 
-        # Base64-encode the file inside the sandbox and capture output
         result = self.terminal(
             f"base64 {remote_path} 2>/dev/null",
             timeout=30,
@@ -270,7 +256,6 @@ class ToolContext:
         except Exception as e:
             return {"success": False, "error": f"Base64 decode failed: {e}"}
 
-        # Write to local host filesystem
         local = _Path(local_path)
         local.parent.mkdir(parents=True, exist_ok=True)
         local.write_bytes(raw)
@@ -293,7 +278,6 @@ class ToolContext:
         """
         from pathlib import Path as _Path
 
-        # List files in the remote directory
         ls_result = self.terminal(
             f"find {remote_dir} -type f 2>/dev/null",
             timeout=15,
@@ -311,7 +295,6 @@ class ToolContext:
             remote_file = remote_file.strip()
             if not remote_file:
                 continue
-            # Compute the relative path to preserve directory structure
             if remote_file.startswith(remote_dir):
                 relative = remote_file[len(remote_dir):].lstrip("/")
             else:
@@ -340,9 +323,6 @@ class ToolContext:
         except json.JSONDecodeError:
             return {"error": result}
 
-    # -------------------------------------------------------------------------
-    # Web tools
-    # -------------------------------------------------------------------------
 
     def web_search(self, query: str) -> Dict[str, Any]:
         """
@@ -376,9 +356,6 @@ class ToolContext:
         except json.JSONDecodeError:
             return {"error": result}
 
-    # -------------------------------------------------------------------------
-    # Browser tools
-    # -------------------------------------------------------------------------
 
     def browser_navigate(self, url: str) -> Dict[str, Any]:
         """
@@ -413,9 +390,6 @@ class ToolContext:
         except json.JSONDecodeError:
             return {"error": result}
 
-    # -------------------------------------------------------------------------
-    # Generic tool access
-    # -------------------------------------------------------------------------
 
     def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """
@@ -433,9 +407,6 @@ class ToolContext:
         """
         return _run_tool_in_thread(tool_name, arguments, self.task_id)
 
-    # -------------------------------------------------------------------------
-    # Cleanup
-    # -------------------------------------------------------------------------
 
     def cleanup(self):
         """
@@ -445,7 +416,6 @@ class ToolContext:
         Called automatically by the base environment via try/finally after
         compute_reward() completes. You generally don't need to call this yourself.
         """
-        # Kill any background processes from this rollout (safety net)
         try:
             from tools.process_registry import process_registry
             killed = process_registry.kill_all(task_id=self.task_id)
@@ -459,8 +429,6 @@ class ToolContext:
         except Exception as e:
             logger.debug("VM cleanup for task %s: %s", self.task_id, e)
 
-        # Suppress browser_tool's noisy debug prints during cleanup.
-        # The cleanup still runs (safe), it just doesn't spam the console.
         _prev_quiet = os.environ.get("DAEDALUS_QUIET")
         os.environ["DAEDALUS_QUIET"] = "1"
         try:

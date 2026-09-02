@@ -26,7 +26,6 @@ class TestCronFilePermissions(unittest.TestCase):
     @patch("cron.jobs.JOBS_FILE")
     def test_ensure_dirs_sets_0700(self, mock_jobs_file, mock_output, mock_cron):
         mock_cron.__class__ = Path
-        # Use real paths
         cron_dir = Path(self.tmpdir) / "cron"
         output_dir = cron_dir / "output"
 
@@ -69,7 +68,6 @@ class TestCronFilePermissions(unittest.TestCase):
             file_mode = stat.S_IMODE(os.stat(output_file).st_mode)
             self.assertEqual(file_mode, 0o600)
 
-            # Job output dir should also be 0700
             job_dir = output_dir / "test-job"
             dir_mode = stat.S_IMODE(os.stat(job_dir).st_mode)
             self.assertEqual(dir_mode, 0o700)
@@ -124,11 +122,11 @@ class TestSecureHelpers(unittest.TestCase):
 
     def test_secure_file_nonexistent_no_error(self):
         from cron.jobs import _secure_file
-        _secure_file(Path("/nonexistent/path/file.json"))  # Should not raise
+        _secure_file(Path("/nonexistent/path/file.json"))
 
     def test_secure_dir_nonexistent_no_error(self):
         from cron.jobs import _secure_dir
-        _secure_dir(Path("/nonexistent/path"))  # Should not raise
+        _secure_dir(Path("/nonexistent/path"))
 
 
 if __name__ == "__main__":

@@ -64,7 +64,6 @@ class TestSafeWriteRoot:
 
     def test_safe_root_with_tilde_expansion(self, tmp_path: Path, monkeypatch):
         """~ in DAEDALUS_WRITE_SAFE_ROOT should be expanded."""
-        # Use a real subdirectory of tmp_path so we can test tilde-style paths
         safe_root = tmp_path / "workspace"
         inside = safe_root / "file.txt"
         os.makedirs(safe_root, exist_ok=True)
@@ -74,7 +73,6 @@ class TestSafeWriteRoot:
 
     def test_safe_root_does_not_override_static_deny(self, tmp_path: Path, monkeypatch):
         """Even if a static-denied path is inside the safe root, it's still denied."""
-        # Point safe root at home to include ~/.ssh
         monkeypatch.setenv("DAEDALUS_WRITE_SAFE_ROOT", os.path.expanduser("~"))
         assert _is_write_denied(os.path.expanduser("~/.ssh/id_rsa")) is True
 

@@ -95,8 +95,6 @@ def _adopt_live_compression_child(
     recovered = loader(session_db, child_session_id)
     if not isinstance(recovered, list) or not recovered:
         return None
-    # Revalidate after loading: the child may have rotated or a competing
-    # continuation may have appeared between the two DB reads.
     confirmed = finder(session_db, parent_session_id)
     if not confirmed or str(confirmed.get("id") or "") != child_session_id:
         return None
@@ -169,9 +167,6 @@ def recover_rotated_compression_session(
     try:
         if not _session_was_rotated_by_compression(session_db, session_id):
             return None
-        # Rotation publication holds the parent compression lease until the
-        # child handoff is durable. A concurrent turn waits briefly rather than
-        # observing the intentional parent-ended/child-empty intermediate state.
         holder_getter = getattr(session_db, "get_compression_lock_holder", None)
         for attempt in range(21):
             recovered = _adopt_live_compression_child(agent, session_db, session_id)

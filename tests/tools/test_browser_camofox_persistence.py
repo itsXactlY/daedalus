@@ -129,7 +129,6 @@ class TestManagedPersistenceMode:
         with _enable_persistence():
             s1 = _get_session("task-a")
             s2 = _get_session("task-b")
-            # Same profile = same userId, different session keys
             assert s1["user_id"] == s2["user_id"]
             assert s1["session_key"] != s2["session_key"]
 
@@ -224,7 +223,6 @@ class TestVncUrlDiscovery:
         with patch("tools.browser_camofox.requests.get", return_value=health_resp) as mock_get:
             check_camofox_available()
             check_camofox_available()
-        # Second call still hits /health for availability but doesn't re-parse vncPort
         assert get_vnc_url() == "http://localhost:6080"
 
     def test_navigate_includes_vnc_hint(self, tmp_path, monkeypatch):
@@ -255,7 +253,6 @@ class TestCamofoxSoftCleanup:
             result = camofox_soft_cleanup("task-1")
 
         assert result is True
-        # Session should have been dropped from in-memory store
         import tools.browser_camofox as mod
         with mod._sessions_lock:
             assert "task-1" not in mod._sessions
@@ -270,7 +267,6 @@ class TestCamofoxSoftCleanup:
             result = camofox_soft_cleanup("task-1")
 
         assert result is False
-        # Session should still be present — not dropped
         import tools.browser_camofox as mod
         with mod._sessions_lock:
             assert "task-1" in mod._sessions

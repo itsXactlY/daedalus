@@ -14,9 +14,6 @@ from tools.cronjob_tools import (
 )
 
 
-# =========================================================================
-# Cron prompt scanning
-# =========================================================================
 
 class TestScanCronPrompt:
     def test_clean_prompt_passes(self):
@@ -67,8 +64,6 @@ class TestCronjobRequirements:
         monkeypatch.setenv("DAEDALUS_INTERACTIVE", "1")
         monkeypatch.delenv("DAEDALUS_GATEWAY_SESSION", raising=False)
         monkeypatch.delenv("DAEDALUS_EXEC_ASK", raising=False)
-        # Even with no crontab in PATH, the cronjob tool should be available
-        # because daedalus uses an internal scheduler, not system crontab.
         assert check_cronjob_requirements() is True
 
     def test_accepts_interactive_mode(self, monkeypatch):
@@ -101,9 +96,6 @@ class TestCronjobRequirements:
         assert check_cronjob_requirements() is False
 
 
-# =========================================================================
-# schedule_cronjob
-# =========================================================================
 
 class TestScheduleCronjob:
     @pytest.fixture(autouse=True)
@@ -206,9 +198,6 @@ class TestScheduleCronjob:
         assert job["origin"].get("thread_id") is None
 
 
-# =========================================================================
-# list_cronjobs
-# =========================================================================
 
 class TestListCronjobs:
     @pytest.fixture(autouse=True)
@@ -243,9 +232,6 @@ class TestListCronjobs:
         assert "enabled" in job
 
 
-# =========================================================================
-# remove_cronjob
-# =========================================================================
 
 class TestRemoveCronjob:
     @pytest.fixture(autouse=True)
@@ -260,7 +246,6 @@ class TestRemoveCronjob:
         result = json.loads(remove_cronjob(job_id))
         assert result["success"] is True
 
-        # Verify it's gone
         listing = json.loads(list_cronjobs())
         assert listing["count"] == 0
 

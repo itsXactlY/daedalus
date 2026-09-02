@@ -48,7 +48,6 @@ def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
         return DaedalusCLI(**kwargs)
 
 
-# ── Sample conversation histories for tests ──────────────────────────
 
 
 def _simple_history():
@@ -113,7 +112,6 @@ def _multimodal_history():
     ]
 
 
-# ── Tests for _display_resumed_history ───────────────────────────────
 
 
 class TestDisplayResumedHistory:
@@ -149,7 +147,6 @@ class TestDisplayResumedHistory:
         cli.conversation_history = _tool_call_history()
         output = self._capture_display(cli)
 
-        # Tool result content should NOT appear
         assert "Found 5 results" not in output
         assert "Page content" not in output
 
@@ -171,13 +168,10 @@ class TestDisplayResumedHistory:
         ]
         output = self._capture_display(cli)
 
-        # Should have truncation indicator and NOT contain the full 500 chars
         assert "..." in output
         assert "A" * 500 not in output
-        # The 300-char truncated text is present but may be line-wrapped by
-        # Rich's panel renderer, so check the total A count in the output
         a_count = output.count("A")
-        assert 200 <= a_count <= 310  # roughly 300 chars (±panel padding)
+        assert 200 <= a_count <= 310
 
     def test_long_assistant_message_truncated(self):
         cli = _make_cli()
@@ -200,11 +194,9 @@ class TestDisplayResumedHistory:
         ]
         output = self._capture_display(cli)
 
-        # First 3 lines should be there
         assert "Line 0" in output
         assert "Line 1" in output
         assert "Line 2" in output
-        # Line 19 should NOT be there (truncated after 3 lines)
         assert "Line 19" not in output
 
     def test_large_history_shows_truncation_indicator(self):
@@ -212,9 +204,7 @@ class TestDisplayResumedHistory:
         cli.conversation_history = _large_history(n_exchanges=15)
         output = self._capture_display(cli)
 
-        # Should show "earlier messages" indicator
         assert "earlier messages" in output
-        # Last question should still be visible
         assert "Question #15" in output
 
     def test_multimodal_content_handled(self):
@@ -234,7 +224,6 @@ class TestDisplayResumedHistory:
 
     def test_minimal_config_suppresses_display(self):
         cli = _make_cli(config_overrides={"display": {"resume_display": "minimal"}})
-        # resume_display is captured as an instance variable during __init__
         assert cli.resume_display == "minimal"
         cli.conversation_history = _simple_history()
         output = self._capture_display(cli)
@@ -258,7 +247,6 @@ class TestDisplayResumedHistory:
         ]
         output = self._capture_display(cli)
 
-        # The assistant entry should be skipped, only the user message shown
         assert "You:" in output
         assert "Daedalus:" not in output
 
@@ -330,7 +318,6 @@ class TestDisplayResumedHistory:
         assert "terminal" in output
 
 
-# ── Tests for _preload_resumed_session ──────────────────────────────
 
 
 class TestPreloadResumedSession:
@@ -408,7 +395,6 @@ class TestPreloadResumedSession:
         cli.console.file = buf
         cli._preload_resumed_session()
 
-        # Should have executed UPDATE to clear ended_at
         mock_conn.execute.assert_called_once()
         call_args = mock_conn.execute.call_args
         assert "ended_at = NULL" in call_args[0][0]
@@ -436,7 +422,6 @@ class TestPreloadResumedSession:
         assert "1 user messages" not in output
 
 
-# ── Integration: _init_agent skips when preloaded ────────────────────
 
 
 class TestInitAgentSkipsPreloaded:
@@ -451,16 +436,12 @@ class TestInitAgentSkipsPreloaded:
         mock_db = MagicMock()
         cli._session_db = mock_db
 
-        # _init_agent will fail at credential resolution (no real API key),
-        # but the session-loading block should be skipped entirely
         with patch.object(cli, "_ensure_runtime_credentials", return_value=False):
             cli._init_agent()
 
-        # get_messages_as_conversation should NOT have been called
         mock_db.get_messages_as_conversation.assert_not_called()
 
 
-# ── Config default tests ─────────────────────────────────────────────
 
 
 class TestResumeDisplayConfig:

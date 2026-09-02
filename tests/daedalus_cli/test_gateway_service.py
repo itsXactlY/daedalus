@@ -126,7 +126,6 @@ class TestGatewayStopCleanup:
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop"))
 
         assert service_calls == ["stop"]
-        # Global kill should NOT be called without --all
         assert kill_calls == []
 
     def test_stop_all_sweeps_all_gateway_processes(self, tmp_path, monkeypatch):
@@ -355,7 +354,6 @@ class TestDetectVenvDir:
         assert result == venv_path
 
     def test_falls_back_to_dot_venv_directory(self, tmp_path, monkeypatch):
-        # Not inside a virtualenv
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
@@ -401,7 +399,6 @@ class TestSystemUnitDaedalusHome:
     """DAEDALUS_HOME in system units must reference the target user, not root."""
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
-        # Simulate sudo: Path.home() returns /root, target user is alice
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.delenv("DAEDALUS_HOME", raising=False)
         monkeypatch.setattr(
@@ -419,7 +416,6 @@ class TestSystemUnitDaedalusHome:
         assert '/root/.daedalus' not in unit
 
     def test_system_unit_remaps_profile_to_target_user(self, monkeypatch):
-        # Simulate sudo with a profile: DAEDALUS_HOME was resolved under root
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.setenv("DAEDALUS_HOME", "/root/.daedalus/profiles/coder")
         monkeypatch.setattr(
@@ -437,7 +433,6 @@ class TestSystemUnitDaedalusHome:
         assert '/root/' not in unit
 
     def test_system_unit_preserves_custom_daedalus_home(self, monkeypatch):
-        # Custom DAEDALUS_HOME not under any user's home — keep as-is
         monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
         monkeypatch.setenv("DAEDALUS_HOME", "/opt/daedalus-shared")
         monkeypatch.setattr(
@@ -454,7 +449,6 @@ class TestSystemUnitDaedalusHome:
         assert 'DAEDALUS_HOME=/opt/daedalus-shared' in unit
 
     def test_user_unit_unaffected_by_change(self):
-        # User-scope units should still use the calling user's DAEDALUS_HOME
         unit = gateway_cli.generate_systemd_unit(system=False)
 
         daedalus_home = str(gateway_cli.get_daedalus_home().resolve())
@@ -506,7 +500,6 @@ class TestGeneratedUnitUsesDetectedVenv:
 
         assert f"VIRTUAL_ENV={dot_venv}" in unit
         assert f"{dot_venv}/bin" in unit
-        # Must NOT contain a hardcoded /venv/ path
         assert "/venv/" not in unit or "/.venv/" in unit
 
 
@@ -520,7 +513,6 @@ class TestGeneratedUnitIncludesLocalBin:
 
     def test_system_unit_includes_local_bin_in_path(self):
         unit = gateway_cli.generate_systemd_unit(system=True)
-        # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
 
 
@@ -565,7 +557,6 @@ class TestSystemServiceIdentityRootHandling:
             username, group, home = gateway_cli._system_service_identity(run_as_user=None)
             assert username == "nobody"
         except ValueError as e:
-            # "nobody" might not exist on all systems
             assert "Unknown user" in str(e)
 
 
@@ -577,9 +568,6 @@ class TestEnsureUserSystemdEnv:
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
         monkeypatch.setattr(os, "getuid", lambda: 42)
 
-        # Patch Path.exists so /run/user/42 appears to exist.
-        # Using a FakePath subclass breaks on Python 3.12+ where
-        # PosixPath.__new__ ignores the redirected path argument.
         _orig_exists = gateway_cli.Path.exists
         monkeypatch.setattr(
             gateway_cli.Path, "exists",
@@ -594,7 +582,7 @@ class TestEnsureUserSystemdEnv:
         runtime = tmp_path / "runtime"
         runtime.mkdir()
         bus_socket = runtime / "bus"
-        bus_socket.touch()  # simulate the socket file
+        bus_socket.touch()
 
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
@@ -616,7 +604,6 @@ class TestEnsureUserSystemdEnv:
     def test_no_dbus_when_bus_socket_missing(self, tmp_path, monkeypatch):
         runtime = tmp_path / "runtime"
         runtime.mkdir()
-        # no bus socket created
 
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)

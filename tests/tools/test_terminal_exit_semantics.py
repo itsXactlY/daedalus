@@ -8,14 +8,12 @@ from tools.terminal_tool import _interpret_exit_code
 class TestInterpretExitCode:
     """Test _interpret_exit_code returns correct notes for known command semantics."""
 
-    # ---- exit code 0 always returns None ----
 
     def test_success_returns_none(self):
         assert _interpret_exit_code("grep foo bar", 0) is None
         assert _interpret_exit_code("diff a b", 0) is None
         assert _interpret_exit_code("test -f /etc/passwd", 0) is None
 
-    # ---- grep / rg family: exit 1 = no matches ----
 
     @pytest.mark.parametrize("cmd", [
         "grep 'pattern' file.txt",
@@ -35,7 +33,6 @@ class TestInterpretExitCode:
         assert _interpret_exit_code("grep 'foo' bar", 2) is None
         assert _interpret_exit_code("rg 'foo' .", 2) is None
 
-    # ---- diff: exit 1 = files differ ----
 
     def test_diff_files_differ(self):
         result = _interpret_exit_code("diff file1 file2", 1)
@@ -50,7 +47,6 @@ class TestInterpretExitCode:
     def test_diff_real_error_no_note(self):
         assert _interpret_exit_code("diff a b", 2) is None
 
-    # ---- test / [: exit 1 = condition false ----
 
     def test_test_condition_false(self):
         result = _interpret_exit_code("test -f /nonexistent", 1)
@@ -62,14 +58,12 @@ class TestInterpretExitCode:
         assert result is not None
         assert "false" in result.lower()
 
-    # ---- find: exit 1 = partial success ----
 
     def test_find_partial_success(self):
         result = _interpret_exit_code("find . -name '*.py'", 1)
         assert result is not None
         assert "inaccessible" in result.lower()
 
-    # ---- curl: various informational codes ----
 
     def test_curl_timeout(self):
         result = _interpret_exit_code("curl https://example.com", 28)
@@ -81,14 +75,12 @@ class TestInterpretExitCode:
         assert result is not None
         assert "connect" in result.lower()
 
-    # ---- git: exit 1 is context-dependent ----
 
     def test_git_diff_exit_1(self):
         result = _interpret_exit_code("git diff HEAD~1", 1)
         assert result is not None
         assert "normal" in result.lower()
 
-    # ---- pipeline / chain handling ----
 
     def test_pipeline_last_command(self):
         """In a pipeline, the last command determines the exit code."""
@@ -111,14 +103,12 @@ class TestInterpretExitCode:
         assert result is not None
         assert "no matches" in result.lower()
 
-    # ---- full paths ----
 
     def test_full_path_command(self):
         result = _interpret_exit_code("/usr/bin/grep 'foo' bar", 1)
         assert result is not None
         assert "no matches" in result.lower()
 
-    # ---- env var prefix ----
 
     def test_env_var_prefix_stripped(self):
         result = _interpret_exit_code("LANG=C grep 'foo' bar", 1)
@@ -130,7 +120,6 @@ class TestInterpretExitCode:
         assert result is not None
         assert "no matches" in result.lower()
 
-    # ---- unknown commands return None ----
 
     @pytest.mark.parametrize("cmd", [
         "python3 script.py",
@@ -142,7 +131,6 @@ class TestInterpretExitCode:
     def test_unknown_commands_return_none(self, cmd):
         assert _interpret_exit_code(cmd, 1) is None
 
-    # ---- edge cases ----
 
     def test_empty_command(self):
         assert _interpret_exit_code("", 1) is None

@@ -25,11 +25,8 @@ from typing import Any, Optional
 
 logger = logging.getLogger("gateway.stream_consumer")
 
-# Sentinel to signal the stream is complete
 _DONE = object()
 
-# Sentinel to signal a tool boundary — finalize current message and start a
-# new one so that subsequent text appears below tool progress messages.
 _NEW_SEGMENT = object()
 
 
@@ -71,9 +68,9 @@ class GatewayStreamConsumer:
         self._accumulated = ""
         self._message_id: Optional[str] = None
         self._already_sent = False
-        self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
+        self._edit_supported = True
         self._last_edit_time = 0.0
-        self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
 
@@ -101,13 +98,11 @@ class GatewayStreamConsumer:
 
     async def run(self) -> None:
         """Async task that drains the queue and edits the platform message."""
-        # Platform message length limit — leave room for cursor + formatting
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
         _safe_limit = max(500, _raw_limit - len(self.cfg.cursor) - 100)
 
         try:
             while True:
-                # Drain all available items from the queue
                 got_done = False
                 got_segment_break = False
                 while True:
@@ -123,7 +118,6 @@ class GatewayStreamConsumer:
                     except queue.Empty:
                         break
 
-                # Decide whether to flush an edit
                 now = time.monotonic()
                 elapsed = now - self._last_edit_time
                 should_edit = (
@@ -135,8 +129,6 @@ class GatewayStreamConsumer:
                 )
 
                 if should_edit and self._accumulated:
-                    # Split overflow: if accumulated text exceeds the platform
-                    # limit, finalize the current message and start a new one.
                     while (
                         len(self._accumulated) > _safe_limit
                         and self._message_id is not None
@@ -148,10 +140,6 @@ class GatewayStreamConsumer:
                         chunk = self._accumulated[:split_at]
                         await self._send_or_edit(chunk)
                         if self._fallback_final_send:
-                            # Edit failed while attempting to split an oversized
-                            # message. Keep the full accumulated text intact so
-                            # the fallback final-send path can deliver the
-                            # remaining continuation without dropping content.
                             break
                         self._accumulated = self._accumulated[split_at:].lstrip("\n")
                         self._message_id = None
@@ -165,10 +153,6 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor. If progressive editing failed
-                    # mid-stream, send a single continuation/fallback message
-                    # here instead of letting the base gateway path send the
-                    # full response again.
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
@@ -178,10 +162,6 @@ class GatewayStreamConsumer:
                             await self._send_or_edit(self._accumulated)
                     return
 
-                # Tool boundary: the should_edit block above already flushed
-                # accumulated text without a cursor.  Reset state so the next
-                # text chunk creates a fresh message below any tool-progress
-                # messages the gateway sent in between.
                 if got_segment_break:
                     self._message_id = None
                     self._accumulated = ""
@@ -189,10 +169,9 @@ class GatewayStreamConsumer:
                     self._fallback_final_send = False
                     self._fallback_prefix = ""
 
-                await asyncio.sleep(0.05)  # Small yield to not busy-loop
+                await asyncio.sleep(0.05)
 
         except asyncio.CancelledError:
-            # Best-effort final edit on cancellation
             if self._accumulated and self._message_id:
                 try:
                     await self._send_or_edit(self._accumulated)
@@ -201,9 +180,6 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
-    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
-    # Matches the simple cleanup regex used by the non-streaming path in
-    # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
 
     @staticmethod
@@ -221,9 +197,7 @@ class GatewayStreamConsumer:
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
-        # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
-        # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
     def _visible_prefix(self) -> str:
@@ -263,7 +237,6 @@ class GatewayStreamConsumer:
         continuation = self._continuation_text(final_text)
         self._fallback_final_send = False
         if not continuation.strip():
-            # Nothing new to send — the visible partial already matches final text.
             self._already_sent = True
             return
 
@@ -282,16 +255,11 @@ class GatewayStreamConsumer:
             )
             if not result.success:
                 if sent_any_chunk:
-                    # Some continuation text already reached the user. Suppress
-                    # the base gateway final-send path so we don't resend the
-                    # full response and create another duplicate.
                     self._already_sent = True
                     self._message_id = last_message_id
                     self._last_sent_text = last_successful_chunk
                     self._fallback_prefix = ""
                     return
-                # No fallback chunk reached the user — allow the normal gateway
-                # final-send path to try one more time.
                 self._already_sent = False
                 self._message_id = None
                 self._last_sent_text = ""
@@ -308,19 +276,14 @@ class GatewayStreamConsumer:
 
     async def _send_or_edit(self, text: str) -> None:
         """Send or edit the streaming message."""
-        # Strip MEDIA: directives so they don't appear as visible text.
-        # Media files are delivered as native attachments after the stream
-        # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
         if not text.strip():
             return
         try:
             if self._message_id is not None:
                 if self._edit_supported:
-                    # Skip if text is identical to what we last sent
                     if text == self._last_sent_text:
                         return
-                    # Edit existing message
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
                         message_id=self._message_id,
@@ -330,20 +293,14 @@ class GatewayStreamConsumer:
                         self._already_sent = True
                         self._last_sent_text = text
                     else:
-                        # If an edit fails mid-stream (especially Telegram flood control),
-                        # stop progressive edits and send only the missing tail once the
-                        # final response is available.
                         logger.debug("Edit failed, disabling streaming for this adapter")
                         self._fallback_prefix = self._visible_prefix()
                         self._fallback_final_send = True
                         self._edit_supported = False
                         self._already_sent = True
                 else:
-                    # Editing not supported — skip intermediate updates.
-                    # The final response will be sent by the fallback path.
                     pass
             else:
-                # First message — send new
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
@@ -354,7 +311,6 @@ class GatewayStreamConsumer:
                     self._already_sent = True
                     self._last_sent_text = text
                 else:
-                    # Initial send failed — disable streaming for this session
                     self._edit_supported = False
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)

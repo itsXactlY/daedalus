@@ -77,7 +77,6 @@ async def handle(event_type: str, context: dict) -> None:
 
     logger.info("Running BOOT.md (%d chars)", len(content))
 
-    # Run in a background thread so we don't block gateway startup.
     thread = threading.Thread(
         target=_run_boot_agent,
         args=(content,),

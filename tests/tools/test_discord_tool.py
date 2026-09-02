@@ -27,9 +27,6 @@ from tools.discord_tool import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _mock_urlopen(response_data, status=200):
     """Create a mock for urllib.request.urlopen."""
@@ -41,9 +38,6 @@ def _mock_urlopen(response_data, status=200):
     return mock_resp
 
 
-# ---------------------------------------------------------------------------
-# Token / check_fn
-# ---------------------------------------------------------------------------
 
 class TestCheckRequirements:
     @pytest.mark.parametrize("token, expected", [(None, False), ("test-token-123", True)])
@@ -117,9 +111,6 @@ class TestCheckRequirements:
             secret_scope.reset_secret_scope(scope_token)
             secret_scope.set_multiplex_active(False)
 
-# ---------------------------------------------------------------------------
-# Channel type names
-# ---------------------------------------------------------------------------
 
 class TestChannelTypeNames:
     def test_type_names(self):
@@ -130,9 +121,6 @@ class TestChannelTypeNames:
         assert _channel_type_name(99) == "unknown(99)"
 
 
-# ---------------------------------------------------------------------------
-# Discord API request helper
-# ---------------------------------------------------------------------------
 
 class TestDiscordRequest:
     @patch("tools.discord_tool.urllib.request.urlopen")
@@ -141,7 +129,6 @@ class TestDiscordRequest:
         result = _discord_request("GET", "/test", "token123")
         assert result == {"ok": True}
 
-        # Verify the request was constructed correctly
         call_args = mock_urlopen_fn.call_args
         req = call_args[0][0]
         assert "https://discord.com/api/v10/test" in req.full_url
@@ -167,9 +154,6 @@ class TestDiscordRequest:
         mock_resp.read.assert_called_once_with(9)
 
 
-# ---------------------------------------------------------------------------
-# Main handler: validation
-# ---------------------------------------------------------------------------
 
 class TestDiscordServerValidation:
     def test_no_token(self, monkeypatch):
@@ -188,9 +172,6 @@ class TestDiscordServerValidation:
         assert "role_id" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Action: list_channels
-# ---------------------------------------------------------------------------
 
 class TestListChannels:
     @patch("tools.discord_tool._discord_request")
@@ -203,20 +184,15 @@ class TestListChannels:
             {"id": "13", "name": "no-category", "type": 0, "position": 0, "parent_id": None, "topic": None, "nsfw": False},
         ]
         result = json.loads(discord_admin_handler(action="list_channels", guild_id="111"))
-        assert result["total_channels"] == 3  # excludes the category itself
+        assert result["total_channels"] == 3
         groups = result["channel_groups"]
-        # Uncategorized first
         assert groups[0]["category"] is None
         assert len(groups[0]["channels"]) == 1
         assert groups[0]["channels"][0]["name"] == "no-category"
-        # Then the category
         assert groups[1]["category"]["name"] == "General"
         assert len(groups[1]["channels"]) == 2
 
 
-# ---------------------------------------------------------------------------
-# Action: list_roles
-# ---------------------------------------------------------------------------
 
 class TestListRoles:
     @patch("tools.discord_tool._discord_request")
@@ -229,16 +205,12 @@ class TestListRoles:
         ]
         result = json.loads(discord_admin_handler(action="list_roles", guild_id="111"))
         assert result["count"] == 3
-        # Should be sorted by position descending
         assert result["roles"][0]["name"] == "Admin"
         assert result["roles"][0]["color"] == "#ff0000"
         assert result["roles"][1]["name"] == "Mod"
         assert result["roles"][2]["name"] == "@everyone"
 
 
-# ---------------------------------------------------------------------------
-# Action: search_members
-# ---------------------------------------------------------------------------
 
 class TestSearchMembers:
     @patch("tools.discord_tool._discord_request")
@@ -247,12 +219,9 @@ class TestSearchMembers:
         mock_req.return_value = []
         discord_core(action="search_members", guild_id="111", query="x", limit=200)
         call_params = mock_req.call_args[1]["params"]
-        assert call_params["limit"] == "100"  # Capped at 100
+        assert call_params["limit"] == "100"
 
 
-# ---------------------------------------------------------------------------
-# Action: fetch_messages
-# ---------------------------------------------------------------------------
 
 class TestFetchMessages:
     @patch("tools.discord_tool._discord_request")
@@ -275,9 +244,6 @@ class TestFetchMessages:
         assert result["messages"][0]["author"]["username"] == "user1"
 
 
-# ---------------------------------------------------------------------------
-# Action: create_thread
-# ---------------------------------------------------------------------------
 
 class TestCreateThread:
     @patch("tools.discord_tool._discord_request")
@@ -287,7 +253,6 @@ class TestCreateThread:
         result = json.loads(discord_core(action="create_thread", channel_id="11", name="New Thread"))
         assert result["success"] is True
         assert result["thread_id"] == "800"
-        # Verify the API call
         mock_req.assert_called_once_with(
             "POST", "/channels/11/threads", "test-token",
             body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
@@ -307,9 +272,6 @@ class TestCreateThread:
         )
 
 
-# ---------------------------------------------------------------------------
-# Error handling
-# ---------------------------------------------------------------------------
 
 class TestErrorHandling:
     @patch("tools.discord_tool._discord_request")
@@ -329,9 +291,6 @@ class TestErrorHandling:
         assert "something broke" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
 
 class TestRegistration:
     def test_core_tool_registered(self):
@@ -349,9 +308,6 @@ class TestRegistration:
         assert set(_CORE_ACTIONS.keys()) & set(_ADMIN_ACTIONS.keys()) == set()
 
 
-# ---------------------------------------------------------------------------
-# Toolset: discord / discord_admin only in daedalus-discord
-# ---------------------------------------------------------------------------
 
 class TestToolsetInclusion:
     def test_discord_tools_only_in_daedalus_discord_toolset(self):
@@ -375,9 +331,6 @@ class TestToolsetInclusion:
             )
 
 
-# ---------------------------------------------------------------------------
-# Capability detection (privileged intents)
-# ---------------------------------------------------------------------------
 
 class TestCapabilityDetection:
     def setup_method(self):
@@ -388,7 +341,6 @@ class TestCapabilityDetection:
 
     @patch("tools.discord_tool._discord_request")
     def test_both_intents_enabled(self, mock_req):
-        # flags: GUILD_MEMBERS (1<<14) + MESSAGE_CONTENT (1<<18) = 278528
         mock_req.return_value = {"flags": (1 << 14) | (1 << 18)}
         caps = _detect_capabilities("tok")
         assert caps["has_members_intent"] is True
@@ -442,7 +394,6 @@ class TestNonBlockingCapabilityDetection:
         )
         caps_in = {"has_members_intent": True, "has_message_content": True, "detected": True}
         dt._save_caps_to_disk("tok", caps_in)
-        # Rewrite timestamp to be stale
         import json as _json
         p = tmp_path / "discord_capabilities.json"
         data = _json.loads(p.read_text())
@@ -462,13 +413,11 @@ class TestNonBlockingCapabilityDetection:
              patch("tools.discord_tool.threading.Thread") as mock_thread, \
              patch("tools.discord_tool._discord_request") as mock_req:
             schema = get_dynamic_schema_core()
-        # No blocking HTTP call happened on the schema-build path
         mock_req.assert_not_called()
-        # Background detection was scheduled exactly once
         assert mock_thread.call_count == 1
         assert schema is not None
         actions = set(schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == set(_CORE_ACTIONS.keys())  # permissive default
+        assert actions == set(_CORE_ACTIONS.keys())
 
     @patch("tools.discord_tool._discord_request")
     def test_cache_is_keyed_by_token(self, mock_req):
@@ -480,7 +429,6 @@ class TestNonBlockingCapabilityDetection:
         rotated or multi-token deployments.
         """
         def _per_token_flags(method, path, token, **_kwargs):
-            # token A: both intents; token B: neither.
             if token == "tok_a":
                 return {"flags": (1 << 14) | (1 << 18)}
             return {"flags": 0}
@@ -494,18 +442,13 @@ class TestNonBlockingCapabilityDetection:
         assert caps_a["has_message_content"] is True
         assert caps_b["has_members_intent"] is False
         assert caps_b["has_message_content"] is False
-        # Each token should hit the endpoint exactly once.
         assert mock_req.call_count == 2
 
-        # Re-requesting either token serves from its own cache entry.
         _detect_capabilities("tok_a")
         _detect_capabilities("tok_b")
         assert mock_req.call_count == 2
 
 
-# ---------------------------------------------------------------------------
-# Config allowlist
-# ---------------------------------------------------------------------------
 
 class TestConfigAllowlist:
     @pytest.fixture(autouse=True)
@@ -555,9 +498,6 @@ class TestConfigAllowlist:
         assert _load_allowed_actions_config() is None
 
 
-# ---------------------------------------------------------------------------
-# Action filtering combines intents + allowlist
-# ---------------------------------------------------------------------------
 
 class TestAvailableActions:
     def test_all_available_when_unrestricted(self):
@@ -569,7 +509,6 @@ class TestAvailableActions:
         actions = _available_actions(caps, None)
         assert "search_members" not in actions
         assert "member_info" not in actions
-        # fetch_messages stays — MESSAGE_CONTENT affects content field but action works
         assert "fetch_messages" in actions
 
     def test_allowlist_intersects_with_intents(self):
@@ -577,14 +516,9 @@ class TestAvailableActions:
         caps = {"detected": True, "has_members_intent": False, "has_message_content": True}
         allowlist = ["list_guilds", "search_members", "fetch_messages"]
         actions = _available_actions(caps, allowlist)
-        # search_members gated by intent → stripped even though allowlisted;
-        # result stays in canonical order regardless of allowlist order
         assert actions == ["list_guilds", "fetch_messages"]
 
 
-# ---------------------------------------------------------------------------
-# Dynamic schema build (integration of intents + config)
-# ---------------------------------------------------------------------------
 
 class TestDynamicSchema:
     def setup_method(self):
@@ -611,10 +545,7 @@ class TestDynamicSchema:
             "daedalus_cli.config.load_config",
             lambda: {"discord": {"server_actions": ""}},
         )
-        mock_req.return_value = {"flags": 1 << 18}  # only MESSAGE_CONTENT
-        # Warm the capability cache — schema builds are non-blocking and use
-        # the permissive default until detection has completed (background
-        # thread + disk cache); filtering applies once caps are known.
+        mock_req.return_value = {"flags": 1 << 18}
         _detect_capabilities("tok")
         schema = get_dynamic_schema_core()
         actions = schema["parameters"]["properties"]["action"]["enum"]
@@ -646,9 +577,6 @@ class TestDynamicSchema:
         assert get_dynamic_schema_admin() is None
 
 
-# ---------------------------------------------------------------------------
-# Runtime allowlist enforcement (defense in depth — schema already filtered)
-# ---------------------------------------------------------------------------
 
 class TestRuntimeAllowlistEnforcement:
     @patch("tools.discord_tool._discord_request")
@@ -675,9 +603,6 @@ class TestRuntimeAllowlistEnforcement:
         assert "guilds" in result
 
 
-# ---------------------------------------------------------------------------
-# 403 enrichment
-# ---------------------------------------------------------------------------
 
 class Test403Enrichment:
     @patch("tools.discord_tool._discord_request")
@@ -693,7 +618,7 @@ class Test403Enrichment:
         ))
         assert "error" in result
         assert "MANAGE_ROLES" in result["error"]
-        assert "Missing Permissions" in result["error"]  # Raw body preserved
+        assert "Missing Permissions" in result["error"]
 
     @patch("tools.discord_tool._discord_request")
     def test_non_403_errors_are_not_enriched(self, mock_req, monkeypatch):
@@ -708,9 +633,6 @@ class Test403Enrichment:
         assert "MANAGE_ROLES" not in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# model_tools integration — dynamic schema replaces static
-# ---------------------------------------------------------------------------
 
 class TestModelToolsIntegration:
     def setup_method(self):
@@ -738,13 +660,9 @@ class TestModelToolsIntegration:
             "daedalus_cli.config.load_config",
             lambda: {"discord": {"server_actions": "list_guilds,server_info"}},
         )
-        # Bot without GUILD_MEMBERS intent
         mock_req.return_value = {"flags": 0}
 
         from model_tools import get_tool_definitions
-        # skip_tool_search_assembly: this test exercises the dynamic schema
-        # rebuild; under tiered disclosure the discord tools defer behind the
-        # bridge, but the rebuilt schema is what tool_describe serves.
         tools = get_tool_definitions(enabled_toolsets=["daedalus-discord"], quiet_mode=True,
                                      skip_tool_search_assembly=True)
         discord_admin_tool = next(

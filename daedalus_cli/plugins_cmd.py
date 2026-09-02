@@ -20,9 +20,6 @@ from daedalus_constants import get_daedalus_home
 
 logger = logging.getLogger(__name__)
 
-# Minimum manifest version this installer understands.
-# Plugins may declare ``manifest_version: 1`` in plugin.yaml;
-# future breaking changes to the manifest schema bump this.
 _SUPPORTED_MANIFEST_VERSION = 1
 
 
@@ -47,7 +44,6 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
             f"Invalid plugin name '{name}': must not reference the plugins directory itself."
         )
 
-    # Reject obvious traversal characters
     for bad in ("/", "\\", ".."):
         if bad in name:
             raise ValueError(f"Invalid plugin name '{name}': must not contain '{bad}'.")
@@ -82,11 +78,9 @@ def _resolve_git_url(identifier: str) -> str:
     NOTE: ``http://`` and ``file://`` schemes are accepted but will trigger a
     security warning at install time.
     """
-    # Already a URL
     if identifier.startswith(("https://", "http://", "git@", "ssh://", "file://")):
         return identifier
 
-    # owner/repo shorthand
     parts = identifier.strip("/").split("/")
     if len(parts) == 2:
         owner, repo = parts
@@ -100,13 +94,10 @@ def _resolve_git_url(identifier: str) -> str:
 
 def _repo_name_from_url(url: str) -> str:
     """Extract the repo name from a Git URL for the plugin directory name."""
-    # Strip trailing .git and slashes
     name = url.rstrip("/")
     if name.endswith(".git"):
         name = name[:-4]
-    # Get last path component
     name = name.rsplit("/", 1)[-1]
-    # Handle ssh-style urls: git@github.com:owner/repo
     if ":" in name:
         name = name.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
     return name
@@ -134,7 +125,7 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
     Skips files that already exist to avoid overwriting user config on reinstall.
     """
     for example_file in plugin_dir.glob("*.example"):
-        real_name = example_file.stem  # e.g. "config.yaml" from "config.yaml.example"
+        real_name = example_file.stem
         real_path = plugin_dir / real_name
         if not real_path.exists():
             try:
@@ -175,7 +166,6 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     from daedalus_cli.config import get_env_value, save_env_value  # noqa: F811
     from daedalus_constants import display_daedalus_home
 
-    # Normalise to list-of-dicts
     env_specs: list[dict] = []
     for entry in requires_env:
         if isinstance(entry, str):
@@ -183,7 +173,6 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
         elif isinstance(entry, dict) and entry.get("name"):
             env_specs.append(entry)
 
-    # Filter to only vars that aren't already set
     missing = [s for s in env_specs if not get_env_value(s["name"])]
     if not missing:
         return
@@ -276,9 +265,6 @@ def _require_installed_plugin(name: str, plugins_dir: Path, console) -> Path:
     return target
 
 
-# ---------------------------------------------------------------------------
-# Commands
-# ---------------------------------------------------------------------------
 
 
 def cmd_install(identifier: str, force: bool = False) -> None:
@@ -294,7 +280,6 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    # Warn about insecure / local URL schemes
     if git_url.startswith(("http://", "file://")):
         console.print(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
@@ -303,7 +288,6 @@ def cmd_install(identifier: str, force: bool = False) -> None:
 
     plugins_dir = _plugins_dir()
 
-    # Clone into a temp directory first so we can read plugin.yaml for the name
     with tempfile.TemporaryDirectory() as tmp:
         tmp_target = Path(tmp) / "plugin"
         console.print(f"[dim]Cloning {git_url}...[/dim]")
@@ -328,18 +312,15 @@ def cmd_install(identifier: str, force: bool = False) -> None:
             )
             sys.exit(1)
 
-        # Read manifest
         manifest = _read_manifest(tmp_target)
         plugin_name = manifest.get("name") or _repo_name_from_url(git_url)
 
-        # Sanitize plugin name against path traversal
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)
         except ValueError as e:
             console.print(f"[red]Error:[/red] {e}")
             sys.exit(1)
 
-        # Check manifest_version compatibility
         mv = manifest.get("manifest_version")
         if mv is not None:
             try:
@@ -370,23 +351,18 @@ def cmd_install(identifier: str, force: bool = False) -> None:
             console.print(f"[dim]  Removing existing {plugin_name}...[/dim]")
             shutil.rmtree(target)
 
-        # Move from temp to final location
         shutil.move(str(tmp_target), str(target))
 
-    # Validate it looks like a plugin
     if not (target / "plugin.yaml").exists() and not (target / "__init__.py").exists():
         console.print(
             f"[yellow]Warning:[/yellow] {plugin_name} doesn't contain plugin.yaml "
             f"or __init__.py. It may not be a valid Daedalus plugin."
         )
 
-    # Copy .example files to their real names (e.g. config.yaml.example → config.yaml)
     _copy_example_files(target, console)
 
-    # Re-read manifest from installed location (for env var prompting)
     installed_manifest = _read_manifest(target)
 
-    # Prompt for required environment variables before showing after-install docs
     _prompt_plugin_env_vars(installed_manifest, console)
 
     _display_after_install(target, identifier)
@@ -437,7 +413,6 @@ def cmd_update(name: str) -> None:
         console.print(f"[red]Error:[/red] Git pull failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
-    # Copy any new .example files
     _copy_example_files(target, console)
 
     output = result.stdout.strip()
@@ -495,7 +470,6 @@ def cmd_enable(name: str) -> None:
     console = Console()
     plugins_dir = _plugins_dir()
 
-    # Verify the plugin exists
     target = plugins_dir / name
     if not target.is_dir():
         console.print(f"[red]Plugin '{name}' is not installed.[/red]")
@@ -518,7 +492,6 @@ def cmd_disable(name: str) -> None:
     console = Console()
     plugins_dir = _plugins_dir()
 
-    # Verify the plugin exists
     target = plugins_dir / name
     if not target.is_dir():
         console.print(f"[red]Plugin '{name}' is not installed.[/red]")
@@ -579,7 +552,6 @@ def cmd_list() -> None:
             except Exception:
                 pass
 
-        # Check if it's a git repo (installed via daedalus plugins install)
         if (d / ".git").exists():
             source = "git"
 
@@ -614,7 +586,6 @@ def cmd_toggle() -> None:
 
     disabled = _get_disabled_set()
 
-    # Build items list: "name — description" for display
     names = []
     labels = []
     selected = set()
@@ -648,7 +619,6 @@ def cmd_toggle() -> None:
         selected=selected,
     )
 
-    # Compute new disabled set from deselected items
     new_disabled = set()
     for i, name in enumerate(names):
         if i not in result:

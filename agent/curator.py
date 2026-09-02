@@ -67,20 +67,13 @@ def _merge_request_overrides(
     return merged
 
 
-DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
+DEFAULT_INTERVAL_HOURS = 24 * 7
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90
-# Consolidation (the LLM umbrella-building fork) is OFF by default. The
-# deterministic inactivity prune (apply_automatic_transitions) still runs
-# whenever the curator is enabled; only the opinionated, aux-model-cost
-# consolidation pass is opt-in.
 DEFAULT_CONSOLIDATE = False
 
 
-# ---------------------------------------------------------------------------
-# .curator_state — persistent scheduler + status
-# ---------------------------------------------------------------------------
 
 def _state_file() -> Path:
     return get_daedalus_home() / "skills" / ".curator_state"
@@ -131,9 +124,6 @@ def is_paused() -> bool:
     return bool(load_state().get("paused"))
 
 
-# ---------------------------------------------------------------------------
-# Config access
-# ---------------------------------------------------------------------------
 
 def _load_config() -> Dict[str, Any]:
     """Read curator.* config from ~/.daedalus/config.yaml. Tolerates missing file."""
@@ -217,9 +207,6 @@ def get_consolidate() -> bool:
     return bool(cfg.get("consolidate", DEFAULT_CONSOLIDATE))
 
 
-# ---------------------------------------------------------------------------
-# Idle / interval check
-# ---------------------------------------------------------------------------
 
 def _parse_iso(ts: Optional[str]) -> Optional[datetime]:
     if not ts:
@@ -259,9 +246,6 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
     state = load_state()
     last = _parse_iso(state.get("last_run_at"))
     if last is None:
-        # Never run before. Seed state so we wait a full interval before the
-        # first real pass. Report-only; do not auto-mutate the library the
-        # very first time a gateway ticks after an update.
         if now is None:
             now = datetime.now(timezone.utc)
         try:
@@ -283,9 +267,6 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
     return (now - last) >= interval
 
 
-# ---------------------------------------------------------------------------
-# Automatic state transitions (pure function, no LLM)
-# ---------------------------------------------------------------------------
 
 def _cron_referenced_skills() -> Set[str]:
     """Skill names referenced by any cron job (incl. paused/disabled).
@@ -357,38 +338,23 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         if row.get("pinned"):
             continue
 
-        # A skill referenced by any cron job (incl. paused/disabled) is in
-        # use by definition — resuming or the next fire must find it. The
-        # scheduler only bumps usage when a job actually fires, so jobs that
-        # fire less often than archive_after_days, paused jobs, and far-future
-        # one-shots would otherwise have their skills aged out from under
-        # them. Treat referenced skills like pinned: never auto-transition.
         if name in cron_referenced or name in bundle_referenced:
             continue
 
-        # First sight of a curation-eligible skill with no persisted record
-        # (e.g. a newly-eligible built-in): anchor its clock to now and defer.
         if not row.get("_persisted", True):
             _u.seed_record_if_missing(name)
             counts["seeded"] += 1
             continue
 
         last_activity = _parse_iso(row.get("last_activity_at"))
-        # If never active, treat created_at as the anchor so new skills don't
-        # immediately archive themselves.
         anchor = last_activity or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
             anchor = anchor.replace(tzinfo=timezone.utc)
 
         current = row.get("state", _u.STATE_ACTIVE)
 
-        # Never-used skills (use_count == 0) get a grace floor: don't archive
-        # one until it is at least stale_after_days old. A use=0 skill is
-        # absence of evidence, not evidence of staleness — a skill created
-        # recently may simply not have had its trigger come up yet.
         never_used = int(row.get("use_count", 0) or 0) == 0
         if never_used and anchor > stale_cutoff:
-            # Younger than the stale window — leave it alone entirely.
             if current == _u.STATE_STALE:
                 _u.set_state(name, _u.STATE_ACTIVE)
                 counts["reactivated"] += 1
@@ -402,16 +368,12 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             _u.set_state(name, _u.STATE_STALE)
             counts["marked_stale"] += 1
         elif anchor > stale_cutoff and current == _u.STATE_STALE:
-            # Skill got used again after being marked stale — reactivate.
             _u.set_state(name, _u.STATE_ACTIVE)
             counts["reactivated"] += 1
 
     return counts
 
 
-# ---------------------------------------------------------------------------
-# Review prompt for the forked agent
-# ---------------------------------------------------------------------------
 
 CURATOR_DRY_RUN_BANNER = (
     "═══════════════════════════════════════════════════════════════\n"
@@ -596,9 +558,6 @@ CURATOR_REVIEW_PROMPT = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Per-run reports — {YYYYMMDD-HHMMSS}/run.json + REPORT.md under logs/curator/
-# ---------------------------------------------------------------------------
 
 def _reports_root() -> Path:
     """Directory where curator run reports are written.
@@ -667,7 +626,6 @@ def _classify_removed_skills(
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
 
-    # Pre-parse tool calls: we only care about skill_manage.
     parsed_calls: List[Dict[str, Any]] = []
     for tc in tool_calls or []:
         if not isinstance(tc, dict):
@@ -675,7 +633,6 @@ def _classify_removed_skills(
         if tc.get("name") != "skill_manage":
             continue
         raw = tc.get("arguments") or ""
-        # Arguments can be a JSON string (standard) or a dict (defensive).
         args: Dict[str, Any] = {}
         if isinstance(raw, dict):
             args = raw
@@ -683,16 +640,11 @@ def _classify_removed_skills(
             try:
                 args = json.loads(raw)
             except Exception:
-                # Truncated or malformed — fall back to substring match on
-                # the raw string so we still catch the common case.
                 args = {"_raw": raw}
         if not isinstance(args, dict):
             continue
         parsed_calls.append(args)
 
-    # Build a set of "destination" skill names: anything still present after
-    # the run plus anything newly added this run. A removed skill being
-    # referenced from one of these is the consolidation signal.
     destinations = set(after_names) | set(added or [])
 
     for name in removed:
@@ -701,29 +653,17 @@ def _classify_removed_skills(
         into: Optional[str] = None
         evidence: Optional[str] = None
 
-        # Normalise name variants we'll search for in path/content strings.
         needles = {name, name.replace("-", "_"), name.replace("_", "-")}
 
         for args in parsed_calls:
             target = args.get("name")
             if not isinstance(target, str) or not target:
                 continue
-            # A call that operates on the removed skill itself isn't
-            # consolidation evidence.
             if target == name:
                 continue
-            # The target must be a surviving or newly-created skill —
-            # otherwise we're pointing to a skill that doesn't exist.
             if target not in destinations:
                 continue
 
-            # Look for the removed skill's name in file_path / content / raw.
-            # Matching strategy differs by field type:
-            #   file_path — needle must be a complete path component
-            #     (filename stem or directory name), so "api" does NOT
-            #     falsely match "references/api-design.md".
-            #   content fields — word-boundary regex so "test" does NOT
-            #     falsely match "latest" or "testing".
             haystacks: List[tuple[str, str]] = []
             for key in ("file_path", "file_content", "content", "new_string", "_raw"):
                 v = args.get(key)
@@ -782,9 +722,6 @@ def _parse_structured_summary(
     if not llm_final or not isinstance(llm_final, str):
         return empty
 
-    # Find the YAML fenced block. We look for ```yaml ... ``` specifically
-    # rather than any fenced block so we don't accidentally pick up a code
-    # sample the model quoted elsewhere.
     import re
     match = re.search(
         r"```ya?ml\s*\n(.*?)\n```",
@@ -796,8 +733,6 @@ def _parse_structured_summary(
 
     body = match.group(1)
 
-    # Prefer PyYAML when available — every daedalus install already has it
-    # (config.yaml loader). Fall back to a hand parser for paranoia.
     try:
         import yaml  # type: ignore
         data = yaml.safe_load(body)
@@ -884,8 +819,6 @@ def _extract_absorbed_into_declarations(
         name = args.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
-        # absorbed_into must be present (even empty string is meaningful);
-        # missing key means the model didn't declare intent.
         if "absorbed_into" not in args:
             continue
         target = args.get("absorbed_into")
@@ -943,7 +876,6 @@ def _reconcile_classification(
         hc = heur_cons.get(name)
         dec = declared.get(name)
 
-        # Authoritative: model declared `absorbed_into` at the delete call.
         if dec is not None:
             into_claim = dec.get("into", "")
             if into_claim and into_claim in destinations:
@@ -958,21 +890,13 @@ def _reconcile_classification(
                 consolidated.append(entry)
                 continue
             if into_claim == "":
-                # Explicit prune declaration
                 pruned.append({
                     "name": name,
                     "source": "absorbed_into=\"\" (model-declared prune)",
                     "reason": (mp.get("reason") or "") if mp else "",
                 })
                 continue
-            # into_claim is non-empty but target doesn't exist: the model
-            # named a nonexistent umbrella at delete time. The tool already
-            # rejects this at the skill_manage layer, so we shouldn't see it
-            # in practice — but if it slips through (e.g. the umbrella was
-            # deleted LATER in the same run), fall through to the usual
-            # signals rather than trusting a broken reference.
 
-        # Model says consolidated — trust it if the destination is real.
         if mc and mc.get("into") in destinations:
             entry: Dict[str, Any] = {
                 "name": name,
@@ -985,8 +909,6 @@ def _reconcile_classification(
             consolidated.append(entry)
             continue
 
-        # Model says consolidated but the umbrella doesn't exist —
-        # hallucination. Fall back to heuristic or prune.
         if mc and mc.get("into") not in destinations:
             if hc:
                 consolidated.append({
@@ -1005,7 +927,6 @@ def _reconcile_classification(
                 })
             continue
 
-        # Heuristic found consolidation the model didn't mention.
         if hc:
             consolidated.append({
                 "name": name,
@@ -1016,7 +937,6 @@ def _reconcile_classification(
             })
             continue
 
-        # Model says pruned (or no mention + no heuristic evidence).
         reason = mp.get("reason", "") if mp else ""
         pruned.append({
             "name": name,
@@ -1103,10 +1023,6 @@ def _build_rename_summary(
     if total > SHOW:
         lines.append(f"  … and {total - SHOW} more")
     lines.append("full report: daedalus curator status")
-    # Pin hint — only surface it when there's actually a destination skill
-    # worth pinning. The umbrella skills that absorbed content are the natural
-    # candidates: pinning one tells future curator runs to leave it alone.
-    # Pruned-only runs don't get this hint (nothing surviving to pin).
     if consolidated:
         umbrellas = sorted({e.get("into") for e in consolidated if e.get("into")})
         if umbrellas:
@@ -1142,7 +1058,6 @@ def _write_run_report(
 
     stamp = started_at.strftime("%Y%m%d-%H%M%S")
     run_dir = root / stamp
-    # If we crash-reran within the same second, append a disambiguator
     suffix = 1
     while run_dir.exists():
         suffix += 1
@@ -1153,14 +1068,12 @@ def _write_run_report(
         logger.debug("Curator run dir create failed: %s", e)
         return None
 
-    # Diff before/after
     after_by_name = {r.get("name"): r for r in after_report if isinstance(r, dict)}
     after_names = set(after_by_name.keys())
-    removed = sorted(before_names - after_names)   # archived during this run
-    added = sorted(after_names - before_names)     # new skills this run
+    removed = sorted(before_names - after_names)
+    added = sorted(after_names - before_names)
     before_by_name = {r.get("name"): r for r in before_report if isinstance(r, dict)}
 
-    # State transitions between the two snapshots (e.g. active -> stale)
     transitions: List[Dict[str, str]] = []
     for name in sorted(after_names & before_names):
         s_before = (before_by_name.get(name) or {}).get("state")
@@ -1168,26 +1081,11 @@ def _write_run_report(
         if s_before and s_after and s_before != s_after:
             transitions.append({"name": name, "from": s_before, "to": s_after})
 
-    # Classify LLM tool calls
     tc_counts: Dict[str, int] = {}
     for tc in llm_meta.get("tool_calls", []) or []:
         name = tc.get("name", "unknown")
         tc_counts[name] = tc_counts.get(name, 0) + 1
 
-    # Split "removed" into consolidated (absorbed into umbrella) vs pruned
-    # (archived for staleness, content not preserved elsewhere). The old
-    # "Skills archived" section lumped both together, which misled users
-    # into thinking consolidated skills had been pruned.
-    #
-    # Classification strategy:
-    # 1. Parse the curator's structured YAML block from its final response.
-    #    The curator is now prompted to emit consolidations/prunings lists
-    #    with short rationale. The model has intent visibility the tool
-    #    calls don't.
-    # 2. Run the tool-call heuristic as a ground-truth audit.
-    # 3. Reconcile: model gets authority over intent + rationale, heuristic
-    #    catches hallucination (umbrella doesn't exist) and omission
-    #    (model forgot to list an actual consolidation).
     heuristic = _classify_removed_skills(
         removed=removed,
         added=added,
@@ -1196,11 +1094,6 @@ def _write_run_report(
     )
     model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
     destinations = set(after_names) | set(added or [])
-    # Authoritative signal: extract per-delete `absorbed_into` declarations
-    # from this run's tool calls. These beat both the YAML summary block and
-    # the substring heuristic — the model is telling us directly, at the
-    # moment of deletion, whether each archived skill was consolidated
-    # (into=<umbrella>) or pruned (into="").
     absorbed_declarations = _extract_absorbed_into_declarations(
         llm_meta.get("tool_calls", []) or []
     )
@@ -1214,13 +1107,6 @@ def _write_run_report(
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]
 
-    # Rewrite cron job skill references. When the curator consolidates
-    # skill X into umbrella Y, any cron job that lists X fails to load
-    # it at run time — the scheduler skips it and the job runs without
-    # the instructions it was scheduled to follow. Rewriting the
-    # references in-place keeps scheduled jobs working across
-    # consolidation passes. Best-effort: never let a cron-module issue
-    # break the curator.
     cron_rewrites: Dict[str, Any] = {"rewrites": [], "jobs_updated": 0, "jobs_scanned": 0}
     try:
         consolidated_map = {
@@ -1279,7 +1165,6 @@ def _write_run_report(
         "tool_calls": llm_meta.get("tool_calls", []),
     }
 
-    # run.json — machine-readable, full fidelity
     try:
         (run_dir / "run.json").write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -1288,15 +1173,12 @@ def _write_run_report(
     except Exception as e:
         logger.debug("Curator run.json write failed: %s", e)
 
-    # REPORT.md — human-readable
     try:
         md = _render_report_markdown(payload)
         (run_dir / "REPORT.md").write_text(md, encoding="utf-8")
     except Exception as e:
         logger.debug("Curator REPORT.md write failed: %s", e)
 
-    # cron_rewrites.json — only when at least one job was touched, to
-    # keep run dirs uncluttered for the common no-op case.
     try:
         if int(cron_rewrites.get("jobs_updated", 0)) > 0:
             (run_dir / "cron_rewrites.json").write_text(
@@ -1331,7 +1213,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     if error:
         lines.append(f"> ⚠ LLM pass error: `{error}`\n")
 
-    # Auto-transitions (pure, no LLM)
     auto = p.get("auto_transitions") or {}
     lines.append("## Auto-transitions (pure, no LLM)\n")
     lines.append(f"- checked: {auto.get('checked', 0)}")
@@ -1340,7 +1221,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     lines.append(f"- reactivated: {auto.get('reactivated', 0)}")
     lines.append("")
 
-    # LLM pass numbers
     tc_counts = p.get("tool_call_counts") or {}
     lines.append("## LLM consolidation pass\n")
     lines.append(f"- tool calls: **{counts.get('tool_calls_total', 0)}** "
@@ -1352,10 +1232,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
                  f"**{counts.get('state_transitions', 0)}**")
     lines.append("")
 
-    # Consolidated list — content absorbed into an umbrella. The directory
-    # on disk still lives under ~/.daedalus/skills/.archive/ (every removal is
-    # recoverable by design), but the "live" content for these skills
-    # continues to exist inside the destination umbrella.
     consolidated = p.get("consolidated") or []
     if consolidated:
         lines.append(f"### Consolidated into umbrella skills ({len(consolidated)})\n")
@@ -1376,8 +1252,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             if reason:
                 line += f" — {reason}"
             if source and source.startswith("tool-call audit"):
-                # The model didn't enumerate this one — surface that to the
-                # user so they know why the row has no rationale.
                 line += f"  _(detected via {source})_"
             lines.append(line)
             if entry.get("model_claimed_into"):
@@ -1390,8 +1264,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             lines.append(f"- … and {len(consolidated) - SHOW} more (see `run.json`)")
         lines.append("")
 
-    # Pruned list — archived without consolidation. These are the
-    # "stale skill pruned" cases the UI should mark clearly.
     pruned = p.get("pruned") or []
     if pruned:
         lines.append(f"### Pruned — archived for staleness ({len(pruned)})\n")
@@ -1403,9 +1275,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
         )
         SHOW = 50
         for entry in pruned[:SHOW]:
-            # Entries are dicts with {name, source, reason} when written via
-            # the reconciler, or bare strings when an older format slipped
-            # through. Handle both.
             if isinstance(entry, dict):
                 name = entry.get("name", "?")
                 reason = (entry.get("reason") or "").strip()
@@ -1419,7 +1288,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             lines.append(f"- … and {len(pruned) - SHOW} more (see `run.json`)")
         lines.append("")
 
-    # Added list
     added = p.get("added") or []
     if added:
         lines.append(f"### New skills this run ({len(added)})\n")
@@ -1428,7 +1296,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             lines.append(f"- `{n}`")
         lines.append("")
 
-    # State transitions
     trans = p.get("state_transitions") or []
     if trans:
         lines.append(f"### State transitions ({len(trans)})\n")
@@ -1436,9 +1303,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             lines.append(f"- `{t.get('name')}`: {t.get('from')} → {t.get('to')}")
         lines.append("")
 
-    # Cron job rewrites — show which scheduled jobs had their skill
-    # references updated so users can audit that the auto-rewrite did
-    # the right thing. Only present when at least one job changed.
     cron_rw = p.get("cron_rewrites") or {}
     cron_rewrites_list = cron_rw.get("rewrites") or []
     if cron_rewrites_list:
@@ -1469,7 +1333,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             )
         lines.append("")
 
-    # Full LLM final response
     final = (p.get("llm_final") or "").strip()
     if final:
         lines.append("## LLM final summary\n")
@@ -1482,7 +1345,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             lines.append(llm_sum)
             lines.append("")
 
-    # Recovery footer
     lines.append("## Recovery\n")
     lines.append("- Restore an archived skill: `daedalus curator restore <name>`")
     lines.append("- All archives live under `~/.daedalus/skills/.archive/` and are recoverable by `mv`")
@@ -1492,9 +1354,6 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Orchestrator — spawn a forked AIAgent for the LLM review pass
-# ---------------------------------------------------------------------------
 
 def _render_candidate_list() -> str:
     """Human/agent-readable list of curator-managed skills with usage stats."""
@@ -1559,7 +1418,6 @@ def run_curator_review(
         consolidate = get_consolidate()
     start = datetime.now(timezone.utc)
     if dry_run:
-        # Count candidates without mutating state.
         try:
             report = skill_usage.curated_report()
             counts = {
@@ -1571,11 +1429,6 @@ def run_curator_review(
         except Exception:
             counts = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
     else:
-        # Pre-mutation snapshot — best-effort, never blocks the run. A
-        # failed snapshot logs at debug and continues (the alternative is
-        # that a transient disk issue silently disables curator forever,
-        # which is worse). Users who want to require snapshots can disable
-        # curator entirely until they can fix disk space.
         try:
             from agent import curator_backup
             snap = curator_backup.snapshot_skills(reason="pre-curator-run")
@@ -1597,11 +1450,6 @@ def run_curator_review(
         auto_summary_parts.append(f"{counts['reactivated']} reactivated")
     auto_summary = ", ".join(auto_summary_parts) if auto_summary_parts else "no changes"
 
-    # Persist state before the LLM pass so a crash mid-review still records
-    # the run and doesn't immediately re-trigger. In dry-run we do NOT bump
-    # last_run_at or run_count — a preview shouldn't push the next scheduled
-    # real pass out. We still record a summary so `daedalus curator status`
-    # shows that a preview ran.
     state = load_state()
     if not dry_run:
         state["last_run_at"] = start.isoformat()
@@ -1612,17 +1460,12 @@ def run_curator_review(
 
     def _llm_pass():
         nonlocal auto_summary
-        # Snapshot skill state BEFORE the LLM pass so the report can diff.
         try:
             before_report = skill_usage.curated_report()
         except Exception:
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
 
-        # Consolidation gate. When off (the default), the curator does ONLY the
-        # deterministic inactivity prune above — no forked aux-model review, no
-        # umbrella-building, no aux-model cost. Record the run, write a report
-        # reflecting the prune-only outcome, and return without spawning a fork.
         if not consolidate:
             final_summary = (
                 f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
@@ -1680,10 +1523,6 @@ def run_curator_review(
                     "error": None,
                 }
             else:
-                # When pruning built-ins is enabled, the candidate list now
-                # includes bundled skills. Override the default "don't touch
-                # bundled" rule for them — but only archiving is permitted, and
-                # hub-installed skills remain strictly off-limits.
                 builtins_note = ""
                 if get_prune_builtins():
                     builtins_note = (
@@ -1720,10 +1559,6 @@ def run_curator_review(
                 "error": str(e),
             }
 
-        # Append the rename map (`old-name → umbrella`) to the user-visible
-        # summary so people don't have to dig into REPORT.md to find out where
-        # their skills went. Best-effort: classification is pure but never
-        # block the run on a formatting issue.
         try:
             rename_lines = _build_rename_summary(
                 before_names=before_names,
@@ -1741,9 +1576,6 @@ def run_curator_review(
         state2["last_run_duration_seconds"] = elapsed
         state2["last_run_summary"] = final_summary
 
-        # Write the per-run report. Runs in a best-effort try so a
-        # reporting bug never breaks the curator itself. Report path is
-        # recorded in state so `daedalus curator status` can point at it.
         try:
             after_report = skill_usage.curated_report()
         except Exception:
@@ -1797,7 +1629,6 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
     _main_provider = _main.get("provider") or "auto"
     _main_model = _main.get("default") or _main.get("model") or ""
 
-    # 1. Canonical aux task slot
     _aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
     _cur_task = _aux.get("curator", {}) if isinstance(_aux.get("curator"), dict) else {}
     _task_provider = (_cur_task.get("provider") or "").strip() or None
@@ -1811,7 +1642,6 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             _merge_request_overrides({}, _cur_task.get("extra_body")),
         )
 
-    # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
     _cur = cfg.get("curator", {}) if isinstance(cfg.get("curator"), dict) else {}
     _legacy = _cur.get("auxiliary", {}) if isinstance(_cur.get("auxiliary"), dict) else {}
     _legacy_provider = _legacy.get("provider") or None
@@ -1829,7 +1659,6 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             _merge_request_overrides({}, _legacy.get("extra_body")),
         )
 
-    # 3. Fall through to the main chat model
     return _ReviewRuntimeBinding(_main_provider, _main_model, None, None, {})
 
 
@@ -1881,17 +1710,6 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         result_meta["summary"] = result_meta["error"]
         return result_meta
 
-    # Resolve provider + model the same way the CLI does, so the curator
-    # fork inherits the user's active main config rather than falling
-    # through to an empty provider/model pair (which sends HTTP 400
-    # "No models provided"). AIAgent() without explicit provider/model
-    # arguments hits an auto-resolution path that fails for OAuth-only
-    # providers and for pool-backed credentials.
-    #
-    # `_resolve_review_runtime()` honors `auxiliary.curator.{provider,model,...}`
-    # (canonical aux-task slot, wired through `daedalus model` → auxiliary
-    # picker and the dashboard Models tab), with a legacy fallback to
-    # `curator.auxiliary.{provider,model,...}`. See docs/user-guide/features/curator.md.
     _api_key = None
     _base_url = None
     _api_mode = None
@@ -1952,34 +1770,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             request_overrides=_request_overrides,
             **_agent_kwargs,
             enabled_toolsets=["skills", "terminal"],
-            # Umbrella-building over a large skill collection is worth a
-            # high iteration ceiling — the pass typically takes 50-100
-            # API calls against hundreds of candidate skills. The
-            # single-session review path caps itself at a much smaller
-            # number because it's not doing a curation sweep.
             max_iterations=9999,
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,
             skip_memory=True,
         )
-        # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
-        # Tag this fork as autonomous background curation so skill_manage's
-        # background-review write guard fires. Without this the fork inherits
-        # the default "assistant_tool" origin, is_background_review() is False,
-        # and the external/bundled/hub-installed skill_manage guards never
-        # trigger during the curation pass they exist to protect against.
-        # turn_context.py binds this onto the write-origin ContextVar at turn
-        # start (see agent/turn_context.py).
         review_agent._memory_write_origin = "background_review"
 
-        # Redirect the forked agent's stdout/stderr to /dev/null while it
-        # runs so its tool-call chatter doesn't pollute the foreground
-        # terminal. The background-thread runner also hides it; this
-        # belt-and-suspenders path matters when a caller invokes
-        # run_curator_review(synchronous=True) from the CLI.
         with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
@@ -1991,10 +1791,6 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         result_meta["final"] = final
         result_meta["summary"] = (final[:240] + "…") if len(final) > 240 else (final or "no change")
 
-        # Collect tool calls for the report. Walk the forked agent's
-        # session messages and extract every tool_call made during the
-        # pass. Truncate argument payloads so a giant skill_manage create
-        # doesn't blow up the report.
         _calls: List[Dict[str, Any]] = []
         for msg in getattr(review_agent, "_session_messages", []) or []:
             if not isinstance(msg, dict):
@@ -2022,9 +1818,6 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     return result_meta
 
 
-# ---------------------------------------------------------------------------
-# Public entrypoint for the session-start hook
-# ---------------------------------------------------------------------------
 
 def maybe_run_curator(
     *,
@@ -2036,7 +1829,6 @@ def maybe_run_curator(
     try:
         if not should_run_now():
             return None
-        # Idle gating: only enforce when the caller provided a measurement.
         if idle_for_seconds is not None:
             min_idle_s = get_min_idle_hours() * 3600.0
             if idle_for_seconds < min_idle_s:

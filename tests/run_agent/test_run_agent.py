@@ -22,9 +22,6 @@ from run_agent import AIAgent
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 def _make_tool_defs(*names: str) -> list:
@@ -137,9 +134,6 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
-# ---------------------------------------------------------------------------
-# Helper to build mock assistant messages (API response objects)
-# ---------------------------------------------------------------------------
 
 
 def _mock_assistant_msg(
@@ -235,9 +229,6 @@ class _FakeMazemakerManager:
         self.queued.append((query, session_id))
 
 
-# ===================================================================
-# Group 1: Pure Functions
-# ===================================================================
 
 
 class TestMazemakerBootstrap:
@@ -275,10 +266,6 @@ class TestMazemakerBootstrap:
         assert len(compact["results"][0]["content"]) < 760
 
     def test_compact_mazemaker_recall_result_handles_pod_list_shape(self, agent):
-        # The mazemaker plugin's handle_tool_call extracts the pod's .result
-        # and json.dumps it — so the compactor receives a bare LIST of hits,
-        # not a dict with a "results" key. Regression: before the fix this
-        # fell into the raw dump and the injected startup context was empty.
         raw = json.dumps([
             {
                 "id": 1164057,
@@ -355,7 +342,6 @@ class TestMazemakerBootstrap:
             msg.get("role") == "tool" and "auto_bootstrap" in msg.get("content", "")
             for msg in api_messages
         )
-        # The synthetic recall is API-only; persisted/internal messages remain clean.
         assert not any(
             msg.get("tool_calls") and msg["tool_calls"][0]["function"]["name"] == "mazemaker_recall"
             for msg in result["messages"]
@@ -520,9 +506,7 @@ class TestCleanSessionContent:
     def test_extra_newlines_cleaned(self):
         text = "\n\n\n<think>x</think>\n\n\nafter"
         result = AIAgent._clean_session_content(text)
-        # Should not have excessive newlines around think block
         assert "\n\n\n" not in result
-        # Content after think block must be preserved
         assert "after" in result
 
 
@@ -534,7 +518,7 @@ class TestGetMessagesUpToLastAssistant:
         msgs = [{"role": "user", "content": "hi"}]
         result = agent._get_messages_up_to_last_assistant(msgs)
         assert result == msgs
-        assert result is not msgs  # should be a copy
+        assert result is not msgs
 
     def test_single_assistant(self, agent):
         msgs = [
@@ -562,7 +546,6 @@ class TestGetMessagesUpToLastAssistant:
             {"role": "assistant", "content": "ok", "tool_calls": [{"id": "1"}]},
             {"role": "tool", "content": "result", "tool_call_id": "1"},
         ]
-        # Last assistant is at index 1, so result = msgs[:1]
         result = agent._get_messages_up_to_last_assistant(msgs)
         assert len(result) == 1
         assert result[0]["role"] == "user"
@@ -583,9 +566,6 @@ class TestMaskApiKey:
         assert "..." in result
 
 
-# ===================================================================
-# Group 2: State / Structure Methods
-# ===================================================================
 
 
 class TestInit:
@@ -702,7 +682,6 @@ class TestInit:
                 skip_context_files=True,
                 skip_memory=True,
             )
-            # Format: YYYYMMDD_HHMMSS_<6 hex chars>
             assert re.match(r"^\d{8}_\d{6}_[0-9a-f]{6}$", a.session_id), (
                 f"session_id doesn't match expected format: {a.session_id}"
             )
@@ -806,7 +785,6 @@ class TestBuildSystemPrompt:
 
     def test_includes_datetime(self, agent):
         prompt = agent._build_system_prompt()
-        # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
@@ -1101,7 +1079,6 @@ class TestBuildApiKwargs:
         agent._base_url_lower = agent.base_url.lower()
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
-        # Should not crash even without a system message
         assert kwargs["messages"][0]["content"][0]["text"] == "hi"
         assert "cache_control" not in kwargs["messages"][0]["content"][0]
 
@@ -1189,9 +1166,6 @@ class TestFormatToolsForSystemMessage:
         assert names == {"web_search", "terminal", "read_file"}
 
 
-# ===================================================================
-# Group 3: Conversation Loop Pieces (OpenAI mock)
-# ===================================================================
 
 
 class TestExecuteToolCalls:
@@ -1203,7 +1177,6 @@ class TestExecuteToolCalls:
             "run_agent.handle_function_call", return_value="search result"
         ) as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-            # enabled_tools passes the agent's own valid_tool_names
             args, kwargs = mock_hfc.call_args
             assert args[:3] == ("web_search", {"q": "test"}, "task-1")
             assert set(kwargs.get("enabled_tools", [])) == agent.valid_tool_names
@@ -1221,7 +1194,6 @@ class TestExecuteToolCalls:
             agent.interrupt()
 
         agent._execute_tool_calls(mock_msg, messages, "task-1")
-        # Both calls should be skipped with cancellation messages
         assert len(messages) == 2
         assert (
             "cancelled" in messages[0]["content"].lower()
@@ -1236,7 +1208,6 @@ class TestExecuteToolCalls:
         messages = []
         with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-            # Invalid JSON args should fall back to empty dict
             args, kwargs = mock_hfc.call_args
             assert args[:3] == ("web_search", {}, "task-1")
             assert set(kwargs.get("enabled_tools", [])) == agent.valid_tool_names
@@ -1253,7 +1224,6 @@ class TestExecuteToolCalls:
         big_result = "x" * 150_000
         with patch("run_agent.handle_function_call", return_value=big_result):
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-        # Content should be replaced with persisted-output or truncation
         assert len(messages[0]["content"]) < 150_000
         assert ("Truncated" in messages[0]["content"] or "<persisted-output>" in messages[0]["content"])
 
@@ -1402,13 +1372,10 @@ class TestConcurrentToolExecution:
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 3
-        # Results must be in original order
         assert messages[0]["tool_call_id"] == "c1"
         assert messages[1]["tool_call_id"] == "c2"
         assert messages[2]["tool_call_id"] == "c3"
-        # All should be tool messages
         assert all(m["role"] == "tool" for m in messages)
-        # Content should contain the query results
         assert "alpha" in messages[0]["content"]
         assert "beta" in messages[1]["content"]
         assert "gamma" in messages[2]["content"]
@@ -1425,7 +1392,7 @@ class TestConcurrentToolExecution:
         def fake_handle(name, args, task_id, **kwargs):
             q = args.get("q", "")
             if q == "slow":
-                _time.sleep(0.1)  # Slow tool
+                _time.sleep(0.1)
             return f"result_{q}"
 
         with patch("run_agent.handle_function_call", side_effect=fake_handle):
@@ -1454,9 +1421,7 @@ class TestConcurrentToolExecution:
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 2
-        # First tool should have error
         assert "Error" in messages[0]["content"] or "boom" in messages[0]["content"]
-        # Second tool should succeed
         assert "success" in messages[1]["content"]
 
     def test_concurrent_interrupt_before_start(self, agent):
@@ -1781,8 +1746,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 1  # no retries
-        # Reasoning should be preserved in the assistant message
+        assert result["api_calls"] == 1
         assistant_msgs = [m for m in result["messages"] if m.get("role") == "assistant"]
         assert any(m.get("reasoning") for m in assistant_msgs)
 
@@ -1801,7 +1765,6 @@ class TestRunConversation:
             {"role": "assistant", "content": "old answer"},
         ]
 
-        # 3 responses: original + 2 prefill continuations (structured reasoning triggers prefill)
         with (
             patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp, empty_resp, empty_resp]),
             patch.object(agent, "_compress_context") as mock_compress,
@@ -1811,10 +1774,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello", conversation_history=prefill)
 
-        mock_compress.assert_not_called()  # no compression triggered
+        mock_compress.assert_not_called()
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
+        assert result["api_calls"] == 3
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
         """Structured reasoning-only triggers prefill continuation (up to 2), then falls through to (empty)."""
@@ -1824,7 +1787,6 @@ class TestRunConversation:
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        # 3 responses: original + 2 prefill continuations, all reasoning-only
         agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp, empty_resp]
         with (
             patch.object(agent, "_persist_session"),
@@ -1834,7 +1796,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
+        assert result["api_calls"] == 3
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
         """When prefill continuation produces content, it becomes the final response."""
@@ -1857,8 +1819,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["final_response"] == "Here is the actual answer."
-        assert result["api_calls"] == 2  # 1 original + 1 prefill continuation
-        # Prefill message should be cleaned up — no consecutive assistant messages
+        assert result["api_calls"] == 2
         roles = [m.get("role") for m in result["messages"]]
         for i in range(len(roles) - 1):
             if roles[i] == "assistant" and roles[i + 1] == "assistant":
@@ -1878,7 +1839,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 1  # no retries
+        assert result["api_calls"] == 1
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
@@ -1941,7 +1902,6 @@ class TestRunConversation:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # _compress_context should return (messages, system_prompt)
             mock_compress.return_value = (
                 [{"role": "user", "content": "search something"}],
                 "compressed system prompt",
@@ -2019,12 +1979,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
-        # Should return immediately — no continuation, only 1 API call
         assert result["completed"] is False
         assert result["api_calls"] == 1
         assert "reasoning" in result["error"].lower()
         assert "output tokens" in result["error"].lower()
-        # Should have a user-friendly response (not None)
         assert result["final_response"] is not None
         assert "Thinking Budget Exhausted" in result["final_response"]
         assert "/thinkon" in result["final_response"]
@@ -2045,7 +2003,6 @@ class TestRunConversation:
         assert result["completed"] is False
         assert result["api_calls"] == 1
         assert "reasoning" in result["error"].lower()
-        # User-friendly message is returned
         assert result["final_response"] is not None
         assert "Thinking Budget Exhausted" in result["final_response"]
 
@@ -2072,18 +2029,17 @@ class TestRetryExhaustion:
         _t = [1000.0]
 
         def _advancing_time():
-            _t[0] += 500.0  # jump 500s per call so sleep_end is always in the past
+            _t[0] += 500.0
             return _t[0]
 
         mock_time.time.side_effect = _advancing_time
-        mock_time.sleep = MagicMock()  # no-op
+        mock_time.sleep = MagicMock()
         mock_time.monotonic.return_value = 12345.0
         return mock_time
 
     def test_invalid_response_returns_error_not_crash(self, agent):
         """Exhausted retries on invalid (empty choices) response must not IndexError."""
         self._setup_agent(agent)
-        # Return response with empty choices every time
         bad_resp = SimpleNamespace(
             choices=[],
             model="test/model",
@@ -2121,9 +2077,6 @@ class TestRetryExhaustion:
         assert "rate limited" in result["error"]
 
 
-# ---------------------------------------------------------------------------
-# Flush sentinel leak
-# ---------------------------------------------------------------------------
 
 
 class TestFlushSentinelNotLeaked:
@@ -2143,17 +2096,14 @@ class TestFlushSentinelNotLeaked:
             {"role": "user", "content": "remember this"},
         ]
 
-        # Mock the API to return a simple response (no tool calls)
         mock_msg = SimpleNamespace(content="OK", tool_calls=None)
         mock_choice = SimpleNamespace(message=mock_msg)
         mock_response = SimpleNamespace(choices=[mock_choice])
         agent.client.chat.completions.create.return_value = mock_response
 
-        # Bypass auxiliary client so flush uses agent.client directly
         with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
             agent.flush_memories(messages, min_turns=0)
 
-        # Check what was actually sent to the API
         call_args = agent.client.chat.completions.create.call_args
         assert call_args is not None, "flush_memories never called the API"
         api_messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
@@ -2163,9 +2113,6 @@ class TestFlushSentinelNotLeaked:
             )
 
 
-# ---------------------------------------------------------------------------
-# Conversation history mutation
-# ---------------------------------------------------------------------------
 
 
 class TestConversationHistoryNotMutated:
@@ -2191,17 +2138,12 @@ class TestConversationHistoryNotMutated:
                 "new question", conversation_history=history
             )
 
-        # Caller's list must be untouched
         assert len(history) == original_len, (
             f"conversation_history was mutated: expected {original_len} items, got {len(history)}"
         )
-        # Result should have more messages than the original history
         assert len(result["messages"]) > original_len
 
 
-# ---------------------------------------------------------------------------
-# _max_tokens_param consistency
-# ---------------------------------------------------------------------------
 
 
 class TestNousCredentialRefresh:
@@ -2337,7 +2279,7 @@ class TestCredentialPoolRecovery:
 
         class _Pool:
             def try_refresh_current(self):
-                return None  # refresh failed
+                return None
 
             def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
                 assert status_code == 401
@@ -2365,7 +2307,7 @@ class TestCredentialPoolRecovery:
 
             def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
                 assert error_context is None
-                return None  # no more credentials
+                return None
 
         agent._credential_pool = _Pool()
         agent._swap_credential = MagicMock()
@@ -2449,9 +2391,6 @@ class TestMaxTokensParam:
         assert result == {"max_tokens": 4096}
 
 
-# ---------------------------------------------------------------------------
-# System prompt stability for prompt caching
-# ---------------------------------------------------------------------------
 
 class TestSystemPromptStability:
     """Verify that the system prompt stays stable across turns for cache hits."""
@@ -2464,21 +2403,15 @@ class TestSystemPromptStability:
         mock_db.get_session.return_value = {"system_prompt": stored}
         agent._session_db = mock_db
 
-        # Simulate a continuing session with history
         history = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
         ]
 
-        # First call — _cached_system_prompt is None, history is non-empty
         agent._cached_system_prompt = None
 
-        # Patch run_conversation internals to just test the system prompt logic.
-        # We'll call the prompt caching block directly by simulating what
-        # run_conversation does.
         conversation_history = history
 
-        # The block under test (from run_conversation):
         if agent._cached_system_prompt is None:
             stored_prompt = None
             if conversation_history and agent._session_db:
@@ -2503,7 +2436,6 @@ class TestSystemPromptStability:
         agent._cached_system_prompt = None
         conversation_history = []
 
-        # The block under test:
         if agent._cached_system_prompt is None:
             stored_prompt = None
             if conversation_history and agent._session_db:
@@ -2516,7 +2448,6 @@ class TestSystemPromptStability:
             else:
                 agent._cached_system_prompt = agent._build_system_prompt()
 
-        # Should have built fresh, not queried the DB
         mock_db.get_session.assert_not_called()
         assert agent._cached_system_prompt is not None
         assert "Daedalus Agent" in agent._cached_system_prompt
@@ -2545,7 +2476,6 @@ class TestSystemPromptStability:
             else:
                 agent._cached_system_prompt = agent._build_system_prompt()
 
-        # Empty string is falsy, so should fall through to fresh build
         assert "Daedalus Agent" in agent._cached_system_prompt
 
 class TestBudgetPressure:
@@ -2591,7 +2521,6 @@ class TestBudgetPressure:
         ]
         warning = agent._get_budget_warning(9)
         assert warning is not None
-        # Simulate the injection logic
         last_content = messages[-1]["content"]
         parsed = json.loads(last_content)
         parsed["_budget_warning"] = warning
@@ -2599,7 +2528,7 @@ class TestBudgetPressure:
         result = json.loads(messages[-1]["content"])
         assert "_budget_warning" in result
         assert "BUDGET WARNING" in result["_budget_warning"]
-        assert result["output"] == "done"  # original content preserved
+        assert result["output"] == "done"
 
     def test_appends_to_non_json_tool_result(self, agent):
         """Warning should be appended as text for non-JSON tool results."""
@@ -2608,7 +2537,6 @@ class TestBudgetPressure:
             {"role": "tool", "content": "plain text result", "tool_call_id": "tc1"}
         ]
         warning = agent._get_budget_warning(9)
-        # Simulate injection logic for non-JSON
         last_content = messages[-1]["content"]
         try:
             import json
@@ -2639,7 +2567,7 @@ class TestSafeWriter:
         inner.write.side_effect = OSError(5, "Input/output error")
         writer = _SafeWriter(inner)
         result = writer.write("hello")
-        assert result == 5  # len("hello")
+        assert result == 5
 
     def test_flush_catches_oserror(self):
         """OSError on flush is silently caught."""
@@ -2648,7 +2576,7 @@ class TestSafeWriter:
         inner = MagicMock()
         inner.flush.side_effect = OSError(5, "Input/output error")
         writer = _SafeWriter(inner)
-        writer.flush()  # should not raise
+        writer.flush()
 
     def test_print_survives_broken_stdout(self, monkeypatch):
         """print() through _SafeWriter doesn't crash on broken pipe."""
@@ -2660,7 +2588,7 @@ class TestSafeWriter:
         original = sys.stdout
         sys.stdout = _SafeWriter(broken)
         try:
-            print("this should not crash")  # would raise without _SafeWriter
+            print("this should not crash")
         finally:
             sys.stdout = original
 
@@ -2685,8 +2613,6 @@ class TestSafeWriter:
             sys.stdout = original_stdout
             sys.stderr = original_stderr
 
-    # test_installed_before_init_time_honcho_error_prints removed —
-    # Honcho integration extracted to plugin (PR #4154).
 
     def test_double_wrap_prevented(self):
         """Wrapping an already-wrapped stream doesn't add layers."""
@@ -2695,12 +2621,9 @@ class TestSafeWriter:
         from io import StringIO
         inner = StringIO()
         wrapped = _SafeWriter(inner)
-        # isinstance check should prevent double-wrapping
         assert isinstance(wrapped, _SafeWriter)
-        # The guard in run_conversation checks isinstance before wrapping
         if not isinstance(wrapped, _SafeWriter):
             wrapped = _SafeWriter(wrapped)
-        # Still just one layer
         wrapped.write("test")
         assert inner.getvalue() == "test"
 
@@ -2723,9 +2646,6 @@ class TestSaveSessionLogAtomicWrite:
         assert call_args.kwargs["default"] is str
 
 
-# ===================================================================
-# Anthropic adapter integration fixes
-# ===================================================================
 
 
 class TestBuildApiKwargsAnthropicMaxTokens:
@@ -2756,7 +2676,6 @@ class TestBuildApiKwargsAnthropicMaxTokens:
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 16384}
             agent._build_api_kwargs([{"role": "user", "content": "test"}])
             call_args = mock_build.call_args
-            # max_tokens should be None (let adapter use its default)
             if call_args[1]:
                 assert call_args[1].get("max_tokens") is None
             else:
@@ -2960,11 +2879,9 @@ def test_is_openai_client_closed_handles_method_form():
         def is_closed(self) -> bool:
             return self._closed
 
-    # Method returning False - client is open
     open_client = MethodFormClient(closed=False)
     assert AIAgent._is_openai_client_closed(open_client) is False
 
-    # Method returning True - client is closed
     closed_client = MethodFormClient(closed=True)
     assert AIAgent._is_openai_client_closed(closed_client) is True
 
@@ -2973,7 +2890,7 @@ def test_is_openai_client_closed_falls_back_to_http_client():
     """Verify fallback to _client.is_closed when top-level is_closed is None."""
 
     class ClientWithHttpClient:
-        is_closed = None  # No top-level is_closed
+        is_closed = None
 
         def __init__(self, http_closed: bool):
             self._client = SimpleNamespace(is_closed=http_closed)
@@ -3001,7 +2918,6 @@ class TestAnthropicBaseUrlPassthrough:
                 skip_memory=True,
             )
             call_args = mock_build.call_args
-            # base_url should be passed through, not filtered out
             assert call_args[0][1] == "https://llm-proxy.company.com/v1"
 
     def test_none_base_url_passed_as_none(self):
@@ -3019,7 +2935,6 @@ class TestAnthropicBaseUrlPassthrough:
                 skip_memory=True,
             )
             call_args = mock_build.call_args
-            # No base_url provided, should be default empty string or None
             passed_url = call_args[0][1]
             assert not passed_url or passed_url is None
 
@@ -3111,9 +3026,6 @@ class TestAnthropicCredentialRefresh:
         assert result is response
 
 
-# ===================================================================
-# _streaming_api_call tests
-# ===================================================================
 
 def _make_chunk(content=None, tool_calls=None, finish_reason=None, model="test/model"):
     """Build a SimpleNamespace mimicking an OpenAI streaming chunk."""
@@ -3189,7 +3101,6 @@ class TestStreamingApiCall:
         """
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":"hello"}')]),
-            # Second tool call at the SAME index 0, but different id
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read_file", '{"path":"x.py"}')]),
             _make_chunk(finish_reason="tool_calls"),
         ]
@@ -3211,7 +3122,6 @@ class TestStreamingApiCall:
         chunks = [
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_a", "search", '{"q":')]),
             _make_chunk(tool_calls=[_make_tc_delta(0, None, None, '"hello"}')]),
-            # New tool call, same index 0
             _make_chunk(tool_calls=[_make_tc_delta(0, "call_b", "read", '{}')]),
             _make_chunk(finish_reason="tool_calls"),
         ]
@@ -3284,9 +3194,7 @@ class TestStreamingApiCall:
     def test_api_exception_falls_back_to_non_streaming(self, agent):
         """When streaming fails before any deltas, fallback to non-streaming is attempted."""
         agent.client.chat.completions.create.side_effect = ConnectionError("fail")
-        # Prevent stream retry logic from replacing the mock client
         with patch.object(agent, "_replace_primary_openai_client", return_value=False):
-            # The fallback also uses the same client, so it'll fail too
             with pytest.raises(ConnectionError, match="fail"):
                 agent._interruptible_streaming_api_call({"messages": []})
 
@@ -3314,9 +3222,6 @@ class TestStreamingApiCall:
         assert resp.model == "gpt-4"
 
 
-# ===================================================================
-# Interrupt _vprint force=True verification
-# ===================================================================
 
 
 class TestInterruptVprintForceTrue:
@@ -3339,9 +3244,6 @@ class TestInterruptVprintForceTrue:
         )
 
 
-# ===================================================================
-# Anthropic interrupt handler in _interruptible_api_call
-# ===================================================================
 
 
 class TestAnthropicInterruptHandler:
@@ -3369,9 +3271,6 @@ class TestAnthropicInterruptHandler:
             "_streaming_api_call must handle Anthropic interrupt"
 
 
-# ---------------------------------------------------------------------------
-# Bugfix: stream_callback forwarding for non-streaming providers
-# ---------------------------------------------------------------------------
 
 
 class TestStreamCallbackNonStreamingProvider:
@@ -3411,8 +3310,6 @@ class TestStreamCallbackNonStreamingProvider:
             except Exception:
                 pass
 
-        # Anthropic format not matched above; fallback via except
-        # Test the actual code path by checking chat_completions branch
         received2 = []
         agent.api_mode = "some_other_mode"
         agent._stream_callback = lambda d: received2.append(d)
@@ -3457,9 +3354,6 @@ class TestStreamCallbackNonStreamingProvider:
         assert received == ["Hello from Claude"]
 
 
-# ---------------------------------------------------------------------------
-# Bugfix: API-only user message prefixes must not persist
-# ---------------------------------------------------------------------------
 
 
 class TestPersistUserMessageOverride:
@@ -3492,9 +3386,6 @@ class TestPersistUserMessageOverride:
         assert first_db_write["content"] == "Hello there"
 
 
-# ---------------------------------------------------------------------------
-# Bugfix: _vprint force=True on error messages during TTS
-# ---------------------------------------------------------------------------
 
 
 class TestVprintForceOnErrors:
@@ -3576,9 +3467,6 @@ class TestNormalizeCodexDictArguments:
         assert tc.function.arguments == args_str
 
 
-# ---------------------------------------------------------------------------
-# OAuth flag and nudge counter fixes (salvaged from PR #1797)
-# ---------------------------------------------------------------------------
 
 
 class TestOAuthFlagAfterCredentialRefresh:
@@ -3692,9 +3580,6 @@ class TestMemoryNudgeCounterPersistence:
         """The run_conversation preamble must not zero the nudge counters."""
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
-        # The preamble resets many fields (retry counts, budget, etc.)
-        # before the main loop. Find that reset block and verify our
-        # counters aren't in it. The reset block ends at iteration_budget.
         preamble_end = src.index("self.iteration_budget = IterationBudget")
         preamble = src[:preamble_end]
         assert "self._turns_since_memory = 0" not in preamble
@@ -3714,311 +3599,72 @@ class TestDeadRetryCode:
         )
 
 
-class TestAliceMcpRouter:
-    """ALICE MCP-router bridge: name normalisation + fail-open gates."""
+class TestPonyKeepsCapabilityGuidance:
+    @pytest.fixture(autouse=True)
+    def _seed_skills(self, tmp_path, monkeypatch):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
 
-    _norm = AIAgent._normalise_mcp_route_name
+        monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
+        for name in ("python-debug", "minecraft-modpack-server"):
+            d = tmp_path / "skills" / "misc" / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: does {name} things\n---\n"
+            )
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
 
-    def test_normalises_canonical_name(self):
-        assert self._norm("mazemaker_recall") == "mazemaker_recall"
-        assert self._norm("mazemaker_recall_multi") == "mazemaker_recall_multi"
+    def _agent(self, strip_guidance):
+        from run_agent import AIAgent
+        from agent.pony_mode import PonyConfig, PonyMode
 
-    def test_normalises_short_spellings(self):
-        assert self._norm("recall") == "mazemaker_recall"
-        assert self._norm("mazemaker:recall") == "mazemaker_recall"
-        assert self._norm("mazemaker_recall_multi") == "mazemaker_recall_multi"
+        class _Probe(AIAgent):
+            def __init__(self):
+                pass
 
-    def test_rejects_non_recall_names(self):
-        assert self._norm("mazemaker:status") is None
-        assert self._norm("status") is None
-        assert self._norm("mazemaker_think") is None
-        assert self._norm("") is None
-        assert self._norm(None) is None
+            def __getattr__(self, name):
+                return None
 
-    def test_route_tools_are_recall_only(self):
-        # The bridge must ONLY route recall/recall_multi (Verify verdict 2026-08-11:
-        # id-parametric think/get and writes remember must never be routed).
-        assert AIAgent._MCP_ROUTE_TOOLS == frozenset({
-            "mazemaker_recall", "mazemaker_recall_multi",
-        })
+        a = _Probe()
+        a.router_prompt = "You are Mazemaker. Answer directly."
+        a.skip_context_files = True
+        a.skip_project_context = True
+        a.valid_tool_names = {"memory", "session_search", "skill_manage",
+                              "skills_list", "skill_view", "terminal"}
+        a.model = "test-model"
+        a.quiet_mode = True
+        a._soak_window_turns = -1
+        a._pony_mode = PonyMode(PonyConfig(enabled=True, strip_tools=False,
+                                           strip_guidance=strip_guidance))
+        return a
 
-    def test_gates_prevent_routing(self, agent):
-        # Config gate: routing disabled → no route.
-        agent._memory_manager = None
-        assert agent._route_mcp_through_alice("mazemaker_recall", {"query": "x"}) is None
+    def test_pony_replaces_persona_but_keeps_capability_guidance(self):
+        prompt = self._agent(False)._build_system_prompt(None)
+        assert prompt.startswith("You are Mazemaker.")
+        assert "skills_list" in prompt
+        assert "skill_view" in prompt
+        assert "2 skills are installed" in prompt
 
-    def test_coalesce_one_alice_call_per_burst(self):
-        # Operator (2026-08-11): "not ONE single call per alice!" — a burst of
-        # mazemaker calls (e.g. 15 x get in one turn) must NOT fire one Alice
-        # round-trip per call. The router coalesces: ONE decision per window,
-        # deterministic tools never routed.
-        from agent import alice_router as _ar
+    def test_pony_still_names_no_individual_skill(self):
+        prompt = self._agent(False)._build_system_prompt(None)
+        assert "<available_skills>" not in prompt
+        for name in ("minecraft-modpack-server", "pokemon-player"):
+            assert name not in prompt
 
-        alice_hits = {"n": 0}
-        _orig = urllib.request.urlopen
+    def test_strip_guidance_restores_the_bare_minimal_prompt(self):
+        prompt = self._agent(True)._build_system_prompt(None)
+        assert prompt == "You are Mazemaker. Answer directly."
+        assert "skills_list" not in prompt
 
-        def _fake_urlopen(req, timeout=None):
-            alice_hits["n"] += 1
-            body = {"choices": [{"message": {"content":
-                "<tool_call>{\"function_name\": \"mazemaker_recall\"}</tool_call>"}}]}
-            class _FakeResp:
-                def read(self):
-                    return json.dumps(body).encode()
-            return _FakeResp()
+    def test_guidance_costs_far_less_than_the_old_skill_index(self):
+        prompt = self._agent(False)._build_system_prompt(None)
+        assert len(prompt) // 4 < 2000
 
-        def _execute(name, args):
-            return json.dumps({"ok": True, "name": name})
+    def test_strip_guidance_defaults_to_keeping_guidance(self):
+        from agent.pony_mode import PonyConfig
 
-        # Pytest has no CLI config loaded — force the delegation gate on.
-        _orig_cfg = _ar._load_delegation_config
-        _ar._load_delegation_config = lambda: {
-            "route_mcp_through_router": True,
-            "base_url": "http://127.0.0.1:8801/v1",
-            "api_key": "test",
-            "model": "alice-qwen",
-        }
-        urllib.request.urlopen = _fake_urlopen
-        try:
-            _ar._alice_last_route_ts = 0.0
-            # 15 x get — never routed
-            for i in range(15):
-                assert _ar.route_mcp_through_alice(
-                    "mazemaker_get", {"memory_id": 1168600 + i}, execute=_execute) is None
-            assert alice_hits["n"] == 0
-            # 5 x recall burst — exactly one Alice round-trip
-            for i in range(5):
-                _ar.route_mcp_through_alice(
-                    "mazemaker_recall", {"query": f"q{i}", "limit": 3}, execute=_execute)
-            assert alice_hits["n"] == 1
-            # window expiry -> Alice fires again
-            import time as _t
-            _ar._alice_last_route_ts = _t.monotonic() - 3.0
-            _ar.route_mcp_through_alice(
-                "mazemaker_recall", {"query": "fresh", "limit": 3}, execute=_execute)
-            assert alice_hits["n"] == 2
-        finally:
-            urllib.request.urlopen = _orig
-            _ar._load_delegation_config = _orig_cfg
-            _ar._alice_last_route_ts = 0.0
-
-    def test_alice_hallucinated_name_falls_back_to_parent_tool(self):
-        # Alice hallucinates an unknown tool name (e.g. "mazemaker_burst" —
-        # live-observed 2026-08-11). The bridge must NOT silently vanish:
-        # route to the PARENT's tool (parent query still wins) and mark the
-        # result as routed so the turn sees router=alice.
-        from agent import alice_router as _ar
-
-        executed = []
-
-        def _execute(name, args):
-            executed.append((name, args))
-            return json.dumps({"ok": True, "name": name})
-
-        _orig_cfg = _ar._load_delegation_config
-        _ar._load_delegation_config = lambda: {
-            "route_mcp_through_router": True,
-            "base_url": "http://127.0.0.1:8801/v1",
-            "api_key": "test",
-            "model": "alice-qwen",
-        }
-        _orig = urllib.request.urlopen
-
-        def _fake_urlopen(req, timeout=None):
-            # Alice hallucinates an unknown tool name (no valid args JSON).
-            body = {"choices": [{"message": {"content":
-                "<tool_call>\n{\"name\": \"mazemaker_burst\"}\n</tool_call>"}}]}
-            class _FakeResp:
-                def read(self):
-                    return json.dumps(body).encode()
-                def __enter__(self):
-                    return self
-                def __exit__(self, *exc):
-                    return False
-            return _FakeResp()
-
-        urllib.request.urlopen = _fake_urlopen
-        try:
-            _ar._alice_last_route_ts = 0.0
-            res = _ar.route_mcp_through_alice(
-                "mazemaker_recall", {"query": "parent q", "limit": 3}, execute=_execute)
-        finally:
-            urllib.request.urlopen = _orig
-            _ar._load_delegation_config = _orig_cfg
-            _ar._alice_last_route_ts = 0.0
-
-        assert res is not None, "bridge must stay active on hallucinated name"
-        rj = json.loads(res)
-        assert rj["router"] == "alice"
-        assert rj["router_tool"] == "mazemaker_recall", "parent tool as fallback"
-        assert executed and executed[0][0] == "mazemaker_recall"
-        assert executed[0][1]["query"] == "parent q", "parent query wins"
-
-    def test_chained_alice_calls_still_use_parent_query(self):
-        # ALICE chains 2-3 <tool_call> blocks (ChatML masker bug, id=1168068)
-        # and the FIRST often carries a hallucinated query. The shim must
-        # route the TOOL TYPE but ALWAYS run the parent's original query.
-        from run_agent import AIAgent as _A
-
-        inst = _A.__new__(_A)
-        inst.router_prompt = ""
-        inst._delegate_depth = 0
-        inst._MCP_ROUTE_TOOLS = frozenset({"mazemaker_recall", "mazemaker_recall_multi"})
-        inst._MCP_ROUTE_TIMEOUT = 1.0  # fast fail-open in tests
-
-        # Simulate a memory manager that records the args it received.
-        calls = []
-
-        class _FakeMM:
-            def handle_tool_call(self, name, args):
-                calls.append((name, args))
-                return '{"ok": true}'
-
-            def has_tool(self, name):
-                return True
-
-        inst._memory_manager = _FakeMM()
-
-        # Monkeypatch the ALICE HTTP call to return a chained, hallucinated
-        # response (the exact failure from the 2026-08-11 discord turn).
-        import run_agent as _ra
-        _orig_urlopen = urllib.request.urlopen
-
-        class _FakeResp:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def read(self):
-                return json.dumps({"choices": [{"message": {"content": (
-                    '<tool_call>\n{"name": "mazemaker_recall", "arguments": '
-                    '"{\\"query\\": \\"deriver guard posthog\\", \\"limit\\": 10}"}\n'
-                    "</tool_call>\n<tool_call>\n"
-                    '{"name": "mazemaker_recall_multi", "arguments": "[]"}\n'
-                    "</tool_call>"
-                )}}]}).encode()
-
-        def _fake_urlopen(req, timeout=None):
-            return _FakeResp()
-
-        _ra.urllib.request.urlopen = _fake_urlopen
-
-        # The shim reads delegation config from cli.CLI_CONFIG — force the gate
-        # open so the route engages (pytest context may not load cli cleanly).
-        import cli as _cli_mod
-        _orig_del = _cli_mod.CLI_CONFIG.get("delegation")
-        _cli_mod.CLI_CONFIG["delegation"] = {
-            "route_mcp_through_router": True,
-            "base_url": "http://127.0.0.1:8801/v1",
-            "api_key": "alice-local",
-            "model": "alice-qwen",
-        }
-        try:
-            parent_q = "Alice-Router routing issue masker chaining fix"
-            res = inst._route_mcp_through_alice("mazemaker_recall", {"query": parent_q, "limit": 5})
-        finally:
-            _ra.urllib.request.urlopen = _orig_urlopen
-            if _orig_del is None:
-                _cli_mod.CLI_CONFIG.pop("delegation", None)
-            else:
-                _cli_mod.CLI_CONFIG["delegation"] = _orig_del
-            # Coalesce isolation: never let this test's Alice round-trip block
-            # a later test's route within the 2s window.
-            from agent import alice_router as _ar
-            _ar._alice_last_route_ts = 0.0
-
-        assert res is not None, "should route (alice chose recall)"
-        assert calls, "pod call must be made"
-        name, args = calls[0]
-        assert name == "mazemaker_recall"
-        # The parent query must be what actually ran — never Alice's hallucination.
-        assert args.get("query") == parent_q, (
-            f"parent query not used: {args.get('query')!r}"
-        )
-        assert args.get("limit") == 5
-
-    def test_bootstrap_routes_through_alice(self):
-        # Whole-harness contract (2026-08-11, "cli, tui, everything"): the
-        # deterministic bootstrap recall must ALSO go through ALICE when
-        # delegation is on, and the injected assistant/tool pair must
-        # truthfully reflect what actually ran (tool + args).
-        from run_agent import AIAgent as _A
-
-        inst = _A.__new__(_A)
-        inst.router_prompt = ""
-        inst._delegate_depth = 0
-        inst.disable_bootstrap_recall = False
-        inst.valid_tool_names = {"mazemaker_recall", "mazemaker_recall_multi"}
-
-        import run_agent as _ra
-        _orig_urlopen = urllib.request.urlopen
-
-        class _FakeResp:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def read(self):
-                return json.dumps({"choices": [{"message": {"content": (
-                    '<tool_call>\n{"name": "mazemaker_recall_multi", "arguments": "[]"}\n'
-                    "</tool_call>"
-                )}}]}).encode()
-
-        def _fake_urlopen(req, timeout=None):
-            return _FakeResp()
-
-        _ra.urllib.request.urlopen = _fake_urlopen
-
-        import cli as _cli_mod
-        _orig_del = _cli_mod.CLI_CONFIG.get("delegation")
-        _cli_mod.CLI_CONFIG["delegation"] = {
-            "route_mcp_through_router": True,
-            "base_url": "http://127.0.0.1:8801/v1",
-            "api_key": "***",
-            "model": "alice-qwen",
-        }
-
-        calls = []
-
-        class _FakeMM:
-            def has_tool(self, name):
-                return True
-
-            def handle_tool_call(self, name, args):
-                calls.append((name, args))
-                # pod-style recall_multi result: a list of hit dicts
-                return json.dumps([{"id": 1, "similarity": 0.9, "content": "hit"}])
-
-        inst._memory_manager = _FakeMM()
-        try:
-            msgs = inst._build_mazemaker_bootstrap_messages("test query bootstrap alice")
-        finally:
-            _ra.urllib.request.urlopen = _orig_urlopen
-            if _orig_del is None:
-                _cli_mod.CLI_CONFIG.pop("delegation", None)
-            else:
-                _cli_mod.CLI_CONFIG["delegation"] = _orig_del
-            # Coalesce isolation: never let this test's Alice round-trip block
-            # a later test's route within the 2s window.
-            from agent import alice_router as _ar
-            _ar._alice_last_route_ts = 0.0
-
-        assert msgs, "bootstrap messages should be built"
-        assert calls, "routed pod call must be made"
-        name, args = calls[0]
-        assert name == "mazemaker_recall_multi", f"alice chose recall_multi: {name}"
-        assert args["k"] == 3
-        assert "test query bootstrap alice" in args["angles"][0]
-
-        # The injected pair must be truthful: recall_multi name + args
-        asst = msgs[0]
-        assert asst["tool_calls"][0]["function"]["name"] == "mazemaker_recall_multi"
-        injected_args = json.loads(asst["tool_calls"][0]["function"]["arguments"])
-        assert injected_args["k"] == 3
-        assert "test query bootstrap alice" in injected_args["angles"][0]
-        tool_msg = msgs[1]
-        assert tool_msg["role"] == "tool"
-        assert "auto_bootstrap" in tool_msg["content"]
+        cfg = PonyConfig.from_config({"pony": {"enabled": True}})
+        assert cfg.strip_guidance is False
+        cfg = PonyConfig.from_config({"pony": {"enabled": True, "strip_guidance": True}})
+        assert cfg.strip_guidance is True

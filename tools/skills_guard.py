@@ -32,14 +32,10 @@ from typing import List, Tuple
 
 
 
-# ---------------------------------------------------------------------------
-# Hardcoded trust configuration
-# ---------------------------------------------------------------------------
 
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills"}
 
 INSTALL_POLICY = {
-    #                  safe      caution    dangerous
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
@@ -49,15 +45,12 @@ INSTALL_POLICY = {
 VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
 
 
-# ---------------------------------------------------------------------------
-# Data structures
-# ---------------------------------------------------------------------------
 
 @dataclass
 class Finding:
     pattern_id: str
-    severity: str       # "critical" | "high" | "medium" | "low"
-    category: str       # "exfiltration" | "injection" | "destructive" | "persistence" | "network" | "obfuscation"
+    severity: str
+    category: str
     file: str
     line: int
     match: str
@@ -68,19 +61,15 @@ class Finding:
 class ScanResult:
     skill_name: str
     source: str
-    trust_level: str    # "builtin" | "trusted" | "community"
-    verdict: str        # "safe" | "caution" | "dangerous"
+    trust_level: str
+    verdict: str
     findings: List[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
 
 
-# ---------------------------------------------------------------------------
-# Threat patterns — (regex, pattern_id, severity, category, description)
-# ---------------------------------------------------------------------------
 
 THREAT_PATTERNS = [
-    # ── Exfiltration: shell commands leaking secrets ──
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
      "env_exfil_curl", "critical", "exfiltration",
      "curl command interpolating secret environment variable"),
@@ -97,7 +86,6 @@ THREAT_PATTERNS = [
      "env_exfil_requests", "critical", "exfiltration",
      "requests library call with secret variable"),
 
-    # ── Exfiltration: reading credential stores ──
     (r'base64[^\n]*env',
      "encoded_exfil", "high", "exfiltration",
      "base64 encoding combined with environment access"),
@@ -123,7 +111,6 @@ THREAT_PATTERNS = [
      "read_secrets_file", "critical", "exfiltration",
      "reads known secrets file"),
 
-    # ── Exfiltration: programmatic env access ──
     (r'printenv|env\s*\|',
      "dump_all_env", "high", "exfiltration",
      "dumps all environment variables"),
@@ -140,7 +127,6 @@ THREAT_PATTERNS = [
      "ruby_env_secret", "critical", "exfiltration",
      "reads secret via Ruby ENV[]"),
 
-    # ── Exfiltration: DNS and staging ──
     (r'\b(dig|nslookup|host)\s+[^\n]*\$',
      "dns_exfil", "critical", "exfiltration",
      "DNS lookup with variable interpolation (possible DNS exfiltration)"),
@@ -148,7 +134,6 @@ THREAT_PATTERNS = [
      "tmp_staging", "critical", "exfiltration",
      "writes to /tmp then exfiltrates"),
 
-    # ── Exfiltration: markdown/link based ──
     (r'!\[.*\]\(https?://[^\)]*\$\{?',
      "md_image_exfil", "high", "exfiltration",
      "markdown image URL with variable interpolation (image-based exfil)"),
@@ -156,7 +141,6 @@ THREAT_PATTERNS = [
      "md_link_exfil", "high", "exfiltration",
      "markdown link with variable interpolation"),
 
-    # ── Prompt injection ──
     (r'ignore\s+(?:\w+\s+)*(previous|all|above|prior)\s+instructions',
      "prompt_injection_ignore", "critical", "injection",
      "prompt injection: ignore previous instructions"),
@@ -194,7 +178,6 @@ THREAT_PATTERNS = [
      "hidden_div", "high", "injection",
      "hidden HTML div (invisible instructions)"),
 
-    # ── Destructive operations ──
     (r'rm\s+-rf\s+/',
      "destructive_root_rm", "critical", "destructive",
      "recursive delete from root"),
@@ -220,7 +203,6 @@ THREAT_PATTERNS = [
      "truncate_system", "critical", "destructive",
      "truncates system file to zero bytes"),
 
-    # ── Persistence ──
     (r'\bcrontab\b',
      "persistence_cron", "medium", "persistence",
      "modifies cron jobs"),
@@ -249,7 +231,6 @@ THREAT_PATTERNS = [
      "git_config_global", "medium", "persistence",
      "modifies global git configuration"),
 
-    # ── Network: reverse shells and tunnels ──
     (r'\bnc\s+-[lp]|ncat\s+-[lp]|\bsocat\b',
      "reverse_shell", "critical", "network",
      "potential reverse shell listener"),
@@ -278,7 +259,6 @@ THREAT_PATTERNS = [
      "paste_service", "medium", "network",
      "references paste service (possible data staging)"),
 
-    # ── Obfuscation: encoding and eval ──
     (r'base64\s+(-d|--decode)\s*\|',
      "base64_decode_pipe", "high", "obfuscation",
      "base64 decodes and pipes to execution"),
@@ -322,7 +302,6 @@ THREAT_PATTERNS = [
      "unicode_escape_chain", "medium", "obfuscation",
      "chain of unicode escapes (possible obfuscation)"),
 
-    # ── Process execution in scripts ──
     (r'subprocess\.(run|call|Popen|check_output)\s*\(',
      "python_subprocess", "medium", "execution",
      "Python subprocess execution"),
@@ -342,7 +321,6 @@ THREAT_PATTERNS = [
      "backtick_subshell", "medium", "execution",
      "backtick string with command substitution"),
 
-    # ── Path traversal ──
     (r'\.\./\.\./\.\.',
      "path_traversal_deep", "high", "traversal",
      "deep relative path traversal (3+ levels up)"),
@@ -359,7 +337,6 @@ THREAT_PATTERNS = [
      "dev_shm", "medium", "traversal",
      "references shared memory (common staging area)"),
 
-    # ── Crypto mining ──
     (r'xmrig|stratum\+tcp|monero|coinhive|cryptonight',
      "crypto_mining", "critical", "mining",
      "cryptocurrency mining reference"),
@@ -367,7 +344,6 @@ THREAT_PATTERNS = [
      "mining_indicators", "medium", "mining",
      "possible cryptocurrency mining indicators"),
 
-    # ── Supply chain: curl/wget pipe to shell ──
     (r'curl\s+[^\n]*\|\s*(ba)?sh',
      "curl_pipe_shell", "critical", "supply_chain",
      "curl piped to shell (download-and-execute)"),
@@ -378,7 +354,6 @@ THREAT_PATTERNS = [
      "curl_pipe_python", "critical", "supply_chain",
      "curl piped to Python interpreter"),
 
-    # ── Supply chain: unpinned/deferred dependencies ──
     (r'#\s*///\s*script.*dependencies',
      "pep723_inline_deps", "medium", "supply_chain",
      "PEP 723 inline script metadata with dependencies (verify pinning)"),
@@ -392,7 +367,6 @@ THREAT_PATTERNS = [
      "uv_run", "medium", "supply_chain",
      "uv run (may auto-install unpinned dependencies)"),
 
-    # ── Supply chain: remote resource fetching ──
     (r'(curl|wget|httpx?\.get|requests\.get|fetch)\s*[\(]?\s*["\']https?://',
      "remote_fetch", "medium", "supply_chain",
      "fetches remote resource at runtime"),
@@ -403,7 +377,6 @@ THREAT_PATTERNS = [
      "docker_pull", "medium", "supply_chain",
      "pulls a Docker image at runtime"),
 
-    # ── Privilege escalation ──
     (r'^allowed-tools\s*:',
      "allowed_tools_field", "high", "privilege_escalation",
      "skill declares allowed-tools (pre-approves tool access)"),
@@ -420,7 +393,6 @@ THREAT_PATTERNS = [
      "suid_bit", "critical", "privilege_escalation",
      "sets SUID/SGID bit on a file"),
 
-    # ── Agent config persistence ──
     (r'AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules',
      "agent_config_mod", "critical", "persistence",
      "references agent config files (could persist malicious instructions across sessions)"),
@@ -431,7 +403,6 @@ THREAT_PATTERNS = [
      "other_agent_config", "high", "persistence",
      "references other agent configuration files"),
 
-    # ── Hardcoded secrets (credentials embedded in the skill itself) ──
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure",
      "possible hardcoded API key, token, or secret"),
@@ -451,7 +422,6 @@ THREAT_PATTERNS = [
      "aws_access_key_leaked", "critical", "credential_exposure",
      "AWS access key ID in skill content"),
 
-    # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now',
      "jailbreak_dan", "critical", "injection",
      "DAN (Do Anything Now) jailbreak attempt"),
@@ -474,7 +444,6 @@ THREAT_PATTERNS = [
      "fake_policy", "medium", "injection",
      "claims new policy/guidelines (may be social engineering)"),
 
-    # ── Context window exfiltration ──
     (r'(include|output|print|send|share)\s+(?:\w+\s+)*(conversation|chat\s+history|previous\s+messages|context)',
      "context_exfil", "high", "exfiltration",
      "instructs agent to output/share conversation history"),
@@ -483,49 +452,42 @@ THREAT_PATTERNS = [
      "instructs agent to send data to a URL"),
 ]
 
-# Structural limits for skill directories
-MAX_FILE_COUNT = 50       # skills shouldn't have 50+ files
-MAX_TOTAL_SIZE_KB = 1024  # 1MB total is suspicious for a skill
-MAX_SINGLE_FILE_KB = 256  # individual file > 256KB is suspicious
+MAX_FILE_COUNT = 50
+MAX_TOTAL_SIZE_KB = 1024
+MAX_SINGLE_FILE_KB = 256
 
-# File extensions to scan (text files only — skip binary)
 SCANNABLE_EXTENSIONS = {
     '.md', '.txt', '.py', '.sh', '.bash', '.js', '.ts', '.rb',
     '.yaml', '.yml', '.json', '.toml', '.cfg', '.ini', '.conf',
     '.html', '.css', '.xml', '.tex', '.r', '.jl', '.pl', '.php',
 }
 
-# Known binary extensions that should NOT be in a skill
 SUSPICIOUS_BINARY_EXTENSIONS = {
     '.exe', '.dll', '.so', '.dylib', '.bin', '.dat', '.com',
     '.msi', '.dmg', '.app', '.deb', '.rpm',
 }
 
-# Zero-width and invisible unicode characters used for injection
 INVISIBLE_CHARS = {
-    '\u200b',  # zero-width space
-    '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
-    '\u2060',  # word joiner
-    '\u2062',  # invisible times
-    '\u2063',  # invisible separator
-    '\u2064',  # invisible plus
-    '\ufeff',  # zero-width no-break space (BOM)
-    '\u202a',  # left-to-right embedding
-    '\u202b',  # right-to-left embedding
-    '\u202c',  # pop directional formatting
-    '\u202d',  # left-to-right override
-    '\u202e',  # right-to-left override
-    '\u2066',  # left-to-right isolate
-    '\u2067',  # right-to-left isolate
-    '\u2068',  # first strong isolate
-    '\u2069',  # pop directional isolate
+    '\u200b',
+    '\u200c',
+    '\u200d',
+    '\u2060',
+    '\u2062',
+    '\u2063',
+    '\u2064',
+    '\ufeff',
+    '\u202a',
+    '\u202b',
+    '\u202c',
+    '\u202d',
+    '\u202e',
+    '\u2066',
+    '\u2067',
+    '\u2068',
+    '\u2069',
 }
 
 
-# ---------------------------------------------------------------------------
-# Scanning functions
-# ---------------------------------------------------------------------------
 
 def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     """
@@ -551,9 +513,8 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
 
     findings = []
     lines = content.split('\n')
-    seen = set()  # (pattern_id, line_number) for deduplication
+    seen = set()
 
-    # Regex pattern matching
     for pattern, pid, severity, category, description in THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
@@ -573,7 +534,6 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     description=description,
                 ))
 
-    # Invisible unicode character detection
     for i, line in enumerate(lines, start=1):
         for char in INVISIBLE_CHARS:
             if char in line:
@@ -587,7 +547,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
                     match=f"U+{ord(char):04X} ({char_name})",
                     description=f"invisible unicode character {char_name} (possible text hiding/injection)",
                 ))
-                break  # one finding per line for invisible chars
+                break
 
     return findings
 
@@ -614,10 +574,8 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
     all_findings: List[Finding] = []
 
     if skill_path.is_dir():
-        # Structural checks first
         all_findings.extend(_check_structure(skill_path))
 
-        # Pattern scanning on each file
         for f in skill_path.rglob("*"):
             if f.is_file():
                 rel = str(f.relative_to(skill_path))
@@ -664,7 +622,6 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
         )
 
     if decision == "ask":
-        # Return None to signal "needs user confirmation"
         return None, (
             f"Requires confirmation ({result.trust_level} source + {result.verdict} verdict, "
             f"{len(result.findings)} findings)"
@@ -688,7 +645,6 @@ def format_scan_report(result: ScanResult) -> str:
     lines.append(f"Scan: {result.skill_name} ({result.source}/{result.trust_level})  Verdict: {verdict_display}")
 
     if result.findings:
-        # Group and sort: critical first, then high, medium, low
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         sorted_findings = sorted(result.findings, key=lambda f: severity_order.get(f.severity, 4))
 
@@ -727,9 +683,6 @@ def content_hash(skill_path: Path) -> str:
     return f"sha256:{h.hexdigest()[:16]}"
 
 
-# ---------------------------------------------------------------------------
-# Structural checks
-# ---------------------------------------------------------------------------
 
 def _check_structure(skill_dir: Path) -> List[Finding]:
     """
@@ -751,7 +704,6 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
         rel = str(f.relative_to(skill_dir))
         file_count += 1
 
-        # Symlink check — must resolve within the skill directory
         if f.is_symlink():
             try:
                 resolved = f.resolve()
@@ -777,14 +729,12 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 ))
             continue
 
-        # Size tracking
         try:
             size = f.stat().st_size
             total_size += size
         except OSError:
             continue
 
-        # Single file too large
         if size > MAX_SINGLE_FILE_KB * 1024:
             findings.append(Finding(
                 pattern_id="oversized_file",
@@ -796,7 +746,6 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 description=f"file is {size // 1024}KB (limit: {MAX_SINGLE_FILE_KB}KB)",
             ))
 
-        # Binary/executable files
         ext = f.suffix.lower()
         if ext in SUSPICIOUS_BINARY_EXTENSIONS:
             findings.append(Finding(
@@ -809,7 +758,6 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 description=f"binary/executable file ({ext}) should not be in a skill",
             ))
 
-        # Executable permission on non-script files
         if ext not in ('.sh', '.bash', '.py', '.rb', '.pl') and f.stat().st_mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
@@ -821,7 +769,6 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
                 description="file has executable permission but is not a recognized script type",
             ))
 
-    # File count limit
     if file_count > MAX_FILE_COUNT:
         findings.append(Finding(
             pattern_id="too_many_files",
@@ -833,7 +780,6 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
             description=f"skill has {file_count} files (limit: {MAX_FILE_COUNT})",
         ))
 
-    # Total size limit
     if total_size > MAX_TOTAL_SIZE_KB * 1024:
         findings.append(Finding(
             pattern_id="oversized_skill",
@@ -872,9 +818,6 @@ def _unicode_char_name(char: str) -> str:
     return names.get(char, f"U+{ord(char):04X}")
 
 
-# ---------------------------------------------------------------------------
-# LLM security audit
-# ---------------------------------------------------------------------------
 
 LLM_AUDIT_PROMPT = """Analyze this skill file for security risks. Evaluate each concern as
 SAFE (no risk), CAUTION (possible risk, context-dependent), or DANGEROUS (clear threat).
@@ -914,7 +857,6 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
     if static_result.verdict == "dangerous":
         return static_result
 
-    # Collect all text content from the skill
     content_parts = []
     if skill_path.is_dir():
         for f in sorted(skill_path.rglob("*")):
@@ -935,18 +877,15 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
         return static_result
 
     skill_content = "\n\n".join(content_parts)
-    # Truncate to avoid token limits (roughly 15k chars ~ 4k tokens)
     if len(skill_content) > 15000:
         skill_content = skill_content[:15000] + "\n\n[... truncated for analysis ...]"
 
-    # Resolve model
     if not model:
         model = _get_configured_model()
 
     if not model:
         return static_result
 
-    # Call the LLM via the centralized provider router
     try:
         from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
@@ -963,25 +902,20 @@ def llm_audit_skill(skill_path: Path, static_result: ScanResult,
         response = call_llm(**call_kwargs)
         llm_text = extract_content_or_reasoning(response)
 
-        # Retry once on empty content (reasoning-only response)
         if not llm_text:
             response = call_llm(**call_kwargs)
             llm_text = extract_content_or_reasoning(response)
     except Exception:
-        # LLM audit is best-effort — don't block install if the call fails
         return static_result
 
-    # Parse LLM response
     llm_findings = _parse_llm_response(llm_text, static_result.skill_name)
 
     if not llm_findings:
         return static_result
 
-    # Merge LLM findings into the static result
     merged_findings = list(static_result.findings) + llm_findings
     merged_verdict = _determine_verdict(merged_findings)
 
-    # LLM can only raise severity, not lower it
     verdict_priority = {"safe": 0, "caution": 1, "dangerous": 2}
     if verdict_priority.get(merged_verdict, 0) < verdict_priority.get(static_result.verdict, 0):
         merged_verdict = static_result.verdict
@@ -1004,7 +938,6 @@ def _parse_llm_response(text: str, skill_name: str) -> List[Finding]:
     """Parse the LLM's JSON response into Finding objects."""
     import json as json_mod
 
-    # Extract JSON from the response (handle markdown code blocks)
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
@@ -1050,9 +983,6 @@ def _get_configured_model() -> str:
         return ""
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
 def _resolve_trust_level(source: str) -> str:
     """Map a source identifier to a trust level."""
@@ -1068,13 +998,10 @@ def _resolve_trust_level(source: str) -> str:
             normalized_source = normalized_source[len(prefix):]
             break
 
-    # Agent-created skills get their own permissive trust level
     if normalized_source == "agent-created":
         return "agent-created"
-    # Official optional skills shipped with the repo
     if normalized_source.startswith("official/") or normalized_source == "official":
         return "builtin"
-    # Check if source matches any trusted repo
     for trusted in TRUSTED_REPOS:
         if normalized_source.startswith(trusted) or normalized_source == trusted:
             return "trusted"

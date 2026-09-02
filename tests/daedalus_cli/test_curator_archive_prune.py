@@ -19,7 +19,6 @@ def _ns(**kwargs):
     return SimpleNamespace(**kwargs)
 
 
-# ─── archive ────────────────────────────────────────────────────────────────
 
 
 def test_archive_refuses_pinned(monkeypatch, capsys):
@@ -43,7 +42,6 @@ def test_archive_refuses_pinned(monkeypatch, capsys):
 
 
 
-# ─── prune ──────────────────────────────────────────────────────────────────
 
 
 def _mk_record(name, *, idle_days=0, pinned=False, state="active", created_idle_days=None):
@@ -68,7 +66,6 @@ def _mk_record(name, *, idle_days=0, pinned=False, state="active", created_idle_
 
 
 
-# ─── argparse wiring ────────────────────────────────────────────────────────
 
 
 def test_archive_and_prune_registered():

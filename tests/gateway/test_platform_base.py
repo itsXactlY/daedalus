@@ -44,7 +44,6 @@ class TestInboundMediaSizeCap:
     _PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
 
     def test_default_cap_is_128_mib(self, monkeypatch):
-        # No config override -> default. Patch loader to return empty config.
         import gateway.platforms.base as base
         monkeypatch.setattr(base, "get_inbound_media_max_bytes", lambda: base.DEFAULT_INBOUND_MEDIA_MAX_BYTES)
         assert base.DEFAULT_INBOUND_MEDIA_MAX_BYTES == 128 * 1024 * 1024
@@ -87,9 +86,6 @@ class TestCacheAudioFromBytes:
         assert saved.read_bytes() == payload
 
 
-# ---------------------------------------------------------------------------
-# MessageEvent — command parsing
-# ---------------------------------------------------------------------------
 
 
 class TestMessageEventIsCommand:
@@ -118,9 +114,6 @@ class TestMessageEventGetCommandArgs:
         assert event.get_command_args() == "session id 123"
 
 
-# ---------------------------------------------------------------------------
-# extract_images
-# ---------------------------------------------------------------------------
 
 
 class TestExtractImages:
@@ -159,7 +152,7 @@ class TestExtractImages:
         images, cleaned = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
         assert images[0][0] == "https://example.com/photo.png"
-        assert images[0][1] == ""  # HTML images have no alt text
+        assert images[0][1] == ""
         assert "<img" not in cleaned
 
 
@@ -173,13 +166,9 @@ class TestExtractImages:
         images, cleaned = BasePlatformAdapter.extract_images(content)
         assert len(images) == 1
         assert images[0][0] == "https://fal.media/cat.png"
-        # The PDF link must survive in cleaned content
         assert "![report](https://example.com/report.pdf)" in cleaned
 
 
-# ---------------------------------------------------------------------------
-# extract_media
-# ---------------------------------------------------------------------------
 
 
 class TestExtractMedia:
@@ -193,7 +182,7 @@ class TestExtractMedia:
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert len(media) == 1
         assert media[0][0] == "/path/to/audio.ogg"
-        assert media[0][1] is False  # no voice tag
+        assert media[0][1] is False
 
 
     def test_voice_directive_only_taints_audio_files(self):
@@ -265,14 +254,10 @@ class TestExtractMedia:
         propagates per-tuple; [[as_document]] is detected at dispatch."""
         content = "[[audio_as_voice]]\n[[as_document]]\nMEDIA:/tmp/x.ogg"
         media, cleaned = BasePlatformAdapter.extract_media(content)
-        # Voice flag is propagated to every media tuple (this matches the
-        # existing extract_media contract)
         assert media == [("/tmp/x.ogg", True)]
-        # Both directives stripped from cleaned text
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
-    # Windows path support — regression coverage for #34632
 
 
     def test_relative_path_still_ignored(self):
@@ -282,7 +267,6 @@ class TestExtractMedia:
         )
         assert media == []
 
-    # --- Code block / inline code / blockquote false-positive guards (#35695) ---
 
 
     def test_media_mixed_code_and_prose(self):
@@ -299,10 +283,7 @@ class TestExtractMedia:
         assert len(media) == 1
         assert media[0][0] == "/output/report.pdf"
         assert "Done." in cleaned
-        # The real tag is stripped from the delivered text...
         assert "MEDIA:/output/report.pdf" not in cleaned
-        # ...but the fenced code block (incl. its example MEDIA: line) must
-        # survive verbatim — masking is a locator, not a text rewrite.
         assert "```text\nMEDIA:/example/path.pdf\n```" in cleaned
 
     def test_inline_code_survives_when_real_media_present(self):
@@ -313,11 +294,6 @@ class TestExtractMedia:
         assert [p for p, _ in media] == ["/r/a.png"]
         assert "`MEDIA:/ex/b.png`" in cleaned
 
-    # --- Markdown emphasis wrapping tolerance ---
-    # Models routinely present a file as **MEDIA:/path** / *MEDIA:/path* /
-    # _MEDIA:/path_. The old pattern only tolerated a single quote/backtick, so
-    # the emphasis prevented the match and the file was silently never
-    # delivered (the literal MEDIA: text leaked into the chat instead).
 
 
 class TestMediaInsideSerializedJson:
@@ -337,7 +313,6 @@ class TestMediaInsideSerializedJson:
         media, _ = BasePlatformAdapter.extract_media(content)
         assert media == [], f"embedded serialized reply leaked: {media}"
 
-    # --- Legitimate tags must still extract (no regression vs line-start anchor) ---
 
 
     def test_quoted_path_media_still_extracted(self):
@@ -352,9 +327,8 @@ class TestMediaInsideSerializedJson:
             "[[audio_as_voice]]\nMEDIA:/tmp/v.ogg"
         )
         assert len(media) == 1 and media[0][0] == "/tmp/v.ogg"
-        assert media[0][1] is True  # voice flag
+        assert media[0][1] is True
 
-    # --- cleaned-text invariants: real tags stripped, JSON data kept verbatim ---
 
     def test_json_embedded_media_kept_verbatim_in_cleaned_text(self):
         """A real tag is delivered+stripped; a JSON-embedded MEDIA: stays as
@@ -362,7 +336,6 @@ class TestMediaInsideSerializedJson:
         content = 'MEDIA:/real/r.png\nlog: {"old":"MEDIA:/stale/s.png"}'
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert [p for p, _ in media] == ["/real/r.png"]
-        # The JSON-embedded path must survive verbatim — not blanked to spaces.
         assert '{"old":"MEDIA:/stale/s.png"}' in cleaned
 
 
@@ -392,9 +365,9 @@ class TestMediaExtensionAllowlistParity:
         from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
         text = "Saved to MEDIA:/tmp/data.weirdext done"
         media, _ = BasePlatformAdapter.extract_media(text)
-        assert media == []  # nonexistent path fails validation, not delivered
+        assert media == []
         stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
-        assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
+        assert "/tmp/data.weirdext" in stripped
 
 
 class TestExtensionlessMediaDelivery:
@@ -460,9 +433,6 @@ class TestUniversalMediaEgress:
 
 
     def test_known_extension_still_unconditional(self):
-        # Known extensions keep the pre-#36060 behavior: extracted (and the
-        # tag stripped) even when the file does not exist — downstream
-        # delivery surfaces the failure.
         content = "MEDIA:/nonexistent/report.pdf"
         media, cleaned = BasePlatformAdapter.extract_media(content)
         assert media == [("/nonexistent/report.pdf", False)]
@@ -475,14 +445,7 @@ class TestMediaDeliveryPathValidation:
             "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             tuple(roots),
         )
-        # All tests in this class cover strict-mode behavior (allowlist +
-        # recency window + denylist). Force strict on so they keep
-        # exercising the legacy path even though the public default
-        # flipped to off in 2026-05.
         monkeypatch.setenv("DAEDALUS_MEDIA_DELIVERY_STRICT", "1")
-        # Disable recency-based trust by default so the original allowlist
-        # tests continue to exercise the strict-allowlist path. Tests that
-        # specifically cover recency trust re-enable it themselves.
         monkeypatch.setenv("DAEDALUS_MEDIA_TRUST_RECENT_FILES", "0")
 
 
@@ -553,12 +516,11 @@ class TestMediaDeliveryPathValidation:
         monkeypatch.setenv("DAEDALUS_MEDIA_TRUST_RECENT_FILES", "1")
         monkeypatch.setenv("DAEDALUS_MEDIA_TRUST_RECENT_SECONDS", "600")
 
-        # Simulate $HOME so ~/.ssh resolves into our tmp dir.
         fake_home = tmp_path / "home"
         ssh_dir = fake_home / ".ssh"
         ssh_dir.mkdir(parents=True)
         secret = ssh_dir / "id_rsa.txt"
-        secret.write_bytes(b"-----BEGIN ...")  # mtime = now
+        secret.write_bytes(b"-----BEGIN ...")
         monkeypatch.setenv("HOME", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
@@ -574,15 +536,10 @@ class TestMediaDeliveryDefaultMode:
     """
 
     def _patch_roots(self, monkeypatch, *roots):
-        # Empty cache allowlist so the only positive path through
-        # validate_media_delivery_path in these tests is the
-        # default-mode "anything not denied" branch.
         monkeypatch.setattr(
             "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
             tuple(roots),
         )
-        # Pin strict OFF — the public default. Tests that exercise the
-        # strict path live in TestMediaDeliveryPathValidation.
         monkeypatch.delenv("DAEDALUS_MEDIA_DELIVERY_STRICT", raising=False)
         monkeypatch.delenv("DAEDALUS_MEDIA_ALLOW_DIRS", raising=False)
 
@@ -596,7 +553,7 @@ class TestMediaDeliveryDefaultMode:
 
         notes = tmp_path / "notes.md"
         notes.write_text("# Old notes\n")
-        old_mtime = time.time() - 7200  # 2 hours ago — far outside any window
+        old_mtime = time.time() - 7200
         os.utime(notes, (old_mtime, old_mtime))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(notes)) == str(notes.resolve())
@@ -662,7 +619,7 @@ class TestMediaDeliveryDefaultMode:
         did NOT blanket-deny the tree (per #32090/#34425). This guards against
         accidentally re-introducing the rejected whole-tree deny.
         """
-        self._patch_roots(monkeypatch)  # strict mode on
+        self._patch_roots(monkeypatch)
         monkeypatch.setenv("DAEDALUS_MEDIA_TRUST_RECENT_FILES", "1")
         monkeypatch.setenv("DAEDALUS_MEDIA_TRUST_RECENT_SECONDS", "600")
 
@@ -670,7 +627,7 @@ class TestMediaDeliveryDefaultMode:
         daedalus_dir = fake_home / ".daedalus"
         daedalus_dir.mkdir(parents=True)
         artifact = daedalus_dir / "adhoc_report.pdf"
-        artifact.write_bytes(b"%PDF-1.4")  # fresh mtime
+        artifact.write_bytes(b"%PDF-1.4")
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr("gateway.platforms.base._DAEDALUS_HOME", daedalus_dir)
         monkeypatch.setattr("gateway.platforms.base._DAEDALUS_ROOT", daedalus_dir)
@@ -708,7 +665,6 @@ class TestMediaDeliveryDefaultMode:
         doc = workdir / "proposal.docx"
         doc.write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("HOME", str(fake_home))
-        # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(fake_home),),
@@ -729,9 +685,8 @@ class TestMediaDeliveryDefaultMode:
         doesn't cover the profile subdir — the file was silently dropped.
         Per-profile cache roots must be allowlisted so it delivers.
         """
-        self._patch_roots(monkeypatch)  # strict on, zero top-level cache roots
+        self._patch_roots(monkeypatch)
 
-        # Stand-in for the literal /root deny prefix in the deployment.
         denied_root = tmp_path / "root"
         daedalus_root = denied_root / ".daedalus"
         prof_cache = daedalus_root / "profiles" / "myprof" / "cache" / "images"
@@ -739,7 +694,6 @@ class TestMediaDeliveryDefaultMode:
         image = prof_cache / "gen.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\n")
 
-        # $HOME is NOT the denied prefix (mirrors HOME=/opt/data/home).
         fake_home = tmp_path / "opt" / "data" / "home"
         fake_home.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(fake_home))
@@ -916,9 +870,6 @@ class TestDockerContainerMediaPathTranslation:
         ) is None
 
 
-# ---------------------------------------------------------------------------
-# should_send_media_as_audio
-# ---------------------------------------------------------------------------
 
 class TestShouldSendMediaAsAudio:
     """Audio-routing policy shared by gateway + scheduler + send_message."""
@@ -937,9 +888,6 @@ class TestShouldSendMediaAsAudio:
         assert should_send_media_as_audio("telegram", ".opus") is False
 
 
-# ---------------------------------------------------------------------------
-# truncate_message
-# ---------------------------------------------------------------------------
 
 
 class TestTruncateMessage:
@@ -1001,9 +949,6 @@ class TestTruncateMessage:
         return box["result"]
 
     def test_pathological_small_max_length_terminates(self):
-        # max_length 0 and 1 previously drove the split loop into an unbounded
-        # hang (headroom -> 0, split_at -> 0, remaining never shrinks). It must
-        # terminate and preserve every character across the chunks.
         import re
 
         for max_length in (0, 1, 2):
@@ -1021,16 +966,12 @@ class TestTruncateMessage:
         msg = "Start\n```javascript\n" + "console.log('x');\n" * 80 + "```\nEnd"
         chunks = adapter.truncate_message(msg, max_length=300)
         if len(chunks) > 1:
-            # At least one continuation chunk should reopen with ```javascript
             reopened_with_lang = any("```javascript" in chunk for chunk in chunks[1:])
             assert reopened_with_lang, (
                 "No continuation chunk reopened with language tag"
             )
 
 
-# ---------------------------------------------------------------------------
-# _get_human_delay
-# ---------------------------------------------------------------------------
 
 
 class TestGetHumanDelay:
@@ -1054,17 +995,10 @@ class TestGetHumanDelay:
             "DAEDALUS_HUMAN_DELAY_MAX_MS": "still-bad",
         }
         with patch.dict(os.environ, env):
-            # falls back to the custom-mode defaults instead of crashing
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.8 <= delay <= 2.5
 
 
-# ---------------------------------------------------------------------------
-# utf16_len / _prefix_within_utf16_limit / truncate_message with len_fn
-# ---------------------------------------------------------------------------
-# Ported from nearai/ironclaw#2304 — Telegram counts message length in UTF-16
-# code units, not Unicode code-points.  Astral-plane characters (emoji, CJK
-# Extension B) are surrogate pairs: 1 Python char but 2 UTF-16 units.
 
 
 class TestUtf16Len:
@@ -1074,7 +1008,6 @@ class TestUtf16Len:
         assert utf16_len("hello") == 5
 
     def test_bmp_cjk(self):
-        # CJK ideographs in the BMP are 1 code unit each
         assert utf16_len("你好") == 2
 
 
@@ -1086,7 +1019,7 @@ class TestPrefixWithinUtf16Limit:
 
 
     def test_all_emoji(self):
-        msg = "😀" * 10  # 20 UTF-16 units
+        msg = "😀" * 10
         result = _prefix_within_utf16_limit(msg, 6)
         assert result == "😀😀😀"
         assert utf16_len(result) == 6
@@ -1104,20 +1037,16 @@ class TestTruncateMessageUtf16:
 
     def test_emoji_near_limit_triggers_split(self):
         """A message at 4096 codepoints but >4096 UTF-16 units must split."""
-        # 2049 emoji = 2049 codepoints but 4098 UTF-16 units → exceeds 4096
         msg = "😀" * 2049
-        assert len(msg) == 2049  # Python len sees 2049 chars
-        assert utf16_len(msg) == 4098  # but it's 4098 UTF-16 units
+        assert len(msg) == 2049
+        assert utf16_len(msg) == 4098
 
-        # Without UTF-16 awareness, this would NOT split (2049 < 4096)
         chunks_naive = BasePlatformAdapter.truncate_message(msg, 4096)
         assert len(chunks_naive) == 1, "Without len_fn, no split expected"
 
-        # With UTF-16 awareness, it MUST split
         chunks = BasePlatformAdapter.truncate_message(msg, 4096, len_fn=utf16_len)
         assert len(chunks) > 1, "With utf16_len, message should be split"
 
-        # Each chunk must fit within the UTF-16 limit
         for i, chunk in enumerate(chunks):
             assert utf16_len(chunk) <= 4096, (
                 f"Chunk {i} exceeds 4096 UTF-16 units: {utf16_len(chunk)}"
@@ -1155,7 +1084,6 @@ class TestMediaDeliveryDiagnosability:
             with caplog.at_level("WARNING"):
                 out = BasePlatformAdapter.filter_media_delivery_paths([(str(outside), False)])
         assert out == []
-        # The dropped path must be in the log so operators can diagnose it.
         assert str(outside) in caplog.text
 
     def test_crafted_null_path_does_not_abort_batch(self, tmp_path, monkeypatch):
@@ -1170,9 +1098,6 @@ class TestMediaDeliveryDiagnosability:
         assert out == [(str(good.resolve()), False)]
 
 
-# ---------------------------------------------------------------------------
-# Media-send fallback must not leak host filesystem paths into chat
-# ---------------------------------------------------------------------------
 
 
 class _CapturingAdapter(BasePlatformAdapter):

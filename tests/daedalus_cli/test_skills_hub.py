@@ -31,9 +31,6 @@ def hub_env(monkeypatch, tmp_path):
     return hub_dir
 
 
-# ---------------------------------------------------------------------------
-# Fixtures for common skill setups
-# ---------------------------------------------------------------------------
 
 _HUB_ENTRY = {"name": "hub-skill", "source": "github", "trust_level": "community"}
 
@@ -96,9 +93,6 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
     return sink.getvalue(), installs
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 
 def test_do_list_initializes_hub_dir(monkeypatch, hub_env):

@@ -58,12 +58,10 @@ def remove_path_from_shell_configs():
             content = config_path.read_text()
             original_content = content
             
-            # Remove lines containing daedalus or daedalus PATH entries
             new_lines = []
             skip_next = False
             
             for line in content.split('\n'):
-                # Skip the "# Daedalus Agent" comment and following line
                 if '# Daedalus Agent' in line or '# daedalus' in line:
                     skip_next = True
                     continue
@@ -72,7 +70,6 @@ def remove_path_from_shell_configs():
                     continue
                 skip_next = False
                 
-                # Remove any PATH line containing daedalus
                 if 'daedalus' in line.lower() and ('PATH=' in line or 'path=' in line.lower()):
                     continue
                     
@@ -80,7 +77,6 @@ def remove_path_from_shell_configs():
             
             new_content = '\n'.join(new_lines)
             
-            # Clean up multiple blank lines
             while '\n\n\n' in new_content:
                 new_content = new_content.replace('\n\n\n', '\n\n')
             
@@ -105,7 +101,6 @@ def remove_wrapper_script():
     for wrapper in wrapper_paths:
         if wrapper.exists():
             try:
-                # Check if it's our wrapper (contains daedalus_cli reference)
                 content = wrapper.read_text()
                 if 'daedalus_cli' in content or 'daedalus' in content:
                     wrapper.unlink()
@@ -135,24 +130,20 @@ def uninstall_gateway_service():
         return False
     
     try:
-        # Stop the service
         subprocess.run(
             ["systemctl", "--user", "stop", svc_name],
             capture_output=True,
             check=False
         )
         
-        # Disable the service
         subprocess.run(
             ["systemctl", "--user", "disable", svc_name],
             capture_output=True,
             check=False
         )
         
-        # Remove service file
         service_file.unlink()
         
-        # Reload systemd
         subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
             capture_output=True,
@@ -183,7 +174,6 @@ def run_uninstall(args):
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA, Colors.BOLD))
     print()
     
-    # Show what will be affected
     print(color("Current Installation:", Colors.CYAN, Colors.BOLD))
     print(f"  Code:    {project_root}")
     print(f"  Config:  {daedalus_home / 'config.yaml'}")
@@ -191,7 +181,6 @@ def run_uninstall(args):
     print(f"  Data:    {daedalus_home / 'cron/'}, {daedalus_home / 'sessions/'}, {daedalus_home / 'logs/'}")
     print()
     
-    # Ask for confirmation
     print(color("Uninstall Options:", Colors.YELLOW, Colors.BOLD))
     print()
     print("  1) " + color("Keep data", Colors.GREEN) + " - Remove code only, keep configs/sessions/logs")
@@ -217,7 +206,6 @@ def run_uninstall(args):
     
     full_uninstall = (choice == "2")
     
-    # Final confirmation
     print()
     if full_uninstall:
         print(color("⚠️  WARNING: This will permanently delete ALL Daedalus data!", Colors.RED, Colors.BOLD))
@@ -242,14 +230,12 @@ def run_uninstall(args):
     print(color("Uninstalling...", Colors.CYAN, Colors.BOLD))
     print()
     
-    # 1. Stop and uninstall gateway service
     log_info("Checking for gateway service...")
     if uninstall_gateway_service():
         log_success("Gateway service stopped and removed")
     else:
         log_info("No gateway service found")
     
-    # 2. Remove PATH entries from shell configs
     log_info("Removing PATH entries from shell configs...")
     removed_configs = remove_path_from_shell_configs()
     if removed_configs:
@@ -258,7 +244,6 @@ def run_uninstall(args):
     else:
         log_info("No PATH entries found to remove")
     
-    # 3. Remove wrapper script
     log_info("Removing daedalus command...")
     removed_wrappers = remove_wrapper_script()
     if removed_wrappers:
@@ -267,26 +252,20 @@ def run_uninstall(args):
     else:
         log_info("No wrapper script found")
     
-    # 4. Remove installation directory (code)
     log_info("Removing installation directory...")
     
-    # Check if we're running from within the install dir
-    # We need to be careful here
     try:
         if project_root.exists():
-            # If the install is inside ~/.daedalus/, just remove the daedalus subdir
             if daedalus_home in project_root.parents or project_root.parent == daedalus_home:
                 shutil.rmtree(project_root)
                 log_success(f"Removed {project_root}")
             else:
-                # Installation is somewhere else entirely
                 shutil.rmtree(project_root)
                 log_success(f"Removed {project_root}")
     except Exception as e:
         log_warn(f"Could not fully remove {project_root}: {e}")
         log_info("You may need to manually remove it")
     
-    # 5. Optionally remove ~/.daedalus/ data directory
     if full_uninstall:
         log_info("Removing configuration and data...")
         try:
@@ -299,7 +278,6 @@ def run_uninstall(args):
     else:
         log_info(f"Keeping configuration and data in {daedalus_home}")
     
-    # Done
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.GREEN, Colors.BOLD))
     print(color("│              ✓ Uninstall Complete!                      │", Colors.GREEN, Colors.BOLD))

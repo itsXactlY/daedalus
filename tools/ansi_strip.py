@@ -16,30 +16,22 @@ import re
 _ANSI_ESCAPE_RE = re.compile(
     r"\x1b"
     r"(?:"
-        r"\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"     # CSI sequence
-        r"|\][\s\S]*?(?:\x07|\x1b\\)"                  # OSC (BEL or ST terminator)
-        r"|[PX^_][\s\S]*?(?:\x1b\\)"                   # DCS/SOS/PM/APC strings
-        r"|[\x20-\x2f]+[\x30-\x7e]"                    # nF escape sequences
-        r"|[\x30-\x7e]"                                 # Fp/Fe/Fs single-byte
+        r"\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+        r"|\][\s\S]*?(?:\x07|\x1b\\)"
+        r"|[PX^_][\s\S]*?(?:\x1b\\)"
+        r"|[\x20-\x2f]+[\x30-\x7e]"
+        r"|[\x30-\x7e]"
     r")"
-    r"|\x9b[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"       # 8-bit CSI
-    r"|\x9d[\s\S]*?(?:\x07|\x9c)"                       # 8-bit OSC
-    r"|[\x80-\x9f]",                                    # Other 8-bit C1 controls
+    r"|\x9b[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"
+    r"|\x9d[\s\S]*?(?:\x07|\x9c)"
+    r"|[\x80-\x9f]",
     re.DOTALL,
 )
 
-# Fast-path check — skip full regex when no escape-like bytes are present.
 _HAS_ESCAPE = re.compile(r"[\x1b\x80-\x9f]")
 
-# C0 control characters (minus tab/newline/carriage-return, handled
-# separately) plus DEL. These survive strip_ansi() — it only removes
-# well-formed escape *sequences* — but are still dangerous or garbled
-# when echoed back to a terminal (BEL rings, backspace/DEL overwrite,
-# NUL truncates in some terminals).
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
-# Fast-path check for sanitize_display_text — any C0 control (except
-# tab/newline), CR, DEL, ESC, or C1 byte triggers the slow path.
 _HAS_CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 
 

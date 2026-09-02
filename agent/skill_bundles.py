@@ -54,8 +54,6 @@ from daedalus_constants import get_daedalus_home
 
 logger = logging.getLogger(__name__)
 
-# Slug normalization — matches agent/skill_commands.py so a bundle and a
-# skill called "Foo Bar" both resolve to "/foo-bar".
 _BUNDLE_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _BUNDLE_MULTI_HYPHEN = re.compile(r"-{2,}")
 
@@ -281,8 +279,6 @@ def build_bundle_invocation_message(
     if not info:
         return None
 
-    # Late import to avoid pulling tools/* at module import time and to
-    # keep skill_bundles cheap to import in test environments.
     from agent.skill_commands import _load_skill_payload, _build_skill_message
 
     try:
@@ -313,8 +309,6 @@ def build_bundle_invocation_message(
             continue
         loaded_skill, skill_dir, skill_name = loaded
 
-        # Per-platform / global disabled gate. Checked against the loaded
-        # skill's canonical name (identifiers may be paths or aliases).
         if skill_name in disabled_names or identifier in disabled_names:
             disabled.append(skill_name or identifier)
             continue
@@ -341,8 +335,6 @@ def build_bundle_invocation_message(
     if not skill_blocks:
         return None
 
-    # Header — tells the agent this is a bundle, lists the skills, and
-    # provides any author-supplied instruction.
     header_lines = [
         f'[IMPORTANT: The user has invoked the "{bundle_name}" skill bundle, '
         f"loading {len(loaded_names)} skills together. Treat every skill below "
@@ -368,9 +360,6 @@ def build_bundle_invocation_message(
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
 
 
-# ---------------------------------------------------------------------------
-# File-level CRUD helpers — used by `daedalus bundles` CLI subcommand.
-# ---------------------------------------------------------------------------
 
 
 def bundle_path_for(name: str) -> Path:
@@ -415,7 +404,7 @@ def save_bundle(
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
     )
-    scan_bundles()  # refresh cache
+    scan_bundles()
     return path
 
 

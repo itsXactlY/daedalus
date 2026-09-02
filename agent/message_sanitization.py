@@ -22,10 +22,6 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Lone surrogate code points are invalid in UTF-8 and crash json.dumps
-# inside the OpenAI SDK.  Used by every surrogate-sanitization helper
-# below as well as by run_agent and the CLI for paste-from-clipboard
-# scrubbing.
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 
@@ -123,11 +119,6 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
                     if isinstance(fn_args, str) and _SURROGATE_RE.search(fn_args):
                         fn["arguments"] = _SURROGATE_RE.sub('\ufffd', fn_args)
                         found = True
-        # Walk any additional string / nested fields (reasoning,
-        # reasoning_content, reasoning_details, etc.) — surrogates from
-        # byte-level reasoning models (xiaomi/mimo, kimi, glm) can lurk
-        # in these fields and aren't covered by the per-field checks above.
-        # Matches _sanitize_messages_non_ascii's coverage (PR #10537).
         for key, value in msg.items():
             if key in {"content", "name", "tool_calls", "role"}:
                 continue
@@ -163,7 +154,6 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
         ch = raw[i]
         if in_string:
             if ch == "\\" and i + 1 < n:
-                # Already-escaped char — pass through as-is
                 out.append(ch)
                 out.append(raw[i + 1])
                 i += 2
@@ -183,12 +173,6 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(out)
 
 
-# When a repair is about to destroy the only copy of a tool call's original
-# argument bytes (rewriting them to "{}"), the WARNING log is the last
-# surviving copy of content that can hold real user data (#80498). Bound the
-# logged string at this size instead of a short preview so it stays
-# recoverable from agent.log without letting a pathological payload flood
-# the log.
 _FULL_ARGS_LOG_BOUND = 100_000
 
 
@@ -203,21 +187,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """
     raw_stripped = raw_args.strip() if isinstance(raw_args, str) else ""
 
-    # Fast-path: empty / whitespace-only -> empty object
     if not raw_stripped:
         logger.warning("Sanitized empty tool_call arguments for %s", tool_name)
         return "{}"
 
-    # Python-literal None -> normalise to {}
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
 
-    # Repair pass 0: llama.cpp backends sometimes emit literal control
-    # characters (tabs, newlines) inside JSON string values. json.loads
-    # with strict=False accepts these and lets us re-serialise the
-    # result into wire-valid JSON without any string surgery. This is
-    # the most common local-model repair case (#12068).
     try:
         parsed = json.loads(raw_stripped, strict=False)
         reserialised = json.dumps(parsed, separators=(",", ":"))
@@ -230,18 +207,14 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Attempt common JSON repairs
     fixed = raw_stripped
-    # 1. Strip trailing commas before } or ]
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
-    # 2. Close unclosed structures
     open_curly = fixed.count('{') - fixed.count('}')
     open_bracket = fixed.count('[') - fixed.count(']')
     if open_curly > 0:
         fixed += '}' * open_curly
     if open_bracket > 0:
         fixed += ']' * open_bracket
-    # 3. Remove excess closing braces/brackets (bounded to 50 iterations)
     for _ in range(50):
         try:
             json.loads(fixed)
@@ -264,9 +237,6 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except json.JSONDecodeError:
         pass
 
-    # Repair pass 4: escape unescaped control chars inside JSON strings,
-    # then retry. Catches cases where strict=False alone fails because
-    # other malformations are present too.
     try:
         escaped = _escape_invalid_chars_in_json_strings(fixed)
         if escaped != fixed:
@@ -279,12 +249,6 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
-    # Last resort: replace with empty object so the API request doesn't
-    # crash the entire session. Log the FULL original string (bounded) —
-    # for callers that discard the original (e.g. the pre-send transcript
-    # sanitizer), this WARNING is the last surviving copy of bytes that can
-    # contain real user content (#80498: a truncated write_file call's
-    # streamed file content).
     logger.warning(
         "Unrepairable tool_call arguments for %s — "
         "replaced with empty object (was: %s)",
@@ -345,7 +309,6 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
     for msg in messages:
         if not isinstance(msg, dict):
             continue
-        # Sanitize content (string)
         content = msg.get("content")
         if isinstance(content, str):
             sanitized = _strip_non_ascii(content)
@@ -361,14 +324,12 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
                         if sanitized != text:
                             part["text"] = sanitized
                             found = True
-        # Sanitize name field (can contain non-ASCII in tool results)
         name = msg.get("name")
         if isinstance(name, str):
             sanitized = _strip_non_ascii(name)
             if sanitized != name:
                 msg["name"] = sanitized
                 found = True
-        # Sanitize tool_calls
         tool_calls = msg.get("tool_calls")
         if isinstance(tool_calls, list):
             for tc in tool_calls:
@@ -381,7 +342,6 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
                             if sanitized != fn_args:
                                 fn["arguments"] = sanitized
                                 found = True
-        # Sanitize any additional top-level string fields (e.g. reasoning_content)
         for key, value in msg.items():
             if key in {"content", "name", "tool_calls", "role"}:
                 continue
@@ -434,12 +394,8 @@ def _strip_images_from_messages(messages: list) -> bool:
             if new_parts:
                 msg["content"] = new_parts
             elif msg.get("role") == "tool":
-                # Preserve tool_call_id linkage — providers require every
-                # assistant tool_call to have a matching tool response.
                 msg["content"] = "[image content removed — server does not support images]"
             else:
-                # Synthetic image-only user/assistant message with no text;
-                # safe to drop.
                 to_delete.append(i)
     for i in reversed(to_delete):
         del messages[i]
@@ -488,11 +444,9 @@ __all__ = [
     "_sanitize_tools_non_ascii",
     "_strip_images_from_messages",
     "_sanitize_structure_non_ascii",
-    # call_id policy owners (F4 consolidation)
     "deterministic_call_id",
     "coalesce_tool_call_id",
     "uniquify_tool_call_ids",
-    # reasoning_content policy owners (F4 consolidation)
     "reasoning_echo_family",
     "matches_reasoning_echo_family",
     "needs_reasoning_echo",
@@ -501,25 +455,6 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# call_id policy — single owner (audit F4, incident chain I4)
-# ---------------------------------------------------------------------------
-#
-# Three forked policy sites converged here:
-#   * agent/codex_responses_adapter.py `_deterministic_call_id` — hash
-#     synthesis when a provider omits call_id (fa3ab2ffd0 → e45f2b39e2).
-#   * run_agent.AIAgent._get_tool_call_id_static — `call_id or id`
-#     coalescing for dicts and SDK objects.
-#   * run_agent.AIAgent._uniquify_tool_call_ids — duplicate-id repair with
-#     deterministic `_d<n>` suffixes (#58327 loss class).
-#
-# NOT consolidated (different scheme on purpose):
-#   agent/transports/codex_event_projector._deterministic_call_id maps codex
-#   app-server ITEM ids (`codex_<type>_<item_id>`), not chat tool-call
-#   content; merging the two would change ids and invalidate prompt caches.
-#
-# HARD INVARIANT: everything here must stay deterministic (never uuid4) and
-# byte-identical for existing inputs — these ids feed prompt-cache prefixes.
 
 
 def deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -567,8 +502,6 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
     """
     seen: set = set()
     for tc in tool_calls or []:
-        # Same coalescing rule as ``coalesce_tool_call_id`` but tolerant of
-        # non-string ids (degraded models can emit ints/None here).
         if isinstance(tc, dict):
             raw = tc.get("call_id") or tc.get("id") or ""
         else:
@@ -576,8 +509,6 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
         raw = raw.strip() if isinstance(raw, str) else ""
         if not raw:
             continue
-        # Composite Responses ids ("call_x|fc_y") collide on the call
-        # half — that's the pairing key providers enforce per turn.
         cid = raw.split("|", 1)[0]
         if not cid:
             continue
@@ -592,8 +523,6 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
         seen.add(new_id)
 
         def _renamed(value):
-            # Preserve a composite id's response-item half so the
-            # provider's real fc_/item id survives the rename.
             if isinstance(value, str) and "|" in value:
                 return f"{new_id}|{value.split('|', 1)[1]}"
             return new_id
@@ -625,34 +554,8 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
     return tool_calls
 
 
-# ---------------------------------------------------------------------------
-# reasoning_content policy — single owner (audit F4)
-# ---------------------------------------------------------------------------
-#
-# The strip-vs-repad decision was previously forked across the wire files in
-# separate incident commits (2b3a4f0af8 strip for strict providers,
-# b5495db701 re-pad for require-side, 94b3131be7/9a9f8a6d99 kimi pad).  The
-# POLICY — which provider direction gets which treatment — lives here as one
-# rule table + apply functions; adapters keep only SYNTAX mapping (e.g.
-# anthropic_adapter turning reasoning_content into a thinking block).
-#
-# Direction table:
-#   require-side (echo-back enforced; replays 400 without the field):
-#     kimi     — provider kimi-coding/kimi-coding-cn, or host api.kimi.com /
-#                moonshot.ai / moonshot.cn.  Host-driven on purpose:
-#                aggregators re-exporting kimi models reject the echo.
-#     deepseek — provider "deepseek", model contains "deepseek", or host
-#                api.deepseek.com (#15250; V4 rejects empty-string pads,
-#                hence the " " single-space pad, #17341).
-#     mimo     — provider "xiaomi", model contains "mimo", or host
-#                *.xiaomimimo.com.
-#   strict side (field rejected with 400/422 "Extra inputs are not
-#     permitted"): everyone else — Mistral, Cerebras, Groq, SambaNova, …
-#     (#45655). Strip the key entirely, even a single-space pad.
 
 _REASONING_ECHO_RULES: tuple = (
-    # (family, exact providers (raw), exact providers (lowered),
-    #  model substrings (lowered), base_url hosts)
     ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (),
      ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",),
@@ -721,24 +624,6 @@ def apply_reasoning_content_policy(
     if source_msg.get("role") != "assistant":
         return
 
-    # 1. Explicit reasoning_content already set.
-    #
-    # When the active provider enforces the thinking-mode echo-back
-    # (DeepSeek / Kimi / MiMo), preserve it verbatim — that includes their
-    # own space-placeholder written at creation time and any valid reasoning
-    # from the same provider. Sessions persisted BEFORE #17341 have
-    # empty-string placeholders pinned at creation time; DeepSeek V4 Pro
-    # rejects those with HTTP 400, so upgrade "" → " " on replay.
-    #
-    # When the active provider does NOT enforce echo-back, strip the field
-    # entirely. Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
-    # SambaNova, …) reject ANY reasoning_content key in input messages with
-    # HTTP 400/422 ("Extra inputs are not permitted"), even an empty string
-    # or a single-space pad. This is the cross-provider fallback case: a
-    # reasoning primary (DeepSeek/Kimi/MiMo) pads history with " ", then a
-    # fallback to a strict provider replays that pad and 422s. Stripping
-    # here covers the rebuild path; ``reapply_reasoning_echo`` covers the
-    # already-built api_messages path. Refs #45655.
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
         if not needs_thinking_pad:
@@ -749,17 +634,6 @@ def apply_reasoning_content_policy(
             api_msg["reasoning_content"] = existing
         return
 
-    # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
-    # if the source turn has tool_calls AND a 'reasoning' field but no
-    # 'reasoning_content' key, the 'reasoning' text was written by a
-    # prior provider (e.g. MiniMax) — DeepSeek's own _build_assistant_message
-    # pins reasoning_content at creation time for tool-call turns, so the
-    # shape (reasoning set, reasoning_content absent, tool_calls present)
-    # is unreachable from same-provider DeepSeek history after this fix.
-    # Inject a single space to satisfy the API without leaking another
-    # provider's chain of thought to DeepSeek/Kimi. Space (not "")
-    # because DeepSeek V4 Pro rejects empty-string reasoning_content
-    # in thinking mode (refs #17341).
     normalized_reasoning = source_msg.get("reasoning")
     if (
         needs_thinking_pad
@@ -770,12 +644,6 @@ def apply_reasoning_content_policy(
         api_msg["reasoning_content"] = " "
         return
 
-    # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
-    # for providers that use the internal 'reasoning' key.
-    # This must happen before the unconditional empty-string fallback so
-    # genuine reasoning content is not overwritten (#15812 regression in
-    # PR #15478). Only promote for providers that enforce echo-back —
-    # strict providers reject the field (refs #45655).
     if isinstance(normalized_reasoning, str) and normalized_reasoning:
         if needs_thinking_pad:
             api_msg["reasoning_content"] = normalized_reasoning
@@ -783,20 +651,10 @@ def apply_reasoning_content_policy(
             api_msg.pop("reasoning_content", None)
         return
 
-    # 4. DeepSeek / Kimi thinking mode: all assistant messages need
-    # reasoning_content. Inject a single space to satisfy the provider's
-    # requirement when no explicit reasoning content is present. Covers
-    # both tool-call turns (already-poisoned history with no reasoning
-    # at all) and plain text turns. Space (not "") because DeepSeek V4
-    # Pro tightened validation and rejects empty string with HTTP 400
-    # ("The reasoning content in the thinking mode must be passed back
-    # to the API"). Refs #17341.
     if needs_thinking_pad:
         api_msg["reasoning_content"] = " "
         return
 
-    # 5. reasoning_content was present but not a string (e.g. None after
-    # context compaction).  Don't pass null to the API.
     api_msg.pop("reasoning_content", None)
 
 
@@ -840,26 +698,9 @@ def reapply_reasoning_echo(api_messages: list, needs_thinking_pad: bool) -> int:
             if api_msg.get("reasoning_content"):
                 changed += 1
         else:
-            # Strict provider — strip any stale reasoning_content pad left
-            # over from a reasoning primary so the fallback request doesn't
-            # 400/422 on it.
             if "reasoning_content" in api_msg:
                 api_msg.pop("reasoning_content", None)
                 changed += 1
     return changed
 
 
-# ---------------------------------------------------------------------------
-# Image / multimodal parts — evaluated, NOT consolidated (verdict: syntax)
-# ---------------------------------------------------------------------------
-#
-# The per-adapter image handling is format-specific SYNTAX, not shared policy:
-#   * anthropic_adapter (~1817): data-URL → Anthropic `source: {type: base64}`
-#     block mapping — Anthropic wire shape only.
-#   * codex_responses_adapter (~113/165/812): chat `image_url` parts →
-#     Responses `input_image` items and image counting for log summaries —
-#     Responses wire shape only.
-#   * transports/chat_completions: pass-through (native format).
-# The one genuinely shared image POLICY — removing images when a server
-# rejects them while preserving tool_call_id pairing — already has a single
-# owner here: ``_strip_images_from_messages`` above.

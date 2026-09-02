@@ -26,19 +26,17 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-# -- Daedalus overlay ----------------------------------------------------------
-# Daedalus-specific metadata that models.dev doesn't provide.
 
 @dataclass(frozen=True)
 class DaedalusOverlay:
     """Daedalus-specific provider metadata layered on top of models.dev."""
 
-    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
+    transport: str = "openai_chat"
     is_aggregator: bool = False
-    auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
-    extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
-    base_url_override: str = ""           # override if models.dev URL is wrong/missing
-    base_url_env_var: str = ""            # env var for user-custom base URL
+    auth_type: str = "api_key"
+    extra_env_vars: Tuple[str, ...] = ()
+    base_url_override: str = ""
+    base_url_env_var: str = ""
 
 
 DAEDALUS_OVERLAYS: Dict[str, DaedalusOverlay] = {
@@ -130,8 +128,6 @@ DAEDALUS_OVERLAYS: Dict[str, DaedalusOverlay] = {
 }
 
 
-# -- Resolved provider -------------------------------------------------------
-# The merged result of models.dev + overlay + user config.
 
 @dataclass
 class ProviderDef:
@@ -139,85 +135,68 @@ class ProviderDef:
 
     id: str
     name: str
-    transport: str                        # openai_chat | anthropic_messages | codex_responses
-    api_key_env_vars: Tuple[str, ...]     # all env vars to check for API key
+    transport: str
+    api_key_env_vars: Tuple[str, ...]
     base_url: str = ""
     base_url_env_var: str = ""
     is_aggregator: bool = False
     auth_type: str = "api_key"
     doc: str = ""
-    source: str = ""                      # "models.dev", "daedalus", "user-config"
+    source: str = ""
 
     @property
     def is_user_defined(self) -> bool:
         return self.source == "user-config"
 
 
-# -- Aliases ------------------------------------------------------------------
-# Maps human-friendly / legacy names to canonical provider IDs.
-# Uses models.dev IDs where possible.
 
 ALIASES: Dict[str, str] = {
-    # openrouter
-    "openai": "openrouter",     # bare "openai" → route through aggregator
+    "openai": "openrouter",
 
-    # zai
     "glm": "zai",
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
 
-    # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
 
-    # minimax-cn
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
 
-    # anthropic
     "claude": "anthropic",
     "claude-code": "anthropic",
 
-    # github-copilot (models.dev ID)
     "copilot": "github-copilot",
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
 
-    # vercel (models.dev ID for AI Gateway)
     "ai-gateway": "vercel",
     "aigateway": "vercel",
     "vercel-ai-gateway": "vercel",
 
-    # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",
     "zen": "opencode",
 
-    # opencode-go
     "go": "opencode-go",
     "opencode-go-sub": "opencode-go",
 
-    # kilo (models.dev ID for KiloCode)
     "kilocode": "kilo",
     "kilo-code": "kilo",
     "kilo-gateway": "kilo",
 
-    # deepseek
     "deep-seek": "deepseek",
 
-    # alibaba
     "dashscope": "alibaba",
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
 
-    # huggingface
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
-    # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
@@ -229,9 +208,6 @@ ALIASES: Dict[str, str] = {
 }
 
 
-# -- Display labels -----------------------------------------------------------
-# Built dynamically from models.dev + overlays.  Fallback for providers
-# not in the catalog.
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
@@ -241,7 +217,6 @@ _LABEL_OVERRIDES: Dict[str, str] = {
 }
 
 
-# -- Transport → API mode mapping ---------------------------------------------
 
 TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
@@ -250,7 +225,6 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
 }
 
 
-# -- Helper functions ---------------------------------------------------------
 
 def normalize_provider(name: str) -> str:
     """Resolve aliases and normalise casing to a canonical provider id.
@@ -280,7 +254,6 @@ def get_provider(name: str) -> Optional[ProviderDef]:
     """
     canonical = normalize_provider(name)
 
-    # Try to get models.dev data
     try:
         from agent.models_dev import get_provider_info as _mdev_provider
         mdev_info = _mdev_provider(canonical)
@@ -290,14 +263,12 @@ def get_provider(name: str) -> Optional[ProviderDef]:
     overlay = DAEDALUS_OVERLAYS.get(canonical)
 
     if mdev_info is not None:
-        # Merge models.dev + overlay
         transport = overlay.transport if overlay else "openai_chat"
         is_agg = overlay.is_aggregator if overlay else False
         auth = overlay.auth_type if overlay else "api_key"
         base_url_env = overlay.base_url_env_var if overlay else ""
         base_url_override = overlay.base_url_override if overlay else ""
 
-        # Combine env vars: models.dev env + daedalus extra
         env_vars = list(mdev_info.env)
         if overlay and overlay.extra_env_vars:
             for ev in overlay.extra_env_vars:
@@ -318,7 +289,6 @@ def get_provider(name: str) -> Optional[ProviderDef]:
         )
 
     if overlay is not None:
-        # Daedalus-only provider (not in models.dev)
         return ProviderDef(
             id=canonical,
             name=_LABEL_OVERRIDES.get(canonical, canonical),
@@ -338,11 +308,9 @@ def get_label(provider_id: str) -> str:
     """Get a human-readable display name for a provider."""
     canonical = normalize_provider(provider_id)
 
-    # Check label overrides first
     if canonical in _LABEL_OVERRIDES:
         return _LABEL_OVERRIDES[canonical]
 
-    # Try models.dev
     pdef = get_provider(canonical)
     if pdef:
         return pdef.name
@@ -350,10 +318,7 @@ def get_label(provider_id: str) -> str:
     return canonical
 
 
-# For direct import compat, expose as module-level dict
-# Built on demand by get_label() calls
 LABELS: Dict[str, str] = {
-    # Static entries for backward compat — get_label() is the proper API
     "openrouter": "OpenRouter",
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
@@ -373,7 +338,6 @@ LABELS: Dict[str, str] = {
     "huggingface": "Hugging Face",
     "local": "Local endpoint",
     "custom": "Custom endpoint",
-    # Legacy Daedalus IDs (point to same providers)
     "ai-gateway": "Vercel AI Gateway",
     "kilocode": "Kilo Gateway",
     "copilot": "GitHub Copilot",
@@ -400,7 +364,6 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     if pdef is not None:
         return TRANSPORT_TO_API_MODE.get(pdef.transport, "chat_completions")
 
-    # URL-based heuristics for custom / unknown providers
     if base_url:
         url_lower = base_url.rstrip("/").lower()
         if url_lower.endswith("/anthropic") or "api.anthropic.com" in url_lower:
@@ -411,7 +374,6 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     return "chat_completions"
 
 
-# -- Provider from user config ------------------------------------------------
 
 def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[ProviderDef]:
     """Resolve a provider from the user's config.yaml ``providers:`` section.
@@ -430,7 +392,6 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     if not isinstance(entry, dict):
         return None
 
-    # Extract fields
     display_name = entry.get("name", "") or name
     api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
     key_env = entry.get("key_env", "") or ""
@@ -469,23 +430,18 @@ def resolve_provider_full(
     """
     canonical = normalize_provider(name)
 
-    # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)
     if pdef is not None:
         return pdef
 
-    # 2. User-defined providers from config
     if user_providers:
-        # Try canonical name
         user_pdef = resolve_user_provider(canonical, user_providers)
         if user_pdef is not None:
             return user_pdef
-        # Try original name (in case alias didn't match)
         user_pdef = resolve_user_provider(name.strip().lower(), user_providers)
         if user_pdef is not None:
             return user_pdef
 
-    # 3. Try models.dev directly (for providers not in our ALIASES)
     try:
         from agent.models_dev import get_provider_info as _mdev_provider
         mdev_info = _mdev_provider(canonical)

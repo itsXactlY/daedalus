@@ -15,7 +15,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-# Ensure repo root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 try:
@@ -30,7 +29,6 @@ except ImportError:
     pytest.skip("atroposlib not installed", allow_module_level=True)
 
 
-# ─── Mock server infrastructure ─────────────────────────────────────────
 
 
 @dataclass
@@ -84,7 +82,6 @@ class MockServer:
     async def chat_completion(self, **kwargs) -> MockChatCompletion:
         self.call_history.append(kwargs)
         if self.call_count >= len(self.responses):
-            # Return a simple text response if we run out
             return MockChatCompletion(
                 choices=[MockChoice(message=MockMessage(content="Done."))]
             )
@@ -128,7 +125,6 @@ def make_tool_response(
     )
 
 
-# ─── Tests ───────────────────────────────────────────────────────────────
 
 
 class TestAgentResult:
@@ -236,7 +232,7 @@ class TestDaedalusAgentLoop:
 
         assert result.finished_naturally is True
         assert result.turns_used == 1
-        assert len(result.messages) >= 2  # user + assistant
+        assert len(result.messages) >= 2
         assert result.messages[-1]["role"] == "assistant"
         assert result.messages[-1]["content"] == "Hello! How can I help?"
 
@@ -258,14 +254,12 @@ class TestDaedalusAgentLoop:
 
         assert result.finished_naturally is True
         assert result.turns_used == 2
-        # Should have: user, assistant (tool_call), tool (result), assistant (text)
         roles = [m["role"] for m in result.messages]
         assert roles == ["user", "assistant", "tool", "assistant"]
 
     @pytest.mark.asyncio
     async def test_max_turns_reached(self, basic_tools, valid_names):
         """Model keeps calling tools until max_turns is hit."""
-        # Create responses that always call a tool
         responses = [
             make_tool_response("todo", {"todos": [{"id": str(i), "content": f"task {i}", "status": "pending"}]}, tool_call_id=f"call_{i}")
             for i in range(10)
@@ -299,7 +293,6 @@ class TestDaedalusAgentLoop:
         messages = [{"role": "user", "content": "Call something weird"}]
         result = await agent.run(messages)
 
-        # Should record a tool error
         assert len(result.tool_errors) >= 1
         assert result.tool_errors[0].tool_name == "nonexistent_tool"
 
@@ -423,7 +416,6 @@ class TestDaedalusAgentLoop:
         messages = [{"role": "user", "content": "Remember this"}]
         result = await agent.run(messages)
 
-        # Find the tool response
         tool_msgs = [m for m in result.messages if m["role"] == "tool"]
         assert len(tool_msgs) >= 1
         tool_result = json.loads(tool_msgs[0]["content"])
@@ -482,8 +474,8 @@ class TestDaedalusAgentLoop:
 class TestResizeToolPool:
     def test_resize_works(self):
         """resize_tool_pool should not raise."""
-        resize_tool_pool(16)  # Small pool for testing
-        resize_tool_pool(128)  # Restore default
+        resize_tool_pool(16)
+        resize_tool_pool(128)
 
     def test_resize_shuts_down_previous_executor(self, monkeypatch):
         """Replacing the global tool executor should shut down the old pool."""

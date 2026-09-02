@@ -186,7 +186,6 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path / "daedalus"))
-    # Prevent pool auto-seeding from host env vars and file-backed sources
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -530,12 +529,10 @@ def test_auth_remove_env_seeded_clears_env_var(tmp_path, monkeypatch):
     daedalus_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-    # Write a .env with an OpenRouter key
     env_path = daedalus_home / ".env"
     env_path.write_text("OPENROUTER_API_KEY=sk-or-test-key-12345\nOTHER_KEY=keep-me\n")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key-12345")
 
-    # Seed the pool with the env entry
     _write_auth_store(
         tmp_path,
         {
@@ -563,14 +560,11 @@ def test_auth_remove_env_seeded_clears_env_var(tmp_path, monkeypatch):
 
     auth_remove_command(_Args())
 
-    # Env var should be cleared from os.environ
     import os
     assert os.environ.get("OPENROUTER_API_KEY") is None
 
-    # Env var should be removed from .env file
     env_content = env_path.read_text()
     assert "OPENROUTER_API_KEY" not in env_content
-    # Other keys should still be there
     assert "OTHER_KEY=keep-me" in env_content
 
 
@@ -580,7 +574,6 @@ def test_auth_remove_env_seeded_does_not_resurrect(tmp_path, monkeypatch):
     daedalus_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-    # Write .env with an OpenRouter key
     env_path = daedalus_home / ".env"
     env_path.write_text("OPENROUTER_API_KEY=sk-or-test-key-12345\n")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key-12345")
@@ -612,7 +605,6 @@ def test_auth_remove_env_seeded_does_not_resurrect(tmp_path, monkeypatch):
 
     auth_remove_command(_Args())
 
-    # Now reload the pool — the entry should NOT come back
     from agent.credential_pool import load_pool
     pool = load_pool("openrouter")
     assert not pool.has_credentials()
@@ -655,5 +647,4 @@ def test_auth_remove_manual_entry_does_not_touch_env(tmp_path, monkeypatch):
 
     auth_remove_command(_Args())
 
-    # .env should be untouched
     assert env_path.read_text() == "SOME_KEY=some-value\n"

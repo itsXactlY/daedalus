@@ -57,9 +57,6 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-# Common aspect ratios across providers (Veo / Kling / xAI / Pixverse). The
-# tool schema advertises this set as an enum hint, but providers may accept
-# a narrower or wider set — they are responsible for clamping.
 COMMON_ASPECT_RATIOS: Tuple[str, ...] = ("16:9", "9:16", "1:1", "4:3", "3:4", "3:2", "2:3")
 DEFAULT_ASPECT_RATIO = "16:9"
 
@@ -67,9 +64,6 @@ COMMON_RESOLUTIONS: Tuple[str, ...] = ("480p", "540p", "720p", "1080p")
 DEFAULT_RESOLUTION = "720p"
 
 
-# ---------------------------------------------------------------------------
-# ABC
-# ---------------------------------------------------------------------------
 
 
 class VideoGenProvider(abc.ABC):
@@ -196,9 +190,6 @@ class VideoGenProvider(abc.ABC):
         """
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 def _videos_cache_dir() -> Path:
@@ -371,9 +362,6 @@ def error_response(
     }
 
 
-# ---------------------------------------------------------------------------
-# Reusable OpenAI-compatible backend
-# ---------------------------------------------------------------------------
 
 
 class OpenAICompatibleVideoGenProvider(VideoGenProvider):
@@ -399,12 +387,6 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
     _env_key: str = "OPENAI_API_KEY"
     _default_base_url: str = "https://api.openai.com/v1"
 
-    # Polling cadence for the async video job. The OpenAI SDK's
-    # ``create_and_poll`` defaults to ~1 poll/second and loops forever on a
-    # non-terminal status, so a multi-minute job issues hundreds of sequential
-    # requests and a stuck job pins its tool-executor worker thread with no way
-    # out. We hand-roll a bounded poll instead: a coarse interval plus a hard
-    # wall-clock deadline that surfaces a timeout error.
     _poll_interval_s: float = 5.0
     _poll_deadline_s: float = 900.0
 
@@ -488,14 +470,12 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
                 provider=self.name,
             )
 
-        # Provider-specific fields the OpenAI ``videos.create`` signature does
-        # not name natively — pass them through ``extra_body``.
         extra_body = {
             k: v
             for k, v in {
                 "negative_prompt": negative_prompt,
                 "aspect_ratio": aspect_ratio,
-                "image_url": image_url,  # presence ⇒ image-to-video
+                "image_url": image_url,
                 "seed": seed,
             }.items()
             if v is not None
@@ -523,13 +503,8 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
                     aspect_ratio=aspect_ratio,
                 )
 
-            # Terminal success status differs across backends: DeepInfra reports
-            # "succeeded", OpenAI/Sora reports "completed". Accept both.
             status = getattr(video, "status", None)
             if status not in ("completed", "succeeded"):
-                # ``video.error`` is a structured SDK object (pydantic
-                # VideoCreateError), not a string — str() it so the response
-                # dict stays JSON-serializable for the tool layer.
                 job_error = getattr(video, "error", None)
                 return error_response(
                     error=str(job_error) if job_error else f"video job ended with status={status!r}",
@@ -540,11 +515,6 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
                     aspect_ratio=aspect_ratio,
                 )
 
-            # Resolve the output. Providers expose it either as a delivery URL in
-            # the job's ``data`` list (DeepInfra, FAL-style) or only via the SDK
-            # download endpoint (OpenAI/Sora). Download the bytes and save locally
-            # so the caller gets a durable file — DeepInfra's delivery URLs in
-            # particular are short-lived. Matches plugins/image_gen/deepinfra.
             url = None
             for item in getattr(video, "data", None) or []:
                 candidate = item.get("url") if isinstance(item, dict) else getattr(item, "url", None)
@@ -554,15 +524,12 @@ class OpenAICompatibleVideoGenProvider(VideoGenProvider):
 
             try:
                 if url:
-                    # Materialise the (often short-lived) delivery URL locally.
                     video_ref = str(save_url_video(url, prefix=self.name))
                 else:
-                    # OpenAI/Sora style: no public URL — pull bytes via the SDK.
                     raw = client.videos.download_content(video.id).read()
                     video_ref = str(save_bytes_video(raw, prefix=self.name))
             except Exception as exc:  # noqa: BLE001
                 if url:
-                    # Best-effort: hand back the URL rather than fail outright.
                     logger.debug("%s: saving video locally failed (%s); returning URL", self.name, exc)
                     video_ref = url
                 else:

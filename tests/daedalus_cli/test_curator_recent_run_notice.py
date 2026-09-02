@@ -60,7 +60,6 @@ def test_silent_when_summary_is_single_line(curator_env):
     curator_env["main"]._print_curator_recent_run_notice()
     out = curator_env["capsys"].readouterr().out
     assert "Skill curator — last run" not in out
-    # Should still mark shown so we don't reconsider on every update.
     state = curator_env["curator"].load_state()
     assert state["last_run_summary_shown_at"] == now
 

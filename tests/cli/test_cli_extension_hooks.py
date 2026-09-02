@@ -87,7 +87,6 @@ class TestExtensionHookDefaults:
             voice_status_bar="voice-status",
             completions_menu="completions-menu",
         )
-        # First element is Window(height=0), rest are the named widgets
         assert children[1:] == [
             "sudo", "secret", "approval", "clarify", "spinner",
             "spacer", "status", "top-rule", "image-bar", "input-area",
@@ -98,7 +97,6 @@ class TestExtensionHookDefaults:
 class TestExtensionHookSubclass:
     def test_extra_widgets_inserted_before_status_bar(self):
         cli = _make_cli()
-        # Monkey-patch to simulate subclass override
         cli._get_extra_tui_widgets = lambda: ["radio-menu", "mini-player"]
 
         children = cli._build_tui_layout_children(
@@ -116,7 +114,6 @@ class TestExtensionHookSubclass:
             voice_status_bar="voice-status",
             completions_menu="completions-menu",
         )
-        # Extra widgets should appear between spacer and status bar
         spacer_idx = children.index("spacer")
         status_idx = children.index("status")
         assert children[spacer_idx + 1] == "radio-menu"

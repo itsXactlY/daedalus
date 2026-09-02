@@ -19,8 +19,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Exactly one retry turn — bounded by design. More retries make frontier
-# models drop fields that were right the first time.
 MAX_SCHEMA_RETRIES = 1
 
 _CONTRACT_HEADER = "OUTPUT CONTRACT (machine-validated)"
@@ -35,7 +33,6 @@ def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[s
     if raw is None:
         return None, None
     if isinstance(raw, str):
-        # Models sometimes double-encode the schema as a JSON string.
         try:
             parsed = json.loads(raw)
         except (ValueError, TypeError):
@@ -52,8 +49,6 @@ def coerce_output_schema(raw: Any) -> Tuple[Optional[Dict[str, Any]], Optional[s
 
         validator_for(raw).check_schema(raw)
     except ImportError:
-        # jsonschema is a hard dependency in practice; degrade to accepting
-        # the dict as-is so delegation still works without it.
         logger.debug("jsonschema unavailable; skipping output_schema meta-validation")
     except Exception as exc:
         return None, f"output_schema is not a valid JSON Schema: {exc}"
@@ -127,7 +122,7 @@ def validate_output(
     if not errors:
         return True, []
     rendered: List[str] = []
-    for err in errors[:10]:  # bound error volume for the retry prompt
+    for err in errors[:10]:
         path = "$" + "".join(
             f"[{p}]" if isinstance(p, int) else f".{p}" for p in err.absolute_path
         )

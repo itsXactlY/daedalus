@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 
-# ─── UI Helpers (shared with setup.py) ────────────────────────────────────────
 
 def _print_info(text: str):
     print(color(f"  {text}", Colors.DIM))
@@ -61,11 +60,7 @@ def _prompt(question: str, default: str = None, password: bool = False) -> str:
         print()
         return default or ""
 
-# ─── Toolset Registry ─────────────────────────────────────────────────────────
 
-# Toolsets shown in the configurator, grouped for display.
-# Each entry: (toolset_name, label, description)
-# These map to keys in toolsets.py TOOLSETS dict.
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
@@ -87,9 +82,6 @@ CONFIGURABLE_TOOLSETS = [
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
 ]
 
-# Toolsets that are OFF by default for new installs.
-# They're still in _DAEDALUS_CORE_TOOLS (available at runtime if enabled),
-# but the setup checklist won't pre-select them for first-time users.
 _DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
 
 
@@ -102,7 +94,7 @@ def _get_effective_configurable_toolsets():
     result = list(CONFIGURABLE_TOOLSETS)
     try:
         from daedalus_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
+        discover_plugins()
         result.extend(get_plugin_toolsets())
     except Exception:
         pass
@@ -113,12 +105,11 @@ def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
         from daedalus_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
+        discover_plugins()
         return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
     except Exception:
         return set()
 
-# Platform display config
 PLATFORMS = {
     "cli":      {"label": "🖥️  CLI",       "default_toolset": "daedalus-cli"},
     "discord":  {"label": "💬 Discord",    "default_toolset": "daedalus-discord"},
@@ -127,10 +118,6 @@ PLATFORMS = {
 }
 
 
-# ─── Tool Categories (provider-aware configuration) ──────────────────────────
-# Maps toolset keys to their provider options. When a toolset is newly enabled,
-# we use this to show provider selection and prompt for the right API keys.
-# Toolsets not in this map either need no config or use the simple fallback.
 
 TOOL_CATEGORIES = {
     "tts": {
@@ -341,15 +328,12 @@ TOOL_CATEGORIES = {
     },
 }
 
-# Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
-# Used as a fallback for tools like vision/moa that just need an API key.
 TOOLSET_ENV_REQUIREMENTS = {
     "vision":     [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
     "moa":        [("OPENROUTER_API_KEY",   "https://openrouter.ai/keys")],
 }
 
 
-# ─── Post-Setup Hooks ─────────────────────────────────────────────────────────
 
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
@@ -423,7 +407,6 @@ def _run_post_setup(post_setup_key: str):
                 _print_info('      uv pip install -e "./tinker-atropos"')
 
 
-# ─── Platform / Toolset Helpers ───────────────────────────────────────────────
 
 def _get_enabled_platforms() -> List[str]:
     """Return platform keys that are configured (have tokens or are CLI)."""
@@ -490,18 +473,11 @@ def _get_platform_tools(
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
-    # If the saved list contains any configurable keys directly, the user
-    # has explicitly configured this platform — use direct membership.
-    # This avoids the subset-inference bug where composite toolsets like
-    # "daedalus-cli" (which include all _DAEDALUS_CORE_TOOLS) cause disabled
-    # toolsets to re-appear as enabled.
     has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
 
     if has_explicit_config:
         enabled_toolsets = {ts for ts in toolset_names if ts in configurable_keys}
     else:
-        # No explicit config — fall back to resolving composite toolset names
-        # (e.g. "daedalus-cli") to individual tool names and reverse-mapping.
         all_tool_names = set()
         for ts_name in toolset_names:
             all_tool_names.update(resolve_toolset(ts_name))
@@ -512,25 +488,16 @@ def _get_platform_tools(
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
-    # Plugin toolsets: enabled by default unless explicitly disabled.
-    # A plugin toolset is "known" for a platform once `daedalus tools`
-    # has been saved for that platform (tracked via known_plugin_toolsets).
-    # Unknown plugins default to enabled; known-but-absent = disabled.
     plugin_ts_keys = _get_plugin_toolset_keys()
     if plugin_ts_keys:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
         for pts in plugin_ts_keys:
             if pts in toolset_names:
-                # Explicitly listed in config — enabled
                 enabled_toolsets.add(pts)
             elif pts not in known_for_platform:
-                # New plugin not yet seen by daedalus tools — default enabled
                 enabled_toolsets.add(pts)
-            # else: known but not in config = user disabled it
 
-    # Preserve any explicit non-configurable toolset entries (for example,
-    # custom toolsets or MCP server names saved in platform_toolsets).
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
     explicit_passthrough = {
         ts
@@ -540,10 +507,6 @@ def _get_platform_tools(
         and ts not in platform_default_keys
     }
 
-    # MCP servers are expected to be available on all platforms by default.
-    # If the platform explicitly lists one or more MCP server names, treat that
-    # as an allowlist. Otherwise include every globally enabled MCP server.
-    # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
     mcp_servers = config.get("mcp_servers") or {}
     enabled_mcp_servers = {
         name
@@ -551,7 +514,6 @@ def _get_platform_tools(
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
-    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
         enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
@@ -577,33 +539,23 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     """
     config.setdefault("platform_toolsets", {})
 
-    # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_keys = _get_plugin_toolset_keys()
     configurable_keys |= plugin_keys
 
-    # Also exclude platform default toolsets (daedalus-cli, daedalus-telegram, etc.)
-    # These are "super" toolsets that resolve to ALL tools, so preserving them
-    # would silently override the user's unchecked selections on the next read.
     platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
-    # Get existing toolsets for this platform
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
 
-    # Preserve any entries that are NOT configurable toolsets and NOT platform
-    # defaults (i.e. only MCP server names should be preserved)
     preserved_entries = {
         entry for entry in existing_toolsets
         if entry not in configurable_keys and entry not in platform_default_keys
     }
 
-    # Merge preserved entries with new enabled toolsets
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
 
-    # Track which plugin toolsets are "known" for this platform so we can
-    # distinguish "new plugin, default enabled" from "user disabled it".
     if plugin_keys:
         config.setdefault("known_plugin_toolsets", {})
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
@@ -631,31 +583,27 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
         if feature and (feature.available or feature.managed_by_nous):
             return True
 
-    # Check TOOL_CATEGORIES first (provider-aware)
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
         for provider in _visible_providers(cat, config):
             env_vars = provider.get("env_vars", [])
             if not env_vars:
-                return True  # No-key provider (e.g. Local Browser, Edge TTS)
+                return True
             if all(get_env_value(e["key"]) for e in env_vars):
                 return True
         return False
 
-    # Fallback to simple requirements
     requirements = TOOLSET_ENV_REQUIREMENTS.get(ts_key, [])
     if not requirements:
         return True
     return all(get_env_value(var) for var, _ in requirements)
 
 
-# ─── Menu Helpers ─────────────────────────────────────────────────────────────
 
 def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """Single-select menu (arrow keys). Uses curses to avoid simple_term_menu
     rendering bugs in tmux, iTerm, and other non-standard terminals."""
 
-    # Curses-based single-select — works in tmux, iTerm, and standard terminals
     try:
         import curses
         result_holder = [default]
@@ -713,7 +661,6 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
     except Exception:
         pass
 
-    # Fallback: numbered input (Windows without curses, etc.)
     print(color(question, Colors.YELLOW))
     for i, c in enumerate(choices):
         marker = "●" if i == default else "○"
@@ -732,9 +679,7 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
             return default
 
 
-# ─── Token Estimation ────────────────────────────────────────────────────────
 
-# Module-level cache so discovery + tokenization runs at most once per process.
 _tool_token_cache: Optional[Dict[str, int]] = None
 
 
@@ -760,7 +705,6 @@ def _estimate_tool_tokens() -> Dict[str, int]:
         return _tool_token_cache
 
     try:
-        # Trigger full tool discovery (imports all tool modules).
         import model_tools  # noqa: F401
         from tools.registry import registry
     except Exception:
@@ -772,8 +716,6 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     for name in registry.get_all_tool_names():
         schema = registry.get_schema(name)
         if schema:
-            # Mirror what gets sent to the API:
-            # {"type": "function", "function": <schema>}
             text = _json.dumps({"type": "function", "function": schema})
             counts[name] = len(enc.encode(text))
     _tool_token_cache = counts
@@ -785,7 +727,6 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     from daedalus_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
 
-    # Pre-compute per-tool token counts (cached after first call).
     tool_tokens = _estimate_tool_tokens()
 
     effective = _get_effective_configurable_toolsets()
@@ -802,13 +743,11 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
         if ts_key in enabled
     }
 
-    # Build a live status function that shows deduplicated total token cost.
     status_fn = None
     if tool_tokens:
         ts_keys = [ts_key for ts_key, _, _ in effective]
 
         def status_fn(chosen: set) -> str:
-            # Collect unique tool names across all selected toolsets
             all_tools: set = set()
             for idx in chosen:
                 all_tools.update(resolve_toolset(ts_keys[idx]))
@@ -827,7 +766,6 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     return {effective[i][0] for i in chosen}
 
 
-# ─── Provider-Aware Configuration ────────────────────────────────────────────
 
 def _configure_toolset(ts_key: str, config: dict):
     """Configure a toolset - provider selection + API keys.
@@ -840,7 +778,6 @@ def _configure_toolset(ts_key: str, config: dict):
     if cat:
         _configure_tool_category(ts_key, cat, config)
     else:
-        # Simple fallback for vision, moa, etc.
         _configure_simple_requirements(ts_key)
 
 
@@ -884,7 +821,6 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
     name = cat["name"]
     providers = _visible_providers(cat, config)
 
-    # Check Python version requirement
     if cat.get("requires_python"):
         req = cat["requires_python"]
         if sys.version_info < req:
@@ -894,27 +830,22 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
             return
 
     if len(providers) == 1:
-        # Single provider - configure directly
         provider = providers[0]
         print()
         print(color(f"  --- {icon} {name} ({provider['name']}) ---", Colors.CYAN))
         if provider.get("tag"):
             _print_info(f"  {provider['tag']}")
-        # For single-provider tools, show a note if available
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
         _configure_provider(provider, config)
     else:
-        # Multiple providers - let user choose
         print()
-        # Use custom title if provided (e.g. "Select Search Provider")
         title = cat.get("setup_title", "Choose a provider")
         print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
         print()
 
-        # Plain text labels only (no ANSI codes in menu items)
         provider_choices = []
         for p in providers:
             tag = f" ({p['tag']})" if p.get("tag") else ""
@@ -929,15 +860,12 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                     configured = " [configured]"
             provider_choices.append(f"{p['name']}{tag}{configured}")
 
-        # Add skip option
         provider_choices.append("Skip — keep defaults / configure later")
 
-        # Detect current provider as default
         default_idx = _detect_active_provider_index(providers, config)
 
         provider_idx = _prompt_choice(f"  {title}:", provider_choices, default_idx)
 
-        # Skip selected
         if provider_idx >= len(providers):
             _print_info(f"  Skipped {name}")
             return
@@ -984,7 +912,6 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
     for i, p in enumerate(providers):
         if _is_provider_active(p, config):
             return i
-        # Fallback: env vars present → likely configured
         env_vars = p.get("env_vars", [])
         if env_vars and all(get_env_value(v["key"]) for v in env_vars):
             return i
@@ -1002,11 +929,9 @@ def _configure_provider(provider: dict, config: dict):
             _print_warning("  Nous Subscription is only available after logging into Nous Portal.")
             return
 
-    # Set TTS provider in config if applicable
     if provider.get("tts_provider"):
         config.setdefault("tts", {})["provider"] = provider["tts_provider"]
 
-    # Set browser cloud provider in config if applicable
     if "browser_provider" in provider:
         bp = provider["browser_provider"]
         if bp == "local":
@@ -1016,7 +941,6 @@ def _configure_provider(provider: dict, config: dict):
             config.setdefault("browser", {})["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
 
-    # Set web search backend in config if applicable
     if provider.get("web_backend"):
         config.setdefault("web", {})["backend"] = provider["web_backend"]
         _print_success(f"  Web backend set to: {provider['web_backend']}")
@@ -1034,14 +958,11 @@ def _configure_provider(provider: dict, config: dict):
                 )
         return
 
-    # Prompt for each required env var
     all_configured = True
     for var in env_vars:
         existing = get_env_value(var["key"])
         if existing:
             _print_success(f"  {var['key']}: already configured")
-            # Don't ask to update - this is a new enable flow.
-            # Reconfigure is handled separately.
         else:
             url = var.get("url", "")
             if url:
@@ -1060,7 +981,6 @@ def _configure_provider(provider: dict, config: dict):
                 _print_warning("    Skipped")
                 all_configured = False
 
-    # Run post-setup hooks if needed
     if provider.get("post_setup") and all_configured:
         _run_post_setup(provider["post_setup"])
 
@@ -1095,7 +1015,6 @@ def _configure_simple_requirements(ts_key: str):
             api_key = _prompt(key_label, password=True)
             if api_key and api_key.strip():
                 save_env_value("OPENAI_API_KEY", api_key.strip())
-                # Save vision base URL to config (not .env — only secrets go there)
                 from daedalus_cli.config import load_config, save_config
                 _cfg = load_config()
                 _aux = _cfg.setdefault("auxiliary", {}).setdefault("vision", {})
@@ -1133,7 +1052,6 @@ def _configure_simple_requirements(ts_key: str):
 
 def _reconfigure_tool(config: dict):
     """Let user reconfigure an existing tool's provider or API key."""
-    # Build list of configurable tools that are currently set up
     configurable = []
     for ts_key, ts_label, _ in _get_effective_configurable_toolsets():
         cat = TOOL_CATEGORIES.get(ts_key)
@@ -1152,7 +1070,7 @@ def _reconfigure_tool(config: dict):
     idx = _prompt_choice("  Which tool would you like to reconfigure?", choices, len(choices) - 1)
 
     if idx >= len(configurable):
-        return  # Cancel
+        return
 
     ts_key, ts_label = configurable[idx]
     cat = TOOL_CATEGORIES.get(ts_key)
@@ -1225,7 +1143,6 @@ def _reconfigure_provider(provider: dict, config: dict):
             config.setdefault("browser", {})["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
 
-    # Set web search backend in config if applicable
     if provider.get("web_backend"):
         config.setdefault("web", {})["backend"] = provider["web_backend"]
         _print_success(f"  Web backend set to: {provider['web_backend']}")
@@ -1283,7 +1200,6 @@ def _reconfigure_simple_requirements(ts_key: str):
             _print_info("    Kept current")
 
 
-# ─── Main Entry Point ─────────────────────────────────────────────────────────
 
 def tools_command(args=None, first_install: bool = False, config: dict = None):
     """Entry point for `daedalus tools` and `daedalus setup tools`.
@@ -1302,7 +1218,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     print()
 
-    # Non-interactive summary mode for CLI usage
     if getattr(args, "summary", False):
         total = len(_get_effective_configurable_toolsets())
         print(color("⚕ Tool Summary", Colors.CYAN, Colors.BOLD))
@@ -1327,16 +1242,13 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     print(color("  Guide: https://hermes.nousresearch.com/docs/user-guide/features/tools", Colors.DIM))
     print()
 
-    # ── First-time install: linear flow, no platform menu ──
     if first_install:
         for pkey in enabled_platforms:
             pinfo = PLATFORMS[pkey]
             current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
-            # Uncheck toolsets that should be off by default
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
 
-            # Show checklist
             new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
 
             added = new_enabled - current_enabled
@@ -1359,10 +1271,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     label = next((l for k, l, _ in CONFIGURABLE_TOOLSETS if k == ts_key), ts_key)
                     print(color(f"  ✓ {label}: using your Nous subscription defaults", Colors.GREEN))
 
-            # Walk through ALL selected tools that have provider options or
-            # need API keys.  This ensures browser (Local vs Browserbase),
-            # TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when
-            # a free provider exists.
             to_configure = [
                 ts_key for ts_key in sorted(new_enabled)
                 if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
@@ -1387,8 +1295,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
         return
 
-    # ── Returning user: platform menu loop ──
-    # Build platform choices
     platform_choices = []
     platform_keys = []
     for pkey in enabled_platforms:
@@ -1403,14 +1309,12 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         platform_choices.append("Configure all platforms (global)")
     platform_choices.append("Reconfigure an existing tool's provider or API key")
 
-    # Show MCP option if any MCP servers are configured
     _has_mcp = bool(config.get("mcp_servers"))
     if _has_mcp:
         platform_choices.append("Configure MCP server tools")
 
     platform_choices.append("Done")
 
-    # Index offsets for the extra options after per-platform entries
     _global_idx = len(platform_keys) if len(platform_keys) > 1 else -1
     _reconfig_idx = len(platform_keys) + (1 if len(platform_keys) > 1 else 0)
     _mcp_idx = (_reconfig_idx + 1) if _has_mcp else -1
@@ -1419,25 +1323,20 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     while True:
         idx = _prompt_choice("Select an option:", platform_choices, default=0)
 
-        # "Done" selected
         if idx == _done_idx:
             break
 
-        # "Reconfigure" selected
         if idx == _reconfig_idx:
             _reconfigure_tool(config)
             print()
             continue
 
-        # "Configure MCP tools" selected
         if idx == _mcp_idx:
             _configure_mcp_tools_interactive(config)
             print()
             continue
 
-        # "Configure all platforms (global)" selected
         if idx == _global_idx:
-            # Use the union of all platforms' current tools as the starting state
             all_current = set()
             for pk in platform_keys:
                 all_current |= _get_platform_tools(config, pk, include_default_mcp_servers=False)
@@ -1456,7 +1355,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                         for ts in sorted(removed):
                             label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
                             print(color(f"    - {label}", Colors.RED))
-                    # Configure API keys for newly enabled tools
                     for ts_key in sorted(added):
                         if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
                             if _toolset_needs_configuration_prompt(ts_key, config):
@@ -1464,7 +1362,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     _save_platform_tools(config, pk, new_enabled)
                 save_config(config)
                 print(color("  ✓ Saved configuration for all platforms", Colors.GREEN))
-                # Update choice labels
                 for ci, pk in enumerate(platform_keys):
                     new_count = len(_get_platform_tools(config, pk, include_default_mcp_servers=False))
                     total = len(_get_effective_configurable_toolsets())
@@ -1477,10 +1374,8 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
         pkey = platform_keys[idx]
         pinfo = PLATFORMS[pkey]
 
-        # Get current enabled toolsets for this platform
         current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 
-        # Show checklist
         new_enabled = _prompt_toolset_checklist(pinfo["label"], current_enabled)
 
         if new_enabled != current_enabled:
@@ -1496,7 +1391,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
                     label = next((l for k, l, _ in _get_effective_configurable_toolsets() if k == ts), ts)
                     print(color(f"  - {label}", Colors.RED))
 
-            # Configure newly enabled toolsets that need API keys
             for ts_key in sorted(added):
                 if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key)):
                     if _toolset_needs_configuration_prompt(ts_key, config):
@@ -1510,7 +1404,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
         print()
 
-        # Update the choice label with new count
         new_count = len(_get_platform_tools(config, pkey, include_default_mcp_servers=False))
         total = len(_get_effective_configurable_toolsets())
         platform_choices[idx] = f"Configure {pinfo['label']}  ({new_count}/{total} enabled)"
@@ -1522,7 +1415,6 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     print()
 
 
-# ─── MCP Tools Interactive Configuration ─────────────────────────────────────
 
 
 def _configure_mcp_tools_interactive(config: dict):
@@ -1539,7 +1431,6 @@ def _configure_mcp_tools_interactive(config: dict):
         _print_info("No MCP servers configured.")
         return
 
-    # Count enabled servers
     enabled_names = [
         k for k, v in mcp_servers.items()
         if v.get("enabled", True) not in (False, "false", "0", "no", "off")
@@ -1564,7 +1455,6 @@ def _configure_mcp_tools_interactive(config: dict):
         _print_info("Check that server commands/URLs are correct and dependencies are installed.")
         return
 
-    # Report discovery results
     failed = [n for n in enabled_names if n not in server_tools]
     if failed:
         for name in failed:
@@ -1586,7 +1476,6 @@ def _configure_mcp_tools_interactive(config: dict):
         include_list = tools_cfg.get("include") or []
         exclude_list = tools_cfg.get("exclude") or []
 
-        # Build checklist labels
         labels = []
         for tool_name, description in tools:
             desc_short = description[:70] + "..." if len(description) > 70 else description
@@ -1595,20 +1484,16 @@ def _configure_mcp_tools_interactive(config: dict):
             else:
                 labels.append(tool_name)
 
-        # Determine which tools are currently enabled
         pre_selected: Set[int] = set()
         tool_names = [t[0] for t in tools]
         for i, tool_name in enumerate(tool_names):
             if include_list:
-                # Include mode: only included tools are selected
                 if tool_name in include_list:
                     pre_selected.add(i)
             elif exclude_list:
-                # Exclude mode: everything except excluded
                 if tool_name not in exclude_list:
                     pre_selected.add(i)
             else:
-                # No filter: all enabled
                 pre_selected.add(i)
 
         chosen = curses_checklist(
@@ -1622,19 +1507,15 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no changes")
             continue
 
-        # Compute new exclude list based on unchecked tools
         new_exclude = [tool_names[i] for i in range(len(tool_names)) if i not in chosen]
 
-        # Update config
         srv_cfg = mcp_servers.setdefault(server_name, {})
         tools_cfg = srv_cfg.setdefault("tools", {})
 
         if new_exclude:
             tools_cfg["exclude"] = new_exclude
-            # Remove include if present — we're switching to exclude mode
             tools_cfg.pop("include", None)
         else:
-            # All tools enabled — clear filters
             tools_cfg.pop("exclude", None)
             tools_cfg.pop("include", None)
 
@@ -1653,7 +1534,6 @@ def _configure_mcp_tools_interactive(config: dict):
         print(color("  No changes to MCP tools", Colors.DIM))
 
 
-# ─── Non-interactive disable/enable ──────────────────────────────────────────
 
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
@@ -1704,7 +1584,6 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                   else color("✗ disabled", Colors.RED))
         print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
-    # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
     if plugin_entries:
         print()

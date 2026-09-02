@@ -136,7 +136,6 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
 
     raw_message.add_reaction.assert_not_awaited()
     raw_message.remove_reaction.assert_not_awaited()
-    # Response should still be sent
     adapter.send.assert_awaited_once()
 
 

@@ -102,9 +102,6 @@ def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)
 
-    # Clear DISCORD_* env vars the test file exercises so tests don't leak
-    # process-env state from the contributor's shell into per-test behaviour.
-    # Individual tests still monkeypatch.setenv() for their own scenarios.
     for _var in (
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
@@ -122,7 +119,7 @@ def adapter(monkeypatch):
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
-    adapter._text_batch_delay_seconds = 0  # disable batching for tests
+    adapter._text_batch_delay_seconds = 0
     adapter.handle_message = AsyncMock()
     return adapter
 
@@ -188,9 +185,6 @@ class FakeHistoryChannel(FakeTextChannel):
 async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
-    # Auto-thread failures now correctly skip agent invocation (#20243), and
-    # FakeTextChannel has no real ``create_thread``. Disable auto-thread so the
-    # routing assertion below stays focused on free-response gating.
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     message = make_message(channel=FakeTextChannel(channel_id=123), content="hello from channel")
@@ -208,9 +202,6 @@ async def test_discord_free_response_in_server_channels(adapter, monkeypatch):
 async def test_discord_accepts_and_strips_bot_mentions_when_required(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
-    # Auto-thread failures now correctly skip agent invocation (#20243).
-    # FakeTextChannel can't satisfy the real ``create_thread`` API, so disable
-    # auto-thread to keep this test focused on mention-strip behaviour.
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     bot_user = adapter._client.user
@@ -289,7 +280,7 @@ async def test_discord_free_response_channel_skips_auto_thread(adapter, monkeypa
     """
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
     monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
-    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)  # default true
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
 
     adapter._auto_create_thread = AsyncMock()
 
@@ -408,10 +399,8 @@ async def test_fetch_channel_context_hydrates_around_reply_target(adapter, monke
 
     channel = FakeHistoryChannel(
         [
-            # Recent activity (after our last response, captured by primary scan)
             make_history_message(author=human, content="latest note", msg_id=6),
             make_history_message(author=bot_user, content="our prior response", msg_id=5),
-            # Older exchange — behind the partition, only reachable via reply anchor
             make_history_message(author=bot_user, content="the bot answer being replied to", msg_id=3),
             make_history_message(author=other, content="older question", msg_id=2),
             make_history_message(author=human, content="even older", msg_id=1),
@@ -419,7 +408,6 @@ async def test_fetch_channel_context_hydrates_around_reply_target(adapter, monke
         channel_id=123,
     )
 
-    # User replied to the bot's older answer (msg_id=3).
     reply_target = SimpleNamespace(id=3)
     trigger = make_message(channel=channel, content="follow-up about that")
 
@@ -427,9 +415,6 @@ async def test_fetch_channel_context_hydrates_around_reply_target(adapter, monke
         channel, before=trigger, reply_target=reply_target,
     )
 
-    # Reply context comes first (older), then recent activity.  The reply
-    # window is NOT cut off at the self-message boundary, so msg_id=3 (a bot
-    # message) and its neighbours appear.
     assert "[Context around the replied-to message]" in result
     assert "the bot answer being replied to" in result
     assert "older question" in result
@@ -456,14 +441,13 @@ async def test_fetch_channel_context_reply_target_in_primary_window_not_duplicat
         channel_id=123,
     )
 
-    reply_target = SimpleNamespace(id=4)  # already inside the primary window
+    reply_target = SimpleNamespace(id=4)
     trigger = make_message(channel=channel, content="re: that")
 
     result = await adapter._fetch_channel_context(
         channel, before=trigger, reply_target=reply_target,
     )
 
-    # No separate reply block, and the target text appears exactly once.
     assert "[Context around the replied-to message]" not in result
     assert result.count("recent reply target") == 1
 
@@ -477,9 +461,6 @@ def test_nonconversational_fallback_requires_self_improvement_emoji():
     )
 
 
-# ---------------------------------------------------------------------------
-# TestChannelContextUnverifiedTagging
-# ---------------------------------------------------------------------------
 
 class TestChannelContextUnverifiedTagging:
     """Indirect prompt-injection mitigation: messages backfilled into channel
@@ -576,7 +557,6 @@ async def test_fetch_channel_context_uses_cache_to_narrow_window(adapter, monkey
 
     human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
 
-    # Record the after= arg passed to history()
     recorded_after = {}
 
     class CacheTrackingChannel(FakeHistoryChannel):
@@ -594,16 +574,14 @@ async def test_fetch_channel_context_uses_cache_to_narrow_window(adapter, monkey
         channel_id=777,
     )
 
-    # Seed the cache — bot's last message in this channel was ID 100
     adapter._last_self_message_id["777"] = "100"
 
     trigger = make_message(channel=channel, content="trigger")
-    trigger.id = 300  # trigger is newer than cache
+    trigger.id = 300
 
     result = await adapter._fetch_channel_context(channel, before=trigger)
 
     assert result == "[Recent channel messages]\n[Alice] hello"
-    # Verify cache was used: after= should be set (not None)
     assert recorded_after["value"] is not None
 
 
@@ -669,7 +647,6 @@ async def test_fetch_channel_context_ignores_stale_cache(adapter, monkeypatch):
         channel_id=777,
     )
 
-    # Cache has a NEWER ID than the trigger — stale/invalid
     adapter._last_self_message_id["777"] = "500"
 
     trigger = make_message(channel=channel, content="trigger")
@@ -678,7 +655,6 @@ async def test_fetch_channel_context_ignores_stale_cache(adapter, monkeypatch):
     result = await adapter._fetch_channel_context(channel, before=trigger)
 
     assert result == "[Recent channel messages]\n[Alice] hello"
-    # Cache should have been ignored — after= should be None
     assert recorded_after["value"] is None
 
 
@@ -773,7 +749,6 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
         guild=None,
         topic=None,
     )
-    # Make isinstance(channel, discord.DMChannel) return True
     monkeypatch.setattr(
         discord_platform.discord, "DMChannel", type(dm_channel), raising=False,
     )
@@ -802,7 +777,7 @@ async def test_discord_reply_in_free_channel_triggers_backfill(adapter, monkeypa
     must now route through _fetch_channel_context with the replied-to message
     as the anchor.
     """
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")  # free-response
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
     adapter.config.extra["history_backfill"] = True
@@ -811,13 +786,11 @@ async def test_discord_reply_in_free_channel_triggers_backfill(adapter, monkeypa
     )
 
     message = make_message(channel=FakeTextChannel(channel_id=321), content="what about edge cases?")
-    # Simulate a Discord reply: reference points at an earlier message id.
     message.reference = SimpleNamespace(message_id=42, resolved=None)
 
     await adapter._handle_message(message)
 
     adapter._fetch_channel_context.assert_awaited_once()
-    # The reply target is passed as the anchor, carrying the referenced id.
     call = adapter._fetch_channel_context.await_args
     assert getattr(call.kwargs.get("reply_target"), "id", None) == 42
 

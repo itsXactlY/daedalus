@@ -27,29 +27,13 @@ def curator_env(tmp_path, monkeypatch):
     import agent.curator as curator
     importlib.reload(curator)
 
-    # Neutralize the real LLM pass by default — tests opt in per-case.
     monkeypatch.setattr(curator, "_run_llm_review", lambda prompt: "llm-stub")
 
-    # Default: no config file → curator defaults. Tests can override.
     monkeypatch.setattr(curator, "_load_config", lambda: {})
-    # Pin prune_builtins OFF by default so transition tests don't pick up
-    # built-ins unless they explicitly enable it. Both config-reading paths
-    # are pinned (curator reads via _load_config; skill_usage reads config
-    # directly). Tests opt in with _enable_prune_builtins(...).
     monkeypatch.setattr(usage, "_prune_builtins_enabled", lambda: False)
 
     yield {"home": home, "curator": curator, "usage": usage}
 
-    # Teardown: a curator review launched with synchronous=False spawns a
-    # daemon "curator-review" thread that calls save_state() when it finishes.
-    # save_state() resolves the state path from DAEDALUS_HOME at write time, so a
-    # straggler thread that outlives this test would write into whatever home
-    # the *next* test has configured (or the default ~/.daedalus once monkeypatch
-    # restores the env) — corrupting an unrelated test's state file. This race
-    # is invisible on a fast machine but flakes under CI load. Join any such
-    # thread here, while DAEDALUS_HOME is still pinned to this test's tmp home
-    # (curator_env depends on monkeypatch, so this teardown runs before the
-    # monkeypatch env is restored). See the salvage of #14261 CI flake.
     for t in threading.enumerate():
         if t.name == "curator-review" and t.is_alive():
             t.join(timeout=10.0)
@@ -64,9 +48,6 @@ def _write_skill(skills_dir: Path, name: str):
     return d
 
 
-# ---------------------------------------------------------------------------
-# Config gates
-# ---------------------------------------------------------------------------
 
 
 
@@ -74,7 +55,7 @@ def _write_skill(skills_dir: Path, name: str):
 
 def test_curator_defaults(curator_env):
     c = curator_env["curator"]
-    assert c.get_interval_hours() == 24 * 7  # 7 days
+    assert c.get_interval_hours() == 24 * 7
     assert c.get_min_idle_hours() == 2
     assert c.get_stale_after_days() == 30
     assert c.get_archive_after_days() == 90
@@ -82,9 +63,6 @@ def test_curator_defaults(curator_env):
 
 
 
-# ---------------------------------------------------------------------------
-# should_run_now
-# ---------------------------------------------------------------------------
 
 def test_first_run_defers(curator_env):
     """The FIRST observation of the curator (fresh install, no state file)
@@ -93,14 +71,12 @@ def test_first_run_defers(curator_env):
     tick after installation. Fixes #18373.
     """
     c = curator_env["curator"]
-    # No state file — should defer and seed last_run_at.
     assert c.should_run_now() is False
     state = c.load_state()
     assert state.get("last_run_at") is not None, (
         "first observation should seed last_run_at so the interval clock "
         "starts ticking instead of firing immediately next tick"
     )
-    # A second immediate call still returns False (seeded, not yet stale).
     assert c.should_run_now() is False
 
 
@@ -118,9 +94,6 @@ def test_set_paused_roundtrip(curator_env):
     assert c.is_paused() is False
 
 
-# ---------------------------------------------------------------------------
-# Automatic state transitions
-# ---------------------------------------------------------------------------
 
 
 
@@ -145,7 +118,7 @@ def test_pinned_skill_is_never_touched(curator_env):
     assert counts["archived"] == 0
     assert counts["marked_stale"] == 0
     rec = u.get_record("precious")
-    assert rec["state"] == "active"  # untouched
+    assert rec["state"] == "active"
     assert rec["pinned"] is True
 
 
@@ -362,9 +335,6 @@ def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
 
 
 
-# ---------------------------------------------------------------------------
-# prune_builtins: curator may archive bundled built-ins after inactivity
-# ---------------------------------------------------------------------------
 
 def _enable_prune_builtins(curator_env, monkeypatch):
     """Flip curator.prune_builtins on for both config-reading paths."""
@@ -399,12 +369,11 @@ def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypat
     u = curator_env["usage"]
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
-    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))  # the real protected name(s)
+    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))
     _write_skill(skills_dir, name)
     (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
     _enable_prune_builtins(curator_env, monkeypatch)
 
-    # Force a record that is far past the archive cutoff.
     super_old = (datetime.now(timezone.utc) - timedelta(days=500)).isoformat()
     data = u.load_usage()
     data[name] = u._empty_record()
@@ -413,7 +382,6 @@ def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypat
 
     counts = c.apply_automatic_transitions()
     assert counts["archived"] == 0
-    # Not even enumerated as a candidate → not "checked".
     assert name not in u.list_agent_created_skill_names()
     assert (skills_dir / name).exists()
     assert name not in u.read_suppressed_names()
@@ -433,7 +401,6 @@ def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
     )
     _enable_prune_builtins(curator_env, monkeypatch)
 
-    # Even with prune_builtins on, hub-installed skills stay off-limits.
     assert u.is_curation_eligible("hubskill") is False
     ok, msg = u.archive_skill("hubskill")
     assert ok is False
@@ -441,9 +408,6 @@ def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
     assert (skills_dir / "hubskill").exists()
 
 
-# ---------------------------------------------------------------------------
-# run_curator_review orchestration
-# ---------------------------------------------------------------------------
 
 def test_run_review_records_state(curator_env):
     c = curator_env["curator"]
@@ -516,7 +480,7 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
 
     assert len(calls) == 1
     assert "skill CURATOR" in calls[0] or "CURATOR" in calls[0]
-    assert captured  # on_summary was called
+    assert captured
     assert any("stubbed-summary" in s for s in captured)
 
 
@@ -540,9 +504,6 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
 
 
 
-# ---------------------------------------------------------------------------
-# Persistence
-# ---------------------------------------------------------------------------
 
 
 
@@ -564,14 +525,11 @@ def test_curator_does_not_instruct_model_to_pin():
     """Pinning is a user opt-out, not a model decision. The prompt should
     not tell the reviewer to pin skills autonomously."""
     from agent.curator import CURATOR_REVIEW_PROMPT
-    # "pinned" appears in the invariant ("skip pinned skills"), but "pin"
-    # as a decision verb should not.
     lines = CURATOR_REVIEW_PROMPT.split("\n")
     decision_block = "\n".join(
         l for l in lines
         if l.strip().startswith(("keep", "patch", "archive", "consolidate", "pin "))
     )
-    # No standalone "pin" action line
     assert not any(l.strip().startswith("pin ") for l in lines), (
         f"Found a pin action line in:\n{decision_block}"
     )
@@ -604,15 +562,6 @@ def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
     assert "bundled" in captured.out.lower() or "hub" in captured.out.lower()
 
 
-# ---------------------------------------------------------------------------
-# curator review-model resolution (canonical auxiliary.curator slot)
-#
-# Curator was unified with the rest of the aux task system in Apr 2026 so
-# `daedalus model` → auxiliary picker, the dashboard Models tab, and the full
-# per-task config (timeout, base_url, api_key, extra_body) all work for it.
-# Voscko report: curator.auxiliary.{provider,model} was advertised but never
-# read. Fix wires curator through auxiliary.curator with a legacy fallback.
-# ---------------------------------------------------------------------------
 
 
 
@@ -745,7 +694,6 @@ def test_curator_slot_is_canonical_aux_task():
     from daedalus_cli.config import DEFAULT_CONFIG
     from daedalus_cli.main import _coalesce_session_name_args
 
-    # 1. DEFAULT_CONFIG.auxiliary — schema source
     assert "curator" in DEFAULT_CONFIG["auxiliary"], \
         "curator missing from DEFAULT_CONFIG['auxiliary']"
     slot = DEFAULT_CONFIG["auxiliary"]["curator"]
@@ -753,8 +701,6 @@ def test_curator_slot_is_canonical_aux_task():
     assert slot["model"] == ""
     assert slot["timeout"] > 0, "curator timeout should be set (reviews run long)"
 
-    # 2. `daedalus curator` — CLI surface: subcommand known to the session-name
-    #    coalescer AND the actual registration module is importable.
     _coalesce_session_name_args(["daedalus", "-c", "curator", "chat"])
     import daedalus_cli.curator as _curator_cli
     assert hasattr(_curator_cli, "register_cli"), \
@@ -879,8 +825,6 @@ def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monk
     """
     curator = curator_env["curator"]
 
-    # curator_env stubs _run_llm_review wholesale; exercise the real
-    # implementation, so reload the module to restore it.
     import importlib
     importlib.reload(curator)
 
@@ -904,7 +848,6 @@ def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monk
 
     meta = curator._run_llm_review("review prompt")
 
-    # error is None proves the fork was actually constructed (capture ran).
     assert meta.get("error") is None, meta.get("error")
     assert captured.get("enabled_toolsets") == ["skills", "terminal"], (
         "curator review fork did not pass enabled_toolsets=['skills', "
@@ -931,13 +874,11 @@ def test_review_fork_toolset_surface_is_skills_plus_terminal():
         resolve_toolset("terminal")
     )
 
-    # The four prompt-named tools are all present.
     assert "skills_list" in surface
     assert "skill_view" in surface
     assert "skill_manage" in surface
     assert "terminal" in surface
 
-    # Representative dropped default + context_engine tools are absent.
     assert "read_file" not in surface
     assert "web_search" not in surface
     assert "lcm_grep" not in surface

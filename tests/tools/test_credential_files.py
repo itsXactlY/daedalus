@@ -123,7 +123,6 @@ class TestSkillsDirectoryMount:
         with patch.dict(os.environ, {"DAEDALUS_HOME": str(daedalus_home)}):
             mounts = get_skills_directory_mount()
 
-        # No local skills dir → no local mount (external dirs may still appear)
         local_mounts = [m for m in mounts if m["container_path"].endswith("/skills")]
         assert local_mounts == []
 
@@ -142,7 +141,6 @@ class TestSkillsDirectoryMount:
         skills_dir = daedalus_home / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "legit.md").write_text("# real skill")
-        # Create a symlink pointing outside the skills tree
         secret = tmp_path / "secret.txt"
         secret.write_text("TOP SECRET")
         (skills_dir / "evil_link").symlink_to(secret)
@@ -152,13 +150,10 @@ class TestSkillsDirectoryMount:
 
         assert len(mounts) >= 1
         mount = mounts[0]
-        # The mount path should be a sanitized copy, not the original
         safe_path = Path(mount["host_path"])
         assert safe_path != skills_dir
-        # Legitimate file should be present
         assert (safe_path / "legit.md").exists()
         assert (safe_path / "legit.md").read_text() == "# real skill"
-        # Symlink should NOT be present
         assert not (safe_path / "evil_link").exists()
 
     def test_no_symlinks_returns_original_dir(self, tmp_path):
@@ -182,7 +177,6 @@ class TestIterSkillsFiles:
         (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
         (skills_dir / "cat" / "myskill" / "scripts").mkdir()
         (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/bin/bash")
-        # Add a symlink that should be filtered
         secret = tmp_path / "secret"
         secret.write_text("nope")
         (skills_dir / "cat" / "myskill" / "evil").symlink_to(secret)
@@ -193,7 +187,6 @@ class TestIterSkillsFiles:
         paths = {f["container_path"] for f in files}
         assert "/root/.daedalus/skills/cat/myskill/SKILL.md" in paths
         assert "/root/.daedalus/skills/cat/myskill/scripts/run.sh" in paths
-        # Symlink should be excluded
         assert not any("evil" in f["container_path"] for f in files)
 
     def test_empty_when_no_skills_dir(self, tmp_path):
@@ -220,7 +213,6 @@ class TestPathTraversalSecurity:
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path / ".daedalus"))
         (tmp_path / ".daedalus").mkdir()
 
-        # Create a sensitive file one level above daedalus_home
         sensitive = tmp_path / "sensitive.json"
         sensitive.write_text('{"secret": "value"}')
 
@@ -235,7 +227,6 @@ class TestPathTraversalSecurity:
         daedalus_home.mkdir()
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-        # Create a fake sensitive file outside daedalus_home
         ssh_dir = tmp_path / ".ssh"
         ssh_dir.mkdir()
         (ssh_dir / "id_rsa").write_text("PRIVATE KEY")
@@ -251,7 +242,6 @@ class TestPathTraversalSecurity:
         daedalus_home.mkdir()
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-        # Create a file at an absolute path
         sensitive = tmp_path / "absolute.json"
         sensitive.write_text("{}")
 
@@ -293,11 +283,9 @@ class TestPathTraversalSecurity:
         daedalus_home.mkdir()
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-        # Create a sensitive file outside daedalus_home
         sensitive = tmp_path / "sensitive.json"
         sensitive.write_text('{"secret": "value"}')
 
-        # Create a symlink inside daedalus_home pointing outside
         symlink = daedalus_home / "evil_link.json"
         try:
             symlink.symlink_to(sensitive)
@@ -306,14 +294,10 @@ class TestPathTraversalSecurity:
 
         result = register_credential_file("evil_link.json")
 
-        # The resolved path escapes DAEDALUS_HOME — must be rejected
         assert result is False
         assert get_credential_file_mounts() == []
 
 
-# ---------------------------------------------------------------------------
-# Config-based credential files — same containment checks
-# ---------------------------------------------------------------------------
 
 class TestConfigPathTraversal:
     """terminal.credential_files in config.yaml must also reject traversal."""
@@ -365,9 +349,6 @@ class TestConfigPathTraversal:
         assert "oauth.json" in mounts[0]["container_path"]
 
 
-# ---------------------------------------------------------------------------
-# Cache directory mounts
-# ---------------------------------------------------------------------------
 
 class TestCacheDirectoryMounts:
     """Tests for get_cache_directory_mounts() and iter_cache_files()."""
@@ -389,7 +370,6 @@ class TestCacheDirectoryMounts:
         """Dirs that don't exist on disk are not returned."""
         daedalus_home = tmp_path / ".daedalus"
         daedalus_home.mkdir()
-        # Create only one cache dir
         (daedalus_home / "cache" / "documents").mkdir(parents=True)
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
@@ -401,7 +381,6 @@ class TestCacheDirectoryMounts:
         """Old-style dir names (e.g. document_cache) are resolved correctly."""
         daedalus_home = tmp_path / ".daedalus"
         daedalus_home.mkdir()
-        # Use legacy dir name — get_daedalus_dir prefers old if it exists
         (daedalus_home / "document_cache").mkdir()
         (daedalus_home / "image_cache").mkdir()
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
@@ -410,7 +389,6 @@ class TestCacheDirectoryMounts:
         host_paths = {m["host_path"] for m in mounts}
         assert str(daedalus_home / "document_cache") in host_paths
         assert str(daedalus_home / "image_cache") in host_paths
-        # Container paths always use the new layout
         container_paths = {m["container_path"] for m in mounts}
         assert "/root/.daedalus/cache/documents" in container_paths
         assert "/root/.daedalus/cache/images" in container_paths

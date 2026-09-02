@@ -31,20 +31,9 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Pending confirmations keyed by gateway session_key.  Each entry:
-#   {
-#       "confirm_id": str,
-#       "command":    str,                       # e.g. "reload-mcp"
-#       "handler":    Callable[[str], Awaitable[Optional[str]]],
-#       "created_at": float,                     # time.time()
-#   }
 _pending: Dict[str, Dict[str, Any]] = {}
 _lock = threading.RLock()
 
-# Default timeout — a pending confirm older than this is discarded when
-# the next message arrives for the same session.  Buttons work up until
-# the adapter drops the callback_data (Telegram: ~48h; Discord: ephemeral;
-# Slack: 3s ack + long-lived actions).
 DEFAULT_TIMEOUT_SECONDS = 300
 
 
@@ -117,10 +106,7 @@ async def resolve(
         if not entry:
             return None
         if entry.get("confirm_id") != confirm_id:
-            # Stale confirm_id — superseded by a newer prompt on the same session.
             return None
-        # Pop before we run the handler to prevent duplicate callbacks
-        # (e.g. button double-click) from running it twice.
         _pending.pop(session_key, None)
         if time.time() - float(entry.get("created_at", 0) or 0) > timeout:
             return None

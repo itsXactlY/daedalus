@@ -10,7 +10,6 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
-# ── browser_console ──────────────────────────────────────────────────
 
 
 class TestBrowserConsole:
@@ -56,7 +55,6 @@ class TestBrowserConsole:
             browser_console(clear=True, task_id="test")
 
         calls = mock_cmd.call_args_list
-        # Both console and errors should get --clear
         assert calls[0][0] == ("test", "console", ["--clear"])
         assert calls[1][0] == ("test", "errors", ["--clear"])
 
@@ -90,13 +88,11 @@ class TestBrowserConsole:
         with patch("tools.browser_tool._run_browser_command", return_value=failed):
             result = json.loads(browser_console(task_id="test"))
 
-        # Should still return success with empty data
         assert result["success"] is True
         assert result["total_messages"] == 0
         assert result["total_errors"] == 0
 
 
-# ── browser_console schema ───────────────────────────────────────────
 
 
 class TestBrowserConsoleSchema:
@@ -138,7 +134,6 @@ class TestBrowserConsoleToolsetWiring:
         assert "browser_console" in registry._tools
 
 
-# ── browser_vision annotate ──────────────────────────────────────────
 
 
 class TestBrowserVisionAnnotate:
@@ -162,7 +157,6 @@ class TestBrowserVisionAnnotate:
             patch("tools.browser_tool._get_vision_model", return_value="test-model"),
         ):
             mock_cmd.return_value = {"success": True, "data": {}}
-            # Will fail at screenshot file read, but we can check the command
             try:
                 browser_vision("test", annotate=False, task_id="test")
             except Exception:
@@ -194,7 +188,6 @@ class TestBrowserVisionAnnotate:
                 assert "--annotate" in cmd_args
 
 
-# ── auto-recording config ────────────────────────────────────────────
 
 
 class TestRecordSessionsConfig:
@@ -224,14 +217,13 @@ class TestRecordSessionsConfig:
         """Stopping when not recording is a no-op."""
         from tools.browser_tool import _maybe_stop_recording, _recording_sessions
 
-        _recording_sessions.discard("test-task")  # ensure not in set
+        _recording_sessions.discard("test-task")
         with patch("tools.browser_tool._run_browser_command") as mock_cmd:
             _maybe_stop_recording("test-task")
 
         mock_cmd.assert_not_called()
 
 
-# ── dogfood skill files ──────────────────────────────────────────────
 
 
 class TestDogfoodSkill:
@@ -239,7 +231,6 @@ class TestDogfoodSkill:
 
     @pytest.fixture(autouse=True)
     def _skill_dir(self):
-        # Use the actual repo skills dir (not temp)
         self.skill_dir = os.path.join(
             os.path.dirname(__file__), "..", "..", "skills", "dogfood"
         )

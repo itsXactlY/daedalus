@@ -17,9 +17,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Test: _flush_messages_to_session_db only writes new messages
-# ---------------------------------------------------------------------------
 
 class TestFlushDeduplication:
     """Verify _flush_messages_to_session_db tracks what it already wrote."""
@@ -56,13 +53,11 @@ class TestFlushDeduplication:
                 {"role": "assistant", "content": "new answer"},
             ]
 
-            # First flush — should write 2 new messages
             agent._flush_messages_to_session_db(messages, conversation_history)
 
             rows = db.get_messages(agent.session_id)
             assert len(rows) == 2, f"Expected 2 messages, got {len(rows)}"
 
-            # Second flush with SAME messages — should write 0 new messages
             agent._flush_messages_to_session_db(messages, conversation_history)
 
             rows = db.get_messages(agent.session_id)
@@ -83,16 +78,13 @@ class TestFlushDeduplication:
                 {"role": "user", "content": "hello"},
             ]
 
-            # First flush — 1 message
             agent._flush_messages_to_session_db(messages, conversation_history)
             rows = db.get_messages(agent.session_id)
             assert len(rows) == 1
 
-            # Add more messages
             messages.append({"role": "assistant", "content": "hi there"})
             messages.append({"role": "user", "content": "follow up"})
 
-            # Second flush — should write only 2 new messages
             agent._flush_messages_to_session_db(messages, conversation_history)
             rows = db.get_messages(agent.session_id)
             assert len(rows) == 3, f"Expected 3 total messages, got {len(rows)}"
@@ -106,7 +98,6 @@ class TestFlushDeduplication:
             db = SessionDB(db_path=db_path)
 
             agent = self._make_agent(db)
-            # Stub out _save_session_log to avoid file I/O
             agent._save_session_log = MagicMock()
 
             conversation_history = [{"role": "user", "content": "old"}]
@@ -117,7 +108,6 @@ class TestFlushDeduplication:
                 {"role": "assistant", "content": "a2"},
             ]
 
-            # Simulate multiple persist calls (like the agent's many exit paths)
             for _ in range(5):
                 agent._persist_session(messages, conversation_history)
 
@@ -134,7 +124,6 @@ class TestFlushDeduplication:
 
             agent = self._make_agent(db)
 
-            # Write some messages
             messages = [
                 {"role": "user", "content": "msg1"},
                 {"role": "assistant", "content": "reply1"},
@@ -144,12 +133,10 @@ class TestFlushDeduplication:
             old_session = agent.session_id
             assert agent._last_flushed_db_idx == 2
 
-            # Simulate what _compress_context does: new session, reset idx
             agent.session_id = "compressed-session-new"
             db.create_session(session_id=agent.session_id, source="test")
             agent._last_flushed_db_idx = 0
 
-            # Now flush compressed messages to new session
             compressed_messages = [
                 {"role": "user", "content": "summary of conversation"},
             ]
@@ -158,14 +145,10 @@ class TestFlushDeduplication:
             new_rows = db.get_messages(agent.session_id)
             assert len(new_rows) == 1
 
-            # Old session should still have its 2 messages
             old_rows = db.get_messages(old_session)
             assert len(old_rows) == 2
 
 
-# ---------------------------------------------------------------------------
-# Test: append_to_transcript skip_db parameter
-# ---------------------------------------------------------------------------
 
 class TestAppendToTranscriptSkipDb:
     """Verify skip_db=True writes JSONL but not SQLite."""
@@ -177,7 +160,7 @@ class TestAppendToTranscriptSkipDb:
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             s = SessionStore(sessions_dir=tmp_path, config=config)
-        s._db = None  # no SQLite for these JSONL-focused tests
+        s._db = None
         s._loaded = True
         return s
 
@@ -187,7 +170,6 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "assistant", "content": "hello world"}
         store.append_to_transcript(session_id, msg, skip_db=True)
 
-        # JSONL should have the message
         jsonl_path = store.get_transcript_path(session_id)
         assert jsonl_path.exists()
         with open(jsonl_path) as f:
@@ -217,11 +199,9 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "assistant", "content": "hello world"}
         store.append_to_transcript(session_id, msg, skip_db=True)
 
-        # SQLite should NOT have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 0, f"Expected 0 DB rows with skip_db=True, got {len(rows)}"
 
-        # But JSONL should have it
         jsonl_path = store.get_transcript_path(session_id)
         with open(jsonl_path) as f:
             lines = f.readlines()
@@ -248,20 +228,15 @@ class TestAppendToTranscriptSkipDb:
         msg = {"role": "user", "content": "test message"}
         store.append_to_transcript(session_id, msg)
 
-        # JSONL should have the message
         jsonl_path = store.get_transcript_path(session_id)
         with open(jsonl_path) as f:
             lines = f.readlines()
         assert len(lines) == 1
 
-        # SQLite should also have the message
         rows = db.get_messages(session_id)
         assert len(rows) == 1
 
 
-# ---------------------------------------------------------------------------
-# Test: _last_flushed_db_idx initialization
-# ---------------------------------------------------------------------------
 
 class TestFlushIdxInit:
     """Verify _last_flushed_db_idx is properly initialized."""
@@ -290,5 +265,4 @@ class TestFlushIdxInit:
             )
         messages = [{"role": "user", "content": "test"}]
         agent._flush_messages_to_session_db(messages, [])
-        # Should not crash, idx should remain 0
         assert agent._last_flushed_db_idx == 0

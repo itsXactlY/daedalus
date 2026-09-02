@@ -35,9 +35,6 @@ from daedalus_cli.profiles import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Shared fixture: redirect Path.home() and DAEDALUS_HOME for profile tests
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def profile_env(tmp_path, monkeypatch):
@@ -54,16 +51,12 @@ def profile_env(tmp_path, monkeypatch):
     return tmp_path
 
 
-# ===================================================================
-# TestValidateProfileName
-# ===================================================================
 
 class TestValidateProfileName:
     """Tests for validate_profile_name()."""
 
     @pytest.mark.parametrize("name", ["coder", "work-bot", "a1", "my_agent"])
     def test_valid_names_accepted(self, name):
-        # Should not raise
         validate_profile_name(name)
 
     @pytest.mark.parametrize("name", ["UPPER", "has space", ".hidden", "-leading"])
@@ -77,12 +70,10 @@ class TestValidateProfileName:
             validate_profile_name(long_name)
 
     def test_max_length_accepted(self):
-        # 64 chars total: 1 leading + 63 remaining = 64, within [0,63] range
         name = "a" * 64
         validate_profile_name(name)
 
     def test_default_accepted(self):
-        # 'default' is a special-case pass-through
         validate_profile_name("default")
 
     def test_empty_string_rejected(self):
@@ -90,9 +81,6 @@ class TestValidateProfileName:
             validate_profile_name("")
 
 
-# ===================================================================
-# TestGetProfileDir
-# ===================================================================
 
 class TestGetProfileDir:
     """Tests for get_profile_dir()."""
@@ -108,9 +96,6 @@ class TestGetProfileDir:
         assert result == tmp_path / ".daedalus" / "profiles" / "coder"
 
 
-# ===================================================================
-# TestCreateProfile
-# ===================================================================
 
 class TestCreateProfile:
     """Tests for create_profile()."""
@@ -138,7 +123,6 @@ class TestCreateProfile:
     def test_clone_config_copies_files(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".daedalus"
-        # Create source config files in default profile
         (default_home / "config.yaml").write_text("model: test")
         (default_home / ".env").write_text("KEY=val")
         (default_home / "SOUL.md").write_text("Be helpful.")
@@ -152,21 +136,17 @@ class TestCreateProfile:
     def test_clone_all_copies_entire_tree(self, profile_env):
         tmp_path = profile_env
         default_home = tmp_path / ".daedalus"
-        # Populate default with some content
         (default_home / "memories").mkdir(exist_ok=True)
         (default_home / "memories" / "note.md").write_text("remember this")
         (default_home / "config.yaml").write_text("model: gpt-4")
-        # Runtime files that should be stripped
         (default_home / "gateway.pid").write_text("12345")
         (default_home / "gateway_state.json").write_text("{}")
         (default_home / "processes.json").write_text("[]")
 
         profile_dir = create_profile("coder", clone_all=True, no_alias=True)
 
-        # Content should be copied
         assert (profile_dir / "memories" / "note.md").read_text() == "remember this"
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
-        # Runtime files should be stripped
         assert not (profile_dir / "gateway.pid").exists()
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
@@ -174,15 +154,11 @@ class TestCreateProfile:
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
-        # No error; optional files just not copied
         assert not (profile_dir / "config.yaml").exists()
         assert not (profile_dir / ".env").exists()
         assert not (profile_dir / "SOUL.md").exists()
 
 
-# ===================================================================
-# TestDeleteProfile
-# ===================================================================
 
 class TestDeleteProfile:
     """Tests for delete_profile()."""
@@ -190,7 +166,6 @@ class TestDeleteProfile:
     def test_removes_directory(self, profile_env):
         profile_dir = create_profile("coder", no_alias=True)
         assert profile_dir.is_dir()
-        # Mock gateway import to avoid real systemd/launchd interaction
         with patch("daedalus_cli.profiles._cleanup_gateway_service"):
             delete_profile("coder", yes=True)
         assert not profile_dir.is_dir()
@@ -204,9 +179,6 @@ class TestDeleteProfile:
             delete_profile("nonexistent", yes=True)
 
 
-# ===================================================================
-# TestListProfiles
-# ===================================================================
 
 class TestListProfiles:
     """Tests for list_profiles()."""
@@ -239,9 +211,6 @@ class TestListProfiles:
         assert profiles[0].is_default is True
 
 
-# ===================================================================
-# TestActiveProfile
-# ===================================================================
 
 class TestActiveProfile:
     """Tests for set_active_profile() / get_active_profile()."""
@@ -275,15 +244,11 @@ class TestActiveProfile:
             set_active_profile("nonexistent")
 
 
-# ===================================================================
-# TestGetActiveProfileName
-# ===================================================================
 
 class TestGetActiveProfileName:
     """Tests for get_active_profile_name()."""
 
     def test_default_daedalus_home_returns_default(self, profile_env):
-        # DAEDALUS_HOME points to tmp_path/.daedalus which is the default
         assert get_active_profile_name() == "default"
 
     def test_profile_path_returns_profile_name(self, profile_env, monkeypatch):
@@ -301,9 +266,6 @@ class TestGetActiveProfileName:
         assert get_active_profile_name() == "custom"
 
 
-# ===================================================================
-# TestResolveProfileEnv
-# ===================================================================
 
 class TestResolveProfileEnv:
     """Tests for resolve_profile_env()."""
@@ -328,15 +290,11 @@ class TestResolveProfileEnv:
             resolve_profile_env("INVALID!")
 
 
-# ===================================================================
-# TestAliasCollision
-# ===================================================================
 
 class TestAliasCollision:
     """Tests for check_alias_collision()."""
 
     def test_normal_name_returns_none(self, profile_env):
-        # Mock 'which' to return not-found
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             result = check_alias_collision("mybot")
@@ -358,9 +316,6 @@ class TestAliasCollision:
         assert "reserved" in result.lower()
 
 
-# ===================================================================
-# TestRenameProfile
-# ===================================================================
 
 class TestRenameProfile:
     """Tests for rename_profile()."""
@@ -371,7 +326,6 @@ class TestRenameProfile:
         old_dir = tmp_path / ".daedalus" / "profiles" / "oldname"
         assert old_dir.is_dir()
 
-        # Mock alias collision to avoid subprocess calls
         with patch("daedalus_cli.profiles.check_alias_collision", return_value="skip"):
             new_dir = rename_profile("oldname", "newname")
 
@@ -399,16 +353,12 @@ class TestRenameProfile:
             rename_profile("alpha", "beta")
 
 
-# ===================================================================
-# TestExportImport
-# ===================================================================
 
 class TestExportImport:
     """Tests for export_profile() / import_profile()."""
 
     def test_export_creates_tar_gz(self, profile_env, tmp_path):
         create_profile("coder", no_alias=True)
-        # Put a marker file so we can verify content
         profile_dir = get_profile_dir("coder")
         (profile_dir / "marker.txt").write_text("hello")
 
@@ -420,7 +370,6 @@ class TestExportImport:
         assert tarfile.is_tarfile(str(result))
 
     def test_import_restores_from_archive(self, profile_env, tmp_path):
-        # Create and export a profile
         create_profile("coder", no_alias=True)
         profile_dir = get_profile_dir("coder")
         (profile_dir / "marker.txt").write_text("hello")
@@ -429,7 +378,6 @@ class TestExportImport:
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         export_profile("coder", str(archive_path))
 
-        # Delete the profile, then import it back under a new name
         import shutil
         shutil.rmtree(profile_dir)
         assert not profile_dir.is_dir()
@@ -446,7 +394,6 @@ class TestExportImport:
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         export_profile("coder", str(archive_path))
 
-        # Importing to same existing name should fail
         with pytest.raises(FileExistsError):
             import_profile(str(archive_path), name="coder")
 
@@ -488,9 +435,6 @@ class TestExportImport:
         with pytest.raises(FileNotFoundError):
             export_profile("nonexistent", str(tmp_path / "out.tar.gz"))
 
-    # ---------------------------------------------------------------
-    # Default profile export / import
-    # ---------------------------------------------------------------
 
     def test_export_default_creates_valid_archive(self, profile_env, tmp_path):
         """Exporting the default profile produces a valid tar.gz."""
@@ -522,7 +466,7 @@ class TestExportImport:
             names = tf.getnames()
 
         assert "default/config.yaml" in names
-        assert "default/.env" not in names  # credentials excluded
+        assert "default/.env" not in names
         assert "default/SOUL.md" in names
         assert "default/memories/MEMORY.md" in names
 
@@ -531,7 +475,6 @@ class TestExportImport:
         default_dir = get_profile_dir("default")
         (default_dir / "config.yaml").write_text("ok")
 
-        # Create dirs/files that should be excluded
         for d in ("daedalus", ".worktrees", "profiles", "bin",
                   "image_cache", "logs", "sandboxes", "checkpoints"):
             sub = default_dir / d
@@ -550,10 +493,8 @@ class TestExportImport:
         with tarfile.open(str(output), "r:gz") as tf:
             names = tf.getnames()
 
-        # Config is present
         assert "default/config.yaml" in names
 
-        # Infrastructure excluded
         excluded_prefixes = [
             "default/daedalus", "default/.worktrees", "default/profiles",
             "default/bin", "default/image_cache", "default/logs",
@@ -632,9 +573,6 @@ class TestExportImport:
         assert (imported / "memories" / "MEMORY.md").read_text() == "important fact"
 
 
-# ===================================================================
-# TestProfileIsolation
-# ===================================================================
 
 class TestProfileIsolation:
     """Verify that two profiles have completely separate paths."""
@@ -658,14 +596,10 @@ class TestProfileIsolation:
         alpha_dir = get_profile_dir("alpha")
         beta_dir = get_profile_dir("beta")
         assert alpha_dir / "skills" != beta_dir / "skills"
-        # Verify both exist and are independent dirs
         assert (alpha_dir / "skills").is_dir()
         assert (beta_dir / "skills").is_dir()
 
 
-# ===================================================================
-# TestCompletion
-# ===================================================================
 
 class TestCompletion:
     """Tests for bash/zsh completion generators."""
@@ -689,9 +623,6 @@ class TestCompletion:
         assert "_daedalus" in script
 
 
-# ===================================================================
-# TestGetProfilesRoot / TestGetDefaultDaedalusHome (internal helpers)
-# ===================================================================
 
 class TestInternalHelpers:
     """Tests for _get_profiles_root() and _get_default_daedalus_home()."""
@@ -707,9 +638,6 @@ class TestInternalHelpers:
         assert home == tmp_path / ".daedalus"
 
 
-# ===================================================================
-# Edge cases and additional coverage
-# ===================================================================
 
 class TestEdgeCases:
     """Additional edge-case tests."""
@@ -733,17 +661,13 @@ class TestEdgeCases:
         tmp_path = profile_env
         default_home = tmp_path / ".daedalus"
 
-        # No pid file -> not running
         assert _check_gateway_running(default_home) is False
 
-        # Write a PID file with a JSON payload
         pid_file = default_home / "gateway.pid"
         pid_file.write_text(json.dumps({"pid": 99999}))
 
-        # os.kill(99999, 0) should raise ProcessLookupError -> not running
         assert _check_gateway_running(default_home) is False
 
-        # Mock os.kill to simulate a running process
         with patch("os.kill", return_value=None):
             assert _check_gateway_running(default_home) is True
 
@@ -776,7 +700,6 @@ class TestEdgeCases:
     def test_clone_from_named_profile(self, profile_env):
         """Clone config from a named (non-default) profile."""
         tmp_path = profile_env
-        # Create source profile with config
         source_dir = create_profile("source", no_alias=True)
         (source_dir / "config.yaml").write_text("model: cloned")
         (source_dir / ".env").write_text("SECRET=yes")

@@ -7,9 +7,6 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Helpers to build mock Daytona SDK objects
-# ---------------------------------------------------------------------------
 
 def _make_exec_response(result="", exit_code=0):
     return SimpleNamespace(result=result, exit_code=exit_code)
@@ -46,9 +43,6 @@ def _patch_daytona_imports(monkeypatch):
     return daytona_mod
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture()
 def daytona_sdk(monkeypatch):
@@ -59,9 +53,7 @@ def daytona_sdk(monkeypatch):
 @pytest.fixture()
 def make_env(daytona_sdk, monkeypatch):
     """Factory that creates a DaytonaEnvironment with a mocked SDK."""
-    # Prevent is_interrupted from interfering
     monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
-    # Prevent skills/credential sync from consuming mock exec calls
     monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", lambda: [])
     monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
     monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
@@ -75,7 +67,6 @@ def make_env(daytona_sdk, monkeypatch):
         **kwargs,
     ):
         sandbox = sandbox or _make_sandbox()
-        # Mock the $HOME detection
         sandbox.process.exec.return_value = _make_exec_response(result=home_dir)
 
         mock_client = MagicMock()
@@ -84,10 +75,8 @@ def make_env(daytona_sdk, monkeypatch):
         if get_side_effect is not None:
             mock_client.get.side_effect = get_side_effect
         else:
-            # Default: no existing sandbox found via get()
             mock_client.get.side_effect = daytona_sdk.DaytonaError("not found")
 
-        # Default: no legacy sandbox found via list()
         if list_return is not None:
             mock_client.list.return_value = list_return
         else:
@@ -103,15 +92,12 @@ def make_env(daytona_sdk, monkeypatch):
             persistent_filesystem=persistent,
             **kwargs,
         )
-        env._mock_client = mock_client  # expose for assertions
+        env._mock_client = mock_client
         return env
 
     return _factory
 
 
-# ---------------------------------------------------------------------------
-# Constructor / cwd resolution
-# ---------------------------------------------------------------------------
 
 class TestCwdResolution:
     def test_default_cwd_resolves_home(self, make_env):
@@ -130,16 +116,13 @@ class TestCwdResolution:
         sb = _make_sandbox()
         sb.process.exec.side_effect = RuntimeError("exec failed")
         env = make_env(sandbox=sb)
-        assert env.cwd == "/home/daytona"  # keeps constructor default
+        assert env.cwd == "/home/daytona"
 
     def test_empty_home_keeps_default_cwd(self, make_env):
         env = make_env(home_dir="")
-        assert env.cwd == "/home/daytona"  # keeps constructor default
+        assert env.cwd == "/home/daytona"
 
 
-# ---------------------------------------------------------------------------
-# Sandbox persistence / resume
-# ---------------------------------------------------------------------------
 
 class TestPersistence:
     def test_persistent_resumes_via_get(self, make_env):
@@ -172,8 +155,6 @@ class TestPersistence:
             task_id="mytask",
         )
         env._mock_client.create.assert_called_once()
-        # Verify the name and labels were passed to CreateSandboxFromImageParams
-        # by checking get() was called with the right sandbox name
         env._mock_client.get.assert_called_with("daedalus-mytask")
         env._mock_client.list.assert_called_with(
             labels={"daedalus_task_id": "mytask"}, page=1, limit=1)
@@ -185,9 +166,6 @@ class TestPersistence:
         env._mock_client.create.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# Cleanup
-# ---------------------------------------------------------------------------
 
 class TestCleanup:
     def test_persistent_cleanup_stops_sandbox(self, make_env):
@@ -205,26 +183,22 @@ class TestCleanup:
     def test_cleanup_idempotent(self, make_env):
         env = make_env(persistent=True)
         env.cleanup()
-        env.cleanup()  # should not raise
+        env.cleanup()
 
     def test_cleanup_swallows_errors(self, make_env):
         env = make_env(persistent=True)
         env._sandbox.stop.side_effect = RuntimeError("stop failed")
-        env.cleanup()  # should not raise
+        env.cleanup()
         assert env._sandbox is None
 
 
-# ---------------------------------------------------------------------------
-# Execute
-# ---------------------------------------------------------------------------
 
 class TestExecute:
     def test_basic_command(self, make_env):
         sb = _make_sandbox()
-        # First call: $HOME detection; subsequent calls: actual commands
         sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),       # $HOME
-            _make_exec_response(result="hello", exit_code=0),  # actual cmd
+            _make_exec_response(result="/root"),
+            _make_exec_response(result="hello", exit_code=0),
         ]
         sb.state = "started"
         env = make_env(sandbox=sb)
@@ -243,11 +217,9 @@ class TestExecute:
         env = make_env(sandbox=sb, timeout=42)
 
         env.execute("echo hello")
-        # The command sent to exec should be wrapped with `timeout N sh -c '...'`
         call_args = sb.process.exec.call_args_list[-1]
         cmd = call_args[0][0]
         assert cmd.startswith("timeout 42 sh -c ")
-        # SDK timeout param should NOT be passed
         assert "timeout" not in call_args[1]
 
     def test_timeout_returns_exit_code_124(self, make_env):
@@ -285,8 +257,6 @@ class TestExecute:
         env = make_env(sandbox=sb)
 
         env.execute("python3", stdin_data="print('hi')")
-        # Check that the command passed to exec contains heredoc markers
-        # (single quotes get shell-escaped by shlex.quote, so check components)
         call_args = sb.process.exec.call_args_list[-1]
         cmd = call_args[0][0]
         assert "DAEDALUS_EOF_" in cmd
@@ -310,9 +280,9 @@ class TestExecute:
         sb = _make_sandbox()
         sb.state = "started"
         sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),  # $HOME
-            daytona_sdk.DaytonaError("transient"),  # first attempt fails
-            _make_exec_response(result="ok", exit_code=0),  # retry succeeds
+            _make_exec_response(result="/root"),
+            daytona_sdk.DaytonaError("transient"),
+            _make_exec_response(result="ok", exit_code=0),
         ]
         env = make_env(sandbox=sb)
 
@@ -321,9 +291,6 @@ class TestExecute:
         assert result["returncode"] == 0
 
 
-# ---------------------------------------------------------------------------
-# Resource conversion
-# ---------------------------------------------------------------------------
 
 class TestResourceConversion:
     def _get_resources_kwargs(self, daytona_sdk):
@@ -344,9 +311,6 @@ class TestResourceConversion:
         assert kw["disk"] == 1
 
 
-# ---------------------------------------------------------------------------
-# Ensure sandbox ready
-# ---------------------------------------------------------------------------
 
 class TestInterrupt:
     def test_interrupt_stops_sandbox_and_returns_130(self, make_env, monkeypatch):
@@ -358,8 +322,8 @@ class TestInterrupt:
         def exec_side_effect(*args, **kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
-                return _make_exec_response(result="/root")  # $HOME detection
-            event.wait(timeout=5)  # simulate long-running command
+                return _make_exec_response(result="/root")
+            event.wait(timeout=5)
             return _make_exec_response(result="done", exit_code=0)
 
         sb.process.exec.side_effect = exec_side_effect
@@ -376,18 +340,15 @@ class TestInterrupt:
             event.set()
 
 
-# ---------------------------------------------------------------------------
-# Retry exhaustion
-# ---------------------------------------------------------------------------
 
 class TestRetryExhausted:
     def test_both_attempts_fail(self, make_env, daytona_sdk):
         sb = _make_sandbox()
         sb.state = "started"
         sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),       # $HOME
-            daytona_sdk.DaytonaError("fail1"),         # first attempt
-            daytona_sdk.DaytonaError("fail2"),         # retry
+            _make_exec_response(result="/root"),
+            daytona_sdk.DaytonaError("fail1"),
+            daytona_sdk.DaytonaError("fail2"),
         ]
         env = make_env(sandbox=sb)
 
@@ -396,9 +357,6 @@ class TestRetryExhausted:
         assert "Daytona execution error" in result["output"]
 
 
-# ---------------------------------------------------------------------------
-# Ensure sandbox ready
-# ---------------------------------------------------------------------------
 
 class TestEnsureSandboxReady:
     def test_restarts_stopped_sandbox(self, make_env):

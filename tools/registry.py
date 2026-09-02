@@ -102,7 +102,6 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
         if registers:
             module_names.append(f"tools.{path.stem}")
 
-    # Drop entries for files that no longer exist; rewrite only when changed.
     if cache_dirty or set(fresh_cache) != set(cache):
         _save_discovery_cache(fresh_cache)
 
@@ -119,8 +118,6 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
 def _discovery_cache_path() -> Optional[Path]:
     """Path of the tool-discovery verdict cache, or None if unresolvable."""
     try:
-        # Deferred import keeps tools/registry.py a no-deps leaf at module
-        # import time (daedalus_constants itself is stdlib-only, so no cycle).
         from daedalus_constants import get_daedalus_home
 
         return Path(get_daedalus_home()) / "cache" / "tool_discovery_cache.json"
@@ -147,7 +144,7 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
     if path is None:
         return
     try:
-        from utils import atomic_json_write  # stdlib+yaml only; no cycle
+        from utils import atomic_json_write
 
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, cache, indent=0)
@@ -177,10 +174,6 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
-        # Optional zero-arg callable returning a dict of schema overrides
-        # applied at get_definitions() time. Use for fields that depend on
-        # runtime config (e.g. delegate_task's description must reflect the
-        # user's current delegation.max_concurrent_children/max_spawn_depth).
         self.dynamic_schema_overrides = dynamic_schema_overrides
 
 
@@ -194,9 +187,6 @@ class ToolRegistry:
         self._generation = 0
         self._toolset_aliases: Dict[str, str] = {}
 
-    # ------------------------------------------------------------------
-    # Registration
-    # ------------------------------------------------------------------
 
     def register(
         self,
@@ -248,7 +238,6 @@ class ToolRegistry:
         entry = self._tools.pop(name, None)
         if entry is None:
             return
-        # Drop the toolset check if this was the last tool in that toolset
         if entry.toolset in self._toolset_checks and not any(
             e.toolset == entry.toolset for e in self._tools.values()
         ):
@@ -257,9 +246,6 @@ class ToolRegistry:
             self._generation += 1
         logger.debug("Deregistered tool: %s", name)
 
-    # ------------------------------------------------------------------
-    # Toolset aliases (MCP parity — v0.20.0)
-    # ------------------------------------------------------------------
 
     def register_toolset_alias(self, alias: str, toolset: str) -> None:
         """Register an explicit alias for a canonical toolset name."""
@@ -289,15 +275,11 @@ class ToolRegistry:
             entry = self._tools.get(name)
             if entry is not None:
                 return entry.toolset
-            # Fall back to alias resolution for MCP-provided tool names
             for alias, target in self._toolset_aliases.items():
                 if name.startswith(alias + "_") or name == alias:
                     return target
             return None
 
-    # ------------------------------------------------------------------
-    # Schema retrieval
-    # ------------------------------------------------------------------
 
     def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
@@ -323,13 +305,7 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}
-            # Apply runtime-dynamic overrides (e.g. delegate_task description
-            # depends on current delegation.max_concurrent_children /
-            # max_spawn_depth). Caller side (model_tools.get_tool_definitions)
-            # already keys its memo on config.yaml mtime + size, so changes
-            # to delegation.* in config invalidate the cache automatically.
             if entry.dynamic_schema_overrides is not None:
                 try:
                     overrides = entry.dynamic_schema_overrides()
@@ -344,9 +320,6 @@ class ToolRegistry:
             result.append({"type": "function", "function": schema_with_name})
         return result
 
-    # ------------------------------------------------------------------
-    # Dispatch
-    # ------------------------------------------------------------------
 
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
         """Execute a tool handler by name.
@@ -367,9 +340,6 @@ class ToolRegistry:
             logger.exception("Tool %s dispatch error: %s", name, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
 
-    # ------------------------------------------------------------------
-    # Query helpers  (replace redundant dicts in model_tools.py)
-    # ------------------------------------------------------------------
 
     def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
         """Return per-tool max result size, or *default* (or global default)."""
@@ -488,24 +458,9 @@ class ToolRegistry:
         return available, unavailable
 
 
-# Module-level singleton
 registry = ToolRegistry()
 
 
-# ---------------------------------------------------------------------------
-# Helpers for tool response serialization
-# ---------------------------------------------------------------------------
-# Every tool handler must return a JSON string.  These helpers eliminate the
-# boilerplate ``json.dumps({"error": msg}, ensure_ascii=False)`` that appears
-# hundreds of times across tool files.
-#
-# Usage:
-#   from tools.registry import registry, tool_error, tool_result
-#
-#   return tool_error("something went wrong")
-#   return tool_error("not found", code=404)
-#   return tool_result(success=True, data=payload)
-#   return tool_result(items)            # pass a dict directly
 
 
 def tool_error(message, **extra) -> str:

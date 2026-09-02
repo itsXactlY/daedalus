@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────
 
 
 def _make_stream_chunk(
@@ -55,7 +54,6 @@ def _make_empty_chunk(model=None, usage=None):
     return SimpleNamespace(choices=[], model=model, usage=usage)
 
 
-# ── Test: Streaming Accumulator ──────────────────────────────────────────
 
 
 class TestStreamingAccumulator:
@@ -219,7 +217,6 @@ class TestStreamingAccumulator:
         assert len(response.choices[0].message.tool_calls) == 1
 
 
-# ── Test: Streaming Callbacks ────────────────────────────────────────────
 
 
 class TestStreamingCallbacks:
@@ -360,17 +357,11 @@ class TestStreamingCallbacks:
 
         response = agent._interruptible_streaming_api_call({})
 
-        # Text before tool call IS fired (we don't know yet it will have tools)
         assert "thinking..." in deltas
-        # Text after tool call IS still routed to stream_delta_callback so that
-        # reasoning tag extraction can fire (PR #3566).  Display-level suppression
-        # of non-reasoning text happens in the CLI's _stream_delta, not here.
         assert " more text" in deltas
-        # Content is still accumulated in the response
         assert response.choices[0].message.content == "thinking... more text"
 
 
-# ── Test: Streaming Fallback ────────────────────────────────────────────
 
 
 class TestStreamingFallback:
@@ -548,8 +539,6 @@ class TestStreamingFallback:
         from run_agent import AIAgent
         import httpx
 
-        # Create an APIError that mimics what the OpenAI SDK raises from SSE error events.
-        # Key: no status_code attribute (unlike APIStatusError which has one).
         from openai import APIError as OAIAPIError
         sse_error = OAIAPIError(
             message="Network connection lost.",
@@ -590,11 +579,8 @@ class TestStreamingFallback:
         response = agent._interruptible_streaming_api_call({})
 
         assert response.choices[0].message.content == "fallback after SSE retries"
-        # Should retry 3 times (default DAEDALUS_STREAM_RETRIES=2 → 3 attempts)
-        # before falling back to non-streaming
         assert mock_client.chat.completions.create.call_count == 3
         mock_non_stream.assert_called_once()
-        # Connection cleanup should happen for each failed retry
         assert mock_close.call_count >= 2
 
     @patch("run_agent.AIAgent._interruptible_api_call")
@@ -645,12 +631,10 @@ class TestStreamingFallback:
         response = agent._interruptible_streaming_api_call({})
 
         assert response.choices[0].message.content == "fallback no retry"
-        # Should NOT retry — goes straight to non-streaming fallback
         assert mock_client.chat.completions.create.call_count == 1
         mock_non_stream.assert_called_once()
 
 
-# ── Test: Reasoning Streaming ────────────────────────────────────────────
 
 
 class TestReasoningStreaming:
@@ -695,7 +679,6 @@ class TestReasoningStreaming:
         assert response.choices[0].message.content == "The answer is 42"
 
 
-# ── Test: _has_stream_consumers ──────────────────────────────────────────
 
 
 class TestHasStreamConsumers:
@@ -734,7 +717,6 @@ class TestHasStreamConsumers:
         assert agent._has_stream_consumers() is True
 
 
-# ── Test: Codex stream fires callbacks ────────────────────────────────
 
 
 class TestCodexStreamCallbacks:
@@ -755,7 +737,6 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
-        # Mock the stream context manager
         mock_event_text = SimpleNamespace(
             type="response.output_text.delta",
             delta="Hello from Codex!",

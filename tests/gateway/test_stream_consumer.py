@@ -9,7 +9,6 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
-# ── _clean_for_display unit tests ────────────────────────────────────────
 
 
 class TestCleanForDisplay:
@@ -59,7 +58,6 @@ class TestCleanForDisplay:
         """Blank lines left by removed tags are collapsed."""
         text = "Before\n\n\nMEDIA:/tmp/file.png\n\n\nAfter"
         result = GatewayStreamConsumer._clean_for_display(text)
-        # Should not have 3+ consecutive newlines
         assert "\n\n\n" not in result
 
     def test_media_only_response(self):
@@ -80,12 +78,9 @@ class TestCleanForDisplay:
         """Normal colons and text with 'MEDIA' as a word aren't stripped."""
         text = "The media: files are stored in /tmp. Use social MEDIA carefully."
         result = GatewayStreamConsumer._clean_for_display(text)
-        # "MEDIA:" in upper case without a path won't match \S+ (space follows)
-        # But "media:" is lowercase so won't match either
         assert result == text
 
 
-# ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 
 
 class TestSendOrEditMediaStripping:
@@ -118,9 +113,7 @@ class TestSendOrEditMediaStripping:
         adapter.MAX_MESSAGE_LENGTH = 4096
 
         consumer = GatewayStreamConsumer(adapter, "chat_123")
-        # First send
         await consumer._send_or_edit("Starting response...")
-        # Edit with MEDIA: tag
         await consumer._send_or_edit("Here is the result\nMEDIA:/tmp/image.png")
 
         adapter.edit_message.assert_called_once()
@@ -140,7 +133,6 @@ class TestSendOrEditMediaStripping:
         adapter.send.assert_not_called()
 
 
-# ── Integration: full stream run ─────────────────────────────────────────
 
 
 class TestStreamRunMediaStripping:
@@ -159,14 +151,12 @@ class TestStreamRunMediaStripping:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        # Feed deltas
         consumer.on_delta("Here is your generated image\n")
         consumer.on_delta("MEDIA:/home/user/.daedalus/cache/images/abc123.png")
         consumer.finish()
 
         await consumer.run()
 
-        # Verify the final text sent/edited doesn't contain MEDIA:
         all_calls = []
         for call in adapter.send.call_args_list:
             all_calls.append(call[1].get("content", ""))
@@ -179,7 +169,6 @@ class TestStreamRunMediaStripping:
         assert consumer.already_sent
 
 
-# ── Segment break (tool boundary) tests ──────────────────────────────────
 
 
 class TestSegmentBreakOnToolBoundary:
@@ -200,18 +189,13 @@ class TestSegmentBreakOnToolBoundary:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        # Phase 1: intermediate text before tool calls
         consumer.on_delta("Let me search for that...")
-        # Tool boundary — model is about to call tools
         consumer.on_delta(None)
-        # Phase 2: final response text after tools finished
         consumer.on_delta("Here are the results.")
         consumer.finish()
 
         await consumer.run()
 
-        # Should have sent TWO separate messages (two adapter.send calls),
-        # not just edited the first one.
         assert adapter.send.call_count == 2
         first_text = adapter.send.call_args_list[0][1]["content"]
         second_text = adapter.send.call_args_list[1][1]["content"]
@@ -230,14 +214,12 @@ class TestSegmentBreakOnToolBoundary:
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
-        # No text before the boundary — model went straight to tool calls
         consumer.on_delta(None)
         consumer.on_delta("Final answer.")
         consumer.finish()
 
         await consumer.run()
 
-        # Only one send call (the final answer)
         assert adapter.send.call_count == 1
         assert "Final answer" in adapter.send.call_args_list[0][1]["content"]
 
@@ -261,20 +243,14 @@ class TestSegmentBreakOnToolBoundary:
 
         await consumer.run()
 
-        # The first segment should have been finalized without cursor.
-        # Check all edit_message calls + the initial send for the first segment.
-        # The last state of msg_1 should NOT have the cursor.
         all_texts = []
         for call in adapter.send.call_args_list:
             all_texts.append(call[1].get("content", ""))
         for call in adapter.edit_message.call_args_list:
             all_texts.append(call[1].get("content", ""))
 
-        # Find the text(s) that contain "Thinking" — the finalized version
-        # should not have the cursor.
         thinking_texts = [t for t in all_texts if "Thinking" in t]
         assert thinking_texts, "Expected at least one message with 'Thinking'"
-        # The LAST occurrence is the finalized version
         assert "▉" not in thinking_texts[-1], (
             f"Cursor found in finalized segment: {thinking_texts[-1]!r}"
         )
@@ -294,15 +270,14 @@ class TestSegmentBreakOnToolBoundary:
         consumer = GatewayStreamConsumer(adapter, "chat_123", config)
 
         consumer.on_delta("Phase 1")
-        consumer.on_delta(None)  # tool boundary
+        consumer.on_delta(None)
         consumer.on_delta("Phase 2")
-        consumer.on_delta(None)  # another tool boundary
+        consumer.on_delta(None)
         consumer.on_delta("Phase 3")
         consumer.finish()
 
         await consumer.run()
 
-        # Three separate messages
         assert adapter.send.call_count == 3
 
     @pytest.mark.asyncio

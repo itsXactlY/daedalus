@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-# Ensure repo root is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 try:
@@ -25,7 +24,6 @@ except ImportError:
     pytest.skip("atroposlib not installed", allow_module_level=True)
 
 
-# ─── Registry tests ─────────────────────────────────────────────────────
 
 class TestParserRegistry:
     def test_list_parsers_returns_nonempty(self):
@@ -52,7 +50,6 @@ class TestParserRegistry:
             assert hasattr(parser, "parse")
 
 
-# ─── Daedalus parser tests ────────────────────────────────────────────────
 
 class TestDaedalusParser:
     @pytest.fixture
@@ -80,7 +77,6 @@ class TestDaedalusParser:
         assert tool_calls is not None
         assert len(tool_calls) == 1
         assert tool_calls[0].function.name == "terminal"
-        # Content should have the surrounding text
         if content is not None:
             assert "check that" in content or content.strip() != ""
 
@@ -113,23 +109,18 @@ class TestDaedalusParser:
     def test_malformed_json_in_tool_call(self, parser):
         text = '<tool_call>not valid json</tool_call>'
         content, tool_calls = parser.parse(text)
-        # Should either return None tool_calls or handle gracefully
-        # (implementation may vary — some parsers return error tool calls)
 
     def test_truncated_tool_call(self, parser):
         """Test handling of unclosed tool_call tag (model truncated mid-generation)."""
         text = '<tool_call>{"name": "terminal", "arguments": {"command": "ls -la"}'
         content, tool_calls = parser.parse(text)
-        # Parser should handle truncated output gracefully
-        # Either parse it successfully or return None
 
 
-# ─── Parse result contract tests (applies to ALL parsers) ───────────────
 
 class TestParseResultContract:
     """Ensure all parsers conform to the ParseResult contract."""
 
-    @pytest.fixture(params=["hermes"])  # Add more as needed
+    @pytest.fixture(params=["hermes"])
     def parser(self, request):
         return get_parser(request.param)
 
@@ -145,7 +136,6 @@ class TestParseResultContract:
 
     def test_tool_calls_are_proper_objects(self, parser):
         """When tool calls are found, they should be ChatCompletionMessageToolCall objects."""
-        # Use daedalus format since that's universal
         text = '<tool_call>{"name": "terminal", "arguments": {"command": "echo hi"}}</tool_call>'
         content, tool_calls = parser.parse(text)
         if tool_calls is not None:
@@ -159,7 +149,6 @@ class TestParseResultContract:
                 assert isinstance(tc.function.arguments, str)
 
 
-# ─── DeepSeek V3 parser tests ───────────────────────────────────────────
 
 class TestDeepSeekV3Parser:
     @pytest.fixture
@@ -211,7 +200,6 @@ class TestDeepSeekV3Parser:
         assert len(tool_calls) == 1
 
 
-# ─── Mistral parser tests ───────────────────────────────────────────────
 
 class TestMistralParser:
     @pytest.fixture

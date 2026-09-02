@@ -40,12 +40,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-# Raw-bytes INGEST budget — what the resolver will load before handing off.
-# This is deliberately the 50MB download cap (tools/vision_tools._VISION_MAX_DOWNLOAD_BYTES),
-# NOT the 20MB provider payload cap. The 20MB cap (_MAX_BASE64_BYTES) is a
-# *post-resize* limit enforced at the call sites: an oversized raw image must
-# still reach the resizer so it can be downscaled under the payload cap. Capping
-# raw bytes at 20MB here would reject every 20-50MB photo before resize can run.
 _MAX_INGEST_BYTES = 50 * 1024 * 1024
 
 
@@ -59,7 +53,7 @@ class UnsupportedScheme(ImageResolutionError):
     pass
 
 
-class SourceUnsafe(ImageResolutionError):  # SSRF / path-allowlist
+class SourceUnsafe(ImageResolutionError):
     pass
 
 
@@ -84,11 +78,9 @@ class ResolveContext:
 class ResolvedImage:
     data: bytes
     mime: str
-    origin: str  # one of: data | http | file | local | container
+    origin: str
 
 
-# Explicit URL scheme, e.g. "ftp://", "s3://". Bare Windows drive paths
-# ("C:\x.png") don't match because they lack the "//".
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
@@ -117,24 +109,10 @@ async def resolve_image_source(
             src=s,
         )
 
-    # Everything else is a filesystem path — including bare relative names
-    # like "pic.png" (accepted on main; a path-shape gate here regressed them).
     candidate = s[len("file://"):] if s.lower().startswith("file://") else s
     p = Path(os.path.expanduser(candidate))
-    # Confinement decision (see module docstring). Under a non-local backend
-    # a path is host-readable ONLY if it lands in a media cache (after
-    # translating a container-visible cache path back to its host mount);
-    # every other path is read inside the sandbox via exec-read, so a host
-    # path outside the caches never yields the host's bytes.
     host_target = _permitted_host_read_target(p, ctx)
     if host_target is not None and host_target.is_file():
-        # Shared credential-read guard (agent.file_safety, #57698): refuse
-        # secret-bearing files (.env, auth.json, ...) with an intentional,
-        # specific error instead of relying on the magic-byte sniff to
-        # reject them incidentally. Same chokepoint the image-gen/video-gen
-        # provider plugins enforce on model-supplied local paths. Import is
-        # best-effort (guard unavailability must not break image loading);
-        # a real block always propagates.
         try:
             from agent.file_safety import raise_if_read_blocked
         except Exception:  # noqa: BLE001 — guard unavailable: proceed
@@ -147,12 +125,7 @@ async def resolve_image_source(
         data = await asyncio.to_thread(host_target.read_bytes)
         return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
-        # Local backend: any path was host-readable, so a miss simply means
-        # the file doesn't exist — no sandbox to fall back to.
         raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
-    # Not a permitted host read (or the host file is absent) -> read the
-    # bytes inside the sandbox. Under a sandbox this reads the container's
-    # filesystem, never the host's.
     return await _resolve_container_fallback(p, ctx, s, permitted)
 
 
@@ -161,14 +134,13 @@ def _resolve_data_url(s: str) -> tuple[bytes, str]:
     if ";base64" not in header:
         raise NotAnImage("data: URL must be base64-encoded", src=s[:64])
     declared = header[len("data:"):].split(";", 1)[0].strip() or "application/octet-stream"
-    # Cheap pre-decode size gate on the encoded length (~4/3 expansion).
     if (len(payload) * 3) // 4 > _MAX_INGEST_BYTES:
         raise SourceTooLarge("data: URL exceeds size limit", src=s[:64])
     try:
         data = base64.b64decode(payload, validate=True)
     except Exception as exc:
         raise NotAnImage(f"invalid base64 in data: URL: {exc}", src=s[:64])
-    return data, declared  # real mime verified in _finalize via magic bytes
+    return data, declared
 
 
 def _http_block_reason(url: str) -> Optional[str]:
@@ -200,10 +172,9 @@ async def _download_to_bytes(url: str) -> bytes:
     with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tf:
         tmp = Path(tf.name)
     try:
-        # Enforces the 50MB stream cap, redirect SSRF guard, and website policy.
         await _download_image(url, tmp)
         return await asyncio.to_thread(tmp.read_bytes)
-    except PermissionError as exc:  # website policy block
+    except PermissionError as exc:
         raise SourceUnsafe(str(exc), src=url, origin="http")
     finally:
         tmp.unlink(missing_ok=True)
@@ -229,8 +200,8 @@ def _media_cache_roots() -> list:
 
     home = get_daedalus_home()
     return [
-        home / "cache",  # cache/images, cache/vision, cache/video(s), cache/audio
-        home / "images",  # desktop/clipboard/PDF uploads (tui_gateway) — #69575
+        home / "cache",
+        home / "images",
         home / "image_cache",
         home / "audio_cache",
         home / "video_cache",
@@ -330,9 +301,6 @@ async def _resolve_container_fallback(
     import asyncio
     import shlex
 
-    # Bring the sandbox up on demand: without this, the first vision_analyze of
-    # a session (before any terminal command) has no active env to read from
-    # under a non-local backend (issue #62825).
     _ensure_container_env(ctx.task_id)
 
     env = _get_active_env(ctx.task_id)
@@ -342,14 +310,6 @@ async def _resolve_container_fallback(
             f"session is available to read it",
             src=src, origin="container")
 
-    # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 bytes
-    # so a huge file (or /dev/zero) can't stream unbounded base64 into host
-    # memory — the +1 byte lets us distinguish "exactly at the cap" from
-    # "over the cap" after decode. The input redirect (< path) avoids argv
-    # entirely, so leading-dash paths can't be parsed as options; base64
-    # -w0 is GNU-only, so pipe through tr -d for BusyBox.
-    # env.execute is a blocking backend exec; keep it off the event loop so a
-    # multi-MB base64 read doesn't stall every other coroutine.
     qp = shlex.quote(str(p))
     cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
 
@@ -359,14 +319,9 @@ async def _resolve_container_fallback(
         if last_res.get("returncode", 1) == 0:
             break
         if attempt == 0:
-            # Cold-start: give the container a moment to settle its pipes
-            # before retrying. 150ms covers Docker exec warm-up in practice
-            # without making a real failure feel sluggish.
             await asyncio.sleep(0.15)
     if last_res.get("returncode", 1) != 0:
         diag = (last_res.get("output") or "").strip().splitlines()
-        # Keep the diagnostic small and noise-free: first non-empty line,
-        # trimmed to a sane length so it slots into the agent's error UI.
         first = next((ln.strip() for ln in diag if ln.strip()), "")
         suffix = f" ({first[:200]})" if first else ""
         raise SourceNotFound(
@@ -409,9 +364,6 @@ def _finalize(
         return ResolvedImage(data=data, mime=sniffed, origin=origin)
 
     if "image" in permitted and b"<svg" in data[:4096].lower():
-        # Pass SVG through — the vision call sites rasterize it to PNG
-        # via _normalize_to_supported_image before embedding (providers
-        # only ingest raster images).
         return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
 
     if "video" in permitted:

@@ -29,7 +29,6 @@ from daedalus_constants import display_daedalus_home
 logger = logging.getLogger(__name__)
 
 
-# ─── UI Helpers ───────────────────────────────────────────────────────────────
 
 def _info(text: str):
     print(color(f"  {text}", Colors.DIM))
@@ -72,7 +71,6 @@ def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
         return default
 
 
-# ─── Config Helpers ───────────────────────────────────────────────────────────
 
 def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     """Return the ``mcp_servers`` dict from config, or empty dict."""
@@ -109,7 +107,6 @@ def _env_key_for_server(name: str) -> str:
     return f"MCP_{name.upper().replace('-', '_')}_API_KEY"
 
 
-# ─── Discovery (temporary connect) ───────────────────────────────────────────
 
 def _probe_single_server(
     name: str, config: dict, connect_timeout: float = 30
@@ -136,7 +133,6 @@ def _probe_single_server(
         )
         for t in server._tools:
             desc = getattr(t, "description", "") or ""
-            # Truncate long descriptions for display
             if len(desc) > 80:
                 desc = desc[:77] + "..."
             tools_found.append((t.name, desc))
@@ -162,13 +158,11 @@ def _unwrap_exception_group(exc: BaseException) -> Exception:
     """
     while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         exc = exc.exceptions[0]
-    # Return a plain Exception so callers can catch normally
     if isinstance(exc, Exception):
         return exc
     return RuntimeError(str(exc))
 
 
-# ─── daedalus mcp add ──────────────────────────────────────────────────────────
 
 def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
@@ -178,7 +172,6 @@ def cmd_mcp_add(args):
     cmd_args = getattr(args, "args", None) or []
     auth_type = getattr(args, "auth", None)
 
-    # Validate transport
     if not url and not command:
         _error("Must specify --url <endpoint> or --command <cmd>")
         _info("Examples:")
@@ -186,14 +179,12 @@ def cmd_mcp_add(args):
         _info('  daedalus mcp add github --command npx --args @modelcontextprotocol/server-github')
         return
 
-    # Check if server already exists
     existing = _get_mcp_servers()
     if name in existing:
         if not _confirm(f"Server '{name}' already exists. Overwrite?", default=False):
             _info("Cancelled.")
             return
 
-    # Build initial config
     server_config: Dict[str, Any] = {}
     if url:
         server_config["url"] = url
@@ -202,7 +193,6 @@ def cmd_mcp_add(args):
         if cmd_args:
             server_config["args"] = cmd_args
 
-    # ── Authentication ────────────────────────────────────────────────
 
     if url and auth_type == "oauth":
         print()
@@ -223,14 +213,12 @@ def cmd_mcp_add(args):
         if not oauth_ok:
             _info("This server may not support OAuth.")
             if _confirm("Continue without authentication?", default=True):
-                # Don't store auth: oauth — server doesn't support it
                 pass
             else:
                 _info("Cancelled.")
                 return
 
     elif url:
-        # Prompt for API key / Bearer token for HTTP servers
         print()
         _info(f"Connecting to {url}")
         needs_auth = _confirm("Does this server require authentication?", default=True)
@@ -247,13 +235,11 @@ def cmd_mcp_add(args):
                         save_env_value(env_key, api_key)
                         _success(f"Saved to {display_daedalus_home()}/.env as {env_key}")
 
-                # Set header with env var interpolation
                 if api_key or existing_key:
                     server_config["headers"] = {
                         "Authorization": f"Bearer ${{{env_key}}}"
                     }
 
-    # ── Discovery: connect and list tools ─────────────────────────────
 
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))
@@ -276,7 +262,6 @@ def cmd_mcp_add(args):
             _success(f"Saved '{name}' to config")
         return
 
-    # ── Tool selection ────────────────────────────────────────────────
 
     print()
     _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
@@ -286,7 +271,6 @@ def cmd_mcp_add(args):
         print(f"    {color(tool_name, Colors.GREEN):40s} {short}")
     print()
 
-    # Ask: enable all, select, or cancel
     try:
         choice = input(
             color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
@@ -301,7 +285,6 @@ def cmd_mcp_add(args):
         return
 
     if choice in ("s", "select"):
-        # Interactive tool selection
         from daedalus_cli.curses_ui import curses_checklist
 
         labels = [f"{t[0]}  —  {t[1]}" for t in tools]
@@ -323,11 +306,9 @@ def cmd_mcp_add(args):
         tool_count = len(chosen_names)
         total = len(tools)
     else:
-        # Enable all (no filter needed — default behaviour)
         tool_count = len(tools)
         total = len(tools)
 
-    # ── Save ──────────────────────────────────────────────────────────
 
     server_config["enabled"] = True
     _save_mcp_server(name, server_config)
@@ -337,7 +318,6 @@ def cmd_mcp_add(args):
     _info("Start a new session to use these tools.")
 
 
-# ─── daedalus mcp remove ───────────────────────────────────────────────────────
 
 def cmd_mcp_remove(args):
     """Remove an MCP server from config."""
@@ -358,7 +338,6 @@ def cmd_mcp_remove(args):
     _remove_mcp_server(name)
     _success(f"Removed '{name}' from config")
 
-    # Clean up OAuth tokens if they exist
     try:
         from tools.mcp_oauth import remove_oauth_tokens
         remove_oauth_tokens(name)
@@ -367,7 +346,6 @@ def cmd_mcp_remove(args):
         pass
 
 
-# ─── daedalus mcp list ──────────────────────────────────────────────────────────
 
 def cmd_mcp_list(args=None):
     """List all configured MCP servers."""
@@ -387,15 +365,12 @@ def cmd_mcp_list(args=None):
     print(color("  MCP Servers:", Colors.CYAN + Colors.BOLD))
     print()
 
-    # Table header
     print(f"  {'Name':<16} {'Transport':<30} {'Tools':<12} {'Status':<10}")
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
-        # Transport info
         if "url" in cfg:
             url = cfg["url"]
-            # Truncate long URLs
             if len(url) > 28:
                 url = url[:25] + "..."
             transport = url
@@ -411,7 +386,6 @@ def cmd_mcp_list(args=None):
         else:
             transport = "?"
 
-        # Tool count
         tools_cfg = cfg.get("tools", {})
         if isinstance(tools_cfg, dict):
             include = tools_cfg.get("include")
@@ -425,7 +399,6 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        # Enabled status
         enabled = cfg.get("enabled", True)
         if isinstance(enabled, str):
             enabled = enabled.lower() in ("true", "1", "yes")
@@ -436,7 +409,6 @@ def cmd_mcp_list(args=None):
     print()
 
 
-# ─── daedalus mcp test ──────────────────────────────────────────────────────────
 
 def cmd_mcp_test(args):
     """Test connection to an MCP server."""
@@ -454,14 +426,12 @@ def cmd_mcp_test(args):
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
 
-    # Show transport info
     if "url" in cfg:
         _info(f"Transport: HTTP → {cfg['url']}")
     else:
         cmd = cfg.get("command", "?")
         _info(f"Transport: stdio → {cmd}")
 
-    # Show auth info (masked)
     auth_type = cfg.get("auth", "")
     headers = cfg.get("headers", {})
     if auth_type == "oauth":
@@ -469,7 +439,6 @@ def cmd_mcp_test(args):
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
-                # Mask the value
                 resolved = _interpolate_value(v)
                 if len(resolved) > 8:
                     masked = resolved[:4] + "***" + resolved[-4:]
@@ -479,7 +448,6 @@ def cmd_mcp_test(args):
     else:
         _info("Auth: none")
 
-    # Attempt connection
     start = time.monotonic()
     try:
         tools = _probe_single_server(name, cfg)
@@ -507,7 +475,6 @@ def _interpolate_value(value: str) -> str:
     return re.sub(r"\$\{(\w+)\}", _replace, value)
 
 
-# ─── daedalus mcp configure ────────────────────────────────────────────────────
 
 def _oauth_tokens_present(name: str) -> bool:
     """True if an OAuth token file actually landed on disk for this server.
@@ -551,8 +518,6 @@ def _reauth_oauth_server(name: str, server_config: dict) -> bool:
         _info("Use `daedalus mcp remove` + `daedalus mcp add` to reconfigure auth.")
         return False
 
-    # Wipe both disk and in-memory cache so the next probe forces a fresh
-    # OAuth flow.
     try:
         from tools.mcp_oauth_manager import get_manager
         get_manager().remove(name)
@@ -679,7 +644,6 @@ def cmd_mcp_configure(args):
 
     cfg = servers[name]
 
-    # Discover all available tools
     print()
     print(color(f"  Connecting to '{name}' to discover tools...", Colors.CYAN))
 
@@ -693,7 +657,6 @@ def cmd_mcp_configure(args):
         _warning("Server reports no tools.")
         return
 
-    # Determine which are currently enabled
     tools_cfg = cfg.get("tools", {})
     if isinstance(tools_cfg, dict):
         include = tools_cfg.get("include")
@@ -722,7 +685,6 @@ def cmd_mcp_configure(args):
     _info(f"Currently {currently}/{total} tools enabled for '{name}'.")
     print()
 
-    # Interactive checklist
     from daedalus_cli.curses_ui import curses_checklist
 
     labels = [f"{t[0]}  —  {t[1]}" for t in all_tools]
@@ -737,12 +699,10 @@ def cmd_mcp_configure(args):
         _info("No changes made.")
         return
 
-    # Update config
     config = load_config()
     server_entry = config.get("mcp_servers", {}).get(name, {})
 
     if len(chosen) == total:
-        # All selected → remove include/exclude (register all)
         server_entry.pop("tools", None)
     else:
         chosen_names = [tool_names[i] for i in sorted(chosen)]
@@ -758,7 +718,6 @@ def cmd_mcp_configure(args):
     _info("Start a new session for changes to take effect.")
 
 
-# ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 def mcp_command(args):
     """Main dispatcher for ``daedalus mcp`` subcommands."""
@@ -786,7 +745,6 @@ def mcp_command(args):
     if handler:
         handler(args)
     else:
-        # No subcommand — show list
         cmd_mcp_list()
         print(color("  Commands:", Colors.CYAN))
         _info("daedalus mcp serve                              Run as MCP server")

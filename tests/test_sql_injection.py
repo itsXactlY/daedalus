@@ -19,7 +19,6 @@ def test_get_sessions_all_query_is_parameterized():
     query = InsightsEngine._GET_SESSIONS_ALL
     assert "?" in query
     assert "started_at >= ?" in query
-    # Must not embed any runtime-variable content via brace interpolation
     assert "{" not in query
 
 

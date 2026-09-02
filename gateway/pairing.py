@@ -30,18 +30,15 @@ from typing import Optional
 from daedalus_constants import get_daedalus_dir
 
 
-# Unambiguous alphabet -- excludes 0/O, 1/I to prevent confusion
 ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 CODE_LENGTH = 8
 
-# Timing constants
-CODE_TTL_SECONDS = 3600             # Codes expire after 1 hour
-RATE_LIMIT_SECONDS = 600            # 1 request per user per 10 minutes
-LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
+CODE_TTL_SECONDS = 3600
+RATE_LIMIT_SECONDS = 600
+LOCKOUT_SECONDS = 3600
 
-# Limits
-MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
-MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
+MAX_PENDING_PER_PLATFORM = 3
+MAX_FAILED_ATTEMPTS = 5
 
 PAIRING_DIR = get_daedalus_dir("platforms/pairing", "pairing")
 
@@ -63,7 +60,7 @@ def _secure_write(path: Path, data: str) -> None:
         try:
             os.chmod(path, 0o600)
         except OSError:
-            pass  # Windows doesn't support chmod the same way
+            pass
     except BaseException:
         try:
             os.unlink(tmp_path)
@@ -84,8 +81,6 @@ class PairingStore:
 
     def __init__(self):
         PAIRING_DIR.mkdir(parents=True, exist_ok=True)
-        # Protects all read-modify-write cycles. The gateway runs multiple
-        # platform adapters concurrently in threads sharing one PairingStore.
         self._lock = threading.RLock()
 
     def _pending_path(self, platform: str) -> Path:
@@ -108,7 +103,6 @@ class PairingStore:
     def _save_json(self, path: Path, data: dict) -> None:
         _secure_write(path, json.dumps(data, indent=2, ensure_ascii=False))
 
-    # ----- Approved users -----
 
     def is_approved(self, platform: str, user_id: str) -> bool:
         """Check if a user is approved (paired) on a platform."""
@@ -145,7 +139,6 @@ class PairingStore:
                 return True
         return False
 
-    # ----- Pending codes -----
 
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""
@@ -161,23 +154,18 @@ class PairingStore:
         with self._lock:
             self._cleanup_expired(platform)
 
-            # Check lockout
             if self._is_locked_out(platform):
                 return None
 
-            # Check rate limit for this specific user
             if self._is_rate_limited(platform, user_id):
                 return None
 
-            # Check max pending
             pending = self._load_json(self._pending_path(platform))
             if len(pending) >= MAX_PENDING_PER_PLATFORM:
                 return None
 
-            # Generate cryptographically random code
             code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
 
-            # Store pending request
             pending[code] = {
                 "user_id": user_id,
                 "user_name": user_name,
@@ -185,7 +173,6 @@ class PairingStore:
             }
             self._save_json(self._pending_path(platform), pending)
 
-            # Record rate limit
             self._record_rate_limit(platform, user_id)
 
             return code
@@ -208,7 +195,6 @@ class PairingStore:
             entry = pending.pop(code)
             self._save_json(self._pending_path(platform), pending)
 
-            # Add to approved list
             self._approve_user(platform, entry["user_id"], entry.get("user_name", ""))
 
             return {
@@ -245,7 +231,6 @@ class PairingStore:
                 self._save_json(self._pending_path(p), {})
         return count
 
-    # ----- Rate limiting and lockout -----
 
     def _is_rate_limited(self, platform: str, user_id: str) -> bool:
         """Check if a user has requested a code too recently."""
@@ -277,12 +262,11 @@ class PairingStore:
         if fails >= MAX_FAILED_ATTEMPTS:
             lockout_key = f"_lockout:{platform}"
             limits[lockout_key] = time.time() + LOCKOUT_SECONDS
-            limits[fail_key] = 0  # Reset counter
+            limits[fail_key] = 0
             print(f"[pairing] Platform {platform} locked out for {LOCKOUT_SECONDS}s "
                   f"after {MAX_FAILED_ATTEMPTS} failed attempts", flush=True)
         self._save_json(self._rate_limit_path(), limits)
 
-    # ----- Cleanup -----
 
     def _cleanup_expired(self, platform: str) -> None:
         """Remove expired pending codes."""

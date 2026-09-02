@@ -34,14 +34,9 @@ class ToolCall:
 
     id: str | None
     name: str
-    arguments: str  # JSON string
+    arguments: str
     provider_data: dict[str, Any] | None = field(default=None, repr=False)
 
-    # ── Backward compatibility ──────────────────────────────────
-    # The agent loop reads tc.function.name / tc.function.arguments
-    # throughout run_agent.py (45+ sites).  These properties let
-    # NormalizedResponse pass through without the _nr_to_assistant_message
-    # shim, while keeping ToolCall's canonical fields flat.
     @property
     def type(self) -> str:
         return "function"
@@ -103,14 +98,11 @@ class NormalizedResponse:
 
     content: str | None
     tool_calls: list[ToolCall] | None
-    finish_reason: str  # "stop", "tool_calls", "length", "content_filter"
+    finish_reason: str
     reasoning: str | None = None
     usage: Usage | None = None
     provider_data: dict[str, Any] | None = field(default=None, repr=False)
 
-    # ── Backward compatibility ──────────────────────────────────
-    # The shim _nr_to_assistant_message() mapped these from provider_data.
-    # These properties let NormalizedResponse pass through directly.
     @property
     def reasoning_content(self) -> str | None:
         pd = self.provider_data or {}
@@ -144,9 +136,6 @@ class NormalizedResponse:
         return pd.get("codex_message_items")
 
 
-# ---------------------------------------------------------------------------
-# Factory helpers
-# ---------------------------------------------------------------------------
 
 
 def build_tool_call(

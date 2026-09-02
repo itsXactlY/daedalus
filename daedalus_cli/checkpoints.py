@@ -94,7 +94,6 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    # `list` is just a terser status — already covered.
     return cmd_status(args)
 
 
@@ -105,10 +104,6 @@ def cmd_prune(args: argparse.Namespace) -> int:
     max_size_mb = args.max_size_mb
     delete_orphans = not args.keep_orphans
 
-    # When set, restricts orphan deletion to exactly the identities shown in
-    # the confirmation preview below (v2 project hashes / pre-v2 shadow repo
-    # paths). `None` means "no restriction" — used for --force, where there
-    # is no preview to bind to.
     orphan_allowlist: Optional[set] = None
 
     if delete_orphans and not args.force:
@@ -138,13 +133,6 @@ def cmd_prune(args: argparse.Namespace) -> int:
             if not _confirm("Delete these orphan projects?"):
                 print("Aborted.")
                 return 1
-        # Bind the deletion to exactly what was just displayed (and, when
-        # non-empty, confirmed) — a project that becomes orphaned only
-        # *after* this preview (e.g. its workdir disappears while waiting on
-        # input()) must not be swept up under this same run. This is set
-        # unconditionally for every non-force run: an EMPTY preview binds to
-        # an EMPTY allowlist, so a zero-orphan preview can never authorize
-        # deletion of orphans discovered by the later rescan.
         orphan_allowlist = {p["hash"] for p in orphans}
         orphan_allowlist.update(p["path"] for p in pre_v2_orphans)
 
@@ -231,7 +219,7 @@ def cmd_clear_legacy(args: argparse.Namespace) -> int:
 
 def register_cli(parser: argparse.ArgumentParser) -> None:
     """Wire subcommands onto the ``daedalus checkpoints`` parser."""
-    parser.set_defaults(func=cmd_status)  # bare `daedalus checkpoints` → status
+    parser.set_defaults(func=cmd_status)
     subs = parser.add_subparsers(dest="checkpoints_command", metavar="COMMAND")
 
     p_status = subs.add_parser(

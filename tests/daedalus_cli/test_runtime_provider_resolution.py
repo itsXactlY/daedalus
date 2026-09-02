@@ -213,9 +213,7 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
 
-    # Should NOT raise — falls through to OpenRouter
     resolved = rp.resolve_runtime_provider(requested="auto")
-    # The fallthrough means it won't be qwen-oauth
     assert resolved["provider"] != "qwen-oauth"
 
 
@@ -694,7 +692,6 @@ def test_resolve_requested_provider_precedence(monkeypatch):
     assert rp.resolve_requested_provider() == "auto"
 
 
-# ── api_mode config override tests ──────────────────────────────────────
 
 
 def test_model_config_api_mode(monkeypatch):
@@ -913,7 +910,6 @@ def test_minimax_env_base_url_still_wins_over_config(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="minimax")
 
-    # Env var wins because resolve_api_key_provider_credentials prefers it
     assert resolved["base_url"] == "https://custom.example.com/v1"
 
 
@@ -929,7 +925,6 @@ def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="minimax")
 
-    # Should use the default, NOT the config base_url from a different provider
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
 
 
@@ -984,8 +979,6 @@ def test_opencode_zen_claude_defaults_to_messages(monkeypatch):
 
     assert resolved["provider"] == "opencode-zen"
     assert resolved["api_mode"] == "anthropic_messages"
-    # Trailing /v1 stripped for anthropic_messages mode — the Anthropic SDK
-    # appends its own /v1/messages to the base_url.
     assert resolved["base_url"] == "https://opencode.ai/zen"
 
 
@@ -999,7 +992,6 @@ def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
-    # Trailing /v1 stripped — Anthropic SDK appends /v1/messages itself.
     assert resolved["base_url"] == "https://opencode.ai/zen/go"
 
 
@@ -1055,9 +1047,6 @@ def test_named_custom_provider_anthropic_api_mode(monkeypatch):
     assert resolved["base_url"] == "https://proxy.example.com/anthropic"
 
 
-# ------------------------------------------------------------------
-# fix #2562 — resolve_provider("custom") must not remap to "openrouter"
-# ------------------------------------------------------------------
 
 
 def test_resolve_provider_custom_returns_custom():
@@ -1131,13 +1120,10 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setattr(rp, "load_config", lambda: {})
 
-    # resolve_provider returns "nous" (stale active_provider in auth.json)
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "nous")
-    # load_pool returns empty pool so we hit the direct credential resolution
     monkeypatch.setattr(rp, "load_pool", lambda p: type("P", (), {
         "has_credentials": lambda self: False,
     })())
-    # Nous credential resolution fails with revoked token
     monkeypatch.setattr(
         rp, "resolve_nous_runtime_credentials",
         lambda **kw: (_ for _ in ()).throw(
@@ -1146,7 +1132,6 @@ def test_auto_detected_nous_auth_failure_falls_through_to_openrouter(monkeypatch
         ),
     )
 
-    # With requested="auto", should fall through to OpenRouter
     resolved = rp.resolve_runtime_provider(requested="auto")
     assert resolved["provider"] == "openrouter"
     assert resolved["api_key"] == "test-or-key"
@@ -1199,7 +1184,6 @@ def test_explicit_nous_auth_failure_still_raises(monkeypatch):
         ),
     )
 
-    # With explicit "nous", should raise — don't silently switch providers
     with pytest.raises(AuthError, match="Refresh session has been revoked"):
         rp.resolve_runtime_provider(requested="nous")
 

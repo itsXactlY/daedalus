@@ -124,33 +124,23 @@ def test_report_md_splits_consolidated_and_pruned_sections(curator_env):
     )
 
     payload = json.loads((run_dir / "run.json").read_text())
-    # Both lists exist and are disjoint
     consolidated_names = {e["name"] for e in payload["consolidated"]}
     assert consolidated_names == {"absorbed-skill"}
-    # `pruned` holds full dicts {name, source, reason}; `pruned_names` is the
-    # flat list for quick scans / legacy compat.
     pruned_names = payload["pruned_names"]
     assert pruned_names == ["dead-skill"]
     assert all(isinstance(e, dict) and "name" in e for e in payload["pruned"])
-    # The union still matches the legacy "archived" field for backward compat
     assert set(payload["archived"]) == consolidated_names | set(pruned_names)
-    # counts exposed
     assert payload["counts"]["consolidated_this_run"] == 1
     assert payload["counts"]["pruned_this_run"] == 1
 
     md = (run_dir / "REPORT.md").read_text()
-    # Two separate sections, not a single "Skills archived" lump
     assert "Consolidated into umbrella skills" in md
     assert "Pruned — archived for staleness" in md
     assert "`absorbed-skill` → merged into `umbrella`" in md
     assert "`dead-skill`" in md
-    # The old single-lump section should not appear
     assert "### Skills archived" not in md
 
 
-# ---------------------------------------------------------------------------
-# _parse_structured_summary — extracting the model's required YAML block
-# ---------------------------------------------------------------------------
 
 
 def test_parse_structured_summary_happy_path(curator_env):
@@ -194,9 +184,6 @@ def test_parse_structured_summary_missing_block(curator_env):
 
 
 
-# ---------------------------------------------------------------------------
-# _reconcile_classification — merging model block with heuristic
-# ---------------------------------------------------------------------------
 
 
 
@@ -264,7 +251,7 @@ def test_reconcile_model_block_visible_in_full_report(curator_env):
     assert cons["name"] == "anthropic-api"
     assert cons["into"] == "llm-providers"
     assert cons["reason"] == "duplicate content, now a subsection"
-    assert cons["source"] == "model+audit"  # model AND heuristic both had it
+    assert cons["source"] == "model+audit"
 
     pruned = payload["pruned"][0]
     assert pruned["name"] == "stale-thing"
@@ -275,9 +262,6 @@ def test_reconcile_model_block_visible_in_full_report(curator_env):
     assert "pre-curator junk" in md
 
 
-# ---------------------------------------------------------------------------
-# _extract_absorbed_into_declarations — authoritative signal from delete calls
-# ---------------------------------------------------------------------------
 
 
 def test_extract_absorbed_into_picks_up_consolidation(curator_env):
@@ -311,7 +295,7 @@ def test_extract_absorbed_into_ignores_non_delete_actions(curator_env):
                 "name": "umbrella",
                 "old_string": "...",
                 "new_string": "...",
-                "absorbed_into": "something",  # bogus on non-delete, must be ignored
+                "absorbed_into": "something",
             }),
         },
     ])
@@ -326,9 +310,6 @@ def test_extract_absorbed_into_ignores_non_delete_actions(curator_env):
 
 
 
-# ---------------------------------------------------------------------------
-# _reconcile_classification with absorbed_into declarations (authoritative)
-# ---------------------------------------------------------------------------
 
 
 def test_reconcile_absorbed_into_beats_everything_else(curator_env):
@@ -344,7 +325,7 @@ def test_reconcile_absorbed_into_beats_everything_else(curator_env):
     out = curator_env._reconcile_classification(
         removed=["pr-review-format"],
         heuristic={"consolidated": [], "pruned": [{"name": "pr-review-format"}]},
-        model_block={"consolidations": [], "prunings": []},  # model forgot YAML block
+        model_block={"consolidations": [], "prunings": []},
         destinations={"daedalus-dev"},
         absorbed_declarations={
             "pr-review-format": {"into": "daedalus-dev", "declared": True},
@@ -403,12 +384,6 @@ def test_reconcile_mixed_declarations_and_legacy_calls(curator_env):
     assert "no-evidence fallback" in pruned_by_name["legacy-prune"]["source"]
 
 
-# ---------------------------------------------------------------------------
-# _build_rename_summary — surfaces the "where did my skills go?" map to the
-# user-visible curator summary (gateway 💾 line, CLI Rich panel,
-# `daedalus curator status`). The full data has always been in REPORT.md on
-# disk; this helper makes it visible without digging.
-# ---------------------------------------------------------------------------
 
 
 def test_rename_summary_empty_when_nothing_archived(curator_env):
@@ -470,7 +445,6 @@ def test_rename_summary_caps_at_ten_with_more_indicator(curator_env):
     )
     assert "archived 15 skill(s):" in result
     assert "… and 5 more" in result
-    # Exactly 10 bullets shown
     bullet_count = sum(1 for ln in result.splitlines() if ln.startswith("  • "))
     assert bullet_count == 10
 
@@ -508,12 +482,6 @@ def test_rename_summary_mixed_consolidation_and_pruning(curator_env):
     assert "drop-me — pruned (stale)" in lines[drop_idx]
 
 
-# ---------------------------------------------------------------------------
-# Pin hint — surfaces `daedalus curator pin <umbrella>` in the rename block so
-# users learn the command exists at the moment they care (a consolidation
-# just landed against their library). The hint is gated on having at least
-# one umbrella destination — pruned-only runs skip it.
-# ---------------------------------------------------------------------------
 
 
 

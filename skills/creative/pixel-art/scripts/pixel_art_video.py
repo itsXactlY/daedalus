@@ -26,7 +26,6 @@ import tempfile
 from PIL import Image, ImageDraw
 
 
-# ── Pixel drawing helpers ──────────────────────────────────────────────
 
 def _px(draw, x, y, color, size=2):
     x, y = int(x), int(y)
@@ -42,7 +41,6 @@ def _pixel_cross(draw, x, y, color, arm=2):
         _px(draw, x, y + i, color, 1)
 
 
-# ── Animation init/draw pairs ──────────────────────────────────────────
 
 def init_stars(rng, W, H):
     return [(rng.randint(0, W), rng.randint(0, H // 2)) for _ in range(15)]
@@ -202,7 +200,6 @@ def draw_heat_shimmer(draw, points, t, W, H):
             _px(draw, x, y, (255, 200, 100), 1)
 
 
-# ── Scene → animation mapping ──────────────────────────────────────────
 
 SCENES = {
     "night":      ["stars", "fireflies", "leaves"],
@@ -219,7 +216,6 @@ SCENES = {
     "desert":     ["heat_shimmer", "dust_motes"],
 }
 
-# Map scene layer name to (init_fn, draw_fn).
 _LAYERS = {
     "stars":        (init_stars, draw_stars),
     "fireflies":    (init_fireflies, draw_fireflies),

@@ -15,7 +15,6 @@ def _old_should_allow(verdict, trust_level, force):
     }
     VERDICT_INDEX = {"safe": 0, "caution": 1, "dangerous": 2}
 
-    # Old buggy check: `and not force`
     if verdict == "dangerous" and not force:
         return False
 
@@ -27,7 +26,7 @@ def _old_should_allow(verdict, trust_level, force):
         return True
 
     if force:
-        return True  # Bug: this line is reached for dangerous + force=True
+        return True
 
     return False
 

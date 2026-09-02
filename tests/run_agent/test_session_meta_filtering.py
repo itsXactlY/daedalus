@@ -12,9 +12,6 @@ from unittest.mock import MagicMock, patch
 from run_agent import AIAgent
 
 
-# ---------------------------------------------------------------------------
-# Layer 1 — _sanitize_api_messages role-allowlist guard
-# ---------------------------------------------------------------------------
 
 class TestSanitizeApiMessagesRoleFilter:
 
@@ -35,7 +32,6 @@ class TestSanitizeApiMessagesRoleFilter:
             {"role": "assistant", "content": "hi"},
             {"role": "tool", "tool_call_id": "c1", "content": "ok"},
         ]
-        # Need a matching assistant tool_call so the tool result isn't orphaned
         msgs[2]["tool_calls"] = [{"id": "c1", "function": {"name": "t", "arguments": "{}"}}]
         out = AIAgent._sanitize_api_messages(msgs)
         roles = [m["role"] for m in out]
@@ -65,15 +61,11 @@ class TestSanitizeApiMessagesRoleFilter:
         assert [m["role"] for m in out] == ["user", "assistant"]
 
 
-# ---------------------------------------------------------------------------
-# Layer 2 — CLI session-restore filters session_meta before loading
-# ---------------------------------------------------------------------------
 
 class TestCLISessionRestoreFiltering:
 
     def test_restore_filters_session_meta(self):
         """Simulates the CLI restore path and verifies session_meta is removed."""
-        # Build a fake restored message list (as returned by get_messages_as_conversation)
         fake_restored = [
             {"role": "session_meta", "content": {"model": "gpt-4"}},
             {"role": "user", "content": "hello"},
@@ -81,7 +73,6 @@ class TestCLISessionRestoreFiltering:
             {"role": "session_meta", "content": {"tools": []}},
         ]
 
-        # Apply the same filtering that the patched CLI code now does
         filtered = [m for m in fake_restored if m.get("role") != "session_meta"]
 
         assert len(filtered) == 2

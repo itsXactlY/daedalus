@@ -17,9 +17,6 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# 1. smart_model_routing: credential_pool preserved in no-route path
-# ---------------------------------------------------------------------------
 
 class TestSmartRoutingPoolPreservation:
     def test_no_route_preserves_credential_pool(self):
@@ -36,7 +33,6 @@ class TestSmartRoutingPoolPreservation:
             "args": [],
             "credential_pool": fake_pool,
         }
-        # routing disabled
         result = resolve_turn_route("hello", None, primary)
         assert result["runtime"]["credential_pool"] is fake_pool
 
@@ -69,7 +65,6 @@ class TestSmartRoutingPoolPreservation:
             "args": [],
             "credential_pool": fake_pool,
         }
-        # routing explicitly disabled
         result = resolve_turn_route("hello", {"enabled": False}, primary)
         assert result["runtime"]["credential_pool"] is fake_pool
 
@@ -96,7 +91,6 @@ class TestSmartRoutingPoolPreservation:
             "max_tokens": 200,
             "patterns": ["^(hi|hello|hey)"],
         }
-        # Force resolve_runtime_provider to fail so it falls back to primary
         monkeypatch.setattr(
             "daedalus_cli.runtime_provider.resolve_runtime_provider",
             MagicMock(side_effect=RuntimeError("no credentials")),
@@ -105,9 +99,6 @@ class TestSmartRoutingPoolPreservation:
         assert result["runtime"]["credential_pool"] is fake_pool
 
 
-# ---------------------------------------------------------------------------
-# 2 & 3. CLI and Gateway _resolve_turn_agent_config include credential_pool
-# ---------------------------------------------------------------------------
 
 class TestCliTurnRoutePool:
     def test_resolve_turn_includes_pool(self, monkeypatch, tmp_path):
@@ -123,7 +114,6 @@ class TestCliTurnRoutePool:
             "agent.smart_model_routing.resolve_turn_route", spy_resolve
         )
 
-        # Build a minimal DaedalusCLI-like object with the method
         shell = SimpleNamespace(
             model="gpt-5.4",
             api_key="sk-test",
@@ -136,7 +126,6 @@ class TestCliTurnRoutePool:
             _smart_model_routing={"enabled": False},
         )
 
-        # Import and bind the real method
         from cli import DaedalusCLI
         bound = DaedalusCLI._resolve_turn_agent_config.__get__(shell)
         bound("test message")
@@ -182,9 +171,6 @@ class TestGatewayTurnRoutePool:
         assert captured["primary"]["credential_pool"] is runtime_kwargs["credential_pool"]
 
 
-# ---------------------------------------------------------------------------
-# 4 & 5. Eager fallback deferred/fires based on credential pool
-# ---------------------------------------------------------------------------
 
 class TestEagerFallbackWithPool:
     """Test the eager fallback guard in run_agent.py's error handling loop."""
@@ -213,7 +199,6 @@ class TestEagerFallbackWithPool:
         """429 with active pool should NOT trigger eager fallback."""
         agent = self._make_agent(has_pool=True, pool_has_creds=True, has_fallback=True)
 
-        # Simulate the check from run_agent.py lines 7180-7191
         is_rate_limited = True
         if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
             pool = agent._credential_pool
@@ -250,9 +235,6 @@ class TestEagerFallbackWithPool:
         agent._try_activate_fallback.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# 6. Full 429 rotation cycle via _recover_with_credential_pool
-# ---------------------------------------------------------------------------
 
 class TestPoolRotationCycle:
     """Verify the retry-same → rotate → exhaust flow in _recover_with_credential_pool."""
@@ -272,7 +254,6 @@ class TestPoolRotationCycle:
         pool = MagicMock()
         pool.has_credentials.return_value = True
 
-        # mark_exhausted_and_rotate returns next entry until exhausted
         self._rotation_index = 0
 
         def rotate(status_code=None, error_context=None):
@@ -306,20 +287,18 @@ class TestPoolRotationCycle:
             status_code=429, has_retried_429=True
         )
         assert recovered is True
-        assert has_retried is False  # reset after rotation
+        assert has_retried is False
         pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
         agent._swap_credential.assert_called_once_with(entries[1])
 
     def test_pool_exhaustion_returns_false(self):
         """When all credentials exhausted, recovery should return False."""
         agent, pool, _ = self._make_agent_with_pool(1)
-        # First 429 sets flag
         _, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
         )
         assert has_retried is True
 
-        # Second 429 tries to rotate but pool is exhausted (only 1 entry)
         recovered, _ = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=True
         )

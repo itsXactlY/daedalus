@@ -16,4 +16,4 @@ class QwenToolCallParser(HermesToolCallParser):
     Same <tool_call>{"name": ..., "arguments": ...}</tool_call> format as Hermes.
     """
 
-    pass  # Identical format -- inherits everything from Hermes
+    pass

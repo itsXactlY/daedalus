@@ -40,9 +40,6 @@ def _send_update(
         logger.debug("Failed to send ACP update", exc_info=True)
 
 
-# ------------------------------------------------------------------
-# Tool progress callback
-# ------------------------------------------------------------------
 
 def make_tool_progress_cb(
     conn: acp.Client,
@@ -63,7 +60,6 @@ def make_tool_progress_cb(
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
-        # Only emit ACP ToolCallStart for tool.started; ignore other event types
         if event_type != "tool.started":
             return
         if isinstance(args, str):
@@ -90,9 +86,6 @@ def make_tool_progress_cb(
     return _tool_progress
 
 
-# ------------------------------------------------------------------
-# Thinking callback
-# ------------------------------------------------------------------
 
 def make_thinking_cb(
     conn: acp.Client,
@@ -110,9 +103,6 @@ def make_thinking_cb(
     return _thinking
 
 
-# ------------------------------------------------------------------
-# Step callback
-# ------------------------------------------------------------------
 
 def make_step_cb(
     conn: acp.Client,
@@ -155,9 +145,6 @@ def make_step_cb(
     return _step
 
 
-# ------------------------------------------------------------------
-# Agent message callback
-# ------------------------------------------------------------------
 
 def make_message_cb(
     conn: acp.Client,

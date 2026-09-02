@@ -82,7 +82,7 @@ def test_setup_syncs_openrouter_from_disk(tmp_path, monkeypatch):
     _stub_tts(monkeypatch)
 
     config = load_config()
-    assert isinstance(config.get("model"), str)  # fresh install
+    assert isinstance(config.get("model"), str)
 
     def fake_select():
         _write_model_config(tmp_path, "openrouter", model_name="anthropic/claude-opus-4.6")
@@ -148,14 +148,13 @@ def test_setup_cancel_preserves_existing_config(tmp_path, monkeypatch):
     _clear_provider_env(monkeypatch)
     _stub_tts(monkeypatch)
 
-    # Pre-set a provider
     _write_model_config(tmp_path, "openrouter", model_name="gpt-4o")
 
     config = load_config()
     assert config["model"]["provider"] == "openrouter"
 
     def fake_select():
-        pass  # user cancelled — nothing written to disk
+        pass
 
     monkeypatch.setattr("daedalus_cli.main.select_provider_and_model", fake_select)
 
@@ -181,7 +180,6 @@ def test_setup_exception_in_select_gracefully_handled(tmp_path, monkeypatch):
 
     monkeypatch.setattr("daedalus_cli.main.select_provider_and_model", fake_select)
 
-    # Should not raise
     setup_model_provider(config)
 
 

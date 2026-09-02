@@ -32,7 +32,6 @@ def session_db(tmp_path):
 @pytest.fixture
 def cli_instance(tmp_path, session_db):
     """Create a minimal DaedalusCLI-like object for testing _handle_branch_command."""
-    # We'll mock the CLI enough to test the branch logic without full init
     from unittest.mock import MagicMock
 
     cli = MagicMock()
@@ -52,7 +51,6 @@ def cli_instance(tmp_path, session_db):
         {"role": "assistant", "content": "def sort_list(lst): return sorted(lst)"},
     ]
 
-    # Create the original session in the DB
     session_db.create_session(
         session_id=cli.session_id,
         source="cli",
@@ -70,10 +68,8 @@ class TestBranchCommandCLI:
         """Branching should create a new session in the DB."""
         from cli import DaedalusCLI
 
-        # Call the real method on the mock, using the real implementation
         DaedalusCLI._handle_branch_command(cli_instance, "/branch")
 
-        # Verify a new session was created
         assert cli_instance.session_id != "20260403_120000_abc123"
         new_session = session_db.get_session(cli_instance.session_id)
         assert new_session is not None
@@ -85,7 +81,7 @@ class TestBranchCommandCLI:
         DaedalusCLI._handle_branch_command(cli_instance, "/branch")
 
         messages = session_db.get_messages_as_conversation(cli_instance.session_id)
-        assert len(messages) == 4  # All 4 messages copied
+        assert len(messages) == 4
 
     def test_branch_preserves_parent_link(self, cli_instance, session_db):
         """The new session should reference the original as parent."""
@@ -132,7 +128,6 @@ class TestBranchCommandCLI:
 
         DaedalusCLI._handle_branch_command(cli_instance, "/branch")
 
-        # session_id should not have changed
         assert cli_instance.session_id == "20260403_120000_abc123"
 
     def test_branch_no_session_db(self, cli_instance):
@@ -142,7 +137,6 @@ class TestBranchCommandCLI:
 
         DaedalusCLI._handle_branch_command(cli_instance, "/branch")
 
-        # session_id should not have changed
         assert cli_instance.session_id == "20260403_120000_abc123"
 
     def test_branch_syncs_agent(self, cli_instance, session_db):
@@ -155,10 +149,9 @@ class TestBranchCommandCLI:
 
         DaedalusCLI._handle_branch_command(cli_instance, "/branch")
 
-        # Agent should have been updated
         assert agent.session_id == cli_instance.session_id
         assert agent.reset_session_state.called
-        assert agent._last_flushed_db_idx == 4  # len(conversation_history)
+        assert agent._last_flushed_db_idx == 4
 
     def test_branch_sets_resumed_flag(self, cli_instance, session_db):
         """Branch should set _resumed=True to prevent auto-title generation."""

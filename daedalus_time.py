@@ -24,11 +24,8 @@ logger = logging.getLogger(__name__)
 try:
     from zoneinfo import ZoneInfo
 except ImportError:
-    # Python 3.8 fallback (shouldn't be needed — Daedalus requires 3.9+)
     from backports.zoneinfo import ZoneInfo  # type: ignore[no-redef]
 
-# Cached state — resolved once, reused on every call.
-# Call reset_cache() to force re-resolution (e.g. after config changes).
 _cached_tz: Optional[ZoneInfo] = None
 _cached_tz_name: Optional[str] = None
 _cache_resolved: bool = False
@@ -40,12 +37,10 @@ def _resolve_timezone_name() -> str:
     This does file I/O when falling through to config.yaml, so callers
     should cache the result rather than calling on every ``now()``.
     """
-    # 1. Environment variable (highest priority — set by Supervisor, etc.)
     tz_env = os.getenv("DAEDALUS_TIMEZONE", "").strip()
     if tz_env:
         return tz_env
 
-    # 2. config.yaml ``timezone`` key
     try:
         import yaml
         daedalus_home = get_daedalus_home()
@@ -92,7 +87,7 @@ def get_timezone() -> Optional[ZoneInfo]:
 def get_timezone_name() -> str:
     """Return the IANA name of the configured timezone, or empty string."""
     if not _cache_resolved:
-        get_timezone()  # populates cache
+        get_timezone()
     return _cached_tz_name or ""
 
 
@@ -106,7 +101,6 @@ def now() -> datetime:
     tz = get_timezone()
     if tz is not None:
         return datetime.now(tz)
-    # No timezone configured — use server-local (still tz-aware)
     return datetime.now().astimezone()
 
 

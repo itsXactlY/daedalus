@@ -37,7 +37,6 @@ class TestCronJobCleanup:
              patch.object(scheduler, "_resolve_delivery_target", return_value=None), \
              patch("dotenv.load_dotenv", return_value=None), \
              patch("run_agent.AIAgent") as MockAgent:
-            # Make the agent raise immediately so we hit the finally block
             MockAgent.return_value.run_conversation.side_effect = RuntimeError("boom")
             scheduler.run_job(job)
 
@@ -66,7 +65,6 @@ class TestCronJobCleanup:
              patch("dotenv.load_dotenv", return_value=None), \
              patch("run_agent.AIAgent") as MockAgent:
             MockAgent.return_value.run_conversation.side_effect = RuntimeError("boom")
-            # Must not raise
             scheduler.run_job(job)
 
         mock_db.end_session.assert_called_once()

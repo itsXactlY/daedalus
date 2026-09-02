@@ -42,7 +42,6 @@ logger = logging.getLogger(__name__)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
-# Platforms whose native voice-bubble delivery requires Ogg/Opus audio.
 OPUS_VOICE_PLATFORMS = frozenset({
     "telegram",
     "matrix",
@@ -51,10 +50,6 @@ OPUS_VOICE_PLATFORMS = frozenset({
     "signal",
 })
 
-# ---------------------------------------------------------------------------
-# Lazy imports -- providers are imported only when actually used to avoid
-# crashing in headless environments (SSH, Docker, WSL, no PortAudio).
-# ---------------------------------------------------------------------------
 
 def _import_edge_tts():
     """Lazy import edge_tts. Returns the module or raises ImportError."""
@@ -77,12 +72,9 @@ def _import_sounddevice():
     return sd
 
 
-# ===========================================================================
-# Defaults
-# ===========================================================================
 DEFAULT_PROVIDER = "edge"
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
-DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
+DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
@@ -100,9 +92,6 @@ DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 MAX_TEXT_LENGTH = 4000
 
 
-# ===========================================================================
-# Config loader -- reads tts: section from ~/.daedalus/config.yaml
-# ===========================================================================
 def _load_tts_config() -> Dict[str, Any]:
     """
     Load TTS configuration from ~/.daedalus/config.yaml.
@@ -127,9 +116,6 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
-# ===========================================================================
-# ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
-# ===========================================================================
 def _has_ffmpeg() -> bool:
     """Check if ffmpeg is available on the system."""
     return shutil.which("ffmpeg") is not None
@@ -170,9 +156,6 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     return None
 
 
-# ===========================================================================
-# Provider: Edge TTS (free)
-# ===========================================================================
 async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using Edge TTS.
@@ -194,9 +177,6 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     return output_path
 
 
-# ===========================================================================
-# Provider: ElevenLabs (premium)
-# ===========================================================================
 def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using ElevenLabs.
@@ -217,7 +197,6 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     voice_id = el_config.get("voice_id", DEFAULT_ELEVENLABS_VOICE_ID)
     model_id = el_config.get("model_id", DEFAULT_ELEVENLABS_MODEL_ID)
 
-    # Determine output format based on file extension
     if output_path.endswith(".ogg"):
         output_format = "opus_48000_64"
     else:
@@ -232,7 +211,6 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
         output_format=output_format,
     )
 
-    # audio_generator yields chunks -- write them all
     with open(output_path, "wb") as f:
         for chunk in audio_generator:
             f.write(chunk)
@@ -240,9 +218,6 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     return output_path
 
 
-# ===========================================================================
-# Provider: OpenAI TTS
-# ===========================================================================
 def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using OpenAI TTS.
@@ -262,7 +237,6 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
     base_url = oai_config.get("base_url", base_url)
 
-    # Determine response format from extension
     if output_path.endswith(".ogg"):
         response_format = "opus"
     else:
@@ -287,9 +261,6 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             close()
 
 
-# ===========================================================================
-# Provider: MiniMax TTS
-# ===========================================================================
 def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using MiniMax TTS API.
@@ -319,7 +290,6 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     pitch = mm_config.get("pitch", 0)
     base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
 
-    # Determine audio format from output extension
     if output_path.endswith(".wav"):
         audio_format = "wav"
     elif output_path.endswith(".flac"):
@@ -365,7 +335,6 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     if not hex_audio:
         raise RuntimeError("MiniMax TTS returned empty audio data")
 
-    # MiniMax returns hex-encoded audio (not base64)
     audio_bytes = bytes.fromhex(hex_audio)
 
     with open(output_path, "wb") as f:
@@ -374,9 +343,6 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     return output_path
 
 
-# ===========================================================================
-# NeuTTS (local, on-device TTS via neutts_cli)
-# ===========================================================================
 
 def _check_neutts_available() -> bool:
     """Check if the neutts engine is importable (installed locally)."""
@@ -412,8 +378,6 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
     device = neutts_config.get("device", "cpu")
 
-    # NeuTTS outputs WAV natively — use a .wav path for generation,
-    # let the caller convert to the final format afterward.
     wav_path = output_path
     if not output_path.endswith(".wav"):
         wav_path = output_path.rsplit(".", 1)[0] + ".wav"
@@ -432,11 +396,9 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         stderr = result.stderr.strip()
-        # Filter out the "OK:" line from stderr
         error_lines = [l for l in stderr.splitlines() if not l.startswith("OK:")]
         raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
 
-    # If the caller wanted .mp3 or .ogg, convert from WAV
     if wav_path != output_path:
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
@@ -444,15 +406,11 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
             subprocess.run(conv_cmd, check=True, timeout=30)
             os.remove(wav_path)
         else:
-            # No ffmpeg — just rename the WAV to the expected path
             os.rename(wav_path, output_path)
 
     return output_path
 
 
-# ===========================================================================
-# Main tool function
-# ===========================================================================
 def text_to_speech_tool(
     text: str,
     output_path: Optional[str] = None,
@@ -477,7 +435,6 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
-    # Truncate very long text with a warning
     if len(text) > MAX_TEXT_LENGTH:
         logger.warning("TTS text too long (%d chars), truncating to %d", len(text), MAX_TEXT_LENGTH)
         text = text[:MAX_TEXT_LENGTH]
@@ -485,33 +442,24 @@ def text_to_speech_tool(
     tts_config = _load_tts_config()
     provider = _get_provider(tts_config)
 
-    # Detect platform from gateway env var to choose the best output format.
-    # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
-    # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
-    # and needs ffmpeg for conversion.
     platform = os.getenv("DAEDALUS_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
 
-    # Determine output path
     if output_path:
         file_path = Path(output_path).expanduser()
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
-        # Use .ogg for Telegram with providers that support native Opus output,
-        # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
         if want_opus and provider in ("openai", "elevenlabs"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
 
-    # Ensure parent directory exists
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_str = str(file_path)
 
     try:
-        # Generate audio with the configured provider
         if provider == "elevenlabs":
             try:
                 _import_elevenlabs()
@@ -549,7 +497,6 @@ def text_to_speech_tool(
             _generate_neutts(text, file_str, tts_config)
 
         else:
-            # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
             try:
                 _import_edge_tts()
@@ -577,15 +524,12 @@ def text_to_speech_tool(
                              "or set up NeuTTS for local synthesis."
                 }, ensure_ascii=False)
 
-        # Check the file was actually created
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
             return json.dumps({
                 "success": False,
                 "error": f"TTS generation produced no output (provider: {provider})"
             }, ensure_ascii=False)
 
-        # Try Opus conversion for Telegram compatibility
-        # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
         if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
@@ -593,13 +537,11 @@ def text_to_speech_tool(
                 file_str = opus_path
                 voice_compatible = True
         elif provider in ("elevenlabs", "openai"):
-            # These providers can output Opus natively if the path ends in .ogg
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
         logger.info("TTS audio saved: %s (%s bytes, provider: %s)", file_str, f"{file_size:,}", provider)
 
-        # Build response with MEDIA tag for platform delivery
         media_tag = f"MEDIA:{file_str}"
         if voice_compatible:
             media_tag = f"[[audio_as_voice]]\n{media_tag}"
@@ -613,25 +555,19 @@ def text_to_speech_tool(
         }, ensure_ascii=False)
 
     except ValueError as e:
-        # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
         return tool_error(error_msg, success=False)
     except FileNotFoundError as e:
-        # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
         return tool_error(error_msg, success=False)
     except Exception as e:
-        # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
         return tool_error(error_msg, success=False)
 
 
-# ===========================================================================
-# Requirements check
-# ===========================================================================
 def check_tts_requirements() -> bool:
     """
     Check if at least one TTS provider is available.
@@ -689,13 +625,8 @@ def _has_openai_audio_backend() -> bool:
     return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
 
 
-# ===========================================================================
-# Streaming TTS: sentence-by-sentence pipeline for ElevenLabs
-# ===========================================================================
-# Sentence boundary pattern: punctuation followed by space or newline
 _SENTENCE_BOUNDARY_RE = re.compile(r'(?<=[.!?])(?:\s|\n)|(?:\n\n)')
 
-# Markdown stripping patterns (same as cli.py _voice_speak_response)
 _MD_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
 _MD_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
 _MD_URL = re.compile(r'https?://\S+')
@@ -743,7 +674,6 @@ def stream_tts_to_speaker(
     tts_done_event.clear()
 
     try:
-        # --- TTS client setup (optional -- display_callback works without it) ---
         client = None
         output_stream = None
         voice_id = DEFAULT_ELEVENLABS_VOICE_ID
@@ -765,9 +695,6 @@ def stream_tts_to_speaker(
             except ImportError:
                 logger.warning("elevenlabs package not installed; streaming TTS disabled")
 
-            # Open a single sounddevice output stream for the lifetime of
-            # this function.  ElevenLabs pcm_24000 produces signed 16-bit
-            # little-endian mono PCM at 24 kHz.
             if client is not None:
                 try:
                     sd = _import_sounddevice()
@@ -786,8 +713,7 @@ def stream_tts_to_speaker(
         min_sentence_len = 20
         long_flush_len = 100
         queue_timeout = 0.5
-        _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
-        # Regex to strip complete <think>...</think> blocks from buffer
+        _spoken_sentences: list[str] = []
         _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
 
         def _speak_sentence(sentence: str):
@@ -797,19 +723,15 @@ def stream_tts_to_speaker(
             cleaned = _strip_markdown_for_tts(sentence).strip()
             if not cleaned:
                 return
-            # Skip duplicate/near-duplicate sentences (LLM repetition)
             cleaned_lower = cleaned.lower().rstrip(".!,")
             for prev in _spoken_sentences:
                 if prev.lower().rstrip(".!,") == cleaned_lower:
                     return
             _spoken_sentences.append(cleaned)
-            # Display raw sentence on screen before TTS processing
             if display_callback is not None:
                 display_callback(sentence)
-            # Skip audio generation if no TTS client available
             if client is None:
                 return
-            # Truncate very long sentences
             if len(cleaned) > MAX_TEXT_LENGTH:
                 cleaned = cleaned[:MAX_TEXT_LENGTH]
             try:
@@ -827,7 +749,6 @@ def stream_tts_to_speaker(
                         audio_array = _np.frombuffer(chunk, dtype=_np.int16)
                         output_stream.write(audio_array.reshape(-1, 1))
                 else:
-                    # Fallback: write chunks to temp file and play via system player
                     _play_via_tempfile(audio_iter, stop_event)
             except Exception as exc:
                 logger.warning("Streaming TTS sentence failed: %s", exc)
@@ -841,7 +762,7 @@ def stream_tts_to_speaker(
                 tmp_path = tmp.name
                 with wave.open(tmp, "wb") as wf:
                     wf.setnchannels(1)
-                    wf.setsampwidth(2)  # 16-bit
+                    wf.setsampwidth(2)
                     wf.setframerate(24000)
                     for chunk in audio_iter:
                         if stop_evt.is_set():
@@ -859,18 +780,15 @@ def stream_tts_to_speaker(
                         pass
 
         while not stop_event.is_set():
-            # Read next delta from queue
             try:
                 delta = text_queue.get(timeout=queue_timeout)
             except queue.Empty:
-                # Timeout: if we have accumulated a long buffer, flush it
                 if len(sentence_buf) > long_flush_len:
                     _speak_sentence(sentence_buf)
                     sentence_buf = ""
                 continue
 
             if delta is None:
-                # End-of-text sentinel: strip any remaining think blocks, flush
                 sentence_buf = _think_block_re.sub('', sentence_buf)
                 if sentence_buf.strip():
                     _speak_sentence(sentence_buf)
@@ -878,17 +796,11 @@ def stream_tts_to_speaker(
 
             sentence_buf += delta
 
-            # --- Think block filtering ---
-            # Strip complete <think>...</think> blocks from buffer.
-            # Works correctly even when tags span multiple deltas.
             sentence_buf = _think_block_re.sub('', sentence_buf)
 
-            # If an incomplete <think tag is at the end, wait for more data
-            # before extracting sentences (the closing tag may arrive next).
             if '<think' in sentence_buf and '</think>' not in sentence_buf:
                 continue
 
-            # Check for sentence boundaries
             while True:
                 m = _SENTENCE_BOUNDARY_RE.search(sentence_buf)
                 if m is None:
@@ -896,25 +808,21 @@ def stream_tts_to_speaker(
                 end_pos = m.end()
                 sentence = sentence_buf[:end_pos]
                 sentence_buf = sentence_buf[end_pos:]
-                # Merge short fragments into the next sentence
                 if len(sentence.strip()) < min_sentence_len:
                     sentence_buf = sentence + sentence_buf
                     break
                 _speak_sentence(sentence)
 
-        # Drain any remaining items from the queue
         while True:
             try:
                 text_queue.get_nowait()
             except queue.Empty:
                 break
 
-        # output_stream is closed in the finally block below
 
     except Exception as exc:
         logger.warning("Streaming TTS pipeline error: %s", exc)
     finally:
-        # Always close the audio output stream to avoid locking the device
         if output_stream is not None:
             try:
                 output_stream.stop()
@@ -924,9 +832,6 @@ def stream_tts_to_speaker(
         tts_done_event.set()
 
 
-# ===========================================================================
-# Main -- quick diagnostics
-# ===========================================================================
 if __name__ == "__main__":
     print("🔊 Text-to-Speech Tool Module")
     print("=" * 50)
@@ -956,9 +861,6 @@ if __name__ == "__main__":
     print(f"  Configured provider: {provider}")
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {

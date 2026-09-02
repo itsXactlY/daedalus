@@ -32,9 +32,6 @@ from tools.environments.local import (
 from tools.file_operations import ShellFileOperations
 
 
-# ── Shared noise detection ───────────────────────────────────────────────
-# Every known shell noise pattern. If ANY of these appear in output that
-# isn't explicitly expected, the test fails with a clear message.
 
 _ALL_NOISE_PATTERNS = list(_SHELL_NOISE_SUBSTRINGS) + [
     "bash: ",
@@ -54,10 +51,7 @@ def _assert_clean(text: str, context: str = "output"):
         )
 
 
-# ── Fixtures ─────────────────────────────────────────────────────────────
 
-# Deterministic file content used across tests. Every byte is known,
-# so any unexpected text in results is immediately caught.
 SIMPLE_CONTENT = "alpha\nbravo\ncharlie\n"
 NUMBERED_CONTENT = "\n".join(f"LINE_{i:04d}" for i in range(1, 51)) + "\n"
 SPECIAL_CONTENT = "single 'quotes' and \"doubles\" and $VARS and `backticks` and \\backslash\n"
@@ -88,7 +82,6 @@ def populated_dir(tmp_path):
     return tmp_path
 
 
-# ── _clean_shell_noise unit tests ────────────────────────────────────────
 
 class TestCleanShellNoise:
     def test_single_noise_line(self):
@@ -175,7 +168,6 @@ class TestCleanShellNoise:
         assert result == "hello\n"
 
 
-# ── _extract_fenced_output unit tests ────────────────────────────────────
 
 class TestExtractFencedOutput:
     def test_normal_fenced_output(self):
@@ -203,7 +195,6 @@ class TestExtractFencedOutput:
         """If user command outputs the fence marker, it is preserved."""
         raw = f"noise{_OUTPUT_FENCE}{_OUTPUT_FENCE}real\n{_OUTPUT_FENCE}noise"
         result = _extract_fenced_output(raw)
-        # first fence -> last fence captures the middle including user's fence
         assert _OUTPUT_FENCE in result
         assert "real\n" in result
 
@@ -216,7 +207,6 @@ class TestExtractFencedOutput:
         assert _extract_fenced_output(raw) == "line1\nline2\nline3\n"
 
 
-# ── LocalEnvironment.execute() ───────────────────────────────────────────
 
 class TestLocalEnvironmentExecute:
     def test_echo_exact_output(self, env):
@@ -276,7 +266,6 @@ class TestLocalEnvironmentExecute:
         _assert_clean(result["output"])
 
 
-# ── _has_command ─────────────────────────────────────────────────────────
 
 class TestHasCommand:
     def test_finds_echo(self, ops):
@@ -302,7 +291,6 @@ class TestHasCommand:
             "Neither rg nor grep found -- search_files will break"
 
 
-# ── read_file ────────────────────────────────────────────────────────────
 
 class TestReadFile:
     def test_exact_content(self, ops, tmp_path):
@@ -310,7 +298,6 @@ class TestReadFile:
         f.write_text(SIMPLE_CONTENT)
         result = ops.read_file(str(f))
         assert result.error is None
-        # Content has line numbers prepended, check the actual text is there
         assert "alpha" in result.content
         assert "bravo" in result.content
         assert "charlie" in result.content
@@ -360,7 +347,6 @@ class TestReadFile:
         _assert_clean(result.content)
 
 
-# ── write_file ───────────────────────────────────────────────────────────
 
 class TestWriteFile:
     def test_write_and_verify(self, ops, tmp_path):
@@ -408,7 +394,6 @@ class TestWriteFile:
         _assert_clean(result.content)
 
 
-# ── patch_replace ────────────────────────────────────────────────────────
 
 class TestPatchReplace:
     def test_exact_replacement(self, ops, tmp_path):
@@ -433,7 +418,6 @@ class TestPatchReplace:
         assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
 
 
-# ── search ───────────────────────────────────────────────────────────────
 
 class TestSearch:
     def test_content_search_finds_exact_match(self, ops, populated_dir):
@@ -455,7 +439,6 @@ class TestSearch:
         result = ops.search("*.py", str(populated_dir), target="files")
         assert result.error is None
         assert result.total_count >= 2
-        # Verify only expected files appear
         found_names = set()
         for f in result.files:
             name = Path(f).name
@@ -490,7 +473,6 @@ class TestSearch:
             _assert_clean(m.path)
 
 
-# ── _expand_path ─────────────────────────────────────────────────────────
 
 class TestExpandPath:
     def test_tilde_exact(self, ops):
@@ -514,23 +496,18 @@ class TestExpandPath:
         """Paths like ~; rm -rf / must NOT execute shell commands."""
         malicious = "~; echo PWNED > /tmp/_daedalus_injection_test"
         result = ops._expand_path(malicious)
-        # The invalid username (contains ";") should prevent shell expansion.
-        # The path should be returned as-is (no expansion).
         assert result == malicious
-        # Verify the injected command did NOT execute
         import os
         assert not os.path.exists("/tmp/_daedalus_injection_test")
 
     def test_tilde_username_with_subpath(self, ops):
         """~root/file.txt should attempt expansion (valid username)."""
         result = ops._expand_path("~root/file.txt")
-        # On most systems ~root expands to /root
         if result != "~root/file.txt":
             assert result.endswith("/file.txt")
             assert "~" not in result
 
 
-# ── Terminal output cleanliness ──────────────────────────────────────────
 
 class TestTerminalOutputCleanliness:
     """Every command the agent might run must produce noise-free output."""

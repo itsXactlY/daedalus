@@ -90,9 +90,6 @@ def get_provider(name: str) -> Optional[WebSearchProvider]:
         return _providers.get(name.strip())
 
 
-# ---------------------------------------------------------------------------
-# Active-provider resolution
-# ---------------------------------------------------------------------------
 
 
 def _read_config_key(*path: str) -> Optional[str]:
@@ -113,12 +110,6 @@ def _read_config_key(*path: str) -> Optional[str]:
     return None
 
 
-# Legacy preference order — preserves behaviour for users who set no
-# ``web.backend`` / ``web.<capability>_backend`` config key at all. Matches
-# the historic candidate order in :func:`tools.web_tools._get_backend`
-# (paid providers first so existing paid setups don't get downgraded to
-# a free tier on upgrade). Filtered by ``is_available()`` at walk time so
-# we don't surface a provider the user has no credentials for.
 _LEGACY_PREFERENCE = (
     "firecrawl",
     "parallel",
@@ -178,9 +169,6 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
             logger.debug("provider %s.is_available() raised %s", p.name, exc)
             return False
 
-    # 1. Explicit config wins — return regardless of is_available() so the
-    #    user gets a precise downstream error message rather than a silent
-    #    backend switch. Matches _get_backend() in web_tools.py.
     if configured:
         provider = snapshot.get(configured)
         if provider is not None and _capable(provider):
@@ -196,10 +184,6 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
                 configured, capability,
             )
 
-    # 2. + 3. Fallback path — filter by availability so we don't surface
-    #    a provider the user has no credentials for. Without this filter,
-    #    a registered-but-unconfigured provider could end up "active" on
-    #    a fresh install with no API keys at all.
     eligible = [
         p for p in snapshot.values()
         if _capable(p) and _is_available_safe(p)

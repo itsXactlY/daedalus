@@ -31,7 +31,6 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
     assert models[0] == "gpt-5.2-codex"
     assert "gpt-5.1-codex" in models
     assert "gpt-5.3-codex" in models
-    # Non-codex-suffixed models are included when the cache says they're available
     assert "gpt-5.4" in models
     assert "gpt-5.4-mini" in models
     assert "gpt-5-hidden-codex" not in models
@@ -39,8 +38,6 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
 
 def test_setup_wizard_codex_import_resolves():
     """Regression test for #712: setup.py must import the correct function name."""
-    # This mirrors the exact import used in daedalus_cli/setup.py line 873.
-    # A prior bug had 'get_codex_models' (wrong) instead of 'get_codex_model_ids'.
     from daedalus_cli.codex_models import get_codex_model_ids as setup_import
     assert callable(setup_import)
 
@@ -107,7 +104,6 @@ def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
     assert captured["current_model"] == "openai/gpt-5.4"
 
 
-# ── Tests for _normalize_model_for_provider ──────────────────────────
 
 
 def _make_cli(model="anthropic/claude-opus-4.6", **kwargs):
@@ -167,7 +163,6 @@ class TestNormalizeModelForProvider:
         """Even a non-OpenAI bare model passes through — user explicitly set it."""
         cli = _make_cli(model="claude-opus-4-6")
         changed = cli._normalize_model_for_provider("openai-codex")
-        # User explicitly chose this model — we trust them, API will error if wrong
         assert changed is False
         assert cli.model == "claude-opus-4-6"
 
@@ -215,7 +210,6 @@ class TestNormalizeModelForProvider:
             "agent": {},
             "terminal": {"env_type": "local"},
         }
-        # Don't pass model= so _model_is_default is True
         with (
             patch("cli.get_tool_definitions", return_value=[]),
             patch.dict("os.environ", {"LLM_MODEL": "", "DAEDALUS_MAX_ITERATIONS": ""}, clear=False),
@@ -231,7 +225,6 @@ class TestNormalizeModelForProvider:
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        # Uses first from available list
         assert cli.model == "gpt-5.3-codex"
 
     def test_default_fallback_when_api_fails(self):

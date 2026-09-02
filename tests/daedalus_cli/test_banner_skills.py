@@ -26,8 +26,6 @@ def test_get_available_skills_delegates_to_find_all_skills():
 
 def test_get_available_skills_excludes_disabled():
     """Disabled skills should not appear in the banner count."""
-    # _find_all_skills already filters disabled skills, so if we give it
-    # a filtered list, get_available_skills should reflect that.
     filtered = [s for s in _MOCK_SKILLS if s["name"] != "skill-b"]
     with patch("tools.skills_tool._find_all_skills", return_value=filtered):
         from daedalus_cli.banner import get_available_skills

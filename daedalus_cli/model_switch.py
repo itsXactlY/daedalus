@@ -45,9 +45,6 @@ from agent.models_dev import (
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Non-agentic model warning
-# ---------------------------------------------------------------------------
 
 _DAEDALUS_MODEL_WARNING = (
     "Nous Research Daedalus 3 & 4 models are NOT agentic and are not designed "
@@ -64,10 +61,6 @@ def _check_daedalus_model_warning(model_name: str) -> str:
     return ""
 
 
-# ---------------------------------------------------------------------------
-# Model aliases -- short names -> (vendor, family) with NO version numbers.
-# Resolved dynamically against the live models.dev catalog.
-# ---------------------------------------------------------------------------
 
 class ModelIdentity(NamedTuple):
     """Vendor slug and family prefix used for catalog resolution."""
@@ -76,64 +69,43 @@ class ModelIdentity(NamedTuple):
 
 
 MODEL_ALIASES: dict[str, ModelIdentity] = {
-    # Anthropic
     "sonnet":    ModelIdentity("anthropic", "claude-sonnet"),
     "opus":      ModelIdentity("anthropic", "claude-opus"),
     "haiku":     ModelIdentity("anthropic", "claude-haiku"),
     "claude":    ModelIdentity("anthropic", "claude"),
 
-    # OpenAI
     "gpt5":      ModelIdentity("openai", "gpt-5"),
     "gpt":       ModelIdentity("openai", "gpt"),
     "codex":     ModelIdentity("openai", "codex"),
     "o3":        ModelIdentity("openai", "o3"),
     "o4":        ModelIdentity("openai", "o4"),
 
-    # Google
     "gemini":    ModelIdentity("google", "gemini"),
 
-    # DeepSeek
     "deepseek":  ModelIdentity("deepseek", "deepseek-chat"),
 
-    # X.AI
     "grok":      ModelIdentity("x-ai", "grok"),
 
-    # Meta
     "llama":     ModelIdentity("meta-llama", "llama"),
 
-    # Qwen / Alibaba
     "qwen":      ModelIdentity("qwen", "qwen"),
 
-    # MiniMax
     "minimax":   ModelIdentity("minimax", "minimax"),
 
-    # Nvidia
     "nemotron":  ModelIdentity("nvidia", "nemotron"),
 
-    # Moonshot / Kimi
     "kimi":      ModelIdentity("moonshotai", "kimi"),
 
-    # Z.AI / GLM
     "glm":       ModelIdentity("z-ai", "glm"),
 
-    # StepFun
     "step":      ModelIdentity("stepfun", "step"),
 
-    # Xiaomi
     "mimo":      ModelIdentity("xiaomi", "mimo"),
 
-    # Arcee
     "trinity":   ModelIdentity("arcee-ai", "trinity"),
 }
 
 
-# ---------------------------------------------------------------------------
-# Direct aliases — exact model+provider+base_url for endpoints that aren't
-# in the models.dev catalog (e.g. Ollama Cloud, local servers).
-# Checked BEFORE catalog resolution.  Format:
-#   alias -> (model_id, provider, base_url)
-# These can also be loaded from config.yaml ``model_aliases:`` section.
-# ---------------------------------------------------------------------------
 
 class DirectAlias(NamedTuple):
     """Exact model mapping that bypasses catalog resolution."""
@@ -142,10 +114,8 @@ class DirectAlias(NamedTuple):
     base_url: str
 
 
-# Built-in direct aliases (can be extended via config.yaml model_aliases:)
 _BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
-# Merged dict (builtins + user config); populated by _load_direct_aliases()
 DIRECT_ALIASES: dict[str, DirectAlias] = {}
 
 
@@ -192,9 +162,6 @@ def _ensure_direct_aliases() -> None:
         DIRECT_ALIASES = _load_direct_aliases()
 
 
-# ---------------------------------------------------------------------------
-# Result dataclasses
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ModelSwitchResult:
@@ -227,9 +194,6 @@ class CustomAutoResult:
     error_message: str = ""
 
 
-# ---------------------------------------------------------------------------
-# Flag parsing
-# ---------------------------------------------------------------------------
 
 def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     """Parse --provider and --global flags from /model command args.
@@ -247,12 +211,10 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     is_global = False
     explicit_provider = ""
 
-    # Extract --global
     if "--global" in raw_args:
         is_global = True
         raw_args = raw_args.replace("--global", "").strip()
 
-    # Extract --provider <name>
     parts = raw_args.split()
     i = 0
     filtered: list[str] = []
@@ -268,9 +230,6 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     return (model_input, explicit_provider, is_global)
 
 
-# ---------------------------------------------------------------------------
-# Alias resolution
-# ---------------------------------------------------------------------------
 
 def resolve_alias(
     raw_input: str,
@@ -290,15 +249,11 @@ def resolve_alias(
     """
     key = raw_input.strip().lower()
 
-    # Check direct aliases first (exact model+provider+base_url mappings)
     _ensure_direct_aliases()
     direct = DIRECT_ALIASES.get(key)
     if direct is not None:
         return (direct.provider, direct.model, key)
 
-    # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
-    # "glm-4.7") route through direct aliases instead of falling through
-    # to the catalog/OpenRouter.
     for alias_name, da in DIRECT_ALIASES.items():
         if da.model.lower() == key:
             return (da.provider, da.model, alias_name)
@@ -309,23 +264,19 @@ def resolve_alias(
 
     vendor, family = identity
 
-    # Search the provider's catalog from models.dev
     catalog = list_provider_models(current_provider)
     if not catalog:
         return None
 
-    # For aggregators, models are vendor/model-name format
     aggregator = is_aggregator(current_provider)
 
     for model_id in catalog:
         mid_lower = model_id.lower()
         if aggregator:
-            # Match vendor/family prefix -- e.g. "anthropic/claude-sonnet"
             prefix = f"{vendor}/{family}".lower()
             if mid_lower.startswith(prefix):
                 return (current_provider, model_id, key)
         else:
-            # Non-aggregator: bare names -- e.g. "claude-sonnet-4-6"
             family_lower = family.lower()
             if mid_lower.startswith(family_lower):
                 return (current_provider, model_id, key)
@@ -370,9 +321,6 @@ def _resolve_alias_fallback(
     return None
 
 
-# ---------------------------------------------------------------------------
-# Core model-switching pipeline
-# ---------------------------------------------------------------------------
 
 def switch_model(
     raw_input: str,
@@ -431,11 +379,7 @@ def switch_model(
     new_model = raw_input.strip()
     target_provider = current_provider
 
-    # =================================================================
-    # PATH A: Explicit --provider given
-    # =================================================================
     if explicit_provider:
-        # Resolve the provider
         pdef = resolve_provider_full(explicit_provider, user_providers)
         if pdef is None:
             _switch_err = (
@@ -443,7 +387,6 @@ def switch_model(
                 f"Check 'daedalus model' for available providers, or define it "
                 f"in config.yaml under 'providers:'."
             )
-            # Check for common config issues that cause provider resolution failures
             try:
                 from daedalus_cli.config import validate_config_structure
                 _cfg_issues = validate_config_structure()
@@ -461,7 +404,6 @@ def switch_model(
 
         target_provider = pdef.id
 
-        # If no model specified, try auto-detect from endpoint
         if not new_model:
             if pdef.base_url:
                 from daedalus_cli.runtime_provider import _auto_detect_local_model
@@ -491,16 +433,11 @@ def switch_model(
                     ),
                 )
 
-        # Resolve alias on the TARGET provider
         alias_result = resolve_alias(new_model, target_provider)
         if alias_result is not None:
             _, new_model, resolved_alias = alias_result
 
-    # =================================================================
-    # PATH B: No explicit provider — resolve from model input
-    # =================================================================
     else:
-        # --- Step a: Try alias resolution on current provider ---
         alias_result = resolve_alias(raw_input, current_provider)
 
         if alias_result is not None:
@@ -510,7 +447,6 @@ def switch_model(
                 resolved_alias, new_model, target_provider,
             )
         else:
-            # --- Step b: Alias exists but not on current provider -> fallback ---
             key = raw_input.strip().lower()
             if key in MODEL_ALIASES:
                 authed = get_authenticated_provider_slugs(
@@ -536,20 +472,17 @@ def switch_model(
                         ),
                     )
             else:
-                # --- Step c: On aggregator, convert vendor:model to vendor/model ---
                 colon_pos = raw_input.find(":")
                 if colon_pos > 0 and is_aggregator(current_provider):
                     left = raw_input[:colon_pos].strip().lower()
                     right = raw_input[colon_pos + 1:].strip()
                     if left and right:
-                        # Colons become slashes for aggregator slugs
                         new_model = f"{left}/{right}"
                         logger.debug(
                             "Converted vendor:model '%s' to aggregator slug '%s'",
                             raw_input, new_model,
                         )
 
-        # --- Step d: Aggregator catalog search ---
         if is_aggregator(target_provider) and not resolved_alias:
             catalog = list_provider_models(target_provider)
             if catalog:
@@ -566,7 +499,6 @@ def switch_model(
                                 new_model = mid
                                 break
 
-        # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
         is_custom = current_provider in ("custom", "local") or (
             "localhost" in _base or "127.0.0.1" in _base
@@ -581,14 +513,10 @@ def switch_model(
             if detected:
                 target_provider, new_model = detected
 
-    # =================================================================
-    # COMMON PATH: Resolve credentials, normalize, get metadata
-    # =================================================================
 
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
 
-    # --- Resolve credentials ---
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
@@ -619,7 +547,6 @@ def switch_model(
         except Exception:
             pass
 
-    # --- Direct alias override: use exact base_url from the alias if set ---
     if resolved_alias:
         _ensure_direct_aliases()
         _da = DIRECT_ALIASES.get(resolved_alias)
@@ -628,10 +555,8 @@ def switch_model(
             if not api_key:
                 api_key = "no-key-required"
 
-    # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
 
-    # --- Validate ---
     try:
         validation = validate_requested_model(
             new_model,
@@ -658,21 +583,16 @@ def switch_model(
             error_message=msg,
         )
 
-    # --- OpenCode api_mode override ---
     if target_provider in {"opencode-zen", "opencode-go", "opencode", "opencode-go"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)
 
-    # --- Determine api_mode if not already set ---
     if not api_mode:
         api_mode = determine_api_mode(target_provider, base_url)
 
-    # --- Get capabilities (legacy) ---
     capabilities = get_model_capabilities(target_provider, new_model)
 
-    # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model)
 
-    # --- Collect warnings ---
     warnings: list[str] = []
     if validation.get("message"):
         warnings.append(validation["message"])
@@ -680,7 +600,6 @@ def switch_model(
     if daedalus_warn:
         warnings.append(daedalus_warn)
 
-    # --- Build result ---
     return ModelSwitchResult(
         success=True,
         new_model=new_model,
@@ -698,9 +617,6 @@ def switch_model(
     )
 
 
-# ---------------------------------------------------------------------------
-# Authenticated providers listing (for /model no-args display)
-# ---------------------------------------------------------------------------
 
 def list_authenticated_providers(
     current_provider: str = "",
@@ -737,14 +653,11 @@ def list_authenticated_providers(
 
     data = fetch_models_dev()
 
-    # Build curated model lists keyed by daedalus provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
 
-    # --- 1. Check Daedalus-mapped providers ---
     for daedalus_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
@@ -754,12 +667,10 @@ def list_authenticated_providers(
         if not isinstance(env_vars, list):
             continue
 
-        # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list
         model_ids = curated.get(daedalus_id, [])
         total = len(model_ids)
         top = model_ids[:max_models]
@@ -779,17 +690,14 @@ def list_authenticated_providers(
         })
         seen_slugs.add(slug)
 
-    # --- 2. Check Daedalus-only providers (nous, openai-codex, copilot) ---
     from daedalus_cli.providers import DAEDALUS_OVERLAYS
     for pid, overlay in DAEDALUS_OVERLAYS.items():
         if pid in seen_slugs:
             continue
-        # Check if credentials exist
         has_creds = False
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
-            # These use auth stores, not env vars — check for auth.json entries
             try:
                 from daedalus_cli.auth import _load_auth_store
                 store = _load_auth_store()
@@ -800,7 +708,6 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list
         model_ids = curated.get(pid, [])
         total = len(model_ids)
         top = model_ids[:max_models]
@@ -816,7 +723,6 @@ def list_authenticated_providers(
         })
         seen_slugs.add(pid)
 
-    # --- 3. User-defined endpoints from config ---
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
@@ -829,8 +735,6 @@ def list_authenticated_providers(
             if default_model:
                 models_list.append(default_model)
 
-            # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
             results.append({
                 "slug": ep_name,
                 "name": display_name,
@@ -842,15 +746,11 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
 
-    # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
 
 
-# ---------------------------------------------------------------------------
-# Fuzzy suggestions
-# ---------------------------------------------------------------------------
 
 def suggest_models(raw_input: str, limit: int = 3) -> List[str]:
     """Return fuzzy model suggestions for a (possibly misspelled) input."""
@@ -868,9 +768,6 @@ def suggest_models(raw_input: str, limit: int = 3) -> List[str]:
     return suggestions[:limit]
 
 
-# ---------------------------------------------------------------------------
-# Custom provider switch
-# ---------------------------------------------------------------------------
 
 def switch_to_custom_provider() -> CustomAutoResult:
     """Handle bare '/model --provider custom' — resolve endpoint and auto-detect model."""

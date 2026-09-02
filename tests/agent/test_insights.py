@@ -31,12 +31,10 @@ def populated_db(db):
     now = time.time()
     day = 86400
 
-    # Session 1: CLI, claude-sonnet, ended, 2 days ago
     db.create_session(
         session_id="s1", source="cli",
         model="anthropic/claude-sonnet-4-20250514", user_id="user1",
     )
-    # Backdate the started_at
     db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 2 * day,))
     db.end_session("s1", end_reason="user_exit")
     db._conn.execute("UPDATE sessions SET ended_at = ? WHERE id = 's1'", (now - 2 * day + 3600,))
@@ -55,7 +53,6 @@ def populated_db(db):
     db.append_message("s1", role="user", content="Thanks!")
     db.append_message("s1", role="assistant", content="You're welcome!")
 
-    # Session 2: Telegram, gpt-4o, ended, 5 days ago
     db.create_session(
         session_id="s2", source="telegram",
         model="gpt-4o", user_id="user1",
@@ -70,7 +67,6 @@ def populated_db(db):
     db.append_message("s2", role="tool", content="results...", tool_name="web_search")
     db.append_message("s2", role="assistant", content="Here's what I found")
 
-    # Session 3: CLI, deepseek-chat, ended, 10 days ago
     db.create_session(
         session_id="s3", source="cli",
         model="deepseek-chat", user_id="user1",
@@ -90,7 +86,6 @@ def populated_db(db):
                       tool_calls=[{"function": {"name": "search_files"}}])
     db.append_message("s3", role="tool", content="found stuff", tool_name="search_files")
 
-    # Session 4: Discord, same model as s1, ended, 1 day ago
     db.create_session(
         session_id="s4", source="discord",
         model="anthropic/claude-sonnet-4-20250514", user_id="user2",
@@ -102,7 +97,6 @@ def populated_db(db):
     db.append_message("s4", role="user", content="Quick question")
     db.append_message("s4", role="assistant", content="Sure, go ahead")
 
-    # Session 5: Old session, 45 days ago (should be excluded from 30-day window)
     db.create_session(
         session_id="s_old", source="cli",
         model="gpt-4o-mini", user_id="user1",
@@ -118,9 +112,6 @@ def populated_db(db):
     return db
 
 
-# =========================================================================
-# Pricing helpers
-# =========================================================================
 
 class TestPricing:
     def test_provider_prefix_stripped(self):
@@ -205,9 +196,6 @@ class TestEstimateCost:
         assert cost == pytest.approx(expected, abs=0.0001)
 
 
-# =========================================================================
-# Format helpers
-# =========================================================================
 
 class TestFormatDuration:
     def test_seconds(self):
@@ -217,14 +205,14 @@ class TestFormatDuration:
         assert _format_duration(300) == "5m"
 
     def test_hours_with_minutes(self):
-        result = _format_duration(5400)  # 1.5 hours
+        result = _format_duration(5400)
         assert result == "1h 30m"
 
     def test_exact_hours(self):
         assert _format_duration(7200) == "2h"
 
     def test_days(self):
-        result = _format_duration(172800)  # 2 days
+        result = _format_duration(172800)
         assert result == "2.0d"
 
 
@@ -232,9 +220,9 @@ class TestBarChart:
     def test_basic_bars(self):
         bars = _bar_chart([10, 5, 0, 20], max_width=10)
         assert len(bars) == 4
-        assert len(bars[3]) == 10  # max value gets full width
-        assert len(bars[0]) == 5   # half of max
-        assert bars[2] == ""       # zero gets empty
+        assert len(bars[3]) == 10
+        assert len(bars[0]) == 5
+        assert bars[2] == ""
 
     def test_empty_values(self):
         bars = _bar_chart([], max_width=10)
@@ -250,9 +238,6 @@ class TestBarChart:
         assert len(bars[0]) == 10
 
 
-# =========================================================================
-# InsightsEngine — empty DB
-# =========================================================================
 
 class TestInsightsEmpty:
     def test_empty_db_returns_empty_report(self, db):
@@ -274,9 +259,6 @@ class TestInsightsEmpty:
         assert "No sessions found" in text
 
 
-# =========================================================================
-# InsightsEngine — populated DB
-# =========================================================================
 
 class TestInsightsPopulated:
     def test_generate_returns_all_sections(self, populated_db):
@@ -296,7 +278,6 @@ class TestInsightsPopulated:
         report = engine.generate(days=30)
         overview = report["overview"]
 
-        # s1, s2, s3, s4 are within 30 days; s_old is 45 days ago
         assert overview["total_sessions"] == 4
 
     def test_overview_token_totals(self, populated_db):
@@ -320,7 +301,6 @@ class TestInsightsPopulated:
         report = engine.generate(days=30)
         overview = report["overview"]
 
-        # All 4 sessions have durations
         assert overview["total_hours"] > 0
         assert overview["avg_session_duration"] > 0
 
@@ -329,13 +309,11 @@ class TestInsightsPopulated:
         report = engine.generate(days=30)
         models = report["models"]
 
-        # Should have 3 distinct models (claude-sonnet x2, gpt-4o, deepseek-chat)
         model_names = [m["model"] for m in models]
         assert "claude-sonnet-4-20250514" in model_names
         assert "gpt-4o" in model_names
         assert "deepseek-chat" in model_names
 
-        # Claude-sonnet has 2 sessions (s1 + s4)
         claude = next(m for m in models if "claude-sonnet" in m["model"])
         assert claude["sessions"] == 2
 
@@ -350,7 +328,7 @@ class TestInsightsPopulated:
         assert "discord" in platform_names
 
         cli = next(p for p in platforms if p["platform"] == "cli")
-        assert cli["sessions"] == 2  # s1 + s3
+        assert cli["sessions"] == 2
 
     def test_tool_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -364,11 +342,9 @@ class TestInsightsPopulated:
         assert "patch" in tool_names
         assert "web_search" in tool_names
 
-        # terminal was used 2x in s3
         terminal = next(t for t in tools if t["tool"] == "terminal")
         assert terminal["count"] == 2
 
-        # Percentages should sum to ~100%
         total_pct = sum(t["percentage"] for t in tools)
         assert total_pct == pytest.approx(100.0, abs=0.1)
 
@@ -398,13 +374,13 @@ class TestInsightsPopulated:
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30, source="cli")
 
-        assert report["overview"]["total_sessions"] == 2  # s1, s3
+        assert report["overview"]["total_sessions"] == 2
 
     def test_source_filter_telegram(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30, source="telegram")
 
-        assert report["overview"]["total_sessions"] == 1  # s2
+        assert report["overview"]["total_sessions"] == 1
 
     def test_source_filter_nonexistent(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -416,20 +392,15 @@ class TestInsightsPopulated:
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=3)
 
-        # Only s1 (2 days ago) and s4 (1 day ago) should be included
         assert report["overview"]["total_sessions"] == 2
 
     def test_days_filter_long(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=60)
 
-        # All 5 sessions should be included
         assert report["overview"]["total_sessions"] == 5
 
 
-# =========================================================================
-# Formatting
-# =========================================================================
 
 class TestTerminalFormatting:
     def test_terminal_format_has_sections(self, populated_db):
@@ -459,7 +430,6 @@ class TestTerminalFormatting:
         report = engine.generate(days=30)
         text = engine.format_terminal(report)
 
-        # Multi-platform, so Platforms section should show
         assert "Platforms" in text
         assert "cli" in text
         assert "telegram" in text
@@ -469,7 +439,7 @@ class TestTerminalFormatting:
         report = engine.generate(days=30)
         text = engine.format_terminal(report)
 
-        assert "█" in text  # Bar chart characters
+        assert "█" in text
 
     def test_terminal_format_shows_na_for_custom_models(self, db):
         """Custom models should show N/A instead of fake cost."""
@@ -499,7 +469,7 @@ class TestGatewayFormatting:
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "**" in text  # Markdown bold
+        assert "**" in text
 
     def test_gateway_format_shows_cost(self, populated_db):
         engine = InsightsEngine(populated_db)
@@ -518,9 +488,6 @@ class TestGatewayFormatting:
         assert "sessions" in text
 
 
-# =========================================================================
-# Edge cases
-# =========================================================================
 
 class TestEdgeCases:
     def test_session_with_no_tokens(self, db):
@@ -542,10 +509,8 @@ class TestEdgeCases:
 
         engine = InsightsEngine(db)
         report = engine.generate(days=30)
-        # Session included
         assert report["overview"]["total_sessions"] == 1
         assert report["overview"]["total_tokens"] == 1500
-        # But no duration stats (session not ended)
         assert report["overview"]["total_hours"] == 0
 
     def test_session_with_no_model(self, db):
@@ -583,11 +548,9 @@ class TestEdgeCases:
         """Tool usage should be extracted from tool_calls JSON when tool_name is NULL."""
         import json as _json
         db.create_session(session_id="s1", source="cli", model="test")
-        # Assistant message with tool_calls (this is what CLI produces)
         db.append_message("s1", role="assistant", content="Let me search",
                           tool_calls=[{"id": "call_1", "type": "function",
                                        "function": {"name": "search_files", "arguments": "{}"}}])
-        # Tool response WITHOUT tool_name (this is the CLI bug)
         db.append_message("s1", role="tool", content="found results",
                           tool_call_id="call_1")
         db.append_message("s1", role="assistant", content="Now reading",
@@ -606,12 +569,10 @@ class TestEdgeCases:
         report = engine.generate(days=30)
         tools = report["tools"]
 
-        # Should find tools from tool_calls JSON even though tool_name is NULL
         tool_names = [t["tool"] for t in tools]
         assert "search_files" in tool_names
         assert "read_file" in tool_names
 
-        # search_files was called twice
         sf = next(t for t in tools if t["tool"] == "search_files")
         assert sf["count"] == 2
 
@@ -628,8 +589,7 @@ class TestEdgeCases:
 
         assert isinstance(overview["models_with_pricing"], list)
         assert isinstance(overview["models_without_pricing"], list)
-        # Should be JSON-serializable
-        _json.dumps(report["overview"])  # would raise if sets present
+        _json.dumps(report["overview"])
 
     def test_mixed_commercial_and_custom_models(self, db):
         """Mix of commercial and custom models: only commercial ones get costs."""
@@ -647,13 +607,11 @@ class TestEdgeCases:
         engine = InsightsEngine(db)
         report = engine.generate(days=30)
 
-        # Cost should only come from gpt-4o, not from the custom model
         overview = report["overview"]
         assert overview["estimated_cost"] > 0
-        assert "claude-sonnet-4-20250514" in overview["models_with_pricing"]  # list now, not set
+        assert "claude-sonnet-4-20250514" in overview["models_with_pricing"]
         assert "my-local-llama" in overview["models_without_pricing"]
 
-        # Verify individual model entries
         claude = next(m for m in report["models"] if m["model"] == "claude-sonnet-4-20250514")
         assert claude["has_pricing"] is True
         assert claude["cost"] > 0
@@ -692,10 +650,7 @@ class TestEdgeCases:
         assert len(report["platforms"]) == 1
         assert report["platforms"][0]["platform"] == "cli"
 
-        # Terminal format should NOT show platform section for single platform
         text = engine.format_terminal(report)
-        # (it still shows platforms section if there's only cli and nothing else)
-        # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
 
     def test_large_days_value(self, db):
         """Very large days value should not crash."""
@@ -713,6 +668,4 @@ class TestEdgeCases:
 
         engine = InsightsEngine(db)
         report = engine.generate(days=0)
-        # Depending on timing, might catch the session if created <1s ago
-        # Just verify it doesn't crash
         assert "empty" in report

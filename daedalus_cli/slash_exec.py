@@ -30,10 +30,10 @@ __all__ = [
 class CommandContext:
     """Surface-provided inputs for a shared command executor."""
 
-    surface: str = "cli"                # "cli" | "gateway" | "tui" — decoration only
-    args: str = ""                      # raw argument string after the command word
-    options: Mapping[str, Any] = field(default_factory=dict)  # surface params
-    config_get: Callable[[str, Any], Any] | None = None       # optional config accessor
+    surface: str = "cli"
+    args: str = ""
+    options: Mapping[str, Any] = field(default_factory=dict)
+    config_get: Callable[[str, Any], Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ class CommandReply:
 
     text: str
     data: Mapping[str, Any] = field(default_factory=dict)
-    format: str = "plain"               # "plain" | "markdown" (hint, not a contract)
+    format: str = "plain"
 
 
 def _exec_bundles(ctx: CommandContext) -> CommandReply:

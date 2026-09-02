@@ -96,7 +96,6 @@ class TestDetectProviderForModel:
         """deepseek-chat should resolve to deepseek provider."""
         result = detect_provider_for_model("deepseek-chat", "openai-codex")
         assert result is not None
-        # Provider is deepseek (direct) or openrouter (fallback) depending on creds
         assert result[0] in ("deepseek", "openrouter")
 
     def test_current_provider_model_returns_none(self):
@@ -121,7 +120,6 @@ class TestDetectProviderForModel:
         """Bare model names should get mapped to full OpenRouter slugs."""
         result = detect_provider_for_model("claude-opus-4.6", "openai-codex")
         assert result is not None
-        # Should find it on OpenRouter with full slug
         assert result[1] == "anthropic/claude-opus-4.6"
 
     def test_unknown_model_returns_none(self):
@@ -132,7 +130,7 @@ class TestDetectProviderForModel:
         """nous/openrouter should never be auto-suggested as target provider."""
         result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
         assert result is not None
-        assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
+        assert result[0] not in ("nous",)
 
 
 class TestFilterNousFreeModels:
@@ -185,18 +183,18 @@ class TestFilterNousFreeModels:
     def test_model_with_no_pricing_entry_treated_as_paid(self):
         """A model missing from the pricing dict is kept (assumed paid)."""
         models = ["anthropic/claude-opus-4.6", "openai/gpt-5.4"]
-        pricing = {"anthropic/claude-opus-4.6": self._PAID}  # gpt-5.4 not in pricing
+        pricing = {"anthropic/claude-opus-4.6": self._PAID}
         result = filter_nous_free_models(models, pricing)
         assert result == models
 
     def test_mixed_scenario(self):
         """End-to-end: mix of paid, free-allowed, free-disallowed, allowlist-not-free."""
         models = [
-            "anthropic/claude-opus-4.6",       # paid, not allowlist → keep
-            "nvidia/nemotron-3-super-120b-a12b:free",  # free, not allowlist → drop
-            "xiaomi/mimo-v2-pro",              # free, allowlist → keep
-            "xiaomi/mimo-v2-omni",             # paid, allowlist → drop
-            "openai/gpt-5.4",                  # paid, not allowlist → keep
+            "anthropic/claude-opus-4.6",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+            "xiaomi/mimo-v2-pro",
+            "xiaomi/mimo-v2-omni",
+            "openai/gpt-5.4",
         ]
         pricing = {
             "anthropic/claude-opus-4.6": self._PAID,
@@ -321,7 +319,6 @@ class TestCheckNousFreeTierCache:
 
         assert result1 is True
         assert result2 is True
-        # fetch_nous_account_tier should only be called once (cached on second call)
         assert mock_fetch.call_count == 1
 
     @patch("daedalus_cli.models.fetch_nous_account_tier")
@@ -334,7 +331,6 @@ class TestCheckNousFreeTierCache:
             result1 = check_nous_free_tier()
             assert mock_fetch.call_count == 1
 
-            # Simulate TTL expiry by backdating the cache timestamp
             cached_result, cached_at = _models_mod._free_tier_cache
             _models_mod._free_tier_cache = (cached_result, cached_at - _FREE_TIER_CACHE_TTL - 1)
 
@@ -346,7 +342,6 @@ class TestCheckNousFreeTierCache:
 
     def test_clear_cache_forces_refresh(self):
         """clear_nous_free_tier_cache() invalidates the cached result."""
-        # Manually seed the cache
         import time
         _models_mod._free_tier_cache = (True, time.monotonic())
 

@@ -23,8 +23,6 @@ try:
     from environments.tool_context import ToolContext
     from environments.daedalus_base_env import DaedalusAgentBaseEnv, DaedalusAgentEnvConfig
 except ImportError:
-    # atroposlib not installed — environments are unavailable but
-    # submodules like tool_call_parsers can still be imported directly.
     pass
 
 __all__ = [

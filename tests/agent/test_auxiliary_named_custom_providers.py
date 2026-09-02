@@ -12,7 +12,6 @@ def _isolate(tmp_path, monkeypatch):
     daedalus_home = tmp_path / ".daedalus"
     daedalus_home.mkdir()
     monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
-    # Write a minimal config so load_config doesn't fail
     (daedalus_home / "config.yaml").write_text("model:\n  default: test-model\n")
 
 
@@ -123,7 +122,6 @@ class TestResolveProviderClientNamedCustom:
         from agent.auxiliary_client import resolve_provider_client
         client, model = resolve_provider_client("beans")
         assert client is not None
-        # Should use _read_main_model() fallback
         assert model == "main-model"
 
     def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
@@ -136,7 +134,6 @@ class TestResolveProviderClientNamedCustom:
         from agent.auxiliary_client import resolve_provider_client
         client, model = resolve_provider_client("local", "test")
         assert client is not None
-        # no-key-required should be used
 
     def test_nonexistent_named_custom_falls_through(self, tmp_path):
         _write_config(tmp_path, {
@@ -146,6 +143,5 @@ class TestResolveProviderClientNamedCustom:
             ],
         })
         from agent.auxiliary_client import resolve_provider_client
-        # "coffee" doesn't exist in custom_providers
         client, model = resolve_provider_client("coffee", "test")
         assert client is None

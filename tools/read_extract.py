@@ -36,7 +36,6 @@ __all__ = [
 ]
 
 EXTRACTABLE_EXTENSIONS = frozenset({".ipynb", ".docx", ".xlsx"})
-# Formats handled only when the optional anydoc converter is installed.
 ANYDOC_EXTENSIONS = frozenset({
     ".doc", ".docm",
     ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
@@ -45,9 +44,6 @@ ANYDOC_EXTENSIONS = frozenset({
     ".rtf", ".epub", ".pdf",
 })
 MAX_XLSX_BYTES = 50 * 1024 * 1024
-# Refuse to convert huge documents. anydoc loads the whole file through its
-# Rust core with no streaming, and the read_file char budget only applies
-# after conversion, so an unbounded input can pin a tool turn and spike RAM.
 MAX_ANYDOC_BYTES = 50 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
 _MAX_XLSX_ROWS_PER_SHEET = 5000
@@ -75,9 +71,6 @@ def _extension(path: str) -> str:
 _ANYDOC_UNSET = object()
 _anydoc_module: Any = _ANYDOC_UNSET
 _anydoc_lock = threading.Lock()
-# After a failed first load, wait this long before trying again. The attempt
-# can shell out to pip, so retrying on every call would hammer the network
-# in environments where the install can never succeed.
 ANYDOC_RETRY_SECONDS = 300.0
 _anydoc_failed_at: Optional[float] = None
 
@@ -103,14 +96,13 @@ def _anydoc() -> Optional[Any]:
         try:
             from tools.lazy_deps import ensure as _lazy_ensure
 
-            # prompt=False: read_file must never block on an install prompt.
             _lazy_ensure("tool.doc_extract", prompt=False)
         except Exception:
             _anydoc_failed_at = time.monotonic()
             return None
         try:
             _anydoc_module = importlib.import_module("anydoc")
-        except Exception:  # ImportError or a broken native binding
+        except Exception:
             _anydoc_failed_at = time.monotonic()
             return None
         _anydoc_failed_at = None
@@ -146,8 +138,6 @@ def extract_document_bytes(data: bytes, path: str) -> str:
     if ext not in EXTRACTABLE_EXTENSIONS:
         raise ExtractionError(f"Unsupported document type: {path!r}")
 
-    # The stdlib extractors are path-oriented. Materialize backend bytes in a
-    # private host temp file, then remove it even when parsing fails.
     temp_path = ""
     try:
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as fh:
@@ -179,10 +169,6 @@ def _extract_anydoc(path: str) -> str:
     except OSError as exc:
         raise ExtractionError(str(exc)) from exc
     except Exception as exc:
-        # anydoc raises one ConvertError subclass per failure mode
-        # (Unsupported, Malformed, Encrypted, ResourceLimit, MissingPart).
-        # Any of them means "no meaningful text": fall back to the normal
-        # path/binary handling rather than crash read_file.
         raise ExtractionError(f"{type(exc).__name__}: {exc}") from exc
     if not isinstance(text, str) or not text.strip():
         raise ExtractionError("Document contains no extractable text")
@@ -190,25 +176,12 @@ def _extract_anydoc(path: str) -> str:
     if Path(path).suffix.lower() == ".pdf":
         note = _pdf_coverage_note(path)
         if note:
-            # Prepend: read_file paginates the extraction, so a footer on a
-            # long document would sit on a page the model may never fetch.
             text = note + text
     return text
 
 
-# ── Scanned-PDF coverage detection ──────────────────────────────────
-#
-# anydoc (like every text-layer extractor) returns nothing for scanned
-# image pages and emits no image placeholders or page markers, so a
-# mostly-scanned PDF converts "successfully" into a few headers with
-# empty bodies — silent data loss the model cannot detect. Count per-page
-# text via poppler's pdftotext (form-feed page separators) and append a
-# loud footer when a meaningful share of pages yielded no text.
 
-# A page with fewer extracted characters than this is considered empty.
 PDF_EMPTY_PAGE_CHARS = 20
-# Warn when at least this many pages are empty AND they exceed the ratio,
-# or when the absolute count alone is overwhelming.
 PDF_COVERAGE_MIN_EMPTY = 2
 PDF_COVERAGE_MIN_RATIO = 0.2
 PDF_COVERAGE_ABSOLUTE_EMPTY = 10
@@ -231,7 +204,7 @@ def _pdf_page_texts(path: str) -> Optional[list[str]]:
         return None
     pages = proc.stdout.decode("utf-8", errors="replace").split("\f")
     if pages and not pages[-1].strip():
-        pages.pop()  # trailing form-feed artifact
+        pages.pop()
     return pages or None
 
 
@@ -262,9 +235,6 @@ def _group_ranges(pages: list[int]) -> list[list[int]]:
     return ranges
 
 
-# Cap the per-gap breakdown so a pathological PDF (hundreds of alternating
-# text/scan pages) cannot balloon the warning. Ranges beyond the cap are
-# summarized in one line.
 PDF_GAP_MAP_MAX_ENTRIES = 20
 _GAP_CONTEXT_CHARS = 60
 
@@ -278,7 +248,6 @@ def _gap_map(counts: list[int], texts: list[str], empty: list[int]) -> str:
     lines: list[str] = []
     for a, b in ranges[:PDF_GAP_MAP_MAX_ENTRIES]:
         label = ""
-        # Walk back to the nearest preceding page with text.
         for prev in range(a - 2, -1, -1):
             if counts[prev] >= PDF_EMPTY_PAGE_CHARS:
                 snippet = " ".join(texts[prev].split())[:_GAP_CONTEXT_CHARS]
@@ -350,8 +319,6 @@ def _extract_anydoc_bytes(data: bytes, path: str) -> str:
     if Path(path).suffix.lower() == ".pdf":
         note = _pdf_coverage_note_from_bytes(data, path)
         if note:
-            # Prepend: read_file paginates the extraction, so a footer on a
-            # long document would sit on a page the model may never fetch.
             text = note + text
     return text
 
@@ -416,8 +383,6 @@ def _clean_stream_text(text: str) -> str:
     return "\n".join(lines)
 
 
-# Notebook outputs longer than this are tail-truncated per output block so a
-# single runaway training log cannot flood the extracted text.
 _MAX_OUTPUT_CHARS = 20_000
 
 
@@ -450,7 +415,6 @@ def _notebook_output_text(output: Any) -> str:
     if otype in {"execute_result", "display_data", "pyout"}:
         data = output.get("data")
         if not isinstance(data, dict):
-            # nbformat v3 stores mime data flat on the output dict.
             data = {}
             if isinstance(output.get("text"), (str, list)):
                 data["text/plain"] = output["text"]
@@ -462,8 +426,6 @@ def _notebook_output_text(output: Any) -> str:
         if "application/vnd.jupyter.widget-view+json" in data:
             return "[interactive widget — omitted]"
 
-        # Prefer readable text: models consume text/plain (e.g. the pandas
-        # twin of an HTML table) far better than markup.
         for mime in ("text/plain", "text/markdown"):
             if mime in data:
                 body = _clean_stream_text(_source_text(data[mime]))

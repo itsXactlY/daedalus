@@ -111,16 +111,12 @@ def automatic_compaction_status_message(
 class ContextEngine(ABC):
     """Base class all context engines must implement."""
 
-    # -- Identity ----------------------------------------------------------
 
     @property
     @abstractmethod
     def name(self) -> str:
         """Short identifier (e.g. 'compressor', 'lcm')."""
 
-    # -- Token state (read by run_agent.py for display/logging) ------------
-    #
-    # Engines MUST maintain these. run_agent.py reads them directly.
 
     last_prompt_tokens: int = 0
     last_completion_tokens: int = 0
@@ -129,28 +125,13 @@ class ContextEngine(ABC):
     context_length: int = 0
     compression_count: int = 0
 
-    # -- Compaction parameters (read by run_agent.py for preflight) --------
-    #
-    # These control the preflight compression check.  Subclasses may
-    # override via __init__ or property; defaults are sensible for most
-    # engines.
-    #
-    # protect_first_n semantics (since PR #13754): count of non-system head
-    # messages always preserved verbatim, IN ADDITION to the system prompt
-    # which is always implicitly protected.  Default 3 keeps the
-    # historical "system + first 3 non-system messages" head shape.
 
     threshold_percent: float = 0.75
     protect_first_n: int = 3
     protect_last_n: int = 6
 
-    # User-visible lifecycle status for automatic host-triggered compaction.
-    # Alternative engines that treat compaction as routine background
-    # maintenance can set this false to keep successful automatic passes silent;
-    # warnings, errors, and explicit manual commands should still surface.
     emit_automatic_compaction_status: bool = True
 
-    # -- Core interface ----------------------------------------------------
 
     @abstractmethod
     def update_from_response(self, usage: Dict[str, Any]) -> None:
@@ -211,7 +192,6 @@ class ContextEngine(ABC):
                 host filters unsupported optional arguments by signature.
         """
 
-    # -- Optional: proactive tool-result prune -----------------------------
 
     def prune_tool_results_only(
         self,
@@ -232,7 +212,6 @@ class ContextEngine(ABC):
         """
         return messages, 0
 
-    # -- Optional: per-turn context selection (distinct from compression) --
 
     def select_context(
         self,
@@ -349,7 +328,6 @@ class ContextEngine(ABC):
         """
         return None
 
-    # -- Optional: pre-flight check ----------------------------------------
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
         """Quick rough check before the API call (no real token count yet).
@@ -389,7 +367,6 @@ class ContextEngine(ABC):
             return None
         return default_message
 
-    # -- Optional: manual /compress preflight ------------------------------
 
     def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
         """Quick check: is there anything in ``messages`` that can be compacted?
@@ -404,7 +381,6 @@ class ContextEngine(ABC):
         """
         return True
 
-    # -- Optional: session lifecycle ---------------------------------------
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Called when a new conversation session begins.
@@ -430,7 +406,6 @@ class ContextEngine(ABC):
         self.last_total_tokens = 0
         self.compression_count = 0
 
-    # -- Optional: tools ---------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return tool schemas this engine provides to the agent.
@@ -452,17 +427,12 @@ class ContextEngine(ABC):
         import json
         return json.dumps({"error": f"Unknown context engine tool: {name}"})
 
-    # -- Optional: status / display ----------------------------------------
 
     def get_status(self) -> Dict[str, Any]:
         """Return status dict for display/logging.
 
         Default returns the standard fields run_agent.py expects.
         """
-        # Clamp the -1 "compression just ran, awaiting real usage" sentinel
-        # (set by conversation_compression) to 0 so status readers don't see a
-        # raw -1 or a negative usage_percent on the transitional turn. Mirrors
-        # the CLI/gateway status-bar paths (cli.py, tui_gateway/server.py).
         last_prompt = self.last_prompt_tokens if self.last_prompt_tokens > 0 else 0
         return {
             "last_prompt_tokens": last_prompt,
@@ -475,7 +445,6 @@ class ContextEngine(ABC):
             "compression_count": self.compression_count,
         }
 
-    # -- Optional: model switch support ------------------------------------
 
     def update_model(
         self,
@@ -493,14 +462,7 @@ class ContextEngine(ABC):
         (e.g. recalculate DAG budgets, switch summary models).
         """
         self.context_length = context_length
-        # Apply per-model threshold overrides if set (longest substring match).
-        # Falls back to _config_threshold_percent (the raw config value) when
-        # no override matches. Plugin engines that override update_model() can
-        # call resolve_model_threshold() for the same logic.
         if not hasattr(self, "_config_threshold_percent"):
-            # Snapshot the pre-override percent ONCE so repeated model
-            # switches fall back to the engine's configured value, not the
-            # previous model's override.
             self._config_threshold_percent = self.threshold_percent
         self._base_threshold_percent = resolve_model_threshold(
             model, getattr(self, "model_thresholds", {}),

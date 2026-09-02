@@ -46,22 +46,11 @@ import re
 import unicodedata
 from typing import List, Optional, Tuple
 
-# Hard cap on text scanned with regexes.  Context/tool-result strings can be
-# arbitrarily large, and the scanners are advisory guards rather than archival
-# search; bounding input keeps worst-case runtime predictable while preserving
-# detections near the beginning of injected content.
 MAX_SCAN_CHARS = 65_536
 
-# Bounded filler used between key attack words.  Earlier patterns used
-# ``(?:\w+\s+)*`` which is ambiguous and can backtrack heavily on adversarial
-# near-misses.  Eight filler words is enough for the intended obfuscation
-# bypasses without introducing unbounded repetition.
 _FILLER = r"(?:\w+\s+){0,8}"
 
-# Each entry: (regex, pattern_id, scope)
-# scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
-    # ── Classic prompt injection (applies everywhere) ────────────────
     (rf'ignore\s+{_FILLER}(previous|all|above|prior)\s+{_FILLER}instructions', "prompt_injection", "all"),
     (r'system\s+prompt\s+override', "sys_prompt_override", "all"),
     (rf'disregard\s+{_FILLER}(your|all|any)\s+{_FILLER}(instructions|rules|guidelines)', "disregard_rules", "all"),
@@ -71,96 +60,62 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'translate\s+[^\n]{0,512}\s+into\s+[^\n]{0,512}\s+and\s+(execute|run|eval)', "translate_execute", "all"),
     (rf'do\s+not\s+{_FILLER}tell\s+{_FILLER}the\s+user', "deception_hide", "all"),
 
-    # ── Role-play / identity hijack (context + strict; common attack
-    #    surface in scraped web content and poisoned context files) ──
     (rf'you\s+are\s+{_FILLER}now\s+(?:a|an|the)\s+', "role_hijack", "context"),
     (rf'pretend\s+{_FILLER}(you\s+are|to\s+be)\s+', "role_pretend", "context"),
     (rf'output\s+{_FILLER}(system|initial)\s+prompt', "leak_system_prompt", "context"),
     (rf'(respond|answer|reply)\s+without\s+{_FILLER}(restrictions|limitations|filters|safety)', "remove_filters", "context"),
     (rf'you\s+have\s+been\s+{_FILLER}(updated|upgraded|patched)\s+to', "fake_update", "context"),
-    # "name yourself X" is a Brainworm-specific tell — identity override
-    # via spec instead of jailbreak.  Anchored on the verb pair so it
-    # doesn't match "name your variables" etc.
     (r'\bname\s+yourself\s+\w+', "identity_override", "context"),
 
-    # ── C2 / Brainworm-style promptware (context scope) ──────────────
-    # These anchor on C2-specific vocabulary.  "register as a node" appears
-    # in legitimate distributed-systems docs, but in combination with the
-    # other patterns the signal is strong; we WARN, not block, so a security
-    # researcher reading the Brainworm post in a webpage doesn't break their
-    # session.
     (r'register\s+(as\s+)?a?\s*node', "c2_node_registration", "context"),
     (r'(heartbeat|beacon|check[\s\-]?in)\s+(to|with)\s+', "c2_heartbeat", "context"),
     (r'pull\s+(down\s+)?(?:new\s+)?task(?:ing|s)?\b', "c2_task_pull", "context"),
     (r'connect\s+to\s+the\s+network\b', "c2_network_connect", "context"),
-    # Verb-anchored "you must register/connect/report/beacon" — the verbs
-    # are C2-specific so this avoids the broader "you must X" false positive.
     (r'you\s+must\s+(?:\w+\s+){0,3}(register|connect|report|beacon)\b', "forced_action", "context"),
-    # Anti-forensic instructions ("never write to disk", "one-liners only")
-    # — extremely unusual in legitimate content; near-zero false positive.
     (r'only\s+use\s+one[\s\-]?liners?\b', "anti_forensic_oneliner", "context"),
     (rf'never\s+{_FILLER}(?:create|write)\s+{_FILLER}(?:script|file)\s+{_FILLER}disk', "anti_forensic_disk", "context"),
-    # Environment-variable unsetting targeting known agent runtimes —
-    # this is pure attack behavior (Brainworm sub-session bypass).
     (r'unset\s+\w*(?:CLAUDE|CODEX|DAEDALUS|AGENT|OPENAI|ANTHROPIC)\w*', "env_var_unset_agent", "context"),
 
-    # ── Known C2 / red-team framework names (near-zero false positive
-    #    outside security research; warn-only by default) ─────────────
-    # NOTE: do not add common English words here. Every token must be a
-    # distinctive offensive-security tool brand, otherwise legitimate
-    # AGENTS.md / SOUL.md content false-positives and the whole file is
-    # blocked. "praxis" was removed for exactly this reason — it's a common
-    # word and a legitimate agent name (Greek for practice/action), not a
-    # C2-specific tell like the brands below.
     (r'\b(?:cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
     (r'\bc2\s+(?:server|channel|infrastructure|beacon)\b', "c2_explicit", "context"),
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 
-    # ── Exfiltration via curl/wget/cat with secrets (applies everywhere) ──
     (r'curl\s+[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl", "all"),
     (r'wget\s+[^\n]{0,2048}\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget", "all"),
     (r'cat\s+[^\n]{0,2048}(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets", "all"),
     (r'(send|post|upload|transmit)\s+[^\n]{0,2048}\s+(to|at)\s+https?://', "send_to_url", "strict"),
     (rf'(include|output|print|share)\s+{_FILLER}(conversation|chat\s+history|previous\s+messages|full\s+context|entire\s+context)', "context_exfil", "strict"),
 
-    # ── Persistence / SSH backdoor (strict scope — memory + skills) ──
     (r'authorized_keys', "ssh_backdoor", "strict"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access", "strict"),
     (r'\$HOME/\.daedalus/\.env|\~/\.daedalus/\.env', "daedalus_env", "strict"),
     (r'(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}(?:AGENTS\.md|CLAUDE\.md|\.cursorrules|\.clinerules)', "agent_config_mod", "strict"),
     (r'(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}\.daedalus/(config\.yaml|SOUL\.md)', "daedalus_config_mod", "strict"),
 
-    # ── Hardcoded secrets ────────────────────────────────────────────
     (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
 ]
 
-# Invisible / bidirectional unicode characters used in injection attacks.
-# Aligned with skills_guard.py INVISIBLE_CHARS — directional isolates
-# (U+2066-U+2069) and invisible math operators (U+2062-U+2064) are real
-# attack tools.
 INVISIBLE_CHARS = frozenset({
-    '\u200b',  # zero-width space
-    '\u200c',  # zero-width non-joiner
-    '\u200d',  # zero-width joiner
-    '\u2060',  # word joiner
-    '\u2062',  # invisible times
-    '\u2063',  # invisible separator
-    '\u2064',  # invisible plus
-    '\ufeff',  # zero-width no-break space (BOM)
-    '\u202a',  # left-to-right embedding
-    '\u202b',  # right-to-left embedding
-    '\u202c',  # pop directional formatting
-    '\u202d',  # left-to-right override
-    '\u202e',  # right-to-left override
-    '\u2066',  # left-to-right isolate
-    '\u2067',  # right-to-left isolate
-    '\u2068',  # first strong isolate
-    '\u2069',  # pop directional isolate
+    '\u200b',
+    '\u200c',
+    '\u200d',
+    '\u2060',
+    '\u2062',
+    '\u2063',
+    '\u2064',
+    '\ufeff',
+    '\u202a',
+    '\u202b',
+    '\u202c',
+    '\u202d',
+    '\u202e',
+    '\u2066',
+    '\u2067',
+    '\u2068',
+    '\u2069',
 })
 
 
-# Compiled pattern sets, indexed by scope.  Compiled once at import time;
-# scan_for_threats() looks them up.
 _COMPILED: dict[str, List[Tuple[re.Pattern, str]]] = {}
 
 
@@ -228,23 +183,13 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
 
     content = content[:MAX_SCAN_CHARS]
 
-    # Invisible unicode — single pass through the content set, not 17
-    # ``in`` lookups.  Run this on the RAW content before NFKC normalisation,
-    # since normalisation can strip some of these codepoints.
     char_set = set(content)
     invisible_hits = char_set & INVISIBLE_CHARS
     for ch in invisible_hits:
         findings.append(f"invisible_unicode_U+{ord(ch):04X}")
 
-    # Normalise to NFKC so full-width / compatibility Unicode variants
-    # (e.g. ｃａｔ → cat, Ａ → A) are folded to their ASCII counterparts before
-    # the regex engine sees them.  This prevents homograph substitution from
-    # bypassing keyword checks (e.g. ``ｃａｔ ~/.daedalus/.env``).  NOTE: this
-    # does NOT defend against cross-script confusables (Cyrillic ``а`` U+0430),
-    # which NFKC leaves untouched — that needs a TR#39 confusable database.
     normalised = unicodedata.normalize("NFKC", content)
 
-    # Threat patterns
     patterns = _COMPILED.get(scope)
     if patterns is None:
         raise ValueError(f"scan_for_threats: unknown scope {scope!r}")

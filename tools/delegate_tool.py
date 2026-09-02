@@ -25,29 +25,23 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 
-# Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
-    "delegate_task",   # no recursive delegation
-    "clarify",         # no user interaction
-    "memory",          # no writes to shared MEMORY.md
-    "send_message",    # no cross-platform side effects
-    "execute_code",    # children should reason step-by-step, not write scripts
+    "delegate_task",
+    "clarify",
+    "memory",
+    "send_message",
+    "execute_code",
 ])
 
 MAX_CONCURRENT_CHILDREN = 3
-MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+MAX_DEPTH = 2
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
-# ALICE-ROUTER mode system prompt (memory_tools=True delegation).
-# ALICE is a finetuned 3B delegation model — the fine-tune already encodes
-# "route the query to exactly one mazemaker_* tool call, then a short
-# Kontext-Waechter balance line". Any heavier instruction set makes her
-# ramble (operator note 2026-08-11: "alice doesnt needs heavy system prompt,
-# or heavy intruction. its finetuned to use mazemaker tools by default").
-_ALICE_ROUTER_PROMPT = (
-    "Du bist ALICE, der mazemaker-Delegations-Router. "
-    "Beantworte die Anfrage mit genau einem mazemaker_* Tool-Aufruf."
+_MEMORY_DELEGATE_PROMPT = (
+    "You are a memory lookup subagent. Answer the request with exactly one "
+    "mazemaker tool call: mazemaker_recall for retrieval, or "
+    "mazemaker(tool=..., args=...) for any other pod tool."
 )
 
 
@@ -138,20 +132,15 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
 
     if not spinner and not parent_cb:
-        return None  # No display → no callback → zero behavior change
+        return None
 
-    # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
 
-    # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
     _batch: List[str] = []
 
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
-        # event_type is one of: "tool.started", "tool.completed",
-        # "reasoning.available", "_thinking", "subagent_progress"
 
-        # "_thinking" / reasoning events
         if event_type in ("_thinking", "reasoning.available"):
             text = preview or tool_name or ""
             if spinner:
@@ -160,14 +149,11 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
                     logger.debug("Spinner print_above failed: %s", e)
-            # Don't relay thinking to gateway (too noisy for chat)
             return
 
-        # tool.completed — no display needed here (spinner shows on started)
         if event_type == "tool.completed":
             return
 
-        # tool.started — display and batch for parent relay
         if spinner:
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
@@ -212,20 +198,12 @@ def _build_child_agent(
     model: Optional[str],
     max_iterations: int,
     parent_agent,
-    # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
-    # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
-    # Give the child the memory-provider tool surface (mazemaker_* tools).
-    # False keeps the standard isolated child (skip_memory=True).
-    # True = ALICE-ROUTER mode: the child is a finetuned delegation model
-    # (e.g. alice_qwen_lora via llama-server) that routes tool calls with
-    # NO instructions. It gets ONLY a minimal router prompt — no identity,
-    # no memory protocol, no continuity — plus the mazemaker_* tool schemas.
     memory_tools: bool = False,
 ):
     """
@@ -239,15 +217,10 @@ def _build_child_agent(
     """
     from run_agent import AIAgent
 
-    # When no explicit toolsets given, inherit from parent's enabled toolsets
-    # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
     parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
     if parent_enabled is not None:
         parent_toolsets = set(parent_enabled)
     elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        # enabled_toolsets is None (all tools) — derive from loaded tool names
         import model_tools
         parent_toolsets = {
             ts for name in parent_agent.valid_tool_names
@@ -257,7 +230,6 @@ def _build_child_agent(
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
     if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
     elif parent_agent and parent_enabled is not None:
         child_toolsets = _strip_blocked_tools(parent_enabled)
@@ -268,33 +240,20 @@ def _build_child_agent(
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
-    # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # ALICE-ROUTER mode (memory_tools=True): the child is a finetuned
-    # delegation model — it needs NO instructions, just the tool surface.
-    # A heavy system prompt makes a 3B router ramble past its context and
-    # blow up the loop (observed 2026-08-11: finish_reason=length spirals).
-    # Cap output + iterations so a misbehaving router degrades gracefully.
-    # 6 iterations mirrors run_loop.py --max-steps 6: route → follow-up
-    # gets → balance line.
     if memory_tools:
-        child_prompt = None  # drop the standard subagent instruction block
+        child_prompt = None
         effective_max_iterations = min(max_iterations, 6)
         effective_max_tokens = 512
     else:
         effective_max_iterations = max_iterations
         effective_max_tokens = getattr(parent_agent, "max_tokens", None)
 
-    # Build progress callback to relay tool calls to parent display
     child_progress_cb = _build_child_progress_callback(task_index, parent_agent)
 
-    # Each subagent gets its own iteration budget capped at max_iterations
-    # (configurable via delegation.max_iterations, default 50).  This means
-    # total iterations across parent + subagents can exceed the parent's
-    # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
     child_thinking_cb = None
     if child_progress_cb:
@@ -308,7 +267,6 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
-    # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
@@ -332,7 +290,7 @@ def _build_child_agent(
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
-        router_prompt=_ALICE_ROUTER_PROMPT if memory_tools else None,
+        router_prompt=_MEMORY_DELEGATE_PROMPT if memory_tools else None,
         disable_bootstrap_recall=memory_tools,
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
@@ -347,19 +305,15 @@ def _build_child_agent(
         providers_order=parent_agent.providers_order,
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,
-        iteration_budget=None,  # fresh budget per subagent
+        iteration_budget=None,
     )
     child._print_fn = getattr(parent_agent, '_print_fn', None)
-    # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
-    # Share a credential pool with the child when possible so subagents can
-    # rotate credentials on rate limits instead of getting pinned to one key.
     child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
     if child_pool is not None:
         child._credential_pool = child_pool
 
-    # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):
         lock = getattr(parent_agent, '_active_children_lock', None)
         if lock:
@@ -383,11 +337,8 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
-    # Get the progress callback from the child agent
     child_progress_cb = getattr(child, 'tool_progress_callback', None)
 
-    # Restore parent tool names using the value saved before child construction
-    # mutated the global. This is the correct parent toolset, not the child's.
     import model_tools
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
@@ -407,7 +358,6 @@ def _run_single_child(
     try:
         result = child.run_conversation(user_message=goal)
 
-        # Flush any remaining batched progress to gateway
         if child_progress_cb and hasattr(child_progress_cb, '_flush'):
             try:
                 child_progress_cb._flush()
@@ -424,15 +374,10 @@ def _run_single_child(
         if interrupted:
             status = "interrupted"
         elif summary:
-            # A summary means the subagent produced usable output.
-            # exit_reason ("completed" vs "max_iterations") already
-            # tells the parent *how* the task ended.
             status = "completed"
         else:
             status = "failed"
 
-        # Build tool trace from conversation messages (already in memory).
-        # Uses tool_call_id to correctly pair parallel tool calls with results.
         tool_trace: list[Dict[str, Any]] = []
         trace_by_id: Dict[str, Dict[str, Any]] = {}
         messages = result.get("messages") or []
@@ -460,16 +405,13 @@ def _run_single_child(
                         "result_bytes": len(content),
                         "status": "error" if is_error else "ok",
                     }
-                    # Match by tool_call_id for parallel calls
                     tc_id = msg.get("tool_call_id")
                     target = trace_by_id.get(tc_id) if tc_id else None
                     if target is not None:
                         target.update(result_meta)
                     elif tool_trace:
-                        # Fallback for messages without tool_call_id
                         tool_trace[-1].update(result_meta)
 
-        # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
         elif completed:
@@ -477,7 +419,6 @@ def _run_single_child(
         else:
             exit_reason = "max_iterations"
 
-        # Extract token counts (safe for mock objects)
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
@@ -520,17 +461,13 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to release credential lease: %s", exc)
 
-        # Restore the parent's tool names so the process-global is correct
-        # for any subsequent execute_code calls or other consumers.
         import model_tools
 
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
-        # Remove child from active tracking
 
-        # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
             try:
                 lock = getattr(parent_agent, '_active_children_lock', None)
@@ -564,7 +501,6 @@ def delegate_task(
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
-    # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
     if depth >= MAX_DEPTH:
         return json.dumps({
@@ -574,22 +510,15 @@ def delegate_task(
             )
         })
 
-    # Load config
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
 
-    # Normalize to task list
     if tasks and isinstance(tasks, list):
         task_list = tasks[:MAX_CONCURRENT_CHILDREN]
     elif goal and isinstance(goal, str) and goal.strip():
@@ -600,7 +529,6 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
@@ -609,18 +537,11 @@ def delegate_task(
     results = []
 
     n_tasks = len(task_list)
-    # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
 
-    # Save parent tool names BEFORE any child construction mutates the global.
-    # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
-    # which overwrites model_tools._last_resolved_tool_names with child's toolset.
     import model_tools as _model_tools
     _parent_tool_names = list(_model_tools._last_resolved_tool_names)
 
-    # Build all child agents on the main thread (thread-safe construction)
-    # Wrapped in try/finally so the global is always restored even if a
-    # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
         for i, t in enumerate(task_list):
@@ -635,20 +556,16 @@ def delegate_task(
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
-            # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
     finally:
-        # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
     if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
         result = _run_single_child(0, _t["goal"], child, parent_agent)
         results.append(result)
     else:
-        # Batch -- run in parallel with per-task progress lines
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
@@ -680,7 +597,6 @@ def delegate_task(
                 results.append(entry)
                 completed_count += 1
 
-                # Print per-task completion line above the spinner
                 idx = entry["task_index"]
                 label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
                 dur = entry.get("duration_seconds", 0)
@@ -696,17 +612,14 @@ def delegate_task(
                 else:
                     print(f"  {completion_line}")
 
-                # Update spinner text to show remaining count
                 if spinner_ref and remaining > 0:
                     try:
                         spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
                     except Exception as e:
                         logger.debug("Spinner update_text failed: %s", e)
 
-        # Sort by task_index so results match input order
         results.sort(key=lambda r: r["task_index"])
 
-    # Notify parent's memory provider of delegation outcomes
     if parent_agent and hasattr(parent_agent, '_memory_manager') and parent_agent._memory_manager:
         for entry in results:
             try:
@@ -811,7 +724,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
         return {
             "model": configured_model,
             "provider": None,
@@ -821,7 +733,6 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "memory_tools": configured_memory_tools,
         }
 
-    # Provider is configured — resolve full credentials
     try:
         from daedalus_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested=configured_provider)
@@ -875,9 +786,6 @@ def _load_config() -> dict:
         return {}
 
 
-# ---------------------------------------------------------------------------
-# OpenAI Function-Calling Schema
-# ---------------------------------------------------------------------------
 
 DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
@@ -977,7 +885,6 @@ DELEGATE_TASK_SCHEMA = {
 }
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

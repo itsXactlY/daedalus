@@ -26,8 +26,6 @@ from pathlib import Path
 
 import yaml
 
-# Load .env from ~/.daedalus/.env first, then project root as dev fallback.
-# User-managed env files should override stale shell exports on restart.
 _daedalus_home = get_daedalus_home()
 _project_env = Path(__file__).parent / '.env'
 
@@ -37,27 +35,20 @@ _loaded_env_paths = load_daedalus_dotenv(daedalus_home=_daedalus_home, project_e
 for _env_path in _loaded_env_paths:
     print(f"✅ Loaded environment variables from {_env_path}")
 
-# Set terminal working directory to tinker-atropos submodule
-# This ensures terminal commands run in the right context for RL work
 tinker_atropos_dir = Path(__file__).parent / 'tinker-atropos'
 if tinker_atropos_dir.exists():
     os.environ['TERMINAL_CWD'] = str(tinker_atropos_dir)
-    os.environ['DAEDALUS_QUIET'] = '1'  # Disable temp subdirectory creation
+    os.environ['DAEDALUS_QUIET'] = '1'
     print(f"📂 Terminal working directory: {tinker_atropos_dir}")
 else:
-    # Fall back to daedalus directory if submodule not found
     os.environ['TERMINAL_CWD'] = str(Path(__file__).parent)
     os.environ['DAEDALUS_QUIET'] = '1'
     print(f"⚠️  tinker-atropos submodule not found, using: {Path(__file__).parent}")
 
-# Import agent and tools
 from run_agent import AIAgent
 from tools.rl_training_tool import get_missing_keys
 
 
-# ============================================================================
-# Config Loading
-# ============================================================================
 
 from daedalus_constants import get_daedalus_home, OPENROUTER_BASE_URL
 
@@ -84,14 +75,12 @@ def load_daedalus_config() -> dict:
             with open(config_path, "r") as f:
                 file_config = yaml.safe_load(f) or {}
             
-            # Get model from config
             if "model" in file_config:
                 if isinstance(file_config["model"], str):
                     config["model"] = file_config["model"]
                 elif isinstance(file_config["model"], dict):
                     config["model"] = file_config["model"].get("default", DEFAULT_MODEL)
             
-            # Get base_url if specified
             if "base_url" in file_config:
                 config["base_url"] = file_config["base_url"]
                 
@@ -101,14 +90,9 @@ def load_daedalus_config() -> dict:
     return config
 
 
-# ============================================================================
-# RL-Specific Configuration
-# ============================================================================
 
-# Extended timeouts for long-running RL operations
-RL_MAX_ITERATIONS = 200  # Allow many more iterations for long workflows
+RL_MAX_ITERATIONS = 200
 
-# RL-focused system prompt
 RL_SYSTEM_PROMPT = """You are an automated post-training engineer specializing in reinforcement learning for language models.
 
 ## Your Capabilities
@@ -168,19 +152,14 @@ When asked to train a model, follow this workflow:
 5. Monitor progress and adjust as needed
 """
 
-# Toolsets to enable for RL workflows
 RL_TOOLSETS = ["terminal", "web", "rl"]
 
 
-# ============================================================================
-# Helper Functions
-# ============================================================================
 
 def check_requirements():
     """Check that all required environment variables and services are available."""
     errors = []
     
-    # Check API keys
     if not os.getenv("OPENROUTER_API_KEY"):
         errors.append("OPENROUTER_API_KEY not set - required for agent")
     
@@ -227,9 +206,6 @@ def list_environments_sync():
     return asyncio.run(_list())
 
 
-# ============================================================================
-# Main CLI
-# ============================================================================
 
 def main(
     task: str = None,
@@ -271,10 +247,8 @@ def main(
         # Check server status
         python rl_cli.py --check-server
     """
-    # Load config from ~/.daedalus/config.yaml
     config = load_daedalus_config()
     
-    # Use config values if not explicitly provided
     if model is None:
         model = config["model"]
     if base_url is None:
@@ -283,7 +257,6 @@ def main(
     print("🎯 RL Training Agent")
     print("=" * 60)
     
-    # Handle setup check
     if check_server:
         print("\n🔍 Checking tinker-atropos setup...")
         ok, result = check_tinker_atropos()
@@ -292,7 +265,6 @@ def main(
             print(f"   Path: {result.get('path')}")
             print(f"   Environments found: {result.get('environments_count', 0)}")
             
-            # Also check API keys
             missing = get_missing_keys()
             if missing:
                 print(f"\n⚠️  Missing API keys: {', '.join(missing)}")
@@ -306,7 +278,6 @@ def main(
             print("  pip install -e ./tinker-atropos")
         return
     
-    # Handle environment listing
     if list_environments:
         print("\n📋 Available RL Environments:")
         print("-" * 40)
@@ -340,11 +311,9 @@ def main(
             print("  pip install -e ./tinker-atropos")
         return
     
-    # Check requirements
     if not check_requirements():
         sys.exit(1)
     
-    # Set default task if none provided
     if not task and not interactive:
         print("\n⚠️  No task provided. Use --interactive for interactive mode or provide a task.")
         print("\nExamples:")
@@ -353,7 +322,6 @@ def main(
         print('  python rl_cli.py --interactive')
         return
     
-    # Get API key
     api_key = api_key or os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         print("❌ No API key provided. Set OPENROUTER_API_KEY or pass --api-key")
@@ -364,7 +332,6 @@ def main(
     print(f"📁 Toolsets: {', '.join(RL_TOOLSETS)}")
     print("=" * 60)
     
-    # Create agent with RL configuration
     agent = AIAgent(
         base_url=base_url,
         api_key=api_key,
@@ -378,7 +345,6 @@ def main(
     )
     
     if interactive:
-        # Interactive mode - multiple conversations
         print("\n🔄 Interactive RL Training Mode")
         print("Type 'quit' or 'exit' to end the session.")
         print("Type 'status' to check active training runs.")
@@ -396,7 +362,6 @@ def main(
                     break
                 
                 if user_input.lower() == 'status':
-                    # Quick status check
                     from tools.rl_training_tool import rl_list_runs
                     import json
                     result = asyncio.run(rl_list_runs())
@@ -409,7 +374,6 @@ def main(
                         print("\nNo active runs.")
                     continue
                 
-                # Run the agent
                 print("\n" + "=" * 60)
                 response = agent.run_conversation(user_input)
                 print("\n" + "=" * 60)
@@ -423,7 +387,6 @@ def main(
                     import traceback
                     traceback.print_exc()
     else:
-        # Single task mode
         print(f"\n📝 Task: {task}")
         print("-" * 40)
         

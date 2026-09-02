@@ -15,9 +15,6 @@ to ``_run_agent``'s return dict and uses it for the slice.
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Helpers - replicate the filtering logic from _run_agent
-# ---------------------------------------------------------------------------
 
 def _filter_history(history: list) -> list:
     """Replicate the agent_history filtering from GatewayRunner._run_agent.
@@ -48,9 +45,6 @@ def _filter_history(history: list) -> list:
     return agent_history
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestTranscriptHistoryOffset:
     """Verify the transcript extraction uses the filtered history length."""
@@ -72,9 +66,8 @@ class TestTranscriptHistoryOffset:
         ]
 
         agent_history = _filter_history(history)
-        assert len(agent_history) == 2  # session_meta stripped
+        assert len(agent_history) == 2
 
-        # Agent returns: filtered history (2) + new turn (2)
         agent_messages = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
@@ -82,14 +75,12 @@ class TestTranscriptHistoryOffset:
             {"role": "assistant", "content": "A programming language."},
         ]
 
-        # OLD behavior: len(history) = 3, skips too many
         old_offset = len(history)
         old_new = (agent_messages[old_offset:]
                    if len(agent_messages) > old_offset
                    else agent_messages)
-        assert len(old_new) == 1  # BUG: lost the user message
+        assert len(old_new) == 1
 
-        # FIXED behavior: history_offset = 2
         history_offset = len(agent_history)
         fixed_new = (agent_messages[history_offset:]
                      if len(agent_messages) > history_offset
@@ -136,9 +127,8 @@ class TestTranscriptHistoryOffset:
 
         agent_history = _filter_history(history)
         assert len(agent_history) == 4
-        assert len(history) == 6  # 2 extra session_meta entries
+        assert len(history) == 6
 
-        # Agent returns 4 old + 2 new = 6 total
         agent_messages = [
             {"role": "user", "content": "msg1"},
             {"role": "assistant", "content": "reply1"},
@@ -148,15 +138,12 @@ class TestTranscriptHistoryOffset:
             {"role": "assistant", "content": "reply3"},
         ]
 
-        # OLD: len(history) == len(agent_messages) == 6 -> else branch
         old_offset = len(history)
         old_new = (agent_messages[old_offset:]
                    if len(agent_messages) > old_offset
                    else agent_messages)
-        # BUG: treats ALL messages as new (duplicates entire history)
         assert old_new == agent_messages
 
-        # FIXED: history_offset = 4
         fixed_new = (agent_messages[len(agent_history):]
                      if len(agent_messages) > len(agent_history)
                      else [])
@@ -174,7 +161,7 @@ class TestTranscriptHistoryOffset:
         ]
 
         agent_history = _filter_history(history)
-        assert len(agent_history) == 2  # only user + assistant
+        assert len(agent_history) == 2
 
         agent_messages = [
             {"role": "user", "content": "Hi"},
@@ -183,14 +170,12 @@ class TestTranscriptHistoryOffset:
             {"role": "assistant", "content": "New answer"},
         ]
 
-        # OLD: len(history) = 4, skips everything
         old_offset = len(history)
         old_new = (agent_messages[old_offset:]
                    if len(agent_messages) > old_offset
                    else agent_messages)
-        assert old_new == agent_messages  # BUG: all treated as new
+        assert old_new == agent_messages
 
-        # FIXED
         fixed_new = (agent_messages[len(agent_history):]
                      if len(agent_messages) > len(agent_history)
                      else [])
@@ -211,17 +196,15 @@ class TestTranscriptHistoryOffset:
             {"role": "assistant", "content": "Hi!", "timestamp": "t1"},
         ]
 
-        # Agent compressed and returned fewer messages than history
         agent_messages = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi!"},
         ]
 
-        history_offset = len(_filter_history(history))  # 2
+        history_offset = len(_filter_history(history))
         new_messages = (agent_messages[history_offset:]
                         if len(agent_messages) > history_offset
                         else [])
-        # 2 == 2, so no new messages - falls to fallback
         assert new_messages == []
 
     def test_tool_call_messages_preserved_in_filter(self):
@@ -238,9 +221,8 @@ class TestTranscriptHistoryOffset:
         ]
 
         agent_history = _filter_history(history)
-        # session_meta filtered, but tool_calls/tool messages kept
         assert len(agent_history) == 4
-        assert len(history) == 5  # 1 session_meta extra
+        assert len(history) == 5
 
         agent_messages = [
             {"role": "user", "content": "Search for cats"},
@@ -252,13 +234,11 @@ class TestTranscriptHistoryOffset:
             {"role": "assistant", "content": "Dog results here."},
         ]
 
-        # OLD: len(history) = 5, agent_messages[5:] = 1 message (lost user msg)
         old_new = (agent_messages[len(history):]
                    if len(agent_messages) > len(history)
                    else agent_messages)
-        assert len(old_new) == 1  # BUG
+        assert len(old_new) == 1
 
-        # FIXED
         fixed_new = (agent_messages[len(agent_history):]
                      if len(agent_messages) > len(agent_history)
                      else [])

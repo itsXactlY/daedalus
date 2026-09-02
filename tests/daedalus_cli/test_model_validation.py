@@ -20,7 +20,6 @@ from daedalus_cli.models import (
 )
 
 
-# -- helpers -----------------------------------------------------------------
 
 FAKE_API_MODELS = [
     "anthropic/claude-opus-4.6",
@@ -45,7 +44,6 @@ def _validate(model, provider="openrouter", api_models=FAKE_API_MODELS, **kw):
         return validate_requested_model(model, provider, **kw)
 
 
-# -- parse_model_input -------------------------------------------------------
 
 class TestParseModelInput:
     def test_plain_model_keeps_current_provider(self):
@@ -115,12 +113,10 @@ class TestParseModelInput:
     def test_custom_triple_empty_model_falls_back(self):
         """custom:name: with no model → treated as custom:name (bare)."""
         provider, model = parse_model_input("custom:name:", "openrouter")
-        # Empty model after second colon → no triple match, falls through
         assert provider == "custom"
         assert model == "name:"
 
 
-# -- curated_models_for_provider ---------------------------------------------
 
 class TestCuratedModelsForProvider:
     def test_openrouter_returns_curated_list(self):
@@ -136,7 +132,6 @@ class TestCuratedModelsForProvider:
         assert curated_models_for_provider("totally-unknown") == []
 
 
-# -- normalize_provider ------------------------------------------------------
 
 class TestNormalizeProvider:
     def test_defaults_to_openrouter(self):
@@ -165,7 +160,6 @@ class TestProviderLabel:
         assert provider_label("my-custom-provider") == "my-custom-provider"
 
 
-# -- provider_model_ids ------------------------------------------------------
 
 class TestProviderModelIds:
     def test_openrouter_returns_curated_list(self):
@@ -198,7 +192,6 @@ class TestProviderModelIds:
         assert "copilot-acp" not in ids
 
 
-# -- fetch_api_models --------------------------------------------------------
 
 class TestFetchApiModels:
     def test_returns_none_when_no_base_url(self):
@@ -330,7 +323,6 @@ class TestCopilotNormalization:
             "id": "gpt-5.4",
             "supported_endpoints": ["/chat/completions", "/responses"],
         }]
-        # GPT-5.4 should use responses even though chat/completions is listed
         assert copilot_model_api_mode("gpt-5.4", catalog=catalog) == "codex_responses"
 
     def test_copilot_api_mode_with_catalog_only_responses(self):
@@ -364,7 +356,6 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
 
 
-# -- validate — format checks -----------------------------------------------
 
 class TestValidateFormatChecks:
     def test_empty_model_rejected(self):
@@ -391,7 +382,6 @@ class TestValidateFormatChecks:
         assert "not found" in result["message"]
 
 
-# -- validate — API found ----------------------------------------------------
 
 class TestValidateApiFound:
     def test_model_found_in_api(self):
@@ -410,7 +400,6 @@ class TestValidateApiFound:
         assert result["recognized"] is True
 
 
-# -- validate — API not found ------------------------------------------------
 
 class TestValidateApiNotFound:
     def test_model_not_in_api_accepted_with_warning(self):
@@ -425,7 +414,6 @@ class TestValidateApiNotFound:
         assert "Similar models" in result["message"]
 
 
-# -- validate — API unreachable — accept and persist everything ----------------
 
 class TestValidateApiFallback:
     def test_any_model_accepted_when_api_down(self):

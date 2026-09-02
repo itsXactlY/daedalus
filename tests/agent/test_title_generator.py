@@ -78,16 +78,15 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
             generate_title("x" * 1000, "y" * 1000)
 
-        # The user content in the messages should be truncated
         user_content = captured_kwargs["messages"][1]["content"]
-        assert len(user_content) < 1100  # 500 + 500 + formatting
+        assert len(user_content) < 1100
 
 
 class TestAutoTitleSession:
     """Tests for auto_title_session() — the sync worker function."""
 
     def test_skips_if_no_session_db(self):
-        auto_title_session(None, "sess-1", "hi", "hello")  # should not crash
+        auto_title_session(None, "sess-1", "hi", "hello")
 
     def test_skips_if_title_exists(self):
         db = MagicMock()
@@ -131,7 +130,6 @@ class TestMaybeAutoTitle:
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "third", "response 3", history)
-            # Wait briefly for any thread to start
             import time
             time.sleep(0.1)
             mock_auto.assert_not_called()
@@ -147,14 +145,13 @@ class TestMaybeAutoTitle:
 
         with patch("agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "hello", "hi there", history)
-            # Wait for the daemon thread to complete
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(db, "sess-1", "hello", "hi there")
 
     def test_skips_if_no_response(self):
         db = MagicMock()
-        maybe_auto_title(db, "sess-1", "hello", "", [])  # empty response
+        maybe_auto_title(db, "sess-1", "hello", "", [])
 
     def test_skips_if_no_session_db(self):
-        maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+        maybe_auto_title(None, "sess-1", "hello", "response", [])

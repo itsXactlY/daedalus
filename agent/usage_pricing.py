@@ -33,14 +33,6 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
-    # True when the raw usage object was present but its primary prompt-size
-    # field (prompt_tokens / input_tokens depending on api_mode) was absent
-    # or None — as opposed to a genuine, present, zero value. Distinguishing
-    # these matters because a missing field defaults to 0 via getattr(),
-    # which is indistinguishable from "this call really used 0 prompt
-    # tokens" unless callers can check this flag. Session-cumulative token
-    # counters use it to avoid silently under-adding for that call (see
-    # run_agent.py's session_prompt_tokens accumulation).
     prompt_field_missing: bool = False
 
     @property
@@ -87,8 +79,6 @@ class CostResult:
 _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 
-# Official docs snapshot entries. Models whose published pricing and cache
-# semantics are stable enough to encode exactly.
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     (
         "anthropic",
@@ -114,7 +104,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
         pricing_version="anthropic-prompt-caching-2026-03-16",
     ),
-    # OpenAI
     (
         "openai",
         "gpt-4o",
@@ -192,7 +181,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://openai.com/api/pricing/",
         pricing_version="openai-pricing-2026-03-16",
     ),
-    # Anthropic older models (pre-4.6 generation)
     (
         "anthropic",
         "claude-3-5-sonnet-20241022",
@@ -241,7 +229,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching",
         pricing_version="anthropic-pricing-2026-03-16",
     ),
-    # DeepSeek
     (
         "deepseek",
         "deepseek-chat",
@@ -262,7 +249,6 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://api-docs.deepseek.com/quick_start/pricing",
         pricing_version="deepseek-pricing-2026-03-16",
     ),
-    # Google Gemini
     (
         "google",
         "gemini-2.5-pro",

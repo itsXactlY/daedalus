@@ -135,7 +135,6 @@ async def test_bundle_command_resolves_and_sends_invocation_message(monkeypatch)
         "agent.skill_bundles.build_bundle_invocation_message",
         _fake_bundle_build,
     )
-    # The skill path must not run when a bundle matches.
     monkeypatch.setattr(
         "agent.skill_commands.resolve_skill_command_key",
         lambda command: (_ for _ in ()).throw(
@@ -181,7 +180,6 @@ async def test_bundle_shadows_skill_with_same_name(monkeypatch):
         "agent.skill_bundles.build_bundle_invocation_message",
         lambda *a, **kw: ("BUNDLE-WINS", ["demo-skill"], []),
     )
-    # The skill would resolve to the same slug — but must be skipped.
     monkeypatch.setattr(
         "agent.skill_commands.resolve_skill_command_key",
         lambda command: "/demo",
@@ -219,7 +217,6 @@ async def test_non_bundle_command_falls_through_to_skill_path(monkeypatch):
         )
         return "SKILL-MSG"
 
-    # The bundle resolver is consulted first but returns no match.
     monkeypatch.setattr(
         "agent.skill_bundles.resolve_bundle_command_key",
         lambda command: None,

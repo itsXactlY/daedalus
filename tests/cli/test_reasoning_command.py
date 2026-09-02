@@ -14,9 +14,6 @@ from unittest.mock import MagicMock, patch
 import re
 
 
-# ---------------------------------------------------------------------------
-# Effort level parsing
-# ---------------------------------------------------------------------------
 
 class TestParseReasoningConfig(unittest.TestCase):
     """Verify _parse_reasoning_config handles all effort levels."""
@@ -50,9 +47,6 @@ class TestParseReasoningConfig(unittest.TestCase):
         self.assertEqual(result["effort"], "high")
 
 
-# ---------------------------------------------------------------------------
-# /reasoning command handler (combined effort + display)
-# ---------------------------------------------------------------------------
 
 class TestHandleReasoningCommand(unittest.TestCase):
     """Test the combined _handle_reasoning_command method."""
@@ -68,7 +62,6 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
     def test_show_enables_display(self):
         stub = self._make_cli(show_reasoning=False)
-        # Simulate /reasoning show
         arg = "show"
         if arg in ("show", "on"):
             stub.show_reasoning = True
@@ -77,7 +70,6 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
     def test_hide_disables_display(self):
         stub = self._make_cli(show_reasoning=True)
-        # Simulate /reasoning hide
         arg = "hide"
         if arg in ("hide", "off"):
             stub.show_reasoning = False
@@ -156,9 +148,6 @@ class TestHandleReasoningCommand(unittest.TestCase):
         self.assertEqual(level, "xhigh")
 
 
-# ---------------------------------------------------------------------------
-# Reasoning extraction and result dict
-# ---------------------------------------------------------------------------
 
 class TestLastReasoningInResult(unittest.TestCase):
     """Verify reasoning extraction from the messages list."""
@@ -216,9 +205,6 @@ class TestLastReasoningInResult(unittest.TestCase):
         self.assertIsNone(last_reasoning)
 
 
-# ---------------------------------------------------------------------------
-# Reasoning display collapse
-# ---------------------------------------------------------------------------
 
 class TestReasoningCollapse(unittest.TestCase):
     """Verify long reasoning is collapsed to 10 lines in the box."""
@@ -259,9 +245,6 @@ class TestReasoningCollapse(unittest.TestCase):
         self.assertIn("7 more lines", preview_lines[-1])
 
 
-# ---------------------------------------------------------------------------
-# Reasoning callback
-# ---------------------------------------------------------------------------
 
 class TestReasoningCallback(unittest.TestCase):
     """Verify reasoning_callback invocation."""
@@ -293,7 +276,6 @@ class TestReasoningCallback(unittest.TestCase):
         callback = None
         if reasoning_text and callback:
             callback(reasoning_text)
-        # No exception = pass
 
 
 class TestReasoningPreviewBuffering(unittest.TestCase):
@@ -398,9 +380,6 @@ class TestReasoningDisplayModeSelection(unittest.TestCase):
         self.assertEqual(callback("x"), ("preview", "x"))
 
 
-# ---------------------------------------------------------------------------
-# Real provider format extraction
-# ---------------------------------------------------------------------------
 
 class TestExtractReasoningFormats(unittest.TestCase):
     """Test _extract_reasoning with real provider response formats."""
@@ -445,9 +424,6 @@ class TestExtractReasoningFormats(unittest.TestCase):
         self.assertIsNone(result)
 
 
-# ---------------------------------------------------------------------------
-# Inline <think> block extraction fallback
-# ---------------------------------------------------------------------------
 
 class TestInlineThinkBlockExtraction(unittest.TestCase):
     """Test _build_assistant_message extracts inline <think> blocks as reasoning
@@ -472,7 +448,7 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent._extract_reasoning = AIAgent._extract_reasoning.__get__(agent)
         agent.verbose_logging = False
         agent.reasoning_callback = None
-        agent.stream_delta_callback = None  # non-streaming by default
+        agent.stream_delta_callback = None
         return agent
 
     def test_single_think_block_extracted(self):
@@ -492,7 +468,6 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent = self._make_agent()
         api_msg = self._build_msg("Just a plain response.")
         result = agent._build_assistant_message(api_msg, "stop")
-        # No structured reasoning AND no inline think blocks → None
         self.assertIsNone(result["reasoning"])
 
     def test_structured_reasoning_takes_priority(self):
@@ -509,7 +484,6 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         agent = self._make_agent()
         api_msg = self._build_msg("<think></think>Hello!")
         result = agent._build_assistant_message(api_msg, "stop")
-        # Empty think block should not produce reasoning
         self.assertIsNone(result["reasoning"])
 
     def test_multiline_think_block(self):
@@ -530,9 +504,6 @@ class TestInlineThinkBlockExtraction(unittest.TestCase):
         self.assertIn("Deep analysis", captured[0])
 
 
-# ---------------------------------------------------------------------------
-# Config defaults
-# ---------------------------------------------------------------------------
 
 class TestConfigDefault(unittest.TestCase):
     """Verify config default for show_reasoning."""
@@ -552,9 +523,6 @@ class TestCommandRegistered(unittest.TestCase):
         self.assertIn("/reasoning", COMMANDS)
 
 
-# ---------------------------------------------------------------------------
-# End-to-end pipeline
-# ---------------------------------------------------------------------------
 
 class TestEndToEndPipeline(unittest.TestCase):
     """Simulate the full pipeline: extraction -> result dict -> display."""
@@ -606,9 +574,6 @@ class TestEndToEndPipeline(unittest.TestCase):
         self.assertIsNone(result["last_reasoning"])
 
 
-# ---------------------------------------------------------------------------
-# Duplicate reasoning box prevention (Bug fix: 3 boxes for 1 reasoning)
-# ---------------------------------------------------------------------------
 
 class TestReasoningDeltasFiredFlag(unittest.TestCase):
     """_build_assistant_message should not re-fire reasoning_callback when
@@ -638,9 +603,8 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent = self._make_agent()
         captured = []
         agent.reasoning_callback = lambda t: captured.append(t)
-        agent.stream_delta_callback = lambda t: None  # streaming is active
+        agent.stream_delta_callback = lambda t: None
 
-        # Simulate streaming having fired reasoning
         agent._reasoning_deltas_fired = True
 
         msg = SimpleNamespace(
@@ -652,7 +616,6 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         )
         agent._build_assistant_message(msg, "stop")
 
-        # Callback should NOT have been fired again
         self.assertEqual(captured, [])
 
     def test_build_assistant_message_skips_callback_when_streaming_active(self):
@@ -663,10 +626,8 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent = self._make_agent()
         captured = []
         agent.reasoning_callback = lambda t: captured.append(t)
-        agent.stream_delta_callback = lambda t: None  # streaming active
+        agent.stream_delta_callback = lambda t: None
 
-        # Even though _reasoning_deltas_fired is False (reasoning came through
-        # content tags, not reasoning_content deltas), callback should not fire
         agent._reasoning_deltas_fired = False
 
         msg = SimpleNamespace(
@@ -678,7 +639,6 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         )
         agent._build_assistant_message(msg, "stop")
 
-        # Callback should NOT fire — streaming is active
         self.assertEqual(captured, [])
 
     def test_build_assistant_message_fires_callback_without_streaming(self):
@@ -687,7 +647,6 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent = self._make_agent()
         captured = []
         agent.reasoning_callback = lambda t: captured.append(t)
-        # No streaming
         agent.stream_delta_callback = None
         agent._reasoning_deltas_fired = False
 
@@ -740,10 +699,8 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
         cli._stream_reasoning_delta("Thinking...")
         self.assertTrue(cli._reasoning_shown_this_turn)
 
-        # Simulate intermediate turn boundary (tool call)
         cli._reset_stream_state()
 
-        # Flag must persist
         self.assertTrue(cli._reasoning_shown_this_turn)
 
     @patch("cli._cprint")
@@ -753,9 +710,8 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
         cli = self._make_cli()
         cli._reasoning_shown_this_turn = True
 
-        # Simulate new user turn setup
         cli._reset_stream_state()
-        cli._reasoning_shown_this_turn = False  # done by process_input
+        cli._reasoning_shown_this_turn = False
 
         self.assertFalse(cli._reasoning_shown_this_turn)
 

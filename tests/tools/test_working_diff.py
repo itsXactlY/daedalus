@@ -120,4 +120,4 @@ def test_cp932_content_is_lossy_but_never_raises(repo):
 
     assert result["success"] is True
     assert "legacy.txt" in result["diff"]
-    assert "\ufffd" in result["diff"]  # lossy by design, matching _run_git
+    assert "\ufffd" in result["diff"]

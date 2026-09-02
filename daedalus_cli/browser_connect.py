@@ -96,9 +96,6 @@ def get_chrome_debug_candidates(system: str) -> list[str]:
         for _, group in install_groups:
             for base in filter(None, bases):
                 for parts in group:
-                    # Only called with WSL ``/mnt/c/...`` bases — those are
-                    # POSIX paths regardless of the host OS, so join with
-                    # posixpath (os.path.join would emit backslashes on nt).
                     add(posixpath.join(base, *parts))
 
     if system == "Darwin":
@@ -178,10 +175,6 @@ def is_browser_debug_ready(url: str, timeout: float = 1.0) -> bool:
     return False
 
 
-# Both loopback literals: Windows (and some Linux setups) can hand the IPv4
-# loopback to one process and the IPv6 loopback to another. Chrome asked to
-# bind :9222 while e.g. VS Code's js-debug holds 127.0.0.1:9222 will come up
-# on [::1]:9222 only — reachable, but invisible to an IPv4-only probe.
 _LOOPBACK_PROBE_HOSTS = ("127.0.0.1", "[::1]")
 _LOOPBACK_SOCKET_HOSTS = ("127.0.0.1", "::1")
 
@@ -289,8 +282,6 @@ def _wait_for_browser_debug_ready_or_exit(
     deadline = time.monotonic() + timeout
 
     while time.monotonic() < deadline:
-        # Dual-stack: a squatter on the IPv4 loopback can push the browser
-        # to bind [::1] only — check both so a successful launch is seen.
         if discover_local_cdp_url(port, timeout=min(interval, 0.2)):
             return "ready"
         if proc.poll() is not None:
@@ -309,7 +300,7 @@ class LaunchAttempt:
     """Outcome of one candidate-binary launch attempt."""
 
     binary: str
-    state: str  # "ready" | "starting" | "exited" | "spawn-failed"
+    state: str
     returncode: int | None = None
     stderr_tail: str = ""
 

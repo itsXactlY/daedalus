@@ -33,7 +33,6 @@ class TestBrowserSecretExfil:
         from tools.browser_tool import browser_navigate
         result = browser_navigate("https://github.com/NousResearch/daedalus")
         parsed = json.loads(result)
-        # Should NOT be blocked by secret detection
         assert "API key or token" not in parsed.get("error", "")
 
 
@@ -53,10 +52,8 @@ class TestWebExtractSecretExfil:
     @pytest.mark.asyncio
     async def test_allows_normal_url(self):
         from tools.web_tools import web_extract_tool
-        # This will fail due to no API key, but should NOT be blocked by secret check
         result = await web_extract_tool(urls=["https://example.com"])
         parsed = json.loads(result)
-        # Should fail for API/config reason, not secret blocking
         assert "API key" not in parsed.get("error", "") or "Blocked" not in parsed.get("error", "")
 
 
@@ -67,7 +64,6 @@ class TestBrowserSnapshotRedaction:
         """Snapshot containing secrets should be redacted before call_llm."""
         from tools.browser_tool import _extract_relevant_content
 
-        # Build a snapshot with a fake Anthropic-style key embedded
         fake_key = "sk-" + "FAKESECRETVALUE1234567890ABCDEF"
         snapshot_with_secret = (
             "heading: Dashboard Settings\n"
@@ -89,9 +85,7 @@ class TestBrowserSnapshotRedaction:
             _extract_relevant_content(snapshot_with_secret, "check settings")
 
         assert len(captured_prompts) == 1
-        # The middle portion of the key must not appear in the prompt
         assert "FAKESECRETVALUE1234567890" not in captured_prompts[0]
-        # Non-secret content should survive
         assert "Dashboard" in captured_prompts[0]
         assert "ref=e5" in captured_prompts[0]
 
@@ -164,7 +158,6 @@ class TestCamofoxAnnotationRedaction:
         )
         result = redact_sensitive_text(annotation)
         assert "FAKEGITHUBTOKEN123456789" not in result
-        # Non-secret parts preserved
         assert "button" in result
         assert "ref=e3" in result
 

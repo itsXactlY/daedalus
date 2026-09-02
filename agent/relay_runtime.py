@@ -212,8 +212,6 @@ class RelayRuntime:
             self.relay.get_scope_stack()
             return callback(*args, **kwargs)
 
-        # A copy permits a helper called by an existing Relay callback to
-        # re-enter the same logical session without re-entering Context.
         return context.run(invoke)
 
     async def run_in_session_async(
@@ -657,9 +655,6 @@ class RelaySessionCoordinator:
                             )
             finally:
                 try:
-                    # Delegated agents own one turn. Close their conversation
-                    # while the active-turn guard is still held so a parent
-                    # timeout fallback cannot race this terminal boundary.
                     if (
                         lease.parent_session_id
                         and isinstance(lease.host, RelayRuntime)
@@ -737,9 +732,6 @@ class RelaySessionCoordinator:
                 )
             except Exception:
                 with turn.logical_llm_lock:
-                    # Relay scopes are stack-owned. If the newest remaining
-                    # handle cannot close, older handles cannot close safely
-                    # either, so retain the unclosed prefix for diagnostics.
                     for pending_request_id, pending_handle in logical_calls[
                         : index + 1
                     ]:
@@ -761,8 +753,6 @@ class RelaySessionCoordinator:
         try:
             _CURRENT_TURN.reset(turn._token)
         except ValueError:
-            # A copied async/thread context may own terminal cleanup. Keep the
-            # token so the originating context can clear its stale reference.
             return
         turn._token = None
 
@@ -822,9 +812,6 @@ def resolve_execution_context(
     ):
         session = turn.lease.session
         return turn.lease.host, session, turn.handle or session.handle
-    # Managed-execution consumers create and retain the profile host before
-    # reaching an out-of-turn adapter. Do not initialize Relay for the default
-    # no-consumer path.
     runtime = get_runtime(create=False)
     if runtime is None:
         return None, None, None

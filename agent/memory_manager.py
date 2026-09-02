@@ -34,15 +34,12 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.context_engine import sanitize_memory_context
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# How long shutdown_all() waits for in-flight background sync/prefetch work
-# to drain before abandoning it. A wedged provider must never block process
-# teardown indefinitely — the worker threads are daemon, so anything still
-# running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 
@@ -69,7 +66,6 @@ def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
     """
     if not isinstance(schema, dict):
         return None
-    # Unwrap an already-wrapped OpenAI tool entry.
     if schema.get("type") == "function" and isinstance(schema.get("function"), dict):
         schema = schema["function"]
         if not isinstance(schema, dict):
@@ -156,9 +152,6 @@ def inject_memory_provider_tools(agent: Any) -> int:
     return added
 
 
-# ---------------------------------------------------------------------------
-# Context fencing helpers
-# ---------------------------------------------------------------------------
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
 _INTERNAL_CONTEXT_RE = re.compile(
@@ -235,17 +228,14 @@ class StreamingContextScrubber:
             if self._in_span:
                 idx = buf.lower().find(self._CLOSE_TAG)
                 if idx == -1:
-                    # Hold back a potential partial close tag; drop the rest
                     held = self._max_partial_suffix(buf, self._CLOSE_TAG)
                     self._buf = buf[-held:] if held else ""
                     return "".join(out)
-                # Found close — skip span content + tag, continue
                 buf = buf[idx + len(self._CLOSE_TAG):]
                 self._in_span = False
             else:
                 idx = self._find_boundary_open_tag(buf)
                 if idx == -1:
-                    # No open tag — hold back a potential partial open tag
                     held = (
                         self._max_pending_open_suffix(buf)
                         or self._max_partial_suffix(buf, self._OPEN_TAG)
@@ -256,7 +246,6 @@ class StreamingContextScrubber:
                     else:
                         self._append_visible(out, buf)
                     return "".join(out)
-                # Emit text before the tag, enter span
                 if idx > 0:
                     self._append_visible(out, buf[:idx])
                 buf = buf[idx + len(self._OPEN_TAG):]
@@ -351,6 +340,7 @@ def build_memory_context_block(raw_context: str) -> str:
     clean = sanitize_context(raw_context)
     if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    clean = sanitize_memory_context(clean)
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
@@ -371,7 +361,7 @@ class MemoryManager:
     def __init__(self, *, external_prefetch_timeout: Optional[float] = None) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
-        self._has_external: bool = False  # True once a non-builtin provider is added
+        self._has_external: bool = False
         self._external_prefetch_timeout = (
             _EXTERNAL_PREFETCH_TIMEOUT_S
             if external_prefetch_timeout is None
@@ -381,15 +371,8 @@ class MemoryManager:
             raise ValueError("external_prefetch_timeout must be positive")
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()
-        # Background executor for end-of-turn sync/prefetch. Lazily created on
-        # first use so the common builtin-only path spawns no extra threads.
-        # A single worker serializes a provider's writes (turn N must land
-        # before turn N+1) and caps thread growth at one per manager. See
-        # _submit_background() and the sync_all/queue_prefetch_all rationale.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
-        # Futures are tracked by durability class so shutdown can give writes
-        # a bounded FIFO drain, then explicitly report anything abandoned.
         self._background_futures: Dict[Future, str] = {}
         self._shutting_down = False
         self._shutdown_drain_state: Dict[str, Any] = {
@@ -399,7 +382,6 @@ class MemoryManager:
             "active_tasks": 0,
         }
 
-    # -- Registration --------------------------------------------------------
 
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a memory provider.
@@ -427,18 +409,10 @@ class MemoryManager:
 
         self._providers.append(provider)
 
-        # Core tool names are reserved — a memory provider must never register
-        # a tool that shadows a built-in (e.g. ``clarify``, ``delegate_task``).
-        # Built-ins always win, so such a tool is dropped at agent init and
-        # would otherwise linger in ``_tool_to_provider`` and hijack dispatch
-        # (#40466). Reject it here, at the door, so it never enters the routing
-        # table at all — matching the built-ins-always-win invariant used by
-        # the TTS/browser/search provider registries.
         from toolsets import _DAEDALUS_CORE_TOOLS
 
         _core_tool_names = set(_DAEDALUS_CORE_TOOLS)
 
-        # Index tool names → provider for routing
         for raw_schema in provider.get_tool_schemas():
             schema = normalize_tool_schema(raw_schema)
             if schema is None:
@@ -492,7 +466,6 @@ class MemoryManager:
                 return p
         return None
 
-    # -- System prompt -------------------------------------------------------
 
     def build_system_prompt(self) -> str:
         """Collect system prompt blocks from all providers.
@@ -513,7 +486,6 @@ class MemoryManager:
                 )
         return "\n\n".join(blocks)
 
-    # -- Prefetch / recall ---------------------------------------------------
 
     @staticmethod
     def _strip_skill_scaffolding(text: str) -> Optional[str]:
@@ -632,7 +604,6 @@ class MemoryManager:
 
         self._submit_background(_run, kind="prefetch")
 
-    # -- Sync ----------------------------------------------------------------
 
     @staticmethod
     def _provider_sync_accepts_messages(provider: MemoryProvider) -> bool:
@@ -704,7 +675,49 @@ class MemoryManager:
 
         self._submit_background(_run)
 
-    # -- Background dispatch -------------------------------------------------
+
+    def continuity_context_all(self, *, session_id: str = "") -> str:
+        """Collect cross-session resume blocks from all providers.
+
+        Fans out the provider ``continuity_context`` hook the same way
+        ``prefetch_all`` fans out ``prefetch``. Providers without continuity
+        return "". Failures are logged, never raised — one broken provider
+        must not cost the agent its session seeding.
+        """
+        parts = []
+        for provider in self._providers:
+            try:
+                block = provider.continuity_context(session_id=session_id or "")
+                if block and block.strip():
+                    parts.append(block)
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' continuity_context failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts)
+
+    def history_pointer_all(self, *, session_id: str = "") -> str:
+        """Collect soak-history pointers from all providers.
+
+        The per-turn injection telling the model its transcript lives in the
+        provider (``auto:turn:<sid>:*``) instead of in context — the contract
+        that makes trim-and-recall safe. Same never-raise rules as
+        ``continuity_context_all``.
+        """
+        parts = []
+        for provider in self._providers:
+            try:
+                ptr = provider.history_pointer(session_id=session_id or "")
+                if ptr and ptr.strip():
+                    parts.append(ptr)
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' history_pointer failed (non-fatal): %s",
+                    provider.name, e,
+                )
+        return "\n\n".join(parts)
+
 
     def _submit_background(self, fn, *, kind: str = "write") -> None:
         """Queue ``fn`` on the serialized worker and track its durability class."""
@@ -713,17 +726,12 @@ class MemoryManager:
             if self._shutting_down:
                 logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
                 return
-            # Creation failure outside shutdown: preserve the historical
-            # fail-safe behavior and run the operation inline.
             try:
                 fn()
             except Exception as e:  # pragma: no cover - fn guards internally
                 logger.debug("Inline memory background task failed: %s", e)
             return
         try:
-            # Make submit+tracking atomic with the shutdown snapshot. The
-            # callback is attached after releasing the lock because an already
-            # completed future invokes callbacks synchronously.
             with self._sync_executor_lock:
                 if self._shutting_down:
                     logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
@@ -755,8 +763,6 @@ class MemoryManager:
                 return None
             if self._sync_executor is None:
                 try:
-                    # Daemon workers (see tools.daemon_pool): a provider wedged
-                    # on a network call must never block interpreter exit.
                     from tools.daemon_pool import DaemonThreadPoolExecutor
                     self._sync_executor = DaemonThreadPoolExecutor(
                         max_workers=1,
@@ -782,7 +788,6 @@ class MemoryManager:
         try:
             fut = executor.submit(lambda: None)
         except RuntimeError:
-            # Executor already shut down — nothing pending.
             return True
         try:
             fut.result(timeout=timeout)
@@ -790,7 +795,6 @@ class MemoryManager:
         except Exception:
             return False
 
-    # -- Tools ---------------------------------------------------------------
 
     def get_all_tool_schemas(self) -> List[Dict[str, Any]]:
         """Collect tool schemas from all providers.
@@ -857,7 +861,6 @@ class MemoryManager:
             )
             return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
-    # -- Lifecycle hooks -----------------------------------------------------
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Notify all providers of a new turn.
@@ -960,12 +963,6 @@ class MemoryManager:
         """
         if not new_session_id:
             return
-        # Only forward ``rewound`` when it's actually set. Passing it
-        # unconditionally would inject ``rewound=False`` into every
-        # provider's **kwargs for the common /resume, /branch, /new, and
-        # compression paths, polluting providers that capture extra kwargs
-        # (and breaking exact-dict assertions). The /undo path sets
-        # rewound=True explicitly; everyone else stays clean.
         if rewound:
             kwargs["rewound"] = True
         for provider in self._providers:
@@ -1057,10 +1054,6 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    # Actions the bridge mirrors to external providers. The built-in memory
-    # tool can also return non-mutating shapes (errors, staged-for-approval
-    # records); those are filtered out by ``notify_memory_tool_write`` before
-    # we ever reach a provider.
     _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
 
     @staticmethod
@@ -1193,9 +1186,6 @@ class MemoryManager:
         if executor is None:
             return
 
-        # shutdown(wait=False) closes submission without touching the FIFO.
-        # Waiting on the tracked futures lets the real single-worker executor
-        # run every queued write/boundary task in order up to the deadline.
         executor.shutdown(wait=False, cancel_futures=False)
         _, pending = wait(tuple(tracked), timeout=_SYNC_DRAIN_TIMEOUT_S)
         if not pending:

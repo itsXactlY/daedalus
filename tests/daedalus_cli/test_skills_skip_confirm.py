@@ -42,7 +42,6 @@ class TestHandleSkillsSlashInstallFlags:
             mock_install.assert_called_once()
             _, kwargs = mock_install.call_args
             assert kwargs.get("force") is True
-            # Slash commands always skip confirmation (input() hangs in TUI)
             assert kwargs.get("skip_confirm") is True
 
     def test_no_flags_still_skips_confirm(self):
@@ -135,11 +134,8 @@ class TestDoInstallSkipConfirm:
              patch("daedalus_cli.skills_hub._resolve_short_name", return_value="test/skill"), \
              patch("daedalus_cli.skills_hub._resolve_source_meta_and_bundle") as mock_resolve:
 
-            # Make it return None so we exit early
             mock_resolve.return_value = (None, None, None)
             do_install("test-skill", skip_confirm=False)
-            # We don't get to the input() call because resolve returns None,
-            # but the parameter wiring is correct
 
 
 class TestDoUninstallSkipConfirm:

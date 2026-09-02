@@ -15,9 +15,6 @@ from pathlib import Path
 from daedalus_constants import get_daedalus_home
 
 
-# ---------------------------------------------------------------------------
-# Curses-based interactive picker (same pattern as daedalus tools)
-# ---------------------------------------------------------------------------
 
 def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -> int:
     """Interactive single-select with arrow keys.
@@ -43,7 +40,6 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
-                # Title
                 try:
                     stdscr.addnstr(0, 0, title, max_x - 1,
                                    curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0))
@@ -88,7 +84,6 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
         return result[0]
 
     except Exception:
-        # Fallback: numbered input
         print(f"\n  {title}\n")
         for i, (label, desc) in enumerate(items):
             marker = "→" if i == default else " "
@@ -123,9 +118,6 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     return val or (default or "")
 
 
-# ---------------------------------------------------------------------------
-# Provider discovery
-# ---------------------------------------------------------------------------
 
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
@@ -148,7 +140,6 @@ def _install_dependencies(provider_name: str) -> None:
     if not pip_deps:
         return
 
-    # pip name → import name mapping for packages where they differ
     _IMPORT_NAMES = {
         "honcho-ai": "honcho",
         "mem0ai": "mem0",
@@ -156,7 +147,6 @@ def _install_dependencies(provider_name: str) -> None:
         "hindsight-all": "hindsight",
     }
 
-    # Check which packages are missing
     missing = []
     for dep in pip_deps:
         import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
@@ -195,7 +185,6 @@ def _install_dependencies(provider_name: str) -> None:
         print(f"  ⚠ Install failed: {e}")
         print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
 
-    # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
     for dep in ext_deps:
         dep_name = dep.get("name", "")
@@ -248,9 +237,6 @@ def _get_available_providers() -> list:
     return results
 
 
-# ---------------------------------------------------------------------------
-# Setup wizard
-# ---------------------------------------------------------------------------
 
 def cmd_setup_provider(provider_name: str) -> None:
     """Run memory setup for a specific provider, skipping the picker."""
@@ -281,7 +267,6 @@ def cmd_setup_provider(provider_name: str) -> None:
         provider.post_setup(daedalus_home, config)
         return
 
-    # Fallback: generic schema-based setup (same as cmd_setup)
     config["memory"]["provider"] = name
     save_config(config)
     print(f"\n  Memory provider: {name}")
@@ -299,7 +284,6 @@ def cmd_setup(args) -> None:
         print("  Install a plugin to ~/.daedalus/plugins/ and try again.\n")
         return
 
-    # Build picker items
     items = []
     for name, desc, _ in providers:
         items.append((name, f"— {desc}"))
@@ -312,7 +296,6 @@ def cmd_setup(args) -> None:
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 
-    # Built-in only
     if selected >= len(providers) or selected < 0:
         config["memory"]["provider"] = ""
         save_config(config)
@@ -322,11 +305,8 @@ def cmd_setup(args) -> None:
 
     name, _, provider = providers[selected]
 
-    # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
 
-    # If the provider has a post_setup hook, delegate entirely to it.
-    # The hook handles its own config, connection test, and activation.
     if hasattr(provider, "post_setup"):
         daedalus_home = str(get_daedalus_home())
         provider.post_setup(daedalus_home, config)
@@ -348,7 +328,6 @@ def cmd_setup(args) -> None:
             key = field["key"]
             desc = field.get("description", key)
             default = field.get("default")
-            # Dynamic default: look up default from another field's value
             default_from = field.get("default_from")
             if default_from and isinstance(default_from, dict):
                 ref_field = default_from.get("field", "")
@@ -361,14 +340,12 @@ def cmd_setup(args) -> None:
             env_var = field.get("env_var")
             url = field.get("url")
 
-            # Skip fields whose "when" condition doesn't match
             when = field.get("when")
             if when and isinstance(when, dict):
                 if not all(provider_config.get(k) == v for k, v in when.items()):
                     continue
 
             if choices and not is_secret:
-                # Use curses picker for choice fields
                 choice_items = [(c, "") for c in choices]
                 current = provider_config.get(key, default)
                 current_idx = 0
@@ -377,7 +354,6 @@ def cmd_setup(args) -> None:
                 sel = _curses_select(f"  {desc}", choice_items, default=current_idx)
                 provider_config[key] = choices[sel]
             elif is_secret:
-                # Prompt for secret
                 existing = os.environ.get(env_var, "") if env_var else ""
                 if existing:
                     masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
@@ -390,18 +366,15 @@ def cmd_setup(args) -> None:
                 if val and env_var:
                     env_writes[env_var] = val
             else:
-                # Regular text prompt
                 current = provider_config.get(key)
                 effective_default = current or default
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
 
-    # Write activation key to config.yaml
     config["memory"]["provider"] = name
     save_config(config)
 
-    # Write non-secret config to provider's native location
     daedalus_home = str(get_daedalus_home())
     if provider_config and hasattr(provider, "save_config"):
         try:
@@ -409,7 +382,6 @@ def cmd_setup(args) -> None:
         except Exception as e:
             print(f"  Failed to write provider config: {e}")
 
-    # Write secrets to .env
     if env_writes:
         _write_env_vars(env_path, env_writes)
 
@@ -447,9 +419,6 @@ def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     env_path.write_text("\n".join(new_lines) + "\n")
 
 
-# ---------------------------------------------------------------------------
-# Status
-# ---------------------------------------------------------------------------
 
 def cmd_status(args) -> None:
     """Show current memory provider config."""
@@ -508,9 +477,6 @@ def cmd_status(args) -> None:
     print()
 
 
-# ---------------------------------------------------------------------------
-# Router
-# ---------------------------------------------------------------------------
 
 def memory_command(args) -> None:
     """Route memory subcommands."""

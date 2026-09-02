@@ -102,11 +102,9 @@ def test_get_platform_tools_no_mcp_sentinel_does_not_affect_other_platforms():
         },
     }
 
-    # api_server should exclude MCP
     api_enabled = _get_platform_tools(config, "api_server")
     assert "exa" not in api_enabled
 
-    # cli (not configured with no_mcp) should include MCP
     cli_enabled = _get_platform_tools(config, "cli")
     assert "exa" in cli_enabled
 
@@ -200,14 +198,13 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
         "platform_toolsets": {
             "cli": [
                 "browser", "clarify", "code_execution", "cronjob",
-                "delegation", "file", "daedalus-cli",  # <-- the culprit
+                "delegation", "file", "daedalus-cli",
                 "memory", "session_search", "skills", "terminal",
                 "todo", "tts", "vision", "web",
             ]
         }
     }
 
-    # User unchecks image_gen, homeassistant, moa — keeps the rest
     new_selection = {
         "browser", "clarify", "code_execution", "cronjob",
         "delegation", "file", "memory", "session_search",
@@ -219,15 +216,12 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
 
     saved = config["platform_toolsets"]["cli"]
 
-    # daedalus-cli must NOT survive — it's a platform default, not an MCP server
     assert "daedalus-cli" not in saved
 
-    # The individual toolset keys the user selected must be present
     assert "web" in saved
     assert "terminal" in saved
     assert "browser" in saved
 
-    # Tools the user unchecked must NOT be present
     assert "image_gen" not in saved
     assert "homeassistant" not in saved
     assert "moa" not in saved
@@ -251,18 +245,14 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
 
     saved = config["platform_toolsets"]["cli"]
 
-    # MCP servers preserved
     assert "my-mcp-server" in saved
     assert "github-tools" in saved
 
-    # Platform default stripped
     assert "daedalus-cli" not in saved
 
-    # User selections present
     assert "web" in saved
     assert "browser" in saved
 
-    # Deselected configurable toolset removed
     assert "terminal" not in saved
 
 
@@ -352,7 +342,6 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     assert config["browser"]["cloud_provider"] == "browser-use"
     assert configured == []
 
-# ── Platform / toolset consistency ────────────────────────────────────────────
 
 
 class TestPlatformToolsetConsistency:
@@ -376,7 +365,6 @@ class TestPlatformToolsetConsistency:
         from toolsets import TOOLSETS
 
         gateway_includes = set(TOOLSETS["daedalus-gateway"]["includes"])
-        # Exclude non-messaging platforms from the check
         non_messaging = {"cli", "api_server"}
         for platform, meta in PLATFORMS.items():
             if platform in non_messaging:

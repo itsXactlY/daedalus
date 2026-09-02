@@ -8,9 +8,6 @@ from unittest.mock import patch, MagicMock
 def _load_ensure_ssl():
     """Import _ensure_ssl_certs fresh (gateway/run.py has heavy deps, so we
     extract just the function source to avoid importing the whole gateway)."""
-    # We can test via the actual module since conftest isolates DAEDALUS_HOME,
-    # but we need to be careful about side effects.  Instead, replicate the
-    # logic in a controlled way.
     from types import ModuleType
     import textwrap, ssl as _ssl  # noqa: F401
 

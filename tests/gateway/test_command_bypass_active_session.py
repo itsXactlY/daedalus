@@ -22,9 +22,6 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.session import SessionSource, build_session_key
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 
 class _StubAdapter(BasePlatformAdapter):
@@ -76,9 +73,6 @@ def _session_key(chat_id="12345"):
     return build_session_key(source)
 
 
-# ---------------------------------------------------------------------------
-# Tests: commands bypass Level 1 when session is active
-# ---------------------------------------------------------------------------
 
 
 class TestCommandBypassActiveSession:
@@ -161,9 +155,6 @@ class TestCommandBypassActiveSession:
         assert any("handled:status" in r for r in adapter.sent_responses)
 
 
-# ---------------------------------------------------------------------------
-# Tests: non-bypass messages still get queued
-# ---------------------------------------------------------------------------
 
 
 class TestNonBypassStillQueued:
@@ -210,9 +201,6 @@ class TestNonBypassStillQueued:
         assert len(adapter.sent_responses) == 0
 
 
-# ---------------------------------------------------------------------------
-# Tests: no active session — commands go through normally
-# ---------------------------------------------------------------------------
 
 
 class TestNoActiveSessionNormalDispatch:
@@ -225,19 +213,13 @@ class TestNoActiveSessionNormalDispatch:
         adapter = _make_adapter()
         sk = _session_key()
 
-        # No active session — _active_sessions is empty
         assert sk not in adapter._active_sessions
 
         await adapter.handle_message(_make_event("/stop"))
 
-        # Should have gone through the normal path (background task spawned)
-        # and NOT be in _pending_messages (that's the queued-during-active path)
         assert sk not in adapter._pending_messages
 
 
-# ---------------------------------------------------------------------------
-# Tests: safety net in _run_agent discards command text from pending queue
-# ---------------------------------------------------------------------------
 
 
 class TestPendingCommandSafetyNet:
@@ -262,7 +244,7 @@ class TestPendingCommandSafetyNet:
         from daedalus_cli.commands import resolve_command
 
         assert resolve_command("reset") is not None
-        assert resolve_command("reset").name == "new"  # alias
+        assert resolve_command("reset").name == "new"
 
     def test_unknown_command_not_detected(self):
         from daedalus_cli.commands import resolve_command
@@ -273,14 +255,9 @@ class TestPendingCommandSafetyNet:
         """'/path/to/file' should not resolve as a command."""
         from daedalus_cli.commands import resolve_command
 
-        # The safety net splits on whitespace and takes the first word
-        # after stripping '/'.  For '/path/to/file', that's 'path/to/file'.
         assert resolve_command("path/to/file") is None
 
 
-# ---------------------------------------------------------------------------
-# Tests: bypass with @botname suffix (Telegram-style)
-# ---------------------------------------------------------------------------
 
 
 class TestBypassWithBotnameSuffix:

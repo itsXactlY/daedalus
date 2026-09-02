@@ -33,7 +33,6 @@ class DeepSeekV31ToolCallParser(ToolCallParser):
 
     START_TOKEN = "<｜tool▁calls▁begin｜>"
 
-    # Regex captures: function_name, function_arguments
     PATTERN = re.compile(
         r"<｜tool▁call▁begin｜>(?P<function_name>.*?)<｜tool▁sep｜>(?P<function_arguments>.*?)<｜tool▁call▁end｜>",
         re.DOTALL,

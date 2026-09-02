@@ -18,9 +18,6 @@ from gateway.config import PlatformConfig
 from gateway.platforms.base import MessageType
 
 
-# ---------------------------------------------------------------------------
-# Discord mock setup (copied from test_discord_free_response.py)
-# ---------------------------------------------------------------------------
 
 def _ensure_discord_mock():
     """Install a mock discord module when discord.py isn't available."""
@@ -61,9 +58,6 @@ import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Fake channel / thread types
-# ---------------------------------------------------------------------------
 
 class FakeDMChannel:
     def __init__(self, channel_id: int = 1):
@@ -81,9 +75,6 @@ class FakeThread:
         self.topic = None
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def _redirect_cache(tmp_path, monkeypatch):
@@ -97,8 +88,6 @@ def _redirect_cache(tmp_path, monkeypatch):
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
-    # These tests mock the actual download. Do not let host DNS/proxy mappings
-    # for cdn.discordapp.com decide whether document handling is exercised.
     monkeypatch.setattr(discord_platform, "is_safe_url", lambda _url: True)
 
     config = PlatformConfig(enabled=True, token="fake-token")
@@ -108,9 +97,6 @@ def adapter(monkeypatch):
     return a
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def make_attachment(
     *,
@@ -156,9 +142,6 @@ def _mock_aiohttp_download(raw_bytes: bytes):
     return patch("aiohttp.ClientSession", return_value=session)
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 
 class TestIncomingDocumentHandling:
 
@@ -179,7 +162,6 @@ class TestIncomingDocumentHandling:
         assert "[Content of notes.txt]:" in event.text
         assert "Hello from a text file" in event.text
         assert "summarize this" in event.text
-        # injection prepended before caption
         assert event.text.index("[Content of") < event.text.index("summarize this")
 
     @pytest.mark.asyncio
@@ -306,18 +288,15 @@ class TestAllowAnyAttachment:
         event = adapter.handle_message.call_args[0][0]
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
-        # Falls back to the source content_type when we have one.
         assert event.media_types == ["application/x-custom"]
         assert event.message_type == MessageType.DOCUMENT
-        # We deliberately do NOT inline arbitrary (non-UTF-8) bytes — run.py
-        # emits the path-pointing note based on DOCUMENT + octet-stream MIME.
         assert "[Content of" not in (event.text or "")
 
 
     @pytest.mark.asyncio
     async def test_max_attachment_bytes_caps_uploads(self, adapter):
         """discord.max_attachment_bytes overrides the historical 32 MiB cap."""
-        adapter.config.extra["max_attachment_bytes"] = 1024  # 1 KiB
+        adapter.config.extra["max_attachment_bytes"] = 1024
 
         msg = make_message([
             make_attachment(
@@ -336,7 +315,6 @@ class TestAllowAnyAttachment:
         """max_attachment_bytes=0 disables the size cap entirely."""
         adapter.config.extra["max_attachment_bytes"] = 0
 
-        # 64 MiB — would normally exceed the historical 32 MiB hardcoded cap.
         with _mock_aiohttp_download(b"x" * 16):
             msg = make_message([
                 make_attachment(

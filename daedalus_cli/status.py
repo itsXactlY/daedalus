@@ -89,9 +89,6 @@ def show_status(args):
     print(color("│                 ⚕ Daedalus Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
     
-    # =========================================================================
-    # Environment
-    # =========================================================================
     print()
     print(color("◆ Environment", Colors.CYAN, Colors.BOLD))
     print(f"  Project:      {PROJECT_ROOT}")
@@ -108,9 +105,6 @@ def show_status(args):
     print(f"  Model:        {_configured_model_label(config)}")
     print(f"  Provider:     {_effective_provider_label()}")
     
-    # =========================================================================
-    # API Keys
-    # =========================================================================
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
     
@@ -123,8 +117,8 @@ def show_status(args):
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
-        "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
-        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
+        "Browser Use": "BROWSER_USE_API_KEY",
+        "Browserbase": "BROWSERBASE_API_KEY",
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
@@ -146,9 +140,6 @@ def show_status(args):
     anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
-    # =========================================================================
-    # Auth Providers (OAuth)
-    # =========================================================================
     print()
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
@@ -206,9 +197,6 @@ def show_status(args):
     if qwen_status.get("error") and not qwen_logged_in:
         print(f"    Error:      {qwen_status.get('error')}")
 
-    # =========================================================================
-    # Nous Subscription Features
-    # =========================================================================
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
         print()
@@ -231,9 +219,6 @@ def show_status(args):
                 state = "not configured"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
 
-    # =========================================================================
-    # API-Key Providers
-    # =========================================================================
     print()
     print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
 
@@ -253,16 +238,11 @@ def show_status(args):
         label = "configured" if configured else "not configured (run: daedalus model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")
 
-    # =========================================================================
-    # Terminal Configuration
-    # =========================================================================
     print()
     print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
     
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
-        # Fall back to config file value when env var isn't set
-        # (daedalus status doesn't go through cli.py's config loading)
         try:
             _cfg = load_config()
             terminal_env = _cfg.get("terminal", {}).get("backend", "local")
@@ -282,9 +262,6 @@ def show_status(args):
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
     
-    # =========================================================================
-    # Messaging Platforms
-    # =========================================================================
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
     
@@ -315,9 +292,6 @@ def show_status(args):
         
         print(f"  {name:<12}  {check_mark(has_token)} {status}")
     
-    # =========================================================================
-    # Gateway Status
-    # =========================================================================
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
     
@@ -358,9 +332,6 @@ def show_status(args):
         print(f"  Status:       {color('N/A', Colors.DIM)}")
         print("  Manager:      (not supported on this platform)")
     
-    # =========================================================================
-    # Cron Jobs
-    # =========================================================================
     print()
     print(color("◆ Scheduled Jobs", Colors.CYAN, Colors.BOLD))
     
@@ -378,9 +349,6 @@ def show_status(args):
     else:
         print("  Jobs:         0")
     
-    # =========================================================================
-    # Sessions
-    # =========================================================================
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
     
@@ -396,14 +364,10 @@ def show_status(args):
     else:
         print("  Active:       0")
     
-    # =========================================================================
-    # Deep checks
-    # =========================================================================
     if deep:
         print()
         print(color("◆ Deep Checks", Colors.CYAN, Colors.BOLD))
         
-        # Check OpenRouter connectivity
         openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
         if openrouter_key:
             try:
@@ -418,16 +382,13 @@ def show_status(args):
             except Exception as e:
                 print(f"  OpenRouter:   {check_mark(False)} error: {e}")
         
-        # Check gateway port
         try:
             import socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
             result = sock.connect_ex(('127.0.0.1', 18789))
             sock.close()
-            # Port in use = gateway likely running
             port_in_use = result == 0
-            # This is informational, not necessarily bad
             print(f"  Port 18789:   {'in use' if port_in_use else 'available'}")
         except OSError:
             pass

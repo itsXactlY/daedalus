@@ -36,7 +36,6 @@ class _FakeAgent:
         self.flush_memories = MagicMock()
         self._invalidate_system_prompt = MagicMock()
 
-        # Token counters (non-zero to verify reset)
         self.session_total_tokens = 1000
         self.session_input_tokens = 600
         self.session_output_tokens = 400
@@ -191,7 +190,6 @@ def test_new_session_resets_token_counters(tmp_path):
     """Regression test for #2099: /new must zero all token counters."""
     cli = _prepare_cli_with_active_session(tmp_path)
 
-    # Verify counters are non-zero before reset
     agent = cli.agent
     assert agent.session_total_tokens > 0
     assert agent.session_api_calls > 0
@@ -199,7 +197,6 @@ def test_new_session_resets_token_counters(tmp_path):
 
     cli.process_command("/new")
 
-    # All agent token counters must be zero
     assert agent.session_total_tokens == 0
     assert agent.session_input_tokens == 0
     assert agent.session_output_tokens == 0
@@ -213,7 +210,6 @@ def test_new_session_resets_token_counters(tmp_path):
     assert agent.session_cost_status == "unknown"
     assert agent.session_cost_source == "none"
 
-    # Context compressor counters must also be zero
     comp = agent.context_compressor
     assert comp.last_prompt_tokens == 0
     assert comp.last_completion_tokens == 0

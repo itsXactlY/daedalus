@@ -32,13 +32,11 @@ class KimiK2ToolCallParser(ToolCallParser):
     The tool_call_id contains the function name (after last dot, before colon).
     """
 
-    # Support both singular and plural variants
     START_TOKENS = [
         "<|tool_calls_section_begin|>",
         "<|tool_call_section_begin|>",
     ]
 
-    # Regex captures: tool_call_id (e.g., "functions.get_weather:0"), function_arguments
     PATTERN = re.compile(
         r"<\|tool_call_begin\|>\s*(?P<tool_call_id>[^<]+:\d+)\s*"
         r"<\|tool_call_argument_begin\|>\s*"
@@ -48,7 +46,6 @@ class KimiK2ToolCallParser(ToolCallParser):
     )
 
     def parse(self, text: str) -> ParseResult:
-        # Check for any variant of the start token
         has_start = any(token in text for token in self.START_TOKENS)
         if not has_start:
             return text, None
@@ -62,12 +59,11 @@ class KimiK2ToolCallParser(ToolCallParser):
             for match in matches:
                 function_id, function_args = match
 
-                # Extract function name from ID format: "functions.get_weather:0" -> "get_weather"
                 function_name = function_id.split(":")[0].split(".")[-1]
 
                 tool_calls.append(
                     ChatCompletionMessageToolCall(
-                        id=function_id,  # Preserve the original ID format
+                        id=function_id,
                         type="function",
                         function=Function(
                             name=function_name,
@@ -79,7 +75,6 @@ class KimiK2ToolCallParser(ToolCallParser):
             if not tool_calls:
                 return text, None
 
-            # Content is everything before the tool calls section
             earliest_start = len(text)
             for token in self.START_TOKENS:
                 idx = text.find(token)

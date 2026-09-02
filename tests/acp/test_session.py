@@ -21,9 +21,6 @@ def manager():
     return SessionManager(agent_factory=_mock_agent)
 
 
-# ---------------------------------------------------------------------------
-# create / get
-# ---------------------------------------------------------------------------
 
 
 class TestCreateSession:
@@ -55,9 +52,6 @@ class TestCreateSession:
         assert manager.get_session("does-not-exist") is None
 
 
-# ---------------------------------------------------------------------------
-# fork
-# ---------------------------------------------------------------------------
 
 
 class TestForkSession:
@@ -69,11 +63,9 @@ class TestForkSession:
         forked = manager.fork_session(original.session_id, cwd="/new")
         assert forked is not None
 
-        # History should be equal in content
         assert len(forked.history) == 2
         assert forked.history[0]["content"] == "hello"
 
-        # But a deep copy — mutating one doesn't affect the other
         forked.history.append({"role": "user", "content": "extra"})
         assert len(original.history) == 2
         assert len(forked.history) == 3
@@ -88,9 +80,6 @@ class TestForkSession:
         assert manager.fork_session("bogus-id") is None
 
 
-# ---------------------------------------------------------------------------
-# list / cleanup / remove
-# ---------------------------------------------------------------------------
 
 
 class TestListAndCleanup:
@@ -117,13 +106,9 @@ class TestListAndCleanup:
         state = manager.create_session()
         assert manager.remove_session(state.session_id) is True
         assert manager.get_session(state.session_id) is None
-        # Removing again returns False
         assert manager.remove_session(state.session_id) is False
 
 
-# ---------------------------------------------------------------------------
-# persistence — sessions survive process restarts (via SessionDB)
-# ---------------------------------------------------------------------------
 
 
 class TestPersistence:
@@ -136,7 +121,6 @@ class TestPersistence:
         row = db.get_session(state.session_id)
         assert row is not None
         assert row["source"] == "acp"
-        # cwd stored in model_config JSON
         mc = json.loads(row["model_config"])
         assert mc["cwd"] == "/project"
 
@@ -149,11 +133,9 @@ class TestPersistence:
 
         sid = state.session_id
 
-        # Drop from in-memory store (simulates process restart).
         with manager._lock:
             del manager._sessions[sid]
 
-        # get_session should transparently restore from DB.
         restored = manager.get_session(sid)
         assert restored is not None
         assert restored.session_id == sid
@@ -161,7 +143,6 @@ class TestPersistence:
         assert len(restored.history) == 2
         assert restored.history[0]["content"] == "hello"
         assert restored.history[1]["content"] == "hi there"
-        # Agent should have been recreated.
         assert restored.agent is not None
 
     def test_save_session_updates_db(self, manager):
@@ -196,7 +177,6 @@ class TestPersistence:
         state = manager.create_session(cwd="/db-only")
         sid = state.session_id
 
-        # Drop from memory.
         with manager._lock:
             del manager._sessions[sid]
 
@@ -210,7 +190,6 @@ class TestPersistence:
         original.history.append({"role": "user", "content": "context"})
         manager.save_session(original.session_id)
 
-        # Drop original from memory.
         with manager._lock:
             del manager._sessions[original.session_id]
 
@@ -231,7 +210,6 @@ class TestPersistence:
         assert updated is not None
         assert updated.cwd == "/new"
 
-        # Should also be persisted in DB.
         db = manager._get_db()
         row = db.get_session(sid)
         mc = json.loads(row["model_config"])
@@ -240,9 +218,7 @@ class TestPersistence:
     def test_only_restores_acp_sessions(self, manager):
         """get_session should not restore non-ACP sessions from DB."""
         db = manager._get_db()
-        # Manually create a CLI session in the DB.
         db.create_session(session_id="cli-session-123", source="cli", model="test")
-        # Should not be found via ACP SessionManager.
         assert manager.get_session("cli-session-123") is None
 
     def test_sessions_searchable_via_fts(self, manager):
@@ -275,7 +251,6 @@ class TestPersistence:
         })
         manager.save_session(state.session_id)
 
-        # Drop from memory, restore from DB.
         with manager._lock:
             del manager._sessions[state.session_id]
 

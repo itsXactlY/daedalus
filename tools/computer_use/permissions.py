@@ -31,7 +31,6 @@ from typing import Any, Dict, List, Optional
 
 from daedalus_cli._subprocess_compat import windows_hide_flags
 
-# Platforms with a cua-driver runtime backend (mirrors the toolset platform_gate).
 _RUNTIME_PLATFORMS = frozenset({"darwin", "win32", "linux"})
 _BOOLS = ("accessibility", "screen_recording", "screen_recording_capturable")
 
@@ -109,7 +108,7 @@ def _mac_permissions(binary: str, out: Dict[str, Any]) -> None:
     except subprocess.TimeoutExpired:
         out["error"] = "cua-driver permissions status timed out"
         return
-    except Exception as exc:  # spawn failure or malformed JSON
+    except Exception as exc:
         out["error"] = f"cua-driver permissions status failed: {exc}"
         return
     if isinstance(data, dict):
@@ -156,7 +155,6 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> Dict[str, Any]:
         if out["error"] is None:
             out["ready"] = out["accessibility"] is True and out["screen_recording"] is True
     elif doctor is not None:
-        # No TCC model off macOS — readiness is driver health.
         out["ready"] = doctor["ok"]
     return out
 

@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, patch
 
 from daedalus_cli.tools_config import _configure_mcp_tools_interactive
 
-# Patch targets: imports happen inside the function body, so patch at source
 _PROBE = "tools.mcp_tool.probe_mcp_server_tools"
 _CHECKLIST = "daedalus_cli.curses_ui.curses_checklist"
 _SAVE = "daedalus_cli.tools_config.save_config"
@@ -81,7 +80,6 @@ def test_disabling_tool_writes_exclude_list(capsys):
         ("search_repos", "Search repos"),
     ]
 
-    # User unchecks delete_repo (index 1)
     with patch(_PROBE, return_value={"github": tools}), \
          patch(_CHECKLIST, return_value={0, 2}), \
          patch(_SAVE) as mock_save:
@@ -105,8 +103,6 @@ def test_enabling_all_clears_filters(capsys):
     }
     tools = [("create_issue", "Create"), ("delete_repo", "Delete")]
 
-    # User checks all tools — pre_selected would be {0} (include mode),
-    # so returning {0, 1} is a change
     with patch(_PROBE, return_value={"github": tools}), \
          patch(_CHECKLIST, return_value={0, 1}), \
          patch(_SAVE) as mock_save:
@@ -133,14 +129,13 @@ def test_pre_selection_respects_existing_exclude(capsys):
 
     def fake_checklist(title, labels, pre_selected, **kwargs):
         captured_pre_selected["value"] = set(pre_selected)
-        return pre_selected  # No changes
+        return pre_selected
 
     with patch(_PROBE, return_value={"github": tools}), \
          patch(_CHECKLIST, side_effect=fake_checklist), \
          patch(_SAVE):
         _configure_mcp_tools_interactive(config)
 
-    # create_issue (0) and search (2) should be pre-selected, delete_repo (1) should not
     assert captured_pre_selected["value"] == {0, 2}
 
 
@@ -159,14 +154,13 @@ def test_pre_selection_respects_existing_include(capsys):
 
     def fake_checklist(title, labels, pre_selected, **kwargs):
         captured_pre_selected["value"] = set(pre_selected)
-        return pre_selected  # No changes
+        return pre_selected
 
     with patch(_PROBE, return_value={"github": tools}), \
          patch(_CHECKLIST, side_effect=fake_checklist), \
          patch(_SAVE):
         _configure_mcp_tools_interactive(config)
 
-    # Only search (2) should be pre-selected
     assert captured_pre_selected["value"] == {2}
 
 
@@ -182,7 +176,7 @@ def test_multiple_servers_each_get_checklist(capsys):
 
     def fake_checklist(title, labels, pre_selected, **kwargs):
         checklist_calls.append(title)
-        return pre_selected  # No changes
+        return pre_selected
 
     with patch(
         _PROBE,
@@ -208,7 +202,6 @@ def test_failed_server_shows_warning(capsys):
         }
     }
 
-    # Only github succeeds
     with patch(
         _PROBE, return_value={"github": [("create_issue", "Create")]},
     ), patch(_CHECKLIST, return_value={0}), \
@@ -241,7 +234,7 @@ def test_description_truncation_in_labels():
 
     label = captured_labels["value"][0]
     assert "..." in label
-    assert len(label) < len(long_desc) + 30  # truncated + tool name + parens
+    assert len(label) < len(long_desc) + 30
 
 
 def test_switching_from_include_to_exclude(capsys):
@@ -256,8 +249,6 @@ def test_switching_from_include_to_exclude(capsys):
     }
     tools = [("create_issue", "Create"), ("search", "Search"), ("delete", "Delete")]
 
-    # User selects create_issue and search (deselects delete)
-    # pre_selected would be {0} (only create_issue from include), so {0, 1} is a change
     with patch(_PROBE, return_value={"github": tools}), \
          patch(_CHECKLIST, return_value={0, 1}), \
          patch(_SAVE):

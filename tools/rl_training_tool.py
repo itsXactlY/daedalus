@@ -48,11 +48,7 @@ from daedalus_constants import get_daedalus_home
 
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# Path Configuration
-# ============================================================================
 
-# Path to tinker-atropos submodule (relative to daedalus root)
 DAEDALUS_ROOT = Path(__file__).parent.parent
 TINKER_ATROPOS_ROOT = DAEDALUS_ROOT / "tinker-atropos"
 ENVIRONMENTS_DIR = TINKER_ATROPOS_ROOT / "tinker_atropos" / "environments"
@@ -64,11 +60,7 @@ def _ensure_logs_dir():
     if TINKER_ATROPOS_ROOT.exists():
         LOGS_DIR.mkdir(exist_ok=True)
 
-# ============================================================================
-# Locked Configuration (Infrastructure Settings)
-# ============================================================================
 
-# These fields cannot be changed by the model - they're tuned for our infrastructure
 LOCKED_FIELDS = {
     "env": {
         "tokenizer_name": "Qwen/Qwen3-8B",
@@ -91,7 +83,7 @@ LOCKED_FIELDS = {
             "weight": 1.0,
             "num_requests_for_eval": 256,
             "timeout": 3600,
-            "server_type": "sglang",  # Tinker uses sglang for actual training
+            "server_type": "sglang",
         }
     ],
     "tinker": {
@@ -108,9 +100,6 @@ LOCKED_FIELDS = {
 LOCKED_FIELD_NAMES = set(LOCKED_FIELDS.get("env", {}).keys())
 
 
-# ============================================================================
-# State Management
-# ============================================================================
 
 @dataclass
 class EnvironmentInfo:
@@ -128,18 +117,16 @@ class RunState:
     run_id: str
     environment: str
     config: Dict[str, Any]
-    status: str = "pending"  # pending, starting, running, stopping, stopped, completed, failed
+    status: str = "pending"
     error_message: str = ""
     wandb_project: str = ""
     wandb_run_name: str = ""
     start_time: float = 0.0
-    # Process handles
     api_process: Optional[subprocess.Popen] = None
     trainer_process: Optional[subprocess.Popen] = None
     env_process: Optional[subprocess.Popen] = None
 
 
-# Global state
 _environments: List[EnvironmentInfo] = []
 _current_env: Optional[str] = None
 _current_config: Dict[str, Any] = {}
@@ -147,13 +134,9 @@ _env_config_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _active_runs: Dict[str, RunState] = {}
 _last_status_check: Dict[str, float] = {}
 
-# Rate limiting for status checks (30 minutes)
 MIN_STATUS_CHECK_INTERVAL = 30 * 60
 
 
-# ============================================================================
-# Environment Discovery
-# ============================================================================
 
 def _scan_environments() -> List[EnvironmentInfo]:
     """
@@ -174,7 +157,6 @@ def _scan_environments() -> List[EnvironmentInfo]:
             
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
-                    # Check if class has BaseEnv as base
                     for base in node.bases:
                         base_name = ""
                         if isinstance(base, ast.Name):
@@ -183,7 +165,6 @@ def _scan_environments() -> List[EnvironmentInfo]:
                             base_name = base.attr
                         
                         if base_name == "BaseEnv":
-                            # Extract name from class attribute if present
                             env_name = py_file.stem
                             description = ""
                             config_class = "BaseEnvConfig"
@@ -197,7 +178,6 @@ def _scan_environments() -> List[EnvironmentInfo]:
                                             elif target.id == "env_config_cls" and isinstance(item.value, ast.Name):
                                                 config_class = item.value.id
                                 
-                                # Get docstring
                                 if isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant):
                                     if isinstance(item.value.value, str) and not description:
                                         description = item.value.value.split("\n")[0].strip()
@@ -224,13 +204,11 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
     directly importing BaseEnvConfig if config_init fails.
     """
     try:
-        # Load the environment module
         spec = importlib.util.spec_from_file_location("env_module", env_file_path)
         module = importlib.util.module_from_spec(spec)
         sys.modules["env_module"] = module
         spec.loader.exec_module(module)
         
-        # Find the BaseEnv subclass
         env_class = None
         for name, obj in vars(module).items():
             if isinstance(obj, type) and name != "BaseEnv":
@@ -241,13 +219,11 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
         if not env_class:
             return {}
         
-        # Try calling config_init to get the actual config class
         config_class = None
         try:
             env_config, server_configs = env_class.config_init()
             config_class = type(env_config)
         except Exception as config_error:
-            # Fallback: try to import BaseEnvConfig directly from atroposlib
             logger.info("config_init failed (%s), using BaseEnvConfig defaults", config_error)
             try:
                 from atroposlib.envs.base import BaseEnvConfig
@@ -258,17 +234,15 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
         if not config_class:
             return {}
         
-        # Helper to make values JSON-serializable (handle enums, etc.)
         def make_serializable(val):
             if val is None:
                 return None
-            if hasattr(val, 'value'):  # Enum
+            if hasattr(val, 'value'):
                 return val.value
             if hasattr(val, 'name') and hasattr(val, '__class__') and 'Enum' in str(type(val)):
                 return val.name
             return val
         
-        # Extract fields from the Pydantic model
         fields = {}
         for field_name, field_info in config_class.model_fields.items():
             field_type = field_info.annotation
@@ -277,7 +251,6 @@ def _get_env_config_fields(env_file_path: str) -> Dict[str, Dict[str, Any]]:
             
             is_locked = field_name in LOCKED_FIELD_NAMES
             
-            # Convert type to string
             type_name = getattr(field_type, "__name__", str(field_type))
             if hasattr(field_type, "__origin__"):
                 type_name = str(field_type)
@@ -307,9 +280,6 @@ def _initialize_environments():
         _environments = _scan_environments()
 
 
-# ============================================================================
-# Subprocess Management
-# ============================================================================
 
 async def _spawn_training_run(run_state: RunState, config_path: Path):
     """
@@ -322,18 +292,14 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
     
     _ensure_logs_dir()
 
-    # Log file paths
     api_log = LOGS_DIR / f"api_{run_id}.log"
     trainer_log = LOGS_DIR / f"trainer_{run_id}.log"
     env_log = LOGS_DIR / f"env_{run_id}.log"
     
     try:
-        # Step 1: Start the Atropos API server (run-api)
         logger.info("[%s] Starting Atropos API server (run-api)...", run_id)
         
-        # File must stay open while the subprocess runs; we store the handle
-        # on run_state so _stop_training_run() can close it when done.
-        api_log_file = open(api_log, "w")  # closed by _stop_training_run
+        api_log_file = open(api_log, "w")
         run_state.api_log_file = api_log_file
         run_state.api_process = subprocess.Popen(
             ["run-api"],
@@ -342,7 +308,6 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             cwd=str(TINKER_ATROPOS_ROOT),
         )
         
-        # Wait for API to start
         await asyncio.sleep(5)
         
         if run_state.api_process.poll() is not None:
@@ -353,10 +318,9 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         logger.info("[%s] Atropos API server started", run_id)
         
-        # Step 2: Start the Tinker trainer
         logger.info("[%s] Starting Tinker trainer: launch_training.py --config %s", run_id, config_path)
         
-        trainer_log_file = open(trainer_log, "w")  # closed by _stop_training_run
+        trainer_log_file = open(trainer_log, "w")
         run_state.trainer_log_file = trainer_log_file
         run_state.trainer_process = subprocess.Popen(
             [sys.executable, "launch_training.py", "--config", str(config_path)],
@@ -366,7 +330,6 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             env={**os.environ, "TINKER_API_KEY": os.getenv("TINKER_API_KEY", "")},
         )
         
-        # Wait for trainer to initialize (it starts FastAPI inference server on 8001)
         logger.info("[%s] Waiting 30 seconds for trainer to initialize...", run_id)
         await asyncio.sleep(30)
         
@@ -378,11 +341,9 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         logger.info("[%s] Trainer started, inference server on port 8001", run_id)
         
-        # Step 3: Start the environment
         logger.info("[%s] Waiting 90 more seconds before starting environment...", run_id)
         await asyncio.sleep(90)
         
-        # Find the environment file
         env_info = None
         for env in _environments:
             if env.name == run_state.environment:
@@ -397,7 +358,7 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         
         logger.info("[%s] Starting environment: %s serve", run_id, env_info.file_path)
         
-        env_log_file = open(env_log, "w")  # closed by _stop_training_run
+        env_log_file = open(env_log, "w")
         run_state.env_log_file = env_log_file
         run_state.env_process = subprocess.Popen(
             [sys.executable, str(env_info.file_path), "serve", "--config", str(config_path)],
@@ -406,7 +367,6 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             cwd=str(TINKER_ATROPOS_ROOT),
         )
         
-        # Wait for environment to connect
         await asyncio.sleep(10)
         
         if run_state.env_process.poll() is not None:
@@ -419,7 +379,6 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
         run_state.start_time = time.time()
         logger.info("[%s] Training run started successfully!", run_id)
         
-        # Start background monitoring
         asyncio.create_task(_monitor_training_run(run_state))
         
     except Exception as e:
@@ -431,9 +390,8 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
 async def _monitor_training_run(run_state: RunState):
     """Background task to monitor a training run."""
     while run_state.status == "running":
-        await asyncio.sleep(30)  # Check every 30 seconds
+        await asyncio.sleep(30)
         
-        # Check if any process has died
         if run_state.env_process and run_state.env_process.poll() is not None:
             exit_code = run_state.env_process.returncode
             if exit_code == 0:
@@ -463,7 +421,6 @@ async def _monitor_training_run(run_state: RunState):
 
 def _stop_training_run(run_state: RunState):
     """Stop all processes for a training run."""
-    # Stop in reverse order: env -> trainer -> api
     if run_state.env_process and run_state.env_process.poll() is None:
         logger.info("[%s] Stopping environment process...", run_state.run_id)
         run_state.env_process.terminate()
@@ -491,7 +448,6 @@ def _stop_training_run(run_state: RunState):
     if run_state.status == "running":
         run_state.status = "stopped"
 
-    # Close log file handles that were opened for subprocess stdout.
     for attr in ("env_log_file", "trainer_log_file", "api_log_file"):
         fh = getattr(run_state, attr, None)
         if fh is not None:
@@ -502,9 +458,6 @@ def _stop_training_run(run_state: RunState):
             setattr(run_state, attr, None)
 
 
-# ============================================================================
-# Environment Discovery Tools
-# ============================================================================
 
 async def rl_list_environments() -> str:
     """
@@ -585,17 +538,14 @@ async def rl_select_environment(name: str) -> str:
     
     _current_env = name
     
-    # Dynamically discover config fields
     config_fields = _get_env_config_fields(env_info.file_path)
     _env_config_cache[name] = config_fields
     
-    # Initialize current config with defaults for non-locked fields
     _current_config = {}
     for field_name, field_info in config_fields.items():
         if not field_info.get("locked", False):
             _current_config[field_name] = field_info.get("default")
     
-    # Auto-set wandb_name to "{env_name}-DATETIME" to avoid overlaps
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     _current_config["wandb_name"] = f"{name}-{timestamp}"
     
@@ -606,9 +556,6 @@ async def rl_select_environment(name: str) -> str:
     }, indent=2)
 
 
-# ============================================================================
-# Configuration Tools
-# ============================================================================
 
 async def rl_get_current_config() -> str:
     """
@@ -703,9 +650,6 @@ async def rl_edit_config(field: str, value: Any) -> str:
     }, indent=2)
 
 
-# ============================================================================
-# Training Management Tools
-# ============================================================================
 
 async def rl_start_training() -> str:
     """
@@ -730,13 +674,11 @@ async def rl_start_training() -> str:
             "error": "No environment selected. Use rl_select_environment(name) first.",
         }, indent=2)
     
-    # Check API keys
     if not os.getenv("TINKER_API_KEY"):
         return json.dumps({
             "error": "TINKER_API_KEY not set. Add it to ~/.daedalus/.env",
         }, indent=2)
     
-    # Find environment file
     env_info = None
     for env in _environments:
         if env.name == _current_env:
@@ -748,26 +690,21 @@ async def rl_start_training() -> str:
             "error": f"Environment file not found for '{_current_env}'",
         }, indent=2)
     
-    # Generate run ID
     run_id = str(uuid.uuid4())[:8]
     
-    # Create config YAML
     CONFIGS_DIR.mkdir(exist_ok=True)
     config_path = CONFIGS_DIR / f"run_{run_id}.yaml"
     
-    # Start with locked config as base
     import copy
     run_config = copy.deepcopy(LOCKED_FIELDS)
     
     if "env" not in run_config:
         run_config["env"] = {}
     
-    # Apply configurable fields
     for field_name, value in _current_config.items():
         if value is not None and value != "":
             run_config["env"][field_name] = value
     
-    # Set WandB settings
     wandb_project = _current_config.get("wandb_project", "atropos-tinker")
     if "tinker" not in run_config:
         run_config["tinker"] = {}
@@ -780,7 +717,6 @@ async def rl_start_training() -> str:
     with open(config_path, "w") as f:
         yaml.dump(run_config, f, default_flow_style=False)
     
-    # Create run state
     run_state = RunState(
         run_id=run_id,
         environment=_current_env,
@@ -792,7 +728,6 @@ async def rl_start_training() -> str:
     
     _active_runs[run_id] = run_state
     
-    # Start training in background
     asyncio.create_task(_spawn_training_run(run_state, config_path))
     
     return json.dumps({
@@ -825,7 +760,6 @@ async def rl_check_status(run_id: str) -> str:
     Returns:
         JSON string with run status and metrics
     """
-    # Check rate limiting
     now = time.time()
     if run_id in _last_status_check:
         elapsed = now - _last_status_check[run_id]
@@ -848,7 +782,6 @@ async def rl_check_status(run_id: str) -> str:
     
     run_state = _active_runs[run_id]
     
-    # Check process status
     processes = {
         "api": run_state.api_process.poll() if run_state.api_process else None,
         "trainer": run_state.trainer_process.poll() if run_state.trainer_process else None,
@@ -878,7 +811,6 @@ async def rl_check_status(run_id: str) -> str:
     if run_state.error_message:
         result["error"] = run_state.error_message
     
-    # Try to get WandB metrics if available
     try:
         import wandb
         api = wandb.Api()
@@ -958,7 +890,6 @@ async def rl_get_results(run_id: str) -> str:
         "wandb_run_name": run_state.wandb_run_name,
     }
     
-    # Get WandB metrics
     try:
         import wandb
         api = wandb.Api()
@@ -999,21 +930,15 @@ async def rl_list_runs() -> str:
     }, indent=2)
 
 
-# ============================================================================
-# Inference Testing (via Atropos `process` mode with OpenRouter)
-# ============================================================================
 
-# Test models at different scales for robustness testing
-# These are cheap, capable models on OpenRouter for testing parsing/scoring
 TEST_MODELS = [
     {"id": "qwen/qwen3-8b", "name": "Qwen3 8B", "scale": "small"},
     {"id": "z-ai/glm-4.7-flash", "name": "GLM-4.7 Flash", "scale": "medium"},
     {"id": "minimax/minimax-m2.7", "name": "MiniMax M2.7", "scale": "large"},
 ]
 
-# Default test parameters - quick but representative
-DEFAULT_NUM_STEPS = 3       # Number of steps (items) to test
-DEFAULT_GROUP_SIZE = 16     # Completions per item (like training)
+DEFAULT_NUM_STEPS = 3
+DEFAULT_GROUP_SIZE = 16
 
 
 async def rl_test_inference(
@@ -1057,7 +982,6 @@ async def rl_test_inference(
             "error": "OPENROUTER_API_KEY not set. Required for inference testing.",
         }, indent=2)
     
-    # Find environment info
     env_info = None
     for env in _environments:
         if env.name == _current_env:
@@ -1069,7 +993,6 @@ async def rl_test_inference(
             "error": f"Environment '{_current_env}' not found",
         }, indent=2)
     
-    # Determine which models to test
     if models:
         test_models = [m for m in TEST_MODELS if m["id"] in models]
         if not test_models:
@@ -1077,7 +1000,6 @@ async def rl_test_inference(
     else:
         test_models = TEST_MODELS
     
-    # Calculate total rollouts for logging
     total_rollouts_per_model = num_steps * group_size
     total_rollouts = total_rollouts_per_model * len(test_models)
     
@@ -1093,7 +1015,6 @@ async def rl_test_inference(
         "models_tested": [],
     }
     
-    # Create output directory for test results
     _ensure_logs_dir()
     test_output_dir = LOGS_DIR / "inference_tests"
     test_output_dir.mkdir(exist_ok=True)
@@ -1106,42 +1027,30 @@ async def rl_test_inference(
         print(f"Testing with {model_info['name']} ({model_id})")
         print(f"{'='*60}")
         
-        # Output file for this test run
         output_file = test_output_dir / f"test_{_current_env}_{model_safe_name}.jsonl"
         
-        # Generate unique run ID for wandb
         test_run_id = str(uuid.uuid4())[:8]
         wandb_run_name = f"test_inference_RSIAgent_{_current_env}_{test_run_id}"
         
-        # Build the process command using Atropos's built-in CLI
-        # This runs the environment's actual code with OpenRouter as the inference backend
-        # We pass our locked settings + test-specific overrides via CLI args
         cmd = [
             sys.executable, env_info.file_path, "process",
-            # Test-specific overrides
             "--env.total_steps", str(num_steps),
             "--env.group_size", str(group_size),
-            "--env.use_wandb", "true",  # Enable wandb for test tracking
+            "--env.use_wandb", "true",
             "--env.wandb_name", wandb_run_name,
             "--env.data_path_to_save_groups", str(output_file),
-            # Use locked settings from our config
             "--env.tokenizer_name", LOCKED_FIELDS["env"]["tokenizer_name"],
             "--env.max_token_length", str(LOCKED_FIELDS["env"]["max_token_length"]),
             "--env.max_num_workers", str(LOCKED_FIELDS["env"]["max_num_workers"]),
             "--env.max_batches_offpolicy", str(LOCKED_FIELDS["env"]["max_batches_offpolicy"]),
-            # OpenRouter config for inference testing
-            # IMPORTANT: Use server_type=openai for OpenRouter (not sglang)
-            # sglang is only for actual training with Tinker's inference server
             "--openai.base_url", "https://openrouter.ai/api/v1",
             "--openai.api_key", api_key,
             "--openai.model_name", model_id,
-            "--openai.server_type", "openai",  # OpenRouter is OpenAI-compatible
-            "--openai.health_check", "false",  # OpenRouter doesn't have health endpoint
+            "--openai.server_type", "openai",
+            "--openai.health_check", "false",
         ]
         
-        # Debug: Print the full command
         cmd_str = " ".join(str(c) for c in cmd)
-        # Hide API key in printed output
         cmd_display = cmd_str.replace(api_key, "***API_KEY***")
         print(f"Command: {cmd_display}")
         print(f"Working dir: {TINKER_ATROPOS_ROOT}")
@@ -1161,7 +1070,6 @@ async def rl_test_inference(
         }
         
         try:
-            # Run the process command with real-time output streaming
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -1169,7 +1077,6 @@ async def rl_test_inference(
                 cwd=str(TINKER_ATROPOS_ROOT),
             )
             
-            # Stream output in real-time while collecting for logs
             stdout_lines = []
             stderr_lines = []
             log_file = test_output_dir / f"test_{_current_env}_{model_safe_name}.log"
@@ -1182,18 +1089,16 @@ async def rl_test_inference(
                         break
                     decoded = line.decode().rstrip()
                     lines_list.append(decoded)
-                    # Print progress-related lines in real-time
                     if any(kw in decoded.lower() for kw in ['processing', 'group', 'step', 'progress', '%', 'completed']):
                         print(f"  {prefix}{decoded}")
             
-            # Read both streams concurrently with timeout
             try:
                 await asyncio.wait_for(
                     asyncio.gather(
                         read_stream(process.stdout, stdout_lines, "📊 "),
                         read_stream(process.stderr, stderr_lines, "⚠️ "),
                     ),
-                    timeout=600,  # 10 minute timeout per model
+                    timeout=600,
                 )
             except asyncio.TimeoutError:
                 process.kill()
@@ -1201,11 +1106,9 @@ async def rl_test_inference(
             
             await process.wait()
             
-            # Combine output for logging
             stdout_text = "\n".join(stdout_lines)
             stderr_text = "\n".join(stderr_lines)
             
-            # Write logs to files for inspection outside CLI
             with open(log_file, "w") as f:
                 f.write(f"Command: {cmd_display}\n")
                 f.write(f"Working dir: {TINKER_ATROPOS_ROOT}\n")
@@ -1225,7 +1128,6 @@ async def rl_test_inference(
                 model_results["stdout"] = stdout_text[-1000:]
                 model_results["log_file"] = str(log_file)
                 print(f"\n  ❌ Error: {model_results['error']}")
-                # Print last few lines of stderr for debugging
                 if stderr_lines:
                     print("  Last errors:")
                     for line in stderr_lines[-5:]:
@@ -1235,9 +1137,7 @@ async def rl_test_inference(
                 print(f"  Output file: {output_file}")
                 print(f"  File exists: {output_file.exists()}")
                 
-                # Parse the output JSONL file
                 if output_file.exists():
-                    # Read JSONL file (one JSON object per line = one step)
                     with open(output_file, "r") as f:
                         for line in f:
                             line = line.strip()
@@ -1271,7 +1171,6 @@ async def rl_test_inference(
             model_results["error"] = str(e)
             print(f"  Error: {e}")
         
-        # Calculate stats
         if model_results["total_completions"] > 0:
             model_results["accuracy"] = round(
                 model_results["correct_completions"] / model_results["total_completions"], 3
@@ -1294,7 +1193,6 @@ async def rl_test_inference(
         
         results["models_tested"].append(model_results)
     
-    # Overall summary
     working_models = [m for m in results["models_tested"] if m.get("steps_tested", 0) > 0]
     
     results["summary"] = {
@@ -1312,9 +1210,6 @@ async def rl_test_inference(
     return json.dumps(results, indent=2)
 
 
-# ============================================================================
-# Requirements Check
-# ============================================================================
 
 def check_rl_python_version() -> bool:
     """
@@ -1355,9 +1250,6 @@ def get_missing_keys() -> List[str]:
     return missing
 
 
-# ---------------------------------------------------------------------------
-# Schemas + Registry
-# ---------------------------------------------------------------------------
 from tools.registry import registry
 
 RL_LIST_ENVIRONMENTS_SCHEMA = {"name": "rl_list_environments", "description": "List all available RL environments. Returns environment names, paths, and descriptions. TIP: Read the file_path with file tools to understand how each environment works (verifiers, data loading, rewards).", "parameters": {"type": "object", "properties": {}, "required": []}}

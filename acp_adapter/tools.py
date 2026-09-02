@@ -13,24 +13,17 @@ from acp.schema import (
     ToolKind,
 )
 
-# ---------------------------------------------------------------------------
-# Map daedalus tool names -> ACP ToolKind
-# ---------------------------------------------------------------------------
 
 TOOL_KIND_MAP: Dict[str, ToolKind] = {
-    # File operations
     "read_file": "read",
     "write_file": "edit",
     "patch": "edit",
     "search_files": "search",
-    # Terminal / execution
     "terminal": "execute",
     "process": "execute",
     "execute_code": "execute",
-    # Web / fetch
     "web_search": "fetch",
     "web_extract": "fetch",
-    # Browser
     "browser_navigate": "fetch",
     "browser_click": "execute",
     "browser_type": "execute",
@@ -40,12 +33,10 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_press": "execute",
     "browser_back": "execute",
     "browser_get_images": "read",
-    # Agent internals
     "delegate_task": "execute",
     "vision_analyze": "read",
     "image_generate": "execute",
     "text_to_speech": "execute",
-    # Thinking / meta
     "_thinking": "think",
 }
 
@@ -96,9 +87,6 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     return tool_name
 
 
-# ---------------------------------------------------------------------------
-# Build ACP content objects for tool-call events
-# ---------------------------------------------------------------------------
 
 
 def build_tool_start(
@@ -119,7 +107,6 @@ def build_tool_start(
             new = arguments.get("new_string", "")
             content = [acp.tool_diff_content(path=path, new_text=new, old_text=old)]
         else:
-            # Patch mode — show the patch content as text
             patch_text = arguments.get("patch", "")
             content = [acp.tool_content(acp.text_block(patch_text))]
         return acp.start_tool_call(
@@ -161,7 +148,6 @@ def build_tool_start(
             raw_input=arguments,
         )
 
-    # Generic fallback
     import json
     try:
         args_text = json.dumps(arguments, indent=2, default=str)
@@ -182,7 +168,6 @@ def build_tool_complete(
     """Create a ToolCallUpdate (progress) event for a completed tool call."""
     kind = get_tool_kind(tool_name)
 
-    # Truncate very large results for the UI
     display_result = result or ""
     if len(display_result) > 5000:
         display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
@@ -197,9 +182,6 @@ def build_tool_complete(
     )
 
 
-# ---------------------------------------------------------------------------
-# Location extraction
-# ---------------------------------------------------------------------------
 
 
 def extract_locations(

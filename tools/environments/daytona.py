@@ -34,8 +34,8 @@ class DaytonaEnvironment(BaseEnvironment):
         cwd: str = "/home/daytona",
         timeout: int = 60,
         cpu: int = 1,
-        memory: int = 5120,       # MB (daedalus convention)
-        disk: int = 10240,        # MB (Daytona platform max is 10GB)
+        memory: int = 5120,
+        disk: int = 10240,
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):
@@ -71,9 +71,7 @@ class DaytonaEnvironment(BaseEnvironment):
         labels = {"daedalus_task_id": task_id}
         sandbox_name = f"daedalus-{task_id}"
 
-        # Try to resume an existing sandbox for this task
         if self._persistent:
-            # 1. Try name-based lookup (new path)
             try:
                 self._sandbox = self._daytona.get(sandbox_name)
                 self._sandbox.start()
@@ -86,7 +84,6 @@ class DaytonaEnvironment(BaseEnvironment):
                                task_id, e)
                 self._sandbox = None
 
-            # 2. Legacy fallback: find sandbox created before the naming migration
             if self._sandbox is None:
                 try:
                     page = self._daytona.list(labels=labels, page=1, limit=1)
@@ -100,7 +97,6 @@ class DaytonaEnvironment(BaseEnvironment):
                                  task_id, e)
                     self._sandbox = None
 
-        # Create a fresh sandbox if we don't have one
         if self._sandbox is None:
             self._sandbox = self._daytona.create(
                 CreateSandboxFromImageParams(
@@ -114,7 +110,6 @@ class DaytonaEnvironment(BaseEnvironment):
             logger.info("Daytona: created sandbox %s for task %s",
                         self._sandbox.id, task_id)
 
-        # Detect remote home dir first so mounts go to the right place.
         self._remote_home = "/root"
         try:
             home = self._sandbox.process.exec("echo $HOME").result.strip()
@@ -126,11 +121,8 @@ class DaytonaEnvironment(BaseEnvironment):
             pass
         logger.info("Daytona: resolved home to %s, cwd to %s", self._remote_home, self.cwd)
 
-        # Track synced files to avoid redundant uploads.
-        # Key: remote_path, Value: (mtime, size)
         self._synced_files: Dict[str, tuple] = {}
 
-        # Upload credential files and skills directory into the sandbox.
         self._sync_skills_and_credentials()
 
     def _upload_if_changed(self, host_path: str, remote_path: str) -> bool:
@@ -185,9 +177,6 @@ class DaytonaEnvironment(BaseEnvironment):
         fallback), so we wrap the command with the shell ``timeout`` utility
         which reliably kills the process and returns exit code 124.
         """
-        # Wrap with shell `timeout` to enforce the deadline reliably.
-        # Add a small buffer so the shell timeout fires before any SDK-level
-        # timeout would, giving us a clean exit code 124.
         timed_command = f"timeout {timeout} sh -c {shlex.quote(exec_command)}"
 
         result_holder: dict = {"value": None, "error": None}
@@ -206,7 +195,6 @@ class DaytonaEnvironment(BaseEnvironment):
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
-        # Wait for timeout + generous buffer for network/SDK overhead
         deadline = time.monotonic() + timeout + 10
         while t.is_alive():
             t.join(timeout=0.2)
@@ -221,7 +209,6 @@ class DaytonaEnvironment(BaseEnvironment):
                     "returncode": 130,
                 }
             if time.monotonic() > deadline:
-                # Shell timeout didn't fire and SDK is hung — force stop
                 with self._lock:
                     try:
                         self._sandbox.stop()
@@ -238,8 +225,6 @@ class DaytonaEnvironment(BaseEnvironment):
                 stdin_data: Optional[str] = None) -> dict:
         with self._lock:
             self._ensure_sandbox_ready()
-        # Incremental sync before each command so mid-session credential
-        # refreshes and skill updates are picked up.
         self._sync_skills_and_credentials()
 
         if stdin_data is not None:
@@ -250,13 +235,6 @@ class DaytonaEnvironment(BaseEnvironment):
 
         exec_command, sudo_stdin = self._prepare_command(command)
 
-        # Daytona sandboxes execute commands via the Daytona SDK and cannot
-        # pipe subprocess stdin directly the way a local Popen can.  When a
-        # sudo password is present, use a shell-level pipe from printf so that
-        # the password feeds sudo -S without appearing as an echo argument
-        # embedded in the shell string.  The password is still visible in the
-        # remote sandbox's command line, but it is not exposed on the user's
-        # local machine — which is the primary threat being mitigated.
         if sudo_stdin is not None:
             import shlex
             exec_command = (

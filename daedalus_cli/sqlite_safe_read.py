@@ -73,13 +73,9 @@ logger = logging.getLogger(__name__)
 
 SQLITE_HEADER_MAGIC = b"SQLite format 3\x00"
 
-# Offset of the 4-byte big-endian page-count field in the SQLite header.
 _HEADER_PAGE_COUNT_OFFSET = 28
 
-# Guards BOTH the registry and the lifecycle syscalls it describes. Reentrant
-# because connect_tracked -> _canonical_db_path -> ... stays on one thread.
 _live_lock = threading.RLock()
-# canonical path -> number of live connections opened by this process
 _live_connections: dict[str, int] = {}
 
 
@@ -154,10 +150,6 @@ class _TrackingMixin:
     def close(self) -> None:  # type: ignore[misc]
         with _live_lock:
             path = getattr(self, "_daedalus_tracked_path", None)
-            # Close first; untrack only once the descriptor is actually gone.
-            # Untracking before a failing close (e.g. cross-thread
-            # ProgrammingError) leaves the FD open while the byte-probe
-            # guard thinks nothing is live — see #75629.
             super().close()  # type: ignore[misc]
             if path is not None:
                 self._daedalus_tracked_path = None
@@ -251,22 +243,14 @@ def connect_tracked(
                 else _canonical_db_path(conn)
             )
             if resolved is None:
-                # In-memory / unnamed: nothing on disk to byte-probe.
                 return conn
             if not isinstance(conn, _TrackingMixin):
-                # The opener substituted its own factory and discarded ours
-                # (test doubles simulating FTS5-less runtimes do this). Retag
-                # the instance's class with the tracking mixin so close() still
-                # releases the registry entry, rather than handing back a
-                # connection whose database has silently lost probe safety.
                 conn = _retrofit_tracking(conn, resolved)
             conn._daedalus_tracked_path = resolved
             _live_connections[resolved] = _live_connections.get(resolved, 0) + 1
             return conn
         except Exception:
             try:
-                # Close via sqlite3 directly: the tracking entry was either
-                # never made or is being unwound here.
                 sqlite3.Connection.close(conn)
             except Exception:
                 pass

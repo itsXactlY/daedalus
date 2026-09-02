@@ -20,9 +20,6 @@ from zoneinfo import ZoneInfo
 import daedalus_time
 
 
-# =========================================================================
-# daedalus_time.now() — core helper
-# =========================================================================
 
 class TestDaedalusTimeNow:
     """Test the timezone-aware now() helper."""
@@ -39,7 +36,6 @@ class TestDaedalusTimeNow:
         os.environ["DAEDALUS_TIMEZONE"] = "Asia/Kolkata"
         result = daedalus_time.now()
         assert result.tzinfo is not None
-        # IST is UTC+5:30
         offset = result.utcoffset()
         assert offset == timedelta(hours=5, minutes=30)
 
@@ -54,7 +50,6 @@ class TestDaedalusTimeNow:
         os.environ["DAEDALUS_TIMEZONE"] = "America/New_York"
         result = daedalus_time.now()
         assert result.tzinfo is not None
-        # Offset is -5h or -4h depending on DST
         offset_hours = result.utcoffset().total_seconds() / 3600
         assert offset_hours in (-5, -4)
 
@@ -63,7 +58,7 @@ class TestDaedalusTimeNow:
         os.environ["DAEDALUS_TIMEZONE"] = "Mars/Olympus_Mons"
         with caplog.at_level(logging.WARNING, logger="daedalus_time"):
             result = daedalus_time.now()
-        assert result.tzinfo is not None  # Still tz-aware (server-local)
+        assert result.tzinfo is not None
         assert "Invalid timezone" in caplog.text
         assert "Mars/Olympus_Mons" in caplog.text
 
@@ -78,9 +73,7 @@ class TestDaedalusTimeNow:
         os.environ["DAEDALUS_TIMEZONE"] = "Asia/Kolkata"
         result = daedalus_time.now()
         formatted = result.strftime("%A, %B %d, %Y %I:%M %p")
-        # Should produce something like "Monday, March 03, 2026 05:30 PM"
         assert len(formatted) > 10
-        # No timezone abbreviation in the format (matching original behavior)
         assert "+" not in formatted
 
     def test_cache_invalidation(self):
@@ -127,9 +120,6 @@ class TestGetTimezone:
         assert daedalus_time.get_timezone_name() == "Asia/Tokyo"
 
 
-# =========================================================================
-# execute_code child env — TZ injection
-# =========================================================================
 
 @pytest.mark.skipif(sys.platform == "win32", reason="UDS not available on Windows")
 class TestCodeExecutionTZ:
@@ -138,8 +128,6 @@ class TestCodeExecutionTZ:
     @pytest.fixture(autouse=True)
     def _import_execute_code(self, monkeypatch):
         """Lazy-import execute_code to avoid pulling in firecrawl at collection time."""
-        # Force local backend — other tests in the same xdist worker may leak
-        # TERMINAL_ENV=modal/docker which causes modal.exception.AuthError.
         monkeypatch.setenv("TERMINAL_ENV", "local")
         try:
             from tools.code_execution_tool import execute_code
@@ -197,9 +185,6 @@ class TestCodeExecutionTZ:
         assert "NOT_SET" in result["output"]
 
 
-# =========================================================================
-# Cron timezone-aware scheduling
-# =========================================================================
 
 class TestCronTimezone:
     """Verify cron paths use timezone-aware now()."""
@@ -217,7 +202,6 @@ class TestCronTimezone:
         from cron.jobs import parse_schedule
         result = parse_schedule("30m")
         run_at = datetime.fromisoformat(result["run_at"])
-        # The stored timestamp should be tz-aware
         assert run_at.tzinfo is not None
 
     def test_compute_next_run_tz_aware(self):
@@ -239,16 +223,13 @@ class TestCronTimezone:
         os.environ["DAEDALUS_TIMEZONE"] = "Asia/Kolkata"
         daedalus_time.reset_cache()
 
-        # Create a job with a NAIVE past timestamp (simulating pre-tz data)
         from cron.jobs import create_job, load_jobs, save_jobs, get_due_jobs
         job = create_job(prompt="Test job", schedule="every 1h")
         jobs = load_jobs()
-        # Force a naive (no timezone) past timestamp
         naive_past = (datetime.now() - timedelta(seconds=30)).isoformat()
         jobs[0]["next_run_at"] = naive_past
         save_jobs(jobs)
 
-        # Should not crash — _ensure_aware handles the naive timestamp
         due = get_due_jobs()
         assert len(due) == 1
 
@@ -264,16 +245,12 @@ class TestCronTimezone:
         os.environ["DAEDALUS_TIMEZONE"] = "Asia/Kolkata"
         daedalus_time.reset_cache()
 
-        # Create a naive datetime — will be interpreted as system-local time
         naive_dt = datetime(2026, 3, 11, 12, 0, 0)
 
         result = _ensure_aware(naive_dt)
 
-        # The result should be in Kolkata tz
         assert result.tzinfo is not None
 
-        # The UTC equivalent must match what we'd get by correctly interpreting
-        # the naive dt as system-local time first, then converting
         system_tz = datetime.now().astimezone().tzinfo
         expected_utc = naive_dt.replace(tzinfo=system_tz).astimezone(timezone.utc)
         actual_utc = result.astimezone(timezone.utc)
@@ -288,11 +265,9 @@ class TestCronTimezone:
         os.environ["DAEDALUS_TIMEZONE"] = "Asia/Kolkata"
         daedalus_time.reset_cache()
 
-        # Create an aware datetime in UTC
         utc_dt = datetime(2026, 3, 11, 15, 0, 0, tzinfo=timezone.utc)
         result = _ensure_aware(utc_dt)
 
-        # Must be in Daedalus tz (Kolkata) but same absolute instant
         kolkata = ZoneInfo("Asia/Kolkata")
         assert result.utctimetuple()[:5] == (2026, 3, 11, 15, 0)
         expected_local = utc_dt.astimezone(kolkata)
@@ -319,13 +294,10 @@ class TestCronTimezone:
         job = create_job(prompt="Bug repro", schedule="every 1h")
         jobs = load_jobs()
 
-        # Simulate a naive timestamp that was written by datetime.now() on a
-        # system running in UTC+5:30 — 5 minutes in the past (local time)
         naive_past = (datetime.now() - timedelta(seconds=30)).isoformat()
         jobs[0]["next_run_at"] = naive_past
         save_jobs(jobs)
 
-        # Must be recognized as due regardless of tz mismatch
         due = get_due_jobs()
         assert len(due) == 1, (
             "Overdue job was skipped — _ensure_aware likely shifted absolute time"
@@ -339,17 +311,13 @@ class TestCronTimezone:
         monkeypatch.setattr(jobs_module, "JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr(jobs_module, "OUTPUT_DIR", tmp_path / "cron" / "output")
 
-        # Use a Daedalus timezone far behind UTC so that the numeric wall time
-        # of the naive timestamp exceeds _daedalus_now's wall time — this would
-        # have caused a false "not due" with the old replace(tzinfo=...) approach.
-        os.environ["DAEDALUS_TIMEZONE"] = "Pacific/Midway"  # UTC-11
+        os.environ["DAEDALUS_TIMEZONE"] = "Pacific/Midway"
         daedalus_time.reset_cache()
 
         from cron.jobs import create_job, load_jobs, save_jobs, get_due_jobs
         create_job(prompt="Cross-tz job", schedule="every 1h")
         jobs = load_jobs()
 
-        # Force a naive past timestamp (system-local wall time, 10 min ago)
         naive_past = (datetime.now() - timedelta(seconds=30)).isoformat()
         jobs[0]["next_run_at"] = naive_past
         save_jobs(jobs)

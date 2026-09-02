@@ -69,9 +69,6 @@ class BrowserUseProvider(CloudBrowserProvider):
     def is_configured(self) -> bool:
         return self._get_config_or_none() is not None
 
-    # ------------------------------------------------------------------
-    # Config resolution (direct API key OR managed Nous gateway)
-    # ------------------------------------------------------------------
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
         api_key = os.environ.get("BROWSER_USE_API_KEY")
@@ -106,9 +103,6 @@ class BrowserUseProvider(CloudBrowserProvider):
             raise ValueError(message)
         return config
 
-    # ------------------------------------------------------------------
-    # Session lifecycle
-    # ------------------------------------------------------------------
 
     def _headers(self, config: Dict[str, Any]) -> Dict[str, str]:
         headers = {
@@ -125,9 +119,6 @@ class BrowserUseProvider(CloudBrowserProvider):
         if managed_mode:
             headers["X-Idempotency-Key"] = _get_or_create_pending_create_key(task_id)
 
-        # Keep gateway-backed sessions short so billing authorization does not
-        # default to a long Browser-Use timeout when Daedalus only needs a task-
-        # scoped ephemeral browser.
         payload = (
             {
                 "timeout": _DEFAULT_MANAGED_TIMEOUT_MINUTES,

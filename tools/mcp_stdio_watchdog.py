@@ -68,7 +68,7 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
     child kill instead of AttributeError.
     """
     killpg = getattr(os, "killpg", None)
-    if killpg is None:  # windows-footgun: ok — non-POSIX fallback
+    if killpg is None:
         try:
             proc.terminate()
             proc.wait(timeout=_TERM_GRACE_S)
@@ -115,9 +115,6 @@ def main(argv: list[str] | None = None) -> int:
         print("mcp_stdio_watchdog: no command given after '--'", file=sys.stderr)
         return 2
 
-    # New process group so we can killpg() the whole tree the real command
-    # may spawn (e.g. mcp-remote's own child `node` process), without
-    # touching our own group or the (already-gone) original parent's.
     proc = subprocess.Popen(
         real_argv,
         stdin=sys.stdin,
@@ -126,12 +123,6 @@ def main(argv: list[str] | None = None) -> int:
         start_new_session=True,
     )
 
-    # Because the real server lives in its OWN process group (above), the
-    # parent's graceful-shutdown killpg of *our* group no longer reaches it.
-    # Forward SIGTERM/SIGINT to the child's group so graceful teardown
-    # (`_kill_orphaned_mcp_children`, shutdown sweeps) still kills a wedged
-    # server that ignores stdin EOF — otherwise the watchdog wrap would
-    # invert the bug it fixes.
     def _forward_shutdown(signum, frame):  # noqa: ARG001
         _terminate_process_group(proc)
         sys.exit(128 + signum)

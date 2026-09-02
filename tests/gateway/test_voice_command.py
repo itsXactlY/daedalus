@@ -55,9 +55,6 @@ _ensure_discord_mock()
 from gateway.platforms.base import MessageEvent, MessageType, SessionSource
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _make_event(text: str = "", message_type=MessageType.TEXT, chat_id="123") -> MessageEvent:
     source = SessionSource(
@@ -85,9 +82,6 @@ def _make_runner(tmp_path):
     return runner
 
 
-# =====================================================================
-# /voice command handler
-# =====================================================================
 
 class TestHandleVoiceCommand:
 
@@ -135,7 +129,7 @@ class TestHandleVoiceCommand:
             "telegram:off_chat": "off",
             "telegram:on_chat": "voice_only",
             "telegram:tts_chat": "all",
-            "slack:999": "voice_only",  # wrong platform, must be ignored
+            "slack:999": "voice_only",
         }
         adapter = SimpleNamespace(
             _auto_tts_default=False,
@@ -184,9 +178,6 @@ class TestHandleVoiceCommand:
         assert runner._voice_mode["slack:999"] == "off"
 
 
-# =====================================================================
-# Auto voice reply decision logic
-# =====================================================================
 
 class TestAutoVoiceReply:
     """Test the real _should_send_voice_reply method on GatewayRunner.
@@ -228,53 +219,24 @@ class TestAutoVoiceReply:
             event, response, agent_messages or []
         )
 
-    # -- Full platform x input x mode matrix --------------------------------
-    #
-    # Legend:
-    #   base = base adapter auto-TTS (play_tts)
-    #   runner = gateway _send_voice_reply
-    #
-    # | Platform      | Input | Mode       | base | runner | Expected     |
-    # |---------------|-------|------------|------|--------|--------------|
-    # | Telegram      | voice | off        | yes  | skip   | 1 audio      |
-    # | Telegram      | voice | voice_only | yes  | skip*  | 1 audio      |
-    # | Telegram      | voice | all        | yes  | skip*  | 1 audio      |
-    # | Telegram      | text  | off        | skip | skip   | 0 audio      |
-    # | Telegram      | text  | voice_only | skip | skip   | 0 audio      |
-    # | Telegram      | text  | all        | skip | yes    | 1 audio      |
-    # | Discord text  | voice | all        | yes  | skip*  | 1 audio      |
-    # | Discord text  | text  | all        | skip | yes    | 1 audio      |
-    # | Discord VC    | voice | all        | skip†| yes    | 1 audio (VC) |
-    # | Web UI        | voice | off        | yes  | skip   | 1 audio      |
-    # | Web UI        | voice | all        | yes  | skip*  | 1 audio      |
-    # | Web UI        | text  | all        | skip | yes    | 1 audio      |
-    # | Slack         | voice | all        | yes  | skip*  | 1 audio      |
-    # | Slack         | text  | all        | skip | yes    | 1 audio      |
-    #
-    # * skip_double: voice input → base already handles
-    # † Discord play_tts override skips when in VC
 
-    # -- Telegram/Slack/Web: voice input, base handles ---------------------
 
     def test_voice_input_voice_only_skipped(self, runner):
         """voice_only + voice input: base auto-TTS handles it, runner skips."""
         assert self._call(runner, "voice_only", MessageType.VOICE) is False
 
 
-    # -- Text input: only runner handles -----------------------------------
 
     def test_text_input_all_mode_runner_fires(self, runner):
         """all + text input: only runner fires (base auto-TTS only for voice)."""
         assert self._call(runner, "all", MessageType.TEXT) is True
 
 
-    # -- Mode off: nothing fires -------------------------------------------
 
     def test_off_mode_voice(self, runner):
         assert self._call(runner, "off", MessageType.VOICE) is False
 
 
-    # -- Discord VC exception: runner must handle --------------------------
 
     def test_discord_vc_voice_input_base_handles(self, runner):
         """Discord VC + voice input: base adapter play_tts plays in VC,
@@ -282,12 +244,8 @@ class TestAutoVoiceReply:
         assert self._call(runner, "all", MessageType.VOICE, in_voice_channel=True) is False
 
 
-    # -- Edge cases --------------------------------------------------------
 
 
-# =====================================================================
-# _send_voice_reply
-# =====================================================================
 
 class TestSendVoiceReply:
 
@@ -350,15 +308,10 @@ class TestSendVoiceReply:
             "telegram_dm_topic_reply_fallback": True,
             "direct_messages_topic_id": "20197",
             "telegram_reply_to_message_id": "462",
-            # Final voice reply is notify-worthy (issue #27970 Bug 2):
-            # mirrors the final-text path in gateway/platforms/base.py.
             "notify": True,
         }
 
 
-# =====================================================================
-# Discord play_tts skip when in voice channel
-# =====================================================================
 
 class TestDiscordPlayTtsSkip:
     """Discord adapter skips play_tts when bot is in a voice channel."""
@@ -385,30 +338,21 @@ class TestDiscordPlayTtsSkip:
     @pytest.mark.asyncio
     async def test_play_tts_plays_in_vc_when_connected(self):
         adapter = self._make_discord_adapter()
-        # Simulate bot in voice channel for guild 111, text channel 123
         mock_vc = MagicMock()
         mock_vc.is_connected.return_value = True
         mock_vc.is_playing.return_value = False
         adapter._voice_clients[111] = mock_vc
         adapter._voice_text_channels[111] = 123
 
-        # Mock play_in_voice_channel to avoid actual ffmpeg call
         async def fake_play(gid, path):
             return True
         adapter.play_in_voice_channel = fake_play
 
         result = await adapter.play_tts(chat_id="123", audio_path="/tmp/test.ogg")
-        # play_tts now plays in VC instead of being a no-op
         assert result.success is True
 
 
-# =====================================================================
-# Web play_tts sends play_audio (not voice bubble)
-# =====================================================================
 
-# =====================================================================
-# Help text + known commands
-# =====================================================================
 
 class TestVoiceInHelp:
 
@@ -419,9 +363,6 @@ class TestVoiceInHelp:
         assert "/voice" in help_text
 
 
-# =====================================================================
-# VoiceReceiver unit tests
-# =====================================================================
 
 class TestVoiceReceiver:
     """Test VoiceReceiver silence detection, SSRC mapping, and lifecycle."""
@@ -461,24 +402,19 @@ class TestVoiceReceiver:
     def test_check_silence_returns_completed_utterance(self):
         receiver = self._make_receiver()
         receiver.map_ssrc(100, 42)
-        # 48kHz, stereo, 16-bit = 192000 bytes/sec
-        # MIN_SPEECH_DURATION = 0.5s → need 96000 bytes
         pcm_data = bytearray(b"\x00" * 96000)
         receiver._buffers[100] = pcm_data
-        # Set last_packet_time far enough in the past to exceed SILENCE_THRESHOLD
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 1
         user_id, data = completed[0]
         assert user_id == 42
         assert len(data) == 96000
-        # Buffer should be cleared after extraction
         assert len(receiver._buffers[100]) == 0
 
     def test_check_silence_ignores_short_buffer(self):
         receiver = self._make_receiver()
         receiver.map_ssrc(100, 42)
-        # Too short to meet MIN_SPEECH_DURATION
         receiver._buffers[100] = bytearray(b"\x00" * 100)
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
@@ -504,7 +440,6 @@ class TestVoiceReceiver:
 
         monkeypatch.delenv("FFMPEG_PATH", raising=False)
         monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
-        # Discovery delegates to tools.transcription_tools; simulate "not found".
         monkeypatch.setattr(ffmpeg_utils, "_shared_find_ffmpeg", lambda: None)
 
         assert ffmpeg_utils.resolve_ffmpeg_executable() == str(ffmpeg)
@@ -513,16 +448,12 @@ class TestVoiceReceiver:
     def test_on_packet_skips_non_rtp(self):
         receiver = self._make_receiver()
         receiver.start()
-        # Valid length but wrong RTP version
         data = bytearray(b"\x00" * 20)
-        data[0] = 0x00  # version 0, not 2
+        data[0] = 0x00
         receiver._on_packet(bytes(data))
         assert len(receiver._buffers) == 0
 
 
-# =====================================================================
-# Gateway voice channel commands (join / leave / input)
-# =====================================================================
 
 class TestVoiceChannelCommands:
     """Test _handle_voice_channel_join, _handle_voice_channel_leave,
@@ -547,7 +478,6 @@ class TestVoiceChannelCommands:
         event.raw_message = SimpleNamespace(guild_id=guild_id, guild=None)
         return event
 
-    # -- _handle_voice_channel_join --
 
 
     @pytest.mark.asyncio
@@ -591,7 +521,6 @@ class TestVoiceChannelCommands:
         assert "voice dependencies are missing" in result.lower()
         assert "PyNaCl" in result
 
-    # -- _handle_voice_channel_leave --
 
 
     @pytest.mark.asyncio
@@ -608,7 +537,6 @@ class TestVoiceChannelCommands:
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
 
-    # -- _handle_voice_channel_input --
 
 
     @pytest.mark.asyncio
@@ -682,7 +610,6 @@ class TestVoiceChannelCommands:
         assert event.source.user_id == "42"
 
 
-    # -- _get_guild_id --
 
     def test_get_guild_id_from_guild(self, runner):
         event = _make_event()
@@ -699,9 +626,6 @@ class TestVoiceChannelCommands:
         assert result == 777
 
 
-# =====================================================================
-# Discord adapter voice channel methods
-# =====================================================================
 
 class TestDiscordVoiceChannelMethods:
     """Test DiscordAdapter voice channel methods (join, leave, play, etc.)."""
@@ -920,16 +844,9 @@ class TestDiscordVoiceChannelMethods:
         callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
 
 
-        # Should not raise
 
 
-# =====================================================================
-# stream_tts_to_speaker functional tests
-# =====================================================================
 
-# =====================================================================
-# VoiceReceiver thread-safety (lock coverage)
-# =====================================================================
 
 class TestVoiceReceiverThreadSafety:
     """Verify that VoiceReceiver buffer access is protected by lock."""
@@ -951,11 +868,9 @@ class TestVoiceReceiverThreadSafety:
         from plugins.platforms.discord.adapter import VoiceReceiver
         source = textwrap.dedent(inspect.getsource(VoiceReceiver.check_silence))
         tree = ast.parse(source)
-        # Find 'with self._lock:' that contains buffer iteration
         found_lock_with_for = False
         for node in ast.walk(tree):
             if isinstance(node, ast.With):
-                # Check if lock context and contains for loop
                 has_lock = any(
                     "lock" in ast.dump(item) for item in node.items
                 )
@@ -967,9 +882,6 @@ class TestVoiceReceiverThreadSafety:
         )
 
 
-# =====================================================================
-# Callback wiring order (join)
-# =====================================================================
 
 class TestCallbackWiringOrder:
     """Verify callback is wired BEFORE join, not after."""
@@ -998,9 +910,6 @@ class TestCallbackWiringOrder:
         assert mock_adapter._voice_input_callback is None
 
 
-# =====================================================================
-# Leave exception handling
-# =====================================================================
 
 class TestLeaveExceptionHandling:
     """Verify state is cleaned up even when leave_voice_channel raises."""
@@ -1030,9 +939,6 @@ class TestLeaveExceptionHandling:
         assert mock_adapter._voice_input_callback is None
 
 
-# =====================================================================
-# Base adapter empty text guard
-# =====================================================================
 
 class TestAutoTtsEmptyTextGuard:
     """Verify base adapter skips TTS when text is empty after markdown strip."""
@@ -1044,9 +950,6 @@ class TestAutoTtsEmptyTextGuard:
         speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()
         assert not speech_text, "Expected empty after stripping markdown chars"
 
-        # Note: base.py regex only strips individual chars, not full code blocks
-        # So code blocks are partially stripped but may leave content
-        # The real fix is in base.py — empty check after strip
 
 
 class TestStreamTtsToSpeaker:
@@ -1093,7 +996,6 @@ class TestStreamTtsToSpeaker:
         stop_evt = threading.Event()
         done_evt = threading.Event()
 
-        # Put a non-string that will cause concatenation to fail
         text_q.put(12345)
         text_q.put(None)
 
@@ -1101,13 +1003,8 @@ class TestStreamTtsToSpeaker:
         assert done_evt.is_set()
 
 
-        # Display callback gets raw text (before markdown stripping)
-        # But the actual TTS audio would be stripped — we verify pipeline doesn't crash
 
 
-# =====================================================================
-# Bug 1: VoiceReceiver.stop() must hold lock while clearing shared state
-# =====================================================================
 
 class TestStopAcquiresLock:
     """stop() must acquire _lock before clearing buffers/state."""
@@ -1133,7 +1030,6 @@ class TestStopAcquiresLock:
         receiver._last_packet_time[100] = time.monotonic()
         receiver.map_ssrc(100, 42)
 
-        # Hold the lock from another thread
         lock_acquired = threading.Event()
         release_lock = threading.Event()
 
@@ -1146,7 +1042,6 @@ class TestStopAcquiresLock:
         holder.start()
         lock_acquired.wait(timeout=2)
 
-        # stop() in another thread — should block on the lock
         stop_done = threading.Event()
 
         def do_stop():
@@ -1156,25 +1051,19 @@ class TestStopAcquiresLock:
         stopper = threading.Thread(target=do_stop, daemon=True)
         stopper.start()
 
-        # stop should NOT complete while lock is held
         assert not stop_done.wait(timeout=0.3), \
             "stop() should block while _lock is held by another thread"
 
-        # Release the lock — stop should complete
         release_lock.set()
         assert stop_done.wait(timeout=2), \
             "stop() should complete after lock is released"
 
-        # State should be cleared
         assert len(receiver._buffers) == 0
         assert len(receiver._ssrc_to_user) == 0
         holder.join(timeout=2)
         stopper.join(timeout=2)
 
 
-# =====================================================================
-# Bug 2: _packet_debug_count must be instance-level, not class-level
-# =====================================================================
 
 class TestPacketDebugCounterIsInstanceLevel:
     """Each VoiceReceiver instance has its own debug counter."""
@@ -1198,9 +1087,6 @@ class TestPacketDebugCounterIsInstanceLevel:
             "_packet_debug_count must be instance-level, not shared across instances"
 
 
-# =====================================================================
-# Bug 3: play_in_voice_channel uses get_running_loop not get_event_loop
-# =====================================================================
 
 class TestPlayInVoiceChannelUsesRunningLoop:
     """play_in_voice_channel must use asyncio.get_running_loop()."""
@@ -1216,9 +1102,6 @@ class TestPlayInVoiceChannelUsesRunningLoop:
             "play_in_voice_channel should NOT use deprecated asyncio.get_event_loop()"
 
 
-# =====================================================================
-# Bug 4: _send_voice_reply filename uses uuid (no collision)
-# =====================================================================
 
 class TestSendVoiceReplyFilename:
     """_send_voice_reply uses uuid for unique filenames."""
@@ -1243,9 +1126,6 @@ class TestSendVoiceReplyFilename:
             "_send_voice_reply should build its path via build_auto_tts_output_path"
 
 
-# =====================================================================
-# Bug 5: Voice timeout cleans up runner voice_mode via callback
-# =====================================================================
 
 class TestVoiceTimeoutCleansRunnerState:
     """Timeout disconnect notifies runner to clean voice_mode."""
@@ -1288,7 +1168,6 @@ class TestVoiceTimeoutCleansRunnerState:
         callback_calls = []
         adapter._on_voice_disconnect = lambda chat_id: callback_calls.append(chat_id)
 
-        # Set up state as if we're in a voice channel
         mock_vc = MagicMock()
         mock_vc.is_connected.return_value = True
         mock_vc.disconnect = AsyncMock()
@@ -1298,7 +1177,6 @@ class TestVoiceTimeoutCleansRunnerState:
         adapter._voice_receivers[111] = MagicMock()
         adapter._voice_listen_tasks[111] = MagicMock()
 
-        # Patch sleep to return immediately
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await adapter._voice_timeout_handler(111)
 
@@ -1306,9 +1184,6 @@ class TestVoiceTimeoutCleansRunnerState:
             "_on_voice_disconnect must be called with chat_id on timeout"
 
 
-# =====================================================================
-# Bug 6: play_in_voice_channel has playback timeout
-# =====================================================================
 
 class TestPlaybackTimeout:
     """play_in_voice_channel must time out instead of blocking forever."""
@@ -1356,13 +1231,11 @@ class TestPlaybackTimeout:
         mock_vc = MagicMock()
         mock_vc.is_connected.return_value = True
         mock_vc.is_playing.return_value = False
-        # play() never calls the after callback -> done never set
         mock_vc.play = MagicMock()
         mock_vc.stop = MagicMock()
         adapter._voice_clients[111] = mock_vc
         adapter._voice_timeout_tasks[111] = MagicMock()
 
-        # Use a tiny timeout for test speed
         original_timeout = DiscordAdapter.PLAYBACK_TIMEOUT
         DiscordAdapter.PLAYBACK_TIMEOUT = 0.1
         try:
@@ -1370,15 +1243,11 @@ class TestPlaybackTimeout:
                  patch("discord.PCMVolumeTransformer", side_effect=lambda s, **kw: s):
                 result = await adapter.play_in_voice_channel(111, "/tmp/test.mp3")
             assert result is True
-            # vc.stop() should have been called due to timeout
             mock_vc.stop.assert_called()
         finally:
             DiscordAdapter.PLAYBACK_TIMEOUT = original_timeout
 
 
-# =====================================================================
-# Bug 7: _send_voice_reply cleanup in finally block
-# =====================================================================
 
 class TestSendVoiceReplyCleanup:
     """_send_voice_reply must clean up temp files even on exception."""
@@ -1403,9 +1272,6 @@ class TestSendVoiceReplyCleanup:
             "_send_voice_reply must have os.unlink in a finally block"
 
 
-# =====================================================================
-# Bug 8: Base adapter auto-TTS cleans up temp file after play_tts
-# =====================================================================
 
 class TestAutoTtsTempFileCleanup:
     """Base adapter auto-TTS must clean up generated audio file."""
@@ -1415,7 +1281,6 @@ class TestAutoTtsTempFileCleanup:
         import inspect
         from gateway.platforms.base import BasePlatformAdapter
         source = inspect.getsource(BasePlatformAdapter._process_message_background)
-        # Find the play_tts section and verify cleanup
         play_tts_idx = source.find("play_tts")
         assert play_tts_idx > 0
         after_play = source[play_tts_idx:]
@@ -1426,9 +1291,6 @@ class TestAutoTtsTempFileCleanup:
         assert remove_idx > finally_idx, "os.remove must be inside the finally block"
 
 
-# =====================================================================
-# Voice channel awareness (get_voice_channel_info / context)
-# =====================================================================
 
 
 class TestVoiceChannelAwareness:
@@ -1469,7 +1331,7 @@ class TestVoiceChannelAwareness:
         info = adapter.get_voice_channel_info(111)
         assert info is not None
         assert info["channel_name"] == "general-voice"
-        assert info["member_count"] == 2  # bot excluded
+        assert info["member_count"] == 2
         names = [m["display_name"] for m in info["members"]]
         assert "Alice" in names
         assert "Bob" in names
@@ -1491,9 +1353,6 @@ class TestVoiceChannelAwareness:
         assert "Alice" in ctx
 
 
-# ---------------------------------------------------------------------------
-# Bugfix: disconnect() must clean up voice state
-# ---------------------------------------------------------------------------
 
 
 class TestDisconnectVoiceCleanup:
@@ -1525,9 +1384,6 @@ class TestDisconnectVoiceCleanup:
         assert len(adapter._voice_timeout_tasks) == 0
 
 
-# =====================================================================
-# Discord Voice Channel Flow Tests
-# =====================================================================
 
 
 @pytest.mark.skipif(
@@ -1560,7 +1416,6 @@ class TestVoiceReception:
         receiver._buffers[ssrc] = bytearray(b"\x00" * size)
         receiver._last_packet_time[ssrc] = time.monotonic() - age_s
 
-    # -- Known SSRC (normal flow) --
 
     def test_known_ssrc_returns_completed(self):
         receiver = self._make_receiver()
@@ -1570,28 +1425,23 @@ class TestVoiceReception:
         completed = receiver.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
-        assert len(receiver._buffers[100]) == 0  # cleared
+        assert len(receiver._buffers[100]) == 0
 
 
-    # -- Unknown SSRC + DAVE passthrough --
 
 
     def test_unknown_ssrc_late_speaking_event(self):
         """Audio buffered before SPEAKING → SPEAKING maps → next check returns it."""
         receiver = self._make_receiver(dave=True)
         receiver.start()
-        self._fill_buffer(receiver, 100, age_s=0.0)  # still receiving
-        # No user yet
+        self._fill_buffer(receiver, 100, age_s=0.0)
         assert receiver.check_silence() == []
-        # SPEAKING event arrives
         receiver.map_ssrc(100, 42)
-        # Silence kicks in
         receiver._last_packet_time[100] = time.monotonic() - 3.0
         completed = receiver.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
 
-    # -- SSRC auto-mapping --
 
 
     def test_automap_persists_across_calls(self):
@@ -1605,13 +1455,11 @@ class TestVoiceReception:
         self._fill_buffer(receiver, 100)
         receiver.check_silence()
         assert receiver._ssrc_to_user[100] == 42
-        # Second utterance — should use cached mapping
         self._fill_buffer(receiver, 100)
         completed = receiver.check_silence()
         assert len(completed) == 1
         assert completed[0][0] == 42
 
-    # -- Stale buffer cleanup --
 
     def test_stale_unknown_buffer_discarded(self):
         """Buffer with no user and very old timestamp is discarded."""
@@ -1622,7 +1470,6 @@ class TestVoiceReception:
         receiver.check_silence()
         assert 200 not in receiver._buffers
 
-    # -- Pause / resume (echo prevention) --
 
     def test_paused_receiver_ignores_packets(self):
         receiver = self._make_receiver()
@@ -1638,7 +1485,6 @@ class TestVoiceReception:
         receiver.resume()
         assert receiver._paused is False
 
-    # -- _on_packet DAVE passthrough behavior --
 
     def _make_receiver_with_nacl(self, dave_session=None, mapped_ssrcs=None):
         """Create a receiver that can process _on_packet with mocked NaCl + Opus."""
@@ -1655,7 +1501,6 @@ class TestVoiceReception:
         vc.channel.members = []
         receiver = VoiceReceiver(vc)
         receiver.start()
-        # Pre-map SSRCs if provided
         if mapped_ssrcs:
             for ssrc, uid in mapped_ssrcs.items():
                 receiver.map_ssrc(ssrc, uid)
@@ -1669,9 +1514,7 @@ class TestVoiceReception:
         NaCl decrypt is mocked so payload content doesn't matter.
         """
         import struct
-        # RTP header: version=2, payload_type=0x78, no extension, no CSRC
         header = struct.pack(">BBHII", 0x80, 0x78, seq, timestamp, ssrc)
-        # Fake encrypted payload (NaCl will be mocked) + 4 byte nonce
         payload = b"\x00" * 20 + b"\x00\x00\x00\x01"
         return header + payload
 
@@ -1721,7 +1564,6 @@ class TestVoiceTTSPlayback:
         adapter._voice_receivers = {}
         return adapter
 
-    # -- play_tts behavior --
 
     @pytest.mark.asyncio
     async def test_play_tts_plays_in_vc(self):
@@ -1743,7 +1585,6 @@ class TestVoiceTTSPlayback:
         assert played == [(111, "/tmp/tts.ogg")]
 
 
-    # -- Runner dedup --
 
     @staticmethod
     def _make_runner():
@@ -1767,7 +1608,6 @@ class TestVoiceTTSPlayback:
             event, response, agent_msgs or [], already_sent=already_sent,
         )
 
-    # -- Streaming OFF (existing behavior, must not change) --
 
     def test_voice_input_runner_skips(self):
         """Streaming OFF + voice input: runner skips — base adapter handles."""
@@ -1789,7 +1629,6 @@ class TestVoiceTTSPlayback:
         assert self._call_should_reply(runner, "all", MessageType.TEXT, response="Error: boom") is False
 
 
-    # -- Streaming ON (already_sent=True) --
 
 
     def test_streaming_on_agent_tts_dedup(self):
@@ -1826,7 +1665,6 @@ class TestUDPKeepalive:
         adapter._voice_receivers = {}
         adapter._voice_listen_tasks = {}
 
-        # Mock VC and receiver
         mock_vc = MagicMock()
         mock_vc.is_connected.return_value = True
         mock_conn = MagicMock()
@@ -1845,16 +1683,14 @@ class TestUDPKeepalive:
         receiver.start()
         adapter._voice_receivers[111] = receiver
 
-        # Set keepalive interval very short for test
         original_interval = DiscordAdapter._KEEPALIVE_INTERVAL
         DiscordAdapter._KEEPALIVE_INTERVAL = 0.1
 
         try:
-            # Run listen loop briefly
             import asyncio
             loop_task = asyncio.create_task(adapter._voice_listen_loop(111))
             await asyncio.sleep(0.2)
-            receiver._running = False  # stop loop
+            receiver._running = False
             await asyncio.sleep(0.1)
             loop_task.cancel()
             try:
@@ -1862,16 +1698,11 @@ class TestUDPKeepalive:
             except asyncio.CancelledError:
                 pass
 
-            # send_packet should have been called with silence frame
             mock_conn.send_packet.assert_called_with(b'\xf8\xff\xfe')
         finally:
             DiscordAdapter._KEEPALIVE_INTERVAL = original_interval
 
 
-# =====================================================================
-# BasePlatformAdapter._should_auto_tts_for_chat — gate for auto-TTS
-# on voice input. Regression test for Issue #16007.
-# =====================================================================
 
 class TestShouldAutoTtsForChat:
     """Three-layer gate: per-chat enable > per-chat disable > config default."""
@@ -1883,8 +1714,6 @@ class TestShouldAutoTtsForChat:
             _auto_tts_enabled_chats=set(enabled),
             _auto_tts_disabled_chats=set(disabled),
         )
-        # Bind the unbound method — _should_auto_tts_for_chat only reads the
-        # three attrs above via ``self.``, so an unbound call works.
         from gateway.platforms.base import BasePlatformAdapter
         return BasePlatformAdapter._should_auto_tts_for_chat, adapter
 
@@ -1920,8 +1749,6 @@ class TestStreamTtsTempfileFallback:
         import tools.voice_mode as vm
         from tools.tts_tool import stream_tts_to_speaker
 
-        # Fake registry streamer so resolve_streaming_provider yields chunked
-        # PCM regardless of which real providers are configured in the env.
         class _FakeStreamer:
             sample_rate = 24000
             channels = 1
@@ -1935,14 +1762,12 @@ class TestStreamTtsTempfileFallback:
             lambda tts_config, preferred=None: _FakeStreamer(),
         )
 
-        # Force sounddevice unavailable → output_stream is None → tempfile fallback.
         def _no_sounddevice():
             raise ImportError("sounddevice unavailable in test")
         monkeypatch.setattr(tts_mod, "_import_sounddevice", _no_sounddevice)
 
-        events = []  # ordered log of ("close", name) / ("play", path)
+        events = []
 
-        # Spy on NamedTemporaryFile to record when the handle is closed.
         real_ntf = tts_mod.tempfile.NamedTemporaryFile
 
         def _spy_ntf(*args, **kwargs):
@@ -1963,7 +1788,6 @@ class TestStreamTtsTempfileFallback:
         def _fake_play(path):
             events.append(("play", path))
             played.append(path)
-            # At play time the file must be a fully written, readable WAV.
             with wave.open(path, "rb") as wf:
                 assert wf.getnframes() > 0
 
@@ -1988,7 +1812,6 @@ class TestStreamTtsTempfileFallback:
             "temp WAV handle must be closed BEFORE play_audio_file — an open "
             "write handle blocks playback and os.unlink() on Windows"
         )
-        # And the temp file is cleaned up afterwards.
         assert not os.path.exists(played[0]), "temp WAV was not unlinked"
 
 
@@ -2025,7 +1848,7 @@ class TestPcmToWav:
 
         from plugins.platforms.discord.adapter import VoiceReceiver
 
-        frames = 48000  # 1s @ 48kHz stereo
+        frames = 48000
         pcm = b"".join(
             struct.pack("<hh", v, v)
             for v in (
@@ -2039,5 +1862,4 @@ class TestPcmToWav:
         with wave.open(str(out)) as w:
             assert w.getnchannels() == 1
             assert w.getframerate() == 16000
-            # 48kHz -> 16kHz is a 3x decimation of a 1s clip.
             assert w.getnframes() == 16000

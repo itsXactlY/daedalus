@@ -81,18 +81,12 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 
-# All skills live in ~/.daedalus/skills/ (seeded from bundled skills/ on install).
-# This is the single source of truth -- agent edits, hub installs, and bundled
-# skills all coexist here without polluting the git repo.
 DAEDALUS_HOME = get_daedalus_home()
 SKILLS_DIR = DAEDALUS_HOME / "skills"
 
-# Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
 
-# Platform identifiers for the 'platforms' frontmatter field.
-# Maps user-friendly names to sys.platform prefixes.
 _PLATFORM_MAP = {
     "macos": "darwin",
     "linux": "linux",
@@ -427,8 +421,6 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     For paths like: ~/.daedalus/skills/mlops/axolotl/SKILL.md -> "mlops"
     Also works for external skill dirs configured via skills.external_dirs.
     """
-    # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
     dirs_to_check = [SKILLS_DIR]
     try:
         from agent.skill_utils import get_external_skills_dirs
@@ -477,11 +469,9 @@ def _parse_tags(tags_value) -> List[str]:
     if not tags_value:
         return []
 
-    # yaml.safe_load already returns a list for [tag1, tag2]
     if isinstance(tags_value, list):
         return [str(t).strip() for t in tags_value if t]
 
-    # String fallback — handle bracket-wrapped or comma-separated
     tags_value = str(tags_value).strip()
     if tags_value.startswith("[") and tags_value.endswith("]"):
         tags_value = tags_value[1:-1]
@@ -533,10 +523,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     skills = []
     seen_names: set = set()
 
-    # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
@@ -580,6 +568,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    "frontmatter": frontmatter,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -610,10 +599,8 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
 
     try:
         content = desc_file.read_text(encoding="utf-8")
-        # Parse frontmatter if present
         frontmatter, body = _parse_frontmatter(content)
 
-        # Prefer frontmatter description, fall back to first non-header line
         description = frontmatter.get("description", "")
         if not description:
             for line in body.strip().split("\n"):
@@ -622,7 +609,6 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
                     description = line
                     break
 
-        # Truncate to reasonable length
         if len(description) > MAX_DESCRIPTION_LENGTH:
             description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
@@ -653,7 +639,6 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
         JSON string with list of categories and their descriptions
     """
     try:
-        # Use module-level SKILLS_DIR (respects monkeypatching) + external dirs
         all_dirs = [SKILLS_DIR] if SKILLS_DIR.exists() else []
         try:
             from agent.skill_utils import get_external_skills_dirs
@@ -716,7 +701,38 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
+def _session_visibility_scope():
+    try:
+        import model_tools
+        from model_tools import get_toolset_for_tool
+    except Exception:
+        return None, None
+    tools = {n for n in (model_tools._last_resolved_tool_names or []) if n}
+    if not tools:
+        return None, None
+    toolsets = {ts for ts in (get_toolset_for_tool(n) for n in tools) if ts}
+    return tools, toolsets
+
+
+def _visible_in_this_session(skill: Dict[str, Any], tools, toolsets) -> bool:
+    if tools is None and toolsets is None:
+        return True
+    try:
+        from agent.prompt_builder import _skill_should_show
+        from agent.skill_utils import extract_skill_conditions
+    except Exception:
+        return True
+    try:
+        return bool(_skill_should_show(
+            extract_skill_conditions(skill.get("frontmatter") or {}),
+            tools, toolsets,
+        ))
+    except Exception:
+        return True
+
+
+def skills_list(category: str = None, task_id: str = None,
+                include_unavailable: bool = False) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
 
@@ -743,7 +759,6 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Find all skills
         all_skills = _find_all_skills()
 
         if not all_skills:
@@ -757,25 +772,39 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Filter by category if specified
+        hidden = 0
+        if not include_unavailable:
+            tools, toolsets = _session_visibility_scope()
+            kept = [s for s in all_skills if _visible_in_this_session(s, tools, toolsets)]
+            hidden = len(all_skills) - len(kept)
+            all_skills = kept
+
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
-        # Sort by category then name
         all_skills.sort(key=lambda s: (s.get("category") or "", s["name"]))
 
-        # Extract unique categories
         categories = sorted(
             set(s.get("category") for s in all_skills if s.get("category"))
         )
 
+        listed = [
+            {k: v for k, v in skill.items() if k != "frontmatter"}
+            for skill in all_skills
+        ]
+
         return json.dumps(
             {
                 "success": True,
-                "skills": all_skills,
+                "skills": listed,
                 "categories": categories,
                 "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "hidden_for_this_session": hidden,
+                "hint": (
+                    "Use skill_view(name) to see full content, tags, and linked files."
+                    + (f" {hidden} more skill(s) need tools this session does not have; "
+                       "pass include_unavailable=true to list them anyway." if hidden else "")
+                ),
             },
             ensure_ascii=False,
         )
@@ -799,7 +828,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
     try:
         from agent.skill_utils import get_external_skills_dirs
 
-        # Build list of all skill directories to search
         all_dirs = []
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)
@@ -817,9 +845,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         skill_dir = None
         skill_md = None
 
-        # Search all dirs: local first, then external (first match wins)
         for search_dir in all_dirs:
-            # Try direct path first (e.g., "mlops/axolotl")
             direct_path = search_dir / name
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
                 skill_dir = direct_path
@@ -829,7 +855,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 skill_md = direct_path.with_suffix(".md")
                 break
 
-        # Search by directory name across all dirs
         if not skill_md:
             for search_dir in all_dirs:
                 for found_skill_md in search_dir.rglob("SKILL.md"):
@@ -840,7 +865,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 if skill_md:
                     break
 
-        # Legacy: flat .md files
         if not skill_md:
             for search_dir in all_dirs:
                 for found_md in search_dir.rglob(f"{name}.md"):
@@ -862,7 +886,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Read the file once — reused for platform check and main content below
         try:
             content = skill_md.read_text(encoding="utf-8")
         except Exception as e:
@@ -874,13 +897,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Apply SKILL.md preprocessing: resolve ${DAEDALUS_SKILL_DIR} /
-        # ${DAEDALUS_SESSION_ID} template tokens and (opt-in) inline !`cmd` shell
-        # snippets before the content is shown to the agent. This is the single
-        # choke point both the skill_view tool path and the /command invocation
-        # path (agent/skill_commands._load_skill_payload) flow through, so every
-        # skill load gets the same expansion. `task_id` carries the session id on
-        # the invocation path (cli.py / gateway/run.py pass session_id as task_id).
         try:
             from agent.skill_preprocessing import preprocess_skill_content
 
@@ -888,8 +904,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         except Exception:
             logger.debug("SKILL.md preprocessing failed for '%s'", name, exc_info=True)
 
-        # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
         _outside_skills_dir = True
         _trusted_dirs = [SKILLS_DIR.resolve()]
         try:
@@ -904,7 +918,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             except ValueError:
                 continue
 
-        # Security: detect common prompt injection patterns
         _INJECTION_PATTERNS = [
             "ignore previous instructions",
             "ignore all previous",
@@ -944,7 +957,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Check if the skill is disabled by the user
         resolved_name = parsed_frontmatter.get("name", skill_md.parent.name)
         if _is_skill_disabled(resolved_name):
             return json.dumps(
@@ -958,9 +970,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # If a specific file path is requested, read that instead
         if file_path and skill_dir:
-            # Security: Prevent path traversal attacks
             normalized_path = Path(file_path)
             if ".." in normalized_path.parts:
                 return json.dumps(
@@ -974,7 +984,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
             target_file = skill_dir / file_path
 
-            # Security: Verify resolved path is still within skill directory
             try:
                 resolved = target_file.resolve()
                 skill_dir_resolved = skill_dir.resolve()
@@ -997,7 +1006,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     ensure_ascii=False,
                 )
             if not target_file.exists():
-                # List available files in the skill directory, organized by type
                 available_files = {
                     "references": [],
                     "templates": [],
@@ -1006,7 +1014,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     "other": [],
                 }
 
-                # Scan for all readable files
                 for f in skill_dir.rglob("*"):
                     if f.is_file() and f.name != "SKILL.md":
                         rel = str(f.relative_to(skill_dir))
@@ -1029,7 +1036,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                         ]:
                             available_files["other"].append(rel)
 
-                # Remove empty categories
                 available_files = {k: v for k, v in available_files.items() if v}
 
                 return json.dumps(
@@ -1042,11 +1048,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     ensure_ascii=False,
                 )
 
-            # Read the file content
             try:
                 content = target_file.read_text(encoding="utf-8")
             except UnicodeDecodeError:
-                # Binary file - return info about it instead
                 return json.dumps(
                     {
                         "success": True,
@@ -1069,10 +1073,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
-        # Reuse the parse from the platform check above
         frontmatter = parsed_frontmatter
 
-        # Get reference, template, asset, and script files if this is a directory-based skill
         reference_files = []
         template_files = []
         asset_files = []
@@ -1103,7 +1105,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                         ]
                     )
 
-            # assets/ — agentskills.io standard directory for supplementary files
             assets_dir = skill_dir / "assets"
             if assets_dir.exists():
                 for f in assets_dir.rglob("*"):
@@ -1117,8 +1118,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                         [str(f.relative_to(skill_dir)) for f in scripts_dir.glob(ext)]
                     )
 
-        # Read tags/related_skills with backward compat:
-        # Check metadata.daedalus.* first (agentskills.io convention), fall back to top-level
         daedalus_meta = {}
         metadata = frontmatter.get("metadata")
         if isinstance(metadata, dict):
@@ -1129,7 +1128,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             daedalus_meta.get("related_skills") or frontmatter.get("related_skills", "")
         )
 
-        # Build linked files structure for clear discovery
         linked_files = {}
         if reference_files:
             linked_files["references"] = reference_files
@@ -1143,7 +1141,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         try:
             rel_path = str(skill_md.relative_to(SKILLS_DIR))
         except ValueError:
-            # External skill — use path relative to the skill's own parent dir
             rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
@@ -1172,9 +1169,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         )
         setup_needed = bool(remaining_missing_required_envs)
 
-        # Register available skill env vars so they pass through to sandboxed
-        # execution environments (execute_code, terminal).  Only vars that are
-        # actually set get registered — missing ones are reported as setup_needed.
         available_env_names = [
             e["name"]
             for e in required_env_vars
@@ -1192,9 +1186,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     exc_info=True,
                 )
 
-        # Register credential files for mounting into remote sandboxes
-        # (Modal, Docker).  Files that exist on the host are registered;
-        # missing ones are added to the setup_needed indicators.
         required_cred_files_raw = frontmatter.get("required_credential_files", [])
         if not isinstance(required_cred_files_raw, list):
             required_cred_files_raw = []
@@ -1260,10 +1251,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             if setup_note:
                 result["setup_note"] = setup_note
 
-        # Record usage telemetry for the Curator (stale/archive lifecycle).
-        # This is the single choke point both the skill_view tool path and the
-        # /command invocation path flow through, so every full-skill load gets
-        # counted. Deliberately best-effort: telemetry must never break a load.
         if not file_path:
             try:
                 from tools.skill_usage import bump_view
@@ -1272,7 +1259,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             except Exception:
                 logger.debug("Could not record skill view for '%s'", resolved_name, exc_info=True)
 
-        # Surface agentskills.io optional fields when present
         if frontmatter.get("compatibility"):
             result["compatibility"] = frontmatter["compatibility"]
         if isinstance(metadata, dict):
@@ -1284,7 +1270,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
-# Tool description for model_tools.py
 SKILLS_TOOL_DESCRIPTION = """Access skill documents providing specialized instructions, guidelines, and executable knowledge.
 
 Progressive disclosure workflow:
@@ -1304,7 +1289,6 @@ if __name__ == "__main__":
     print("🎯 Skills Tool Test")
     print("=" * 60)
 
-    # Test listing skills
     print("\n📋 Listing all skills:")
     result = json.loads(skills_list())
     if result["success"]:
@@ -1319,7 +1303,6 @@ if __name__ == "__main__":
     else:
         print(f"Error: {result['error']}")
 
-    # Test viewing a skill
     print("\n📖 Viewing skill 'axolotl':")
     result = json.loads(skill_view("axolotl"))
     if result["success"]:
@@ -1331,7 +1314,6 @@ if __name__ == "__main__":
     else:
         print(f"Error: {result['error']}")
 
-    # Test viewing a reference file
     print("\n📄 Viewing reference file 'axolotl/references/dataset-formats.md':")
     result = json.loads(skill_view("axolotl", "references/dataset-formats.md"))
     if result["success"]:
@@ -1342,20 +1324,21 @@ if __name__ == "__main__":
         print(f"Error: {result['error']}")
 
 
-# ---------------------------------------------------------------------------
-# Registry
-# ---------------------------------------------------------------------------
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "List every installed skill (name + description) — the complete set is not in your context, so search here before concluding a skill does not exist. Use skill_view(name) to load full content.",
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "include_unavailable": {
+                "type": "boolean",
+                "description": "Also list skills whose required tools are missing in this session. Default false.",
+            },
         },
         "required": [],
     },

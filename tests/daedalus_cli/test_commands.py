@@ -35,9 +35,6 @@ def _completions(completer: SlashCommandCompleter, text: str):
     )
 
 
-# ---------------------------------------------------------------------------
-# CommandDef registry tests
-# ---------------------------------------------------------------------------
 
 class TestCommandRegistry:
     def test_registry_is_nonempty(self):
@@ -57,9 +54,7 @@ class TestCommandRegistry:
         for cmd in COMMAND_REGISTRY:
             for alias in cmd.aliases:
                 if alias in canonical_names:
-                    # reset -> new is intentional (reset IS an alias for new)
                     target = next(c for c in COMMAND_REGISTRY if c.name == alias)
-                    # This should only happen if the alias points to the same entry
                     assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
@@ -74,9 +69,6 @@ class TestCommandRegistry:
                 f"{cmd.name} cannot be both cli_only and gateway_only"
 
 
-# ---------------------------------------------------------------------------
-# resolve_command tests
-# ---------------------------------------------------------------------------
 
 class TestResolveCommand:
     def test_canonical_name_resolves(self):
@@ -101,9 +93,6 @@ class TestResolveCommand:
         assert resolve_command("") is None
 
 
-# ---------------------------------------------------------------------------
-# Derived dicts (backwards compat)
-# ---------------------------------------------------------------------------
 
 class TestDerivedDicts:
     def test_commands_dict_excludes_gateway_only(self):
@@ -136,9 +125,6 @@ class TestDerivedDicts:
             assert isinstance(desc, str) and len(desc) > 0, f"{cmd} has empty description"
 
 
-# ---------------------------------------------------------------------------
-# Gateway helpers
-# ---------------------------------------------------------------------------
 
 class TestGatewayKnownCommands:
     def test_excludes_cli_only_without_config_gate(self):
@@ -239,9 +225,6 @@ class TestSlackSubcommandMap:
                 assert cmd.name not in mapping
 
 
-# ---------------------------------------------------------------------------
-# Config-gated gateway commands
-# ---------------------------------------------------------------------------
 
 class TestGatewayConfigGate:
     """Tests for the gateway_config_gate mechanism on CommandDef."""
@@ -258,7 +241,6 @@ class TestGatewayConfigGate:
 
     def test_config_gate_excluded_from_help_when_off(self, tmp_path, monkeypatch):
         """When the config gate is falsy, the command should not appear in help."""
-        # Write a config with the gate off (default)
         config_file = tmp_path / "config.yaml"
         config_file.write_text("display:\n  tool_progress_command: false\n")
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
@@ -310,12 +292,8 @@ class TestGatewayConfigGate:
         assert "verbose" in mapping
 
 
-# ---------------------------------------------------------------------------
-# Autocomplete (SlashCommandCompleter)
-# ---------------------------------------------------------------------------
 
 class TestSlashCommandCompleter:
-    # -- basic prefix completion -----------------------------------------
 
     def test_builtin_prefix_completion_uses_shared_registry(self):
         completions = _completions(SlashCommandCompleter(), "/re")
@@ -330,7 +308,6 @@ class TestSlashCommandCompleter:
         assert len(completions) == 1
         assert completions[0].display_meta_text == "Show available commands"
 
-    # -- exact-match trailing space --------------------------------------
 
     def test_exact_match_completion_adds_trailing_space(self):
         completions = _completions(SlashCommandCompleter(), "/help")
@@ -342,7 +319,6 @@ class TestSlashCommandCompleter:
 
         assert [item.text for item in completions] == ["help"]
 
-    # -- non-slash input returns nothing ---------------------------------
 
     def test_no_completions_for_non_slash_input(self):
         assert _completions(SlashCommandCompleter(), "help") == []
@@ -350,7 +326,6 @@ class TestSlashCommandCompleter:
     def test_no_completions_for_empty_input(self):
         assert _completions(SlashCommandCompleter(), "") == []
 
-    # -- skill commands via provider ------------------------------------
 
     def test_skill_commands_are_completed_from_provider(self):
         completer = SlashCommandCompleter(
@@ -382,7 +357,6 @@ class TestSlashCommandCompleter:
         """Default (None) provider should not blow up or add completions."""
         completer = SlashCommandCompleter()
         completions = _completions(completer, "/gif")
-        # /gif doesn't match any builtin command
         assert completions == []
 
     def test_skill_provider_exception_is_swallowed(self):
@@ -390,7 +364,6 @@ class TestSlashCommandCompleter:
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
         )
-        # Should return builtin matches only, no crash
         completions = _completions(completer, "/he")
         texts = {item.text for item in completions}
         assert "help" in texts
@@ -405,7 +378,6 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/long")
         assert len(completions) == 1
         meta = completions[0].display_meta_text
-        # "⚡ " prefix + 50 chars + "..."
         assert meta == f"⚡ {'A' * 50}..."
 
     def test_skill_missing_description_uses_fallback(self):
@@ -419,7 +391,6 @@ class TestSlashCommandCompleter:
         assert "Skill command" in completions[0].display_meta_text
 
 
-# ── SUBCOMMANDS extraction ──────────────────────────────────────────────
 
 
 class TestSubcommands:
@@ -452,7 +423,6 @@ class TestSubcommands:
         assert "/clear" not in SUBCOMMANDS
 
 
-# ── Subcommand tab completion ───────────────────────────────────────────
 
 
 class TestSubcommandCompletion:
@@ -481,7 +451,6 @@ class TestSubcommandCompletion:
         assert completions == []
 
 
-# ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────
 
 
 def _suggestion(text: str, completer=None) -> str | None:
@@ -520,9 +489,6 @@ class TestGhostText:
         assert _suggestion("hello") is None
 
 
-# ---------------------------------------------------------------------------
-# Telegram command name sanitization
-# ---------------------------------------------------------------------------
 
 
 class TestSanitizeTelegramName:
@@ -567,9 +533,6 @@ class TestSanitizeTelegramName:
         assert _sanitize_telegram_name("valid_name_123") == "valid_name_123"
 
 
-# ---------------------------------------------------------------------------
-# Telegram command name clamping (32-char limit)
-# ---------------------------------------------------------------------------
 
 
 class TestClampTelegramNames:
@@ -588,7 +551,6 @@ class TestClampTelegramNames:
         assert result[0][1] == "desc"
 
     def test_collision_with_reserved_gets_digit_suffix(self):
-        # The truncated form collides with a reserved name
         prefix = "x" * _TG_NAME_LIMIT
         long_name = "x" * 40
         result = _clamp_telegram_names([(long_name, "d")], reserved={prefix})
@@ -598,7 +560,6 @@ class TestClampTelegramNames:
         assert name == "x" * (_TG_NAME_LIMIT - 1) + "0"
 
     def test_collision_between_entries_gets_incrementing_digits(self):
-        # Two long names that truncate to the same 32-char prefix
         base = "y" * 40
         entries = [(base + "_alpha", "d1"), (base + "_beta", "d2")]
         result = _clamp_telegram_names(entries, set())
@@ -609,7 +570,6 @@ class TestClampTelegramNames:
     def test_collision_with_reserved_and_entries_skips_taken_digits(self):
         prefix = "z" * _TG_NAME_LIMIT
         digit0 = "z" * (_TG_NAME_LIMIT - 1) + "0"
-        # Reserve both the plain truncation and digit-0
         reserved = {prefix, digit0}
         long_name = "z" * 50
         result = _clamp_telegram_names([(long_name, "d")], reserved)
@@ -618,7 +578,6 @@ class TestClampTelegramNames:
 
     def test_all_digits_exhausted_drops_entry(self):
         prefix = "w" * _TG_NAME_LIMIT
-        # Reserve the plain truncation + all 10 digit slots
         reserved = {prefix} | {"w" * (_TG_NAME_LIMIT - 1) + str(d) for d in range(10)}
         long_name = "w" * 50
         result = _clamp_telegram_names([(long_name, "d")], reserved)
@@ -650,7 +609,6 @@ class TestTelegramMenuCommands:
         """Skills disabled for telegram should not appear in the menu."""
         from unittest.mock import patch, MagicMock
 
-        # Set up a config with a telegram-specific disabled list
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "skills:\n"
@@ -660,7 +618,6 @@ class TestTelegramMenuCommands:
         )
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
 
-        # Mock get_skill_commands to return two skills
         fake_skills_dir = str(tmp_path / "skills")
         fake_cmds = {
             "/my-disabled-skill": {
@@ -716,7 +673,6 @@ class TestTelegramMenuCommands:
             (tmp_path / "skills").mkdir(exist_ok=True)
             menu, _ = telegram_menu_commands(max_commands=100)
 
-        # Every name must match Telegram's [a-z0-9_] requirement
         tg_valid = re.compile(r"^[a-z0-9_]+$")
         for name, _ in menu:
             assert tg_valid.match(name), f"Invalid Telegram command name: {name!r}"
@@ -750,15 +706,10 @@ class TestTelegramMenuCommands:
             menu, _ = telegram_menu_commands(max_commands=100)
 
         menu_names = {n for n, _ in menu}
-        # The valid skill should be present, the empty one should not
         assert "valid_skill" in menu_names
-        # No empty string in menu names
         assert "" not in menu_names
 
 
-# ---------------------------------------------------------------------------
-# Backward-compat aliases
-# ---------------------------------------------------------------------------
 
 class TestBackwardCompatAliases:
     """The renamed constants/functions still exist under the old names."""
@@ -770,9 +721,6 @@ class TestBackwardCompatAliases:
         assert _clamp_telegram_names is _clamp_command_names
 
 
-# ---------------------------------------------------------------------------
-# Discord skill command registration
-# ---------------------------------------------------------------------------
 
 class TestDiscordSkillCommands:
     """Tests for discord_skill_commands() — centralized skill registration."""
@@ -810,7 +758,6 @@ class TestDiscordSkillCommands:
         assert "gif-search" in names
         assert "code-review" in names
         assert hidden == 0
-        # Verify cmd_key is preserved for handler callbacks
         keys = {k for _n, _d, k in entries}
         assert "/gif-search" in keys
         assert "/code-review" in keys
@@ -838,7 +785,7 @@ class TestDiscordSkillCommands:
                 max_slots=50, reserved_names=set(),
             )
 
-        assert entries[0][0] == "my-cool-skill"  # hyphens preserved
+        assert entries[0][0] == "my-cool-skill"
 
     def test_cap_enforcement(self, tmp_path, monkeypatch):
         """Entries beyond max_slots should be hidden."""

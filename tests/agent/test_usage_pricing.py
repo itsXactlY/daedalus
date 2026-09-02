@@ -49,7 +49,6 @@ def test_normalize_usage_flags_missing_prompt_tokens_field():
     """
     usage = SimpleNamespace(
         completion_tokens=42,
-        # prompt_tokens deliberately absent from this SimpleNamespace.
     )
 
     normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
@@ -74,7 +73,6 @@ def test_normalize_usage_does_not_flag_a_genuine_present_zero():
 def test_normalize_usage_anthropic_flags_missing_input_tokens_field():
     usage = SimpleNamespace(
         output_tokens=10,
-        # input_tokens deliberately absent.
     )
 
     normalized = normalize_usage(usage, provider="anthropic", api_mode="anthropic_messages")

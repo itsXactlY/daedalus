@@ -22,16 +22,11 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-# Hostnames that should always be blocked regardless of IP resolution
 _BLOCKED_HOSTNAMES = frozenset({
     "metadata.google.internal",
     "metadata.goog",
 })
 
-# 100.64.0.0/10 (CGNAT / Shared Address Space, RFC 6598) is NOT covered by
-# ipaddress.is_private — it returns False for both is_private and is_global.
-# Must be blocked explicitly. Used by carrier-grade NAT, Tailscale/WireGuard
-# VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -41,7 +36,6 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         return True
     if ip.is_multicast or ip.is_unspecified:
         return True
-    # CGNAT range not covered by is_private
     if ip in _CGNAT_NETWORK:
         return True
     return False
@@ -59,17 +53,13 @@ def is_safe_url(url: str) -> bool:
         if not hostname:
             return False
 
-        # Block known internal hostnames
         if hostname in _BLOCKED_HOSTNAMES:
             logger.warning("Blocked request to internal hostname: %s", hostname)
             return False
 
-        # Try to resolve and check IP
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
         except socket.gaierror:
-            # DNS resolution failed — fail closed. If DNS can't resolve it,
-            # the HTTP client will also fail, so blocking loses nothing.
             logger.warning("Blocked request — DNS resolution failed for: %s", hostname)
             return False
 
@@ -90,7 +80,5 @@ def is_safe_url(url: str) -> bool:
         return True
 
     except Exception as exc:
-        # Fail closed on unexpected errors — don't let parsing edge cases
-        # become SSRF bypass vectors
         logger.warning("Blocked request — URL safety check error for %s: %s", url, exc)
         return False

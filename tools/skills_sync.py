@@ -65,11 +65,9 @@ def _read_manifest() -> Dict[str, str]:
             if not line:
                 continue
             if ":" in line:
-                # v2 format: name:hash
                 name, _, hash_val = line.partition(":")
                 result[name.strip()] = hash_val.strip()
             else:
-                # v1 format: plain name — empty hash triggers migration
                 result[line] = ""
         return result
     except (OSError, IOError):
@@ -182,10 +180,8 @@ def sync_skills(quiet: bool = False) -> dict:
         bundled_hash = _dir_hash(skill_src)
 
         if skill_name not in manifest:
-            # ── New skill — never offered before ──
             try:
                 if dest.exists():
-                    # User already has a skill with the same name — don't overwrite
                     skipped += 1
                     manifest[skill_name] = bundled_hash
                 else:
@@ -198,35 +194,27 @@ def sync_skills(quiet: bool = False) -> dict:
             except (OSError, IOError) as e:
                 if not quiet:
                     print(f"  ! Failed to copy {skill_name}: {e}")
-                # Do NOT add to manifest — next sync should retry
 
         elif dest.exists():
-            # ── Existing skill — in manifest AND on disk ──
             origin_hash = manifest.get(skill_name, "")
             user_hash = _dir_hash(dest)
 
             if not origin_hash:
-                # v1 migration: no origin hash recorded. Set baseline from
-                # user's current copy so future syncs can detect modifications.
                 manifest[skill_name] = user_hash
                 if user_hash == bundled_hash:
-                    skipped += 1  # already in sync
+                    skipped += 1
                 else:
-                    # Can't tell if user modified or bundled changed — be safe
                     skipped += 1
                 continue
 
             if user_hash != origin_hash:
-                # User modified this skill — don't overwrite their changes
                 user_modified.append(skill_name)
                 if not quiet:
                     print(f"  ~ {skill_name} (user-modified, skipping)")
                 continue
 
-            # User copy matches origin — check if bundled has a newer version
             if bundled_hash != origin_hash:
                 try:
-                    # Move old copy to a backup so we can restore on failure
                     backup = dest.with_suffix(".bak")
                     shutil.move(str(dest), str(backup))
                     try:
@@ -235,10 +223,8 @@ def sync_skills(quiet: bool = False) -> dict:
                         updated.append(skill_name)
                         if not quiet:
                             print(f"  ↑ {skill_name} (updated)")
-                        # Remove backup after successful copy
                         shutil.rmtree(backup, ignore_errors=True)
                     except (OSError, IOError):
-                        # Restore from backup
                         if backup.exists() and not dest.exists():
                             shutil.move(str(backup), str(dest))
                         raise
@@ -246,18 +232,15 @@ def sync_skills(quiet: bool = False) -> dict:
                     if not quiet:
                         print(f"  ! Failed to update {skill_name}: {e}")
             else:
-                skipped += 1  # bundled unchanged, user unchanged
+                skipped += 1
 
         else:
-            # ── In manifest but not on disk — user deleted it ──
             skipped += 1
 
-    # Clean stale manifest entries (skills removed from bundled dir)
     cleaned = sorted(set(manifest.keys()) - bundled_names)
     for name in cleaned:
         del manifest[name]
 
-    # Also copy DESCRIPTION.md files for categories (if not already present)
     for desc_md in bundled_dir.rglob("DESCRIPTION.md"):
         rel = desc_md.relative_to(bundled_dir)
         dest_desc = SKILLS_DIR / rel

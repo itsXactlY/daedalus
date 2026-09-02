@@ -45,7 +45,6 @@ class TestSanitizeSurrogates:
         dirty = "data \udce2\udcb0 from clipboard"
         clean = _sanitize_surrogates(dirty)
         serialized = json.dumps({"content": clean}, ensure_ascii=False)
-        # Must not raise UnicodeEncodeError
         serialized.encode("utf-8")
 
     def test_original_surrogates_fail_encoding(self):
@@ -121,7 +120,6 @@ class TestRunConversationSurrogateSanitization:
 
         mock_sys.return_value = "system prompt"
 
-        # Mock streaming to return a simple response
         mock_choice = MagicMock()
         mock_choice.message.content = "response"
         mock_choice.message.tool_calls = None
@@ -141,13 +139,11 @@ class TestRunConversationSurrogateSanitization:
         agent = AIAgent(model="test/model", quiet_mode=True, skip_memory=True, skip_context_files=True)
         agent.client = MagicMock()
 
-        # Pass a message with surrogates
         result = agent.run_conversation(
             user_message="test \udce2 message",
             conversation_history=[],
         )
 
-        # The message stored in history should have surrogates replaced
         for msg in result.get("messages", []):
             if msg.get("role") == "user":
                 assert "\udce2" not in msg["content"], "Surrogate leaked into stored message"

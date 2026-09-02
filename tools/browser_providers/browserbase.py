@@ -26,9 +26,6 @@ class BrowserbaseProvider(CloudBrowserProvider):
     def is_configured(self) -> bool:
         return self._get_config_or_none() is not None
 
-    # ------------------------------------------------------------------
-    # Session lifecycle
-    # ------------------------------------------------------------------
 
     def _get_config_or_none(self) -> Optional[Dict[str, Any]]:
         api_key = os.environ.get("BROWSERBASE_API_KEY")
@@ -53,7 +50,6 @@ class BrowserbaseProvider(CloudBrowserProvider):
     def create_session(self, task_id: str) -> Dict[str, object]:
         config = self._get_config()
 
-        # Optional env-var knobs
         enable_proxies = os.environ.get("BROWSERBASE_PROXIES", "true").lower() != "false"
         enable_advanced_stealth = os.environ.get("BROWSERBASE_ADVANCED_STEALTH", "false").lower() == "true"
         enable_keep_alive = os.environ.get("BROWSERBASE_KEEP_ALIVE", "true").lower() != "false"
@@ -86,7 +82,6 @@ class BrowserbaseProvider(CloudBrowserProvider):
         if enable_advanced_stealth:
             session_config["browserSettings"] = {"advancedStealth": True}
 
-        # --- Create session via API ---
         headers = {
             "Content-Type": "application/json",
             "X-BB-API-Key": config["api_key"],
@@ -102,7 +97,6 @@ class BrowserbaseProvider(CloudBrowserProvider):
         proxies_fallback = False
         keepalive_fallback = False
 
-        # Handle 402 — paid features unavailable
         if response.status_code == 402:
             if enable_keep_alive:
                 keepalive_fallback = True

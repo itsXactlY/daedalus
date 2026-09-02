@@ -34,7 +34,6 @@ def cli_obj(_isolate):
         obj.base_url = ""
         obj.provider = "test"
         obj._provider_source = None
-        # Mock agent with context compressor
         obj.agent = SimpleNamespace(
             context_compressor=SimpleNamespace(context_length=None)
         )
@@ -51,7 +50,6 @@ class TestLowContextWarning:
              patch("cli.build_welcome_banner"):
             cli_obj.show_banner()
 
-        # Check that no yellow warning was printed
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
         warning_calls = [c for c in calls if "too low" in c]
         assert len(warning_calls) == 0
@@ -88,7 +86,7 @@ class TestLowContextWarning:
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
         warning_calls = [c for c in calls if "too low" in c]
-        assert len(warning_calls) == 1  # 8192 is still warned about
+        assert len(warning_calls) == 1
 
     def test_no_warning_above_boundary(self, cli_obj):
         """No warning at 16384."""

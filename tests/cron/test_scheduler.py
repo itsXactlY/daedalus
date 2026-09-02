@@ -271,10 +271,8 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         args, kwargs = send_mock.call_args
-        # Text content should have MEDIA: tag stripped
         assert "MEDIA:" not in args[3]
         assert "Title" in args[3]
-        # Media files should be forwarded separately
         assert kwargs["media_files"] == [("/tmp/test-voice.ogg", False)]
 
     def test_live_adapter_sends_media_as_attachments(self):
@@ -296,7 +294,6 @@ class TestDeliverResultWrapping:
         loop = MagicMock()
         loop.is_running.return_value = True
 
-        # run_coroutine_threadsafe returns concurrent.futures.Future (has timeout kwarg)
         def fake_run_coro(coro, _loop):
             future = Future()
             future.set_result(MagicMock(success=True))
@@ -319,13 +316,11 @@ class TestDeliverResultWrapping:
                 loop=loop,
             )
 
-        # Text should be sent without the MEDIA tag
         adapter.send.assert_called_once()
         text_sent = adapter.send.call_args[0][1]
         assert "MEDIA:" not in text_sent
         assert "Here is TTS" in text_sent
 
-        # Audio file should be sent as a voice attachment
         adapter.send_voice.assert_called_once()
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
@@ -411,9 +406,7 @@ class TestDeliverResultWrapping:
                 loop=loop,
             )
 
-        # Text send should NOT be called (no text after stripping MEDIA tag)
         adapter.send.assert_not_called()
-        # Audio should still be delivered
         adapter.send_voice.assert_called_once()
 
     def test_live_adapter_sends_cleaned_text_not_raw(self):
@@ -664,7 +657,6 @@ class TestRunJobSessionPersistence:
              ), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
-            # Agent did work via tools but returned no text
             mock_agent.run_conversation.return_value = {"final_response": ""}
             mock_agent_cls.return_value = mock_agent
 
@@ -672,9 +664,7 @@ class TestRunJobSessionPersistence:
 
         assert success is True
         assert error is None
-        # final_response should be empty for delivery logic to skip
         assert final_response == ""
-        # But the output log should show the placeholder
         assert "(No response generated)" in output
 
     def test_run_job_sets_auto_delivery_env_from_dotenv_home_channel(self, tmp_path, monkeypatch):
@@ -762,7 +752,6 @@ class TestRunJobConfigLogging:
 
     def test_bad_prefill_messages_is_logged(self, caplog, tmp_path):
         """When the prefill messages file contains invalid JSON, a warning should be logged."""
-        # Valid config.yaml that points to a bad prefill file
         config_yaml = tmp_path / "config.yaml"
         config_yaml.write_text("prefill_messages_file: prefill.json\n")
 
@@ -1061,7 +1050,6 @@ class TestBuildJobPromptMissingSkill:
         """Job should run even when a referenced skill is not installed."""
         with patch("tools.skills_tool.skill_view", side_effect=self._missing_skill_view):
             result = _build_job_prompt({"skills": ["ghost-skill"], "prompt": "do something"})
-        # prompt is preserved even though skill was skipped
         assert "do something" in result
 
     def test_missing_skill_injects_user_notice_into_prompt(self):
@@ -1126,7 +1114,6 @@ class TestTickAdvanceBeforeRun:
 
         assert executed == 1
         adv_mock.assert_called_once_with("test-advance")
-        # advance must happen before run
         assert call_order == [("advance", "test-advance"), ("run", "test-advance")]
 
 

@@ -23,8 +23,6 @@ from daedalus_constants import display_daedalus_home
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
-# webhook_subscriptions.json holds per-route HMAC secrets -- keep it
-# unreadable to other local users regardless of the process umask.
 _SUBSCRIPTIONS_FILE_MODE = 0o600
 
 
@@ -51,10 +49,6 @@ def _load_subscriptions() -> Dict[str, dict]:
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
     path = _subscriptions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    # webhook_subscriptions.json contains per-route HMAC secrets -- write via
-    # tempfile + chmod 0o600 before the atomic rename so a permissive umask
-    # cannot leave the secrets readable to other local users in the window
-    # between create and rename.
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.",
         suffix=".tmp",
@@ -69,8 +63,6 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
             os.fsync(fh.fileno())
         os.chmod(tmp_path, _SUBSCRIPTIONS_FILE_MODE)
         os.replace(str(tmp_path), str(path))
-        # Re-assert after rename in case the destination pre-existed with a
-        # broader mode that os.replace() would otherwise have preserved.
         os.chmod(path, _SUBSCRIPTIONS_FILE_MODE)
     except Exception:
         try:

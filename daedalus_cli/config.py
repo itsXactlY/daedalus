@@ -27,8 +27,6 @@ from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_no
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# Env var names written to .env that aren't in OPTIONAL_ENV_VARS
-# (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
@@ -51,9 +49,6 @@ from daedalus_cli.colors import Colors, color
 from daedalus_cli.default_soul import DEFAULT_SOUL_MD
 
 
-# =============================================================================
-# Managed mode (NixOS declarative config)
-# =============================================================================
 
 _MANAGED_TRUE_VALUES = ("true", "1", "yes")
 _MANAGED_SYSTEM_NAMES = {
@@ -137,11 +132,7 @@ def managed_error(action: str = "modify configuration"):
     print(format_managed_message(action), file=sys.stderr)
 
 
-# =============================================================================
-# Config paths
-# =============================================================================
 
-# Re-export from daedalus_constants — canonical definition lives there.
 from daedalus_constants import get_daedalus_home  # noqa: F811,E402
 
 def get_config_path() -> Path:
@@ -194,9 +185,6 @@ def ensure_daedalus_home():
     _ensure_default_soul_md(home)
 
 
-# =============================================================================
-# Config loading/saving
-# =============================================================================
 
 DEFAULT_CONFIG = {
     "model": "",
@@ -206,76 +194,49 @@ DEFAULT_CONFIG = {
     "toolsets": ["daedalus-cli"],
     "agent": {
         "max_turns": 90,
-        # Inactivity timeout for gateway agent execution (seconds).
-        # The agent can run indefinitely as long as it's actively calling
-        # tools or receiving API responses.  Only fires when the agent has
-        # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
-        # Tool-use enforcement: injects system prompt guidance that tells the
-        # model to actually call tools instead of describing intended actions.
-        # Values: "auto" (default — applies to gpt/codex models), true/false
-        # (force on/off for all models), or a list of model-name substrings
-        # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
     },
     
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
-        "cwd": ".",  # Use current directory
+        "cwd": ".",
         "timeout": 180,
-        # Environment variables to pass through to sandboxed execution
-        # (terminal and execute_code).  Skill-declared required_environment_variables
-        # are passed through automatically; this list is for non-skill use cases.
         "env_passthrough": [],
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
-        # Container resource limits (singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
-        "container_memory": 5120,       # MB (default 5GB)
-        "container_disk": 51200,        # MB (default 50GB)
-        "container_persistent": True,   # Persist filesystem across sessions
-        # Persistent shell — keep a long-lived bash shell across execute() calls
-        # so cwd/env vars/shell variables survive between commands.
-        # Enabled by default for non-local backends (SSH); local is always opt-in
-        # via TERMINAL_LOCAL_PERSISTENT env var.
+        "container_memory": 5120,
+        "container_disk": 51200,
+        "container_persistent": True,
         "persistent_shell": True,
     },
     
     "browser": {
         "inactivity_timeout": 120,
-        "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
-        "record_sessions": False,  # Auto-record browser sessions as WebM videos
-        "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "command_timeout": 30,
+        "record_sessions": False,
+        "allow_private_urls": False,
         "camofox": {
-            # When true, Daedalus sends a stable profile-scoped userId to Camofox
-            # so the server can map it to a persistent browser profile directory.
-            # Requires Camofox server to be configured with CAMOFOX_PROFILE_DIR.
-            # When false (default), each session gets a random userId (ephemeral).
             "managed_persistence": False,
         },
     },
 
-    # Filesystem checkpoints — automatic snapshots before destructive file ops.
-    # When enabled, the agent takes a snapshot of the working directory once per
-    # conversation turn (on first write_file/patch call).  Use /rollback to restore.
     "checkpoints": {
         "enabled": True,
-        "max_snapshots": 50,  # Max checkpoints to keep per directory
+        "max_snapshots": 50,
     },
 
-    # Maximum characters returned by a single read_file call.  Reads that
-    # exceed this are rejected with guidance to use offset+limit.
-    # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
     
     "compression": {
         "enabled": True,
-        "threshold": 0.50,            # compress when context usage exceeds this ratio
-        "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
-        "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "summary_model": "",          # empty = use main configured model
+        "threshold": 0.50,
+        "target_ratio": 0.20,
+        "protect_last_n": 20,
+        "summary_model": "",
         "summary_provider": "auto",
         "summary_base_url": None,
     },
@@ -286,34 +247,28 @@ DEFAULT_CONFIG = {
         "cheap_model": {},
     },
     
-    # Auxiliary model config — provider:model for each side task.
-    # Format: provider is the provider name, model is the model slug.
-    # "auto" for provider = auto-detect best available provider.
-    # Empty model = use provider's default auxiliary model.
-    # All tasks fall back to openrouter:google/gemini-3-flash-preview if
-    # the configured provider is unavailable.
     "auxiliary": {
         "vision": {
-            "provider": "auto",    # auto | openrouter | nous | codex | custom
-            "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
-            "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
-            "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 30,         # seconds — LLM API call timeout; increase for slow local vision models
-            "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "download_timeout": 30,
         },
         "web_extract": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
+            "timeout": 360,
         },
         "compression": {
             "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "timeout": 120,
         },
         "session_search": {
             "provider": "auto",
@@ -331,7 +286,7 @@ DEFAULT_CONFIG = {
         },
         "approval": {
             "provider": "auto",
-            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
+            "model": "",
             "base_url": "",
             "api_key": "",
             "timeout": 30,
@@ -350,11 +305,6 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 30,
         },
-        # Curator — skill-usage review fork. Timeout is generous because the
-        # review pass can take several minutes on reasoning models (umbrella
-        # building over hundreds of candidate skills). "auto" = use main chat
-        # model; override via `daedalus model` → auxiliary → Curator to route
-        # to a cheaper aux model (e.g. openrouter google/gemini-3-flash-preview).
         "curator": {
             "provider": "auto",
             "model": "",
@@ -362,7 +312,7 @@ DEFAULT_CONFIG = {
             "api_key": "",
             "timeout": 600,
             "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            "reasoning_effort": "",
         },
     },
     
@@ -374,54 +324,50 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
-        "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
-        "show_cost": False,       # Show $ cost in the status bar (off by default)
+        "inline_diffs": True,
+        "show_cost": False,
         "skin": "default",
-        "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        "tool_progress_command": False,
+        "tool_preview_length": 0,
     },
 
-    # Privacy settings
     "privacy": {
-        "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        "redact_pii": False,
     },
     
-    # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
+        "provider": "edge",
         "edge": {
             "voice": "en-US-AriaNeural",
-            # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
         },
         "elevenlabs": {
-            "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
+            "voice_id": "pNInz6obpgDQGcFmaJgB",
             "model_id": "eleven_multilingual_v2",
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
-            # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
         "neutts": {
-            "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
-            "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
-            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
-            "device": "cpu",  # cpu, cuda, or mps
+            "ref_audio": "",
+            "ref_text": "",
+            "model": "neuphonic/neutts-air-q4-gguf",
+            "device": "cpu",
         },
     },
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",
         "local": {
-            "model": "base",  # tiny, base, small, medium, large-v3
-            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
+            "model": "base",
+            "language": "",
         },
         "openai": {
-            "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+            "model": "whisper-1",
         },
         "mistral": {
-            "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+            "model": "voxtral-mini-latest",
         },
     },
 
@@ -429,8 +375,8 @@ DEFAULT_CONFIG = {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,
         "auto_tts": False,
-        "silence_threshold": 200,     # RMS below this = silence (0-32767)
-        "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "silence_threshold": 200,
+        "silence_duration": 3.0,
     },
     
     "human_delay": {
@@ -439,88 +385,51 @@ DEFAULT_CONFIG = {
         "max_ms": 2500,
     },
     
-    # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
-        "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
-        "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
-        # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
-        # Only ONE external provider is allowed at a time.
+        "memory_char_limit": 2200,
+        "user_char_limit": 1375,
         "provider": "",
     },
 
-    # Subagent delegation — override the provider:model used by delegate_task
-    # so child agents can run on a different (cheaper/faster) provider and model.
-    # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
     "delegation": {
-        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
-        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
-        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
-        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
-                               # independent of the parent's max_iterations)
+        "model": "",
+        "provider": "",
+        "base_url": "",
+        "api_key": "",
+        "max_iterations": 50,
     },
 
-    # Ephemeral prefill messages file — JSON list of {role, content} dicts
-    # injected at the start of every API call for few-shot priming.
-    # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
     
-    # Skills — external skill directories for sharing skills across tools/agents.
-    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.daedalus/skills/.
     "skills": {
-        "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        "external_dirs": [],
     },
 
-    # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
-    # This section is only needed for daedalus-specific overrides; everything else
-    # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.
     "honcho": {},
 
-    # IANA timezone (e.g. "Asia/Kolkata", "America/New_York").
-    # Empty string means use server-local time.
     "timezone": "",
 
-    # Discord platform settings (gateway mode)
     "discord": {
-        "require_mention": True,       # Require @mention to respond in server channels
-        "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
-        "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
-        "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "require_mention": True,
+        "free_response_channels": "",
+        "auto_thread": True,
+        "reactions": True,
     },
 
-    # WhatsApp platform settings (gateway mode)
     "whatsapp": {
-        # Reply prefix prepended to every outgoing WhatsApp message.
-        # Default (None) uses the built-in "⚕ *Daedalus Agent*" header.
-        # Set to "" (empty string) to disable the header entirely.
-        # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
     },
 
-    # Approval mode for dangerous commands:
-    #   manual — always prompt the user (default)
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
-    #   off    — skip all approval prompts (equivalent to --yolo)
     "approvals": {
         "mode": "manual",
         "timeout": 60,
     },
 
-    # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
-    # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
-    # Custom personalities — add your own entries here
-    # Supports string format: {"name": "system prompt"}
-    # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
-    # Pre-exec security scanning via tirith
     "security": {
         "redact_secrets": True,
         "tirith_enabled": True,
@@ -535,63 +444,33 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
-        # Wrap delivered cron responses with a header (task name) and footer
-        # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
     },
 
-    # Logging — controls file logging to ~/.daedalus/logs/.
-    # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
     "logging": {
-        "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
-        "max_size_mb": 5,      # Max size per log file before rotation
-        "backup_count": 3,     # Number of rotated backup files to keep
+        "level": "INFO",
+        "max_size_mb": 5,
+        "backup_count": 3,
     },
 
-    # Curator — background skill maintenance. Runs inactivity-triggered from
-    # session start (no cron daemon). Mark stale after stale_after_days
-    # without use; archive (move to skills/.archive/, recoverable) after
-    # archive_after_days. consolidate:false (default) = prune-only pass, no
-    # LLM umbrella-building fork, no aux-model cost.
     "curator": {
         "enabled": True,
-        # How long to wait between curator runs (hours).  Default: 7 days.
         "interval_hours": 24 * 7,
-        # Only run when the agent has been idle at least this long (hours).
         "min_idle_hours": 2,
-        # Mark a skill as "stale" after this many days without use.
         "stale_after_days": 30,
-        # Archive a skill (move to skills/.archive/) after this many days
-        # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
-        # Run the LLM consolidation (umbrella-building) pass. OFF by default.
         "consolidate": False,
-        # Also prune (archive) bundled built-in skills after the inactivity
-        # period, not just agent-created ones. ON by default. Built-ins
-        # accrue usage telemetry and their inactivity clock starts the first
-        # time the curator sees them, so a long-unused built-in is archived
-        # only after archive_after_days of genuine non-use.
         "prune_builtins": True,
-        # Pre-run backup: before every real curator pass (dry-run is
-        # skipped), snapshot ~/.daedalus/skills/ into
-        # ~/.daedalus/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
-        # user can roll back with `daedalus curator rollback`.
         "backup": {
             "enabled": True,
-            "keep": 5,  # retain last N regular snapshots
+            "keep": 5,
         },
     },
 
-    # Config schema version - bump this when adding new required fields
     "_config_version": 12,
 }
 
-# =============================================================================
-# Config Migration System
-# =============================================================================
 
-# Track which env vars were introduced in each config version.
-# Migration only mentions vars new since the user's previous version.
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
     4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
@@ -601,15 +480,9 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     11: ["TERMINAL_MODAL_MODE"],
 }
 
-# Required environment variables with metadata for migration prompts.
-# LLM provider is required but handled in the setup wizard's provider
-# selection step (Nous Portal / OpenRouter / Custom endpoint), so this
-# dict is intentionally empty — no single env var is universally required.
 REQUIRED_ENV_VARS = {}
 
-# Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
-    # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",
         "prompt": "Nous Portal base URL (leave empty for default)",
@@ -816,7 +689,6 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
 
-    # ── Tool API keys ──
     "EXA_API_KEY": {
         "description": "Exa API key for AI-native web search and contents",
         "prompt": "Exa API key",
@@ -975,7 +847,6 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
-    # ── Honcho ──
     "HONCHO_API_KEY": {
         "description": "Honcho API key for AI-native persistent memory",
         "prompt": "Honcho API key",
@@ -990,7 +861,6 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
-    # ── Messaging platforms ──
     "TELEGRAM_BOT_TOKEN": {
         "description": "Telegram bot token from @BotFather",
         "prompt": "Telegram bot token",
@@ -1194,7 +1064,6 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
 
-    # ── Agent settings ──
     "MESSAGING_CWD": {
         "description": "Working directory for terminal commands via messaging",
         "prompt": "Messaging working directory (default: home)",
@@ -1216,9 +1085,6 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "setting",
     },
-    # DAEDALUS_TOOL_PROGRESS and DAEDALUS_TOOL_PROGRESS_MODE are deprecated —
-    # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
-    # Gateway falls back to these env vars for backward compatibility.
     "DAEDALUS_TOOL_PROGRESS": {
         "description": "(deprecated) Use display.tool_progress in config.yaml instead",
         "prompt": "Tool progress (deprecated — use config.yaml)",
@@ -1267,12 +1133,10 @@ def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     """
     missing = []
     
-    # Check required vars
     for var_name, info in REQUIRED_ENV_VARS.items():
         if not get_env_value(var_name):
             missing.append({"name": var_name, **info, "is_required": True})
     
-    # Check optional vars (if not required_only)
     if not required_only:
         for var_name, info in OPTIONAL_ENV_VARS.items():
             if not get_env_value(var_name):
@@ -1343,7 +1207,6 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     config = load_config()
     missing: List[Dict[str, Any]] = []
     for var in all_vars:
-        # Skill config is stored under skills.config.<logical_key>
         storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
         parts = storage_key.split(".")
         current = config
@@ -1355,7 +1218,6 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
             else:
                 value = None
                 break
-        # Missing = key doesn't exist or is empty string
         if value is None or (isinstance(value, str) and not value.strip()):
             missing.append(var)
     return missing
@@ -1373,11 +1235,7 @@ def check_config_version() -> Tuple[int, int]:
     return current, latest
 
 
-# =============================================================================
-# Config structure validation
-# =============================================================================
 
-# Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
@@ -1385,13 +1243,11 @@ _KNOWN_ROOT_KEYS = {
     "auxiliary", "custom_providers", "memory", "gateway",
 }
 
-# Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "models",
     "context_length", "rate_limit_delay",
 }
 
-# Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
 
 
@@ -1399,7 +1255,7 @@ _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_
 class ConfigIssue:
     """A detected config structure problem."""
 
-    severity: str  # "error", "warning"
+    severity: str
     message: str
     hint: str
 
@@ -1420,7 +1276,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
 
     issues: List[ConfigIssue] = []
 
-    # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
     if cp is not None:
         if isinstance(cp, dict):
@@ -1433,7 +1288,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "      base_url: https://...\n"
                 "      api_key: ...",
             ))
-            # Check if dict keys look like they should be list-entry fields
             cp_keys = set(cp.keys()) if isinstance(cp, dict) else set()
             suspicious = cp_keys & _CUSTOM_PROVIDER_LIKE_FIELDS
             if suspicious:
@@ -1443,7 +1297,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "These should be indented under a '- name: ...' list entry, not at root level",
                 ))
         elif isinstance(cp, list):
-            # Validate each entry in the list
             for i, entry in enumerate(cp):
                 if not isinstance(entry, dict):
                     issues.append(ConfigIssue(
@@ -1465,7 +1318,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
 
-    # ── fallback_model must be a top-level dict with provider + model ────
     fb = config.get("fallback_model")
     if fb is not None:
         if not isinstance(fb, dict):
@@ -1491,7 +1343,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
-    # ── Check for fallback_model accidentally nested inside custom_providers ──
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(
             "error",
@@ -1499,7 +1350,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "Move fallback_model to the top level of config.yaml (no indentation)",
         ))
 
-    # ── model section: should exist when custom_providers is configured ──
     model_cfg = config.get("model")
     if cp and not model_cfg:
         issues.append(ConfigIssue(
@@ -1512,7 +1362,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
-    # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:
         if key.startswith("_"):
             continue
@@ -1562,18 +1411,15 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     """
     results = {"env_added": [], "config_added": [], "warnings": []}
 
-    # ── Always: sanitize .env (split concatenated keys) ──
     try:
         fixes = sanitize_env_file()
         if fixes and not quiet:
             print(f"  ✓ Repaired .env file ({fixes} corrupted entries fixed)")
     except Exception:
-        pass  # best-effort; don't block migration on sanitize failure
+        pass
 
-    # Check config version
     current_ver, latest_ver = check_config_version()
     
-    # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
         config = load_config()
         display = config.get("display", {})
@@ -1596,7 +1442,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
     
-    # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
         config = load_config()
         if "timezone" not in config:
@@ -1612,8 +1457,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 tz_display = config["timezone"] or "(server-local)"
                 print(f"  ✓ Added timezone to config.yaml: {tz_display}")
 
-    # ── Version 8 → 9: clear ANTHROPIC_TOKEN from .env ──
-    # The new Anthropic auth flow no longer uses this env var.
     if current_ver < 9:
         try:
             old_token = get_env_value("ANTHROPIC_TOKEN")
@@ -1624,7 +1467,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         except Exception:
             pass
 
-    # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     if current_ver < 12:
         config = load_config()
         custom_list = config.get("custom_providers")
@@ -1640,16 +1482,13 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 old_url = entry.get("base_url", "") or entry.get("url", "") or ""
                 old_key = entry.get("api_key", "")
                 if not old_url:
-                    continue  # skip entries with no URL
+                    continue
 
-                # Generate a kebab-case key from the display name
                 key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
-                # Remove consecutive hyphens and trailing hyphens
                 while "--" in key:
                     key = key.replace("--", "-")
                 key = key.strip("-")
                 if not key:
-                    # Fallback: derive from URL hostname
                     try:
                         from urllib.parse import urlparse
                         parsed = urlparse(old_url)
@@ -1657,7 +1496,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     except Exception:
                         key = f"endpoint-{migrated_count}"
 
-                # Don't overwrite existing entries
                 if key in providers_dict:
                     key = f"{key}-{migrated_count}"
 
@@ -1667,7 +1505,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 if old_key and old_key not in ("no-key", "no-key-required", ""):
                     new_entry["api_key"] = old_key
 
-                # Carry over model and api_mode if present
                 if entry.get("model"):
                     new_entry["default_model"] = entry["model"]
                 if entry.get("api_mode"):
@@ -1678,7 +1515,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             if migrated_count > 0:
                 config["providers"] = providers_dict
-                # Remove the old list
                 del config["custom_providers"]
                 save_config(config)
                 if not quiet:
@@ -1690,7 +1526,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
-    # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
     
     if missing_env and not quiet:
@@ -1718,8 +1553,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
     
-    # Check for missing optional env vars and offer to configure interactively
-    # Skip "advanced" vars (like OPENAI_BASE_URL) -- those are for power users
     missing_optional = get_missing_env_vars(required_only=False)
     required_names = {v["name"] for v in missing_env} if missing_env else set()
     missing_optional = [
@@ -1727,7 +1560,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if v["name"] not in required_names and not v.get("advanced")
     ]
     
-    # Only offer to configure env vars that are NEW since the user's previous version
     new_var_names = set()
     for ver in range(current_ver + 1, latest_ver + 1):
         new_var_names.update(ENV_VARS_BY_VERSION.get(ver, []))
@@ -1769,7 +1601,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 print("  Set later with: daedalus config set <key> <value>")
     
-    # Check for missing config fields
     missing_config = get_missing_config_fields()
     
     if missing_config:
@@ -1784,19 +1615,13 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print(f"  ✓ Added {key} = {default}")
         
-        # Update version and save
         config["_config_version"] = latest_ver
         save_config(config)
     elif current_ver < latest_ver:
-        # Just update version
         config = load_config()
         config["_config_version"] = latest_ver
         save_config(config)
 
-    # ── Skill-declared config vars ──────────────────────────────────────
-    # Skills can declare config.yaml settings they need via
-    # metadata.daedalus.config in their SKILL.md frontmatter.
-    # Prompt for any that are missing/empty.
     missing_skill_config = get_missing_skill_config_vars()
     if missing_skill_config and interactive and not quiet:
         print(f"\n  {len(missing_skill_config)} skill setting(s) not configured:")
@@ -1889,7 +1714,6 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     After migration the root-level keys are removed so they can't cause
     confusion on subsequent loads.
     """
-    # Only act if there are root-level keys to migrate
     has_root = any(config.get(k) for k in ("provider", "base_url"))
     if not has_root:
         return config
@@ -2113,8 +1937,6 @@ def save_config(config: Dict[str, Any]):
     config_path = get_config_path()
     normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
 
-    # Build optional commented-out sections for features that are off by
-    # default or only relevant when explicitly configured.
     parts = []
     sec = normalized.get("security", {})
     if not sec or sec.get("redact_secrets") is None:
@@ -2137,8 +1959,6 @@ def load_env() -> Dict[str, str]:
     env_vars = {}
     
     if env_path.exists():
-        # On Windows, open() defaults to the system locale (cp1252) which can
-        # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
         open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
         with open(env_path, **open_kw) as f:
             for line in f:
@@ -2162,8 +1982,6 @@ def _sanitize_env_lines(lines: list) -> list:
     split on real Daedalus env var names, avoiding false positives from values
     that happen to contain uppercase text with ``=``.
     """
-    # Build the known keys set lazily from OPTIONAL_ENV_VARS + extras.
-    # Done inside the function so OPTIONAL_ENV_VARS is guaranteed to be defined.
     known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
 
     sanitized: list[str] = []
@@ -2171,13 +1989,10 @@ def _sanitize_env_lines(lines: list) -> list:
         raw = line.rstrip("\r\n")
         stripped = raw.strip()
 
-        # Preserve blank lines and comments
         if not stripped or stripped.startswith("#"):
             sanitized.append(raw + "\n")
             continue
 
-        # Detect concatenated KEY=VALUE pairs on one line.
-        # Search for known KEY= patterns at any position in the line.
         split_positions = []
         for key_name in known_keys:
             needle = key_name + "="
@@ -2188,7 +2003,6 @@ def _sanitize_env_lines(lines: list) -> list:
 
         if len(split_positions) > 1:
             split_positions.sort()
-            # Deduplicate (shouldn't happen, but be safe)
             split_positions = sorted(set(split_positions))
             for i, pos in enumerate(split_positions):
                 end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
@@ -2222,10 +2036,8 @@ def sanitize_env_file() -> int:
     if sanitized == original_lines:
         return 0
 
-    # Count fixes: difference in line count (from splits) + removed lines
     fixes = abs(len(sanitized) - len(original_lines))
     if fixes == 0:
-        # Lines changed content (e.g. *** removal) even if count is same
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
@@ -2257,8 +2069,6 @@ def save_env_value(key: str, value: str):
     ensure_daedalus_home()
     env_path = get_env_path()
     
-    # On Windows, open() defaults to the system locale (cp1252) which can
-    # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
     write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
 
@@ -2266,10 +2076,8 @@ def save_env_value(key: str, value: str):
     if env_path.exists():
         with open(env_path, **read_kw) as f:
             lines = f.readlines()
-        # Sanitize on every read: split concatenated keys, drop stale placeholders
         lines = _sanitize_env_lines(lines)
     
-    # Find and update or append
     found = False
     for i, line in enumerate(lines):
         if line.strip().startswith(f"{key}="):
@@ -2278,7 +2086,6 @@ def save_env_value(key: str, value: str):
             break
     
     if not found:
-        # Ensure there's a newline at the end of the file before appending
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
@@ -2300,7 +2107,6 @@ def save_env_value(key: str, value: str):
 
     os.environ[key] = value
 
-    # Restrict .env permissions to owner-only (contains API keys)
     if not _IS_WINDOWS:
         try:
             os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
@@ -2386,18 +2192,13 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
 
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.daedalus/.env or environment."""
-    # Check environment first
     if key in os.environ:
         return os.environ[key]
     
-    # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
 
 
-# =============================================================================
-# Config display
-# =============================================================================
 
 def redact_key(key: str) -> str:
     """Redact an API key for display."""
@@ -2417,14 +2218,12 @@ def show_config():
     print(color("│              ⚕ Daedalus Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
     
-    # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
     print(f"  Config:       {get_config_path()}")
     print(f"  Secrets:      {get_env_path()}")
     print(f"  Install:      {get_project_root()}")
     
-    # API Keys
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
     
@@ -2446,13 +2245,11 @@ def show_config():
     anthropic_value = get_env_value("ANTHROPIC_TOKEN") or get_env_value("ANTHROPIC_API_KEY")
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
     
-    # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
     
-    # Display
     print()
     print(color("◆ Display", Colors.CYAN, Colors.BOLD))
     display = config.get('display', {})
@@ -2460,7 +2257,6 @@ def show_config():
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
 
-    # Terminal
     print()
     print(color("◆ Terminal", Colors.CYAN, Colors.BOLD))
     terminal = config.get('terminal', {})
@@ -2484,7 +2280,6 @@ def show_config():
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
     
-    # Timezone
     print()
     print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
     tz = config.get('timezone', '')
@@ -2493,7 +2288,6 @@ def show_config():
     else:
         print(f"  Timezone:     {color('(server-local)', Colors.DIM)}")
 
-    # Compression
     print()
     print(color("◆ Context Compression", Colors.CYAN, Colors.BOLD))
     compression = config.get('compression', {})
@@ -2509,7 +2303,6 @@ def show_config():
         if comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")
     
-    # Auxiliary models
     auxiliary = config.get('auxiliary', {})
     aux_tasks = {
         "Vision":      auxiliary.get('vision', {}),
@@ -2531,7 +2324,6 @@ def show_config():
                     parts.append(f"model={mdl}")
                 print(f"  {label:12s}  {', '.join(parts)}")
     
-    # Messaging
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
     
@@ -2541,7 +2333,6 @@ def show_config():
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
     
-    # Skill config
     try:
         from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
         skill_vars = discover_all_skill_config_vars()
@@ -2573,16 +2364,13 @@ def edit_config():
         return
     config_path = get_config_path()
     
-    # Ensure config exists
     if not config_path.exists():
         save_config(DEFAULT_CONFIG)
         print(f"Created {config_path}")
     
-    # Find editor
     editor = os.getenv('EDITOR') or os.getenv('VISUAL')
     
     if not editor:
-        # Try common editors
         for cmd in ['nano', 'vim', 'vi', 'code', 'notepad']:
             import shutil
             if shutil.which(cmd):
@@ -2603,7 +2391,6 @@ def set_config_value(key: str, value: str):
     if is_managed():
         managed_error("set configuration values")
         return
-    # Check if it's an API key (goes to .env)
     api_keys = [
         'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
         'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
@@ -2622,9 +2409,6 @@ def set_config_value(key: str, value: str):
         print(f"✓ Set {key} in {get_env_path()}")
         return
     
-    # Otherwise it goes to config.yaml
-    # Read the raw user config (not merged with defaults) to avoid
-    # dumping all default values back to the file
     config_path = get_config_path()
     user_config = {}
     if config_path.exists():
@@ -2634,7 +2418,6 @@ def set_config_value(key: str, value: str):
         except Exception:
             user_config = {}
     
-    # Handle nested keys (e.g., "tts.provider")
     parts = key.split('.')
     current = user_config
     
@@ -2643,7 +2426,6 @@ def set_config_value(key: str, value: str):
             current[part] = {}
         current = current[part]
     
-    # Convert value to appropriate type
     if value.lower() in ('true', 'yes', 'on'):
         value = True
     elif value.lower() in ('false', 'no', 'off'):
@@ -2655,13 +2437,10 @@ def set_config_value(key: str, value: str):
     
     current[parts[-1]] = value
     
-    # Write only user config back (not the full merged defaults)
     ensure_daedalus_home()
     with open(config_path, 'w', encoding="utf-8") as f:
         yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
     
-    # Keep .env in sync for keys that terminal_tool reads directly from env vars.
-    # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     _config_to_env_sync = {
         "terminal.backend": "TERMINAL_ENV",
         "terminal.modal_mode": "TERMINAL_MODAL_MODE",
@@ -2679,9 +2458,6 @@ def set_config_value(key: str, value: str):
     print(f"✓ Set {key} = {value} in {config_path}")
 
 
-# =============================================================================
-# Command handler
-# =============================================================================
 
 def config_command(args):
     """Handle config subcommands."""
@@ -2717,7 +2493,6 @@ def config_command(args):
         print(color("🔄 Checking configuration for updates...", Colors.CYAN, Colors.BOLD))
         print()
         
-        # Check what's missing
         missing_env = get_missing_env_vars(required_only=False)
         missing_config = get_missing_config_fields()
         current_ver, latest_ver = check_config_version()
@@ -2727,7 +2502,6 @@ def config_command(args):
             print()
             return
         
-        # Show what needs to be updated
         if current_ver < latest_ver:
             print(f"  Config version: {current_ver} → {latest_ver}")
         
@@ -2754,7 +2528,6 @@ def config_command(args):
         
         print()
         
-        # Run migration
         results = migrate_config(interactive=True, quiet=False)
         
         print()
@@ -2769,7 +2542,6 @@ def config_command(args):
         print()
     
     elif subcmd == "check":
-        # Non-interactive check for what's missing
         print()
         print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
         print()

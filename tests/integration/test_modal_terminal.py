@@ -21,12 +21,10 @@ import sys
 import json
 from pathlib import Path
 
-# Try to load .env file if python-dotenv is available
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    # Manually load .env if dotenv not available
     env_file = Path(__file__).parent.parent.parent / ".env"
     if env_file.exists():
         with open(env_file) as f:
@@ -34,15 +32,12 @@ except ImportError:
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
                     key, value = line.split('=', 1)
-                    # Remove quotes if present
                     value = value.strip().strip('"').strip("'")
                     os.environ.setdefault(key.strip(), value)
 
-# Add project root to path for imports
 parent_dir = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(parent_dir))
 
-# Import terminal_tool module directly using importlib to avoid tools/__init__.py
 import importlib.util
 terminal_tool_path = parent_dir / "tools" / "terminal_tool.py"
 spec = importlib.util.spec_from_file_location("terminal_tool", terminal_tool_path)
@@ -66,7 +61,6 @@ def test_modal_requirements():
     print(f"Current TERMINAL_ENV: {config['env_type']}")
     print(f"Modal image: {config['modal_image']}")
     
-    # Check for Modal authentication
     modal_token = os.getenv("MODAL_TOKEN_ID")
     modal_toml = Path.home() / ".modal.toml"
     
@@ -105,7 +99,6 @@ def test_simple_command():
     success = result_json.get('exit_code') == 0 and 'Hello from Modal!' in result_json.get('output', '')
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
     
-    # Cleanup
     cleanup_vm(test_task_id)
     
     return success
@@ -133,7 +126,6 @@ def test_python_execution():
     success = result_json.get('exit_code') == 0 and 'Python' in result_json.get('output', '')
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
     
-    # Cleanup
     cleanup_vm(test_task_id)
     
     return success
@@ -147,7 +139,6 @@ def test_pip_install():
     
     test_task_id = "modal_test_pip"
     
-    # Install a small package and verify
     print("Executing: pip install --break-system-packages cowsay && python3 -c \"import cowsay; cowsay.cow('Modal works!')\"")
     
     result = terminal_tool(
@@ -166,7 +157,6 @@ def test_pip_install():
     success = result_json.get('exit_code') == 0 and 'Modal works!' in result_json.get('output', '')
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
     
-    # Cleanup
     cleanup_vm(test_task_id)
     
     return success
@@ -180,13 +170,11 @@ def test_filesystem_persistence():
     
     test_task_id = "modal_test_persist"
     
-    # Create a file
     print("Step 1: Creating test file...")
     result1 = terminal_tool("echo 'persistence test' > /tmp/modal_test.txt", task_id=test_task_id)
     result1_json = json.loads(result1)
     print(f"  Exit code: {result1_json.get('exit_code')}")
     
-    # Read the file back
     print("Step 2: Reading test file...")
     result2 = terminal_tool("cat /tmp/modal_test.txt", task_id=test_task_id)
     result2_json = json.loads(result2)
@@ -200,7 +188,6 @@ def test_filesystem_persistence():
     )
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
     
-    # Cleanup
     cleanup_vm(test_task_id)
     
     return success
@@ -215,23 +202,19 @@ def test_environment_isolation():
     task1 = "modal_test_iso_1"
     task2 = "modal_test_iso_2"
     
-    # Create file in task1
     print("Step 1: Creating file in task1...")
     result1 = terminal_tool("echo 'task1 data' > /tmp/isolated.txt", task_id=task1)
     
-    # Try to read from task2 (should not exist)
     print("Step 2: Trying to read file from task2 (should not exist)...")
     result2 = terminal_tool("cat /tmp/isolated.txt 2>&1 || echo 'FILE_NOT_FOUND'", task_id=task2)
     result2_json = json.loads(result2)
     
-    # The file should either not exist or be empty in task2
     output = result2_json.get('output', '')
     isolated = 'task1 data' not in output or 'FILE_NOT_FOUND' in output or 'No such file' in output
     
     print(f"  Task2 output: {output[:200]}")
     print(f"\nTest: {'✅ Passed (environments isolated)' if isolated else '❌ Failed (environments NOT isolated)'}")
     
-    # Cleanup
     cleanup_vm(task1)
     cleanup_vm(task2)
     
@@ -243,7 +226,6 @@ def main():
     print("🧪 Modal Terminal Tool Test Suite")
     print("=" * 60)
     
-    # Check current config
     config = _get_env_config()
     print(f"\nCurrent configuration:")
     print(f"  TERMINAL_ENV: {config['env_type']}")
@@ -260,7 +242,6 @@ def main():
     
     results = {}
     
-    # Run tests
     results['requirements'] = test_modal_requirements()
     
     if not results['requirements']:
@@ -273,7 +254,6 @@ def main():
     results['filesystem_persistence'] = test_filesystem_persistence()
     results['environment_isolation'] = test_environment_isolation()
     
-    # Summary
     print("\n" + "=" * 60)
     print("TEST SUMMARY")
     print("=" * 60)
@@ -287,7 +267,6 @@ def main():
     
     print(f"\nTotal: {passed}/{total} tests passed")
     
-    # Show active environments
     env_info = get_active_environments_info()
     print(f"\nActive environments after tests: {env_info['count']}")
     if env_info['count'] > 0:

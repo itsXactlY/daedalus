@@ -87,7 +87,6 @@ class TestInlineShellExpansion:
         monkeypatch.setattr(subprocess, "run", fake_run)
         out = expand_inline_shell("Hello !`echo hi`", Path("/d"), timeout=10)
         assert out == "Hello hi"
-        # Runs via bash -c with the skill dir as CWD and stdin closed.
         assert captured["argv"][:2] == ["bash", "-c"]
         assert captured["argv"][2] == "echo hi"
         assert captured["kwargs"]["cwd"] == "/d"
@@ -174,7 +173,6 @@ class TestSkillViewPath:
         content = result["content"]
         assert f"node {skill_dir}/scripts/foo.js" in content
         assert "Sess: sess-abc" in content
-        # Literal template tokens must not leak through.
         assert "${DAEDALUS_SKILL_DIR}" not in content
         assert "${DAEDALUS_SESSION_ID}" not in content
 
@@ -191,7 +189,6 @@ class TestSkillViewPath:
                 return_value={"template_vars": True, "inline_shell": False},
             ),
         ):
-            # No task_id -> session id unavailable; skill dir still resolves.
             raw = skill_view("no-sess")
         result = json.loads(raw)
         assert result["success"] is True

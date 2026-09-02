@@ -195,7 +195,6 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
         _try_add_tool_call(raw)
         consumed_spans.append((m.start(), m.end()))
 
-    # Only try bare-JSON fallback when no XML blocks were found.
     if not extracted:
         for m in _TOOL_CALL_JSON_RE.finditer(text):
             raw = m.group(0)

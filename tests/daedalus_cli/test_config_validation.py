@@ -39,7 +39,6 @@ class TestCustomProvidersValidation:
             },
         })
         warnings = [i for i in issues if i.severity == "warning"]
-        # Should flag base_url, api_key as looking like custom_providers entry fields
         misplaced = [i for i in warnings if "custom_providers entry fields" in i.message]
         assert len(misplaced) == 1
 
@@ -118,7 +117,6 @@ class TestFallbackModelValidation:
                 "model": "anthropic/claude-sonnet-4",
             },
         })
-        # Only fallback-related issues should be absent
         fb_issues = [i for i in issues if "fallback" in i.message.lower()]
         assert len(fb_issues) == 0
 
@@ -155,7 +153,6 @@ class TestMissingModelSection:
             ],
             "model": {"provider": "custom", "default": "test-model"},
         })
-        # Should not warn about missing model section
         assert not any("no 'model' section" in i.message for i in issues)
 
 

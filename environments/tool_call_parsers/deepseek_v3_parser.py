@@ -39,8 +39,6 @@ class DeepSeekV3ToolCallParser(ToolCallParser):
 
     START_TOKEN = "<｜tool▁calls▁begin｜>"
 
-    # Updated PATTERN: Using \s* instead of literal \n for increased robustness
-    # against variations in model formatting (Issue #989).
     PATTERN = re.compile(
         r"<｜tool▁call▁begin｜>(?P<type>.*?)<｜tool▁sep｜>(?P<function_name>.*?)\s*```json\s*(?P<function_arguments>.*?)\s*```\s*<｜tool▁call▁end｜>",
         re.DOTALL,
@@ -54,7 +52,6 @@ class DeepSeekV3ToolCallParser(ToolCallParser):
             return text, None
 
         try:
-            # Using finditer to capture ALL tool calls in the sequence
             matches = list(self.PATTERN.finditer(text))
             if not matches:
                 return text, None
@@ -77,7 +74,6 @@ class DeepSeekV3ToolCallParser(ToolCallParser):
                 )
 
             if tool_calls:
-                # Content is text before the first tool call block
                 content_index = text.find(self.START_TOKEN)
                 content = text[:content_index].strip()
                 return content if content else None, tool_calls

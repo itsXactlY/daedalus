@@ -34,13 +34,10 @@ from daedalus_constants import get_daedalus_home
 
 OSV_BATCH_URL = "https://api.osv.dev/v1/querybatch"
 OSV_VULN_URL = "https://api.osv.dev/v1/vulns/{vid}"
-OSV_BATCH_MAX = 1000  # OSV documented hard cap per request
+OSV_BATCH_MAX = 1000
 HTTP_TIMEOUT = 20
 DETAIL_PARALLELISM = 8
 
-# Severity ordering for --fail-on gating. UNKNOWN sits below LOW so it
-# never blocks unless --fail-on is passed something even lower (we don't
-# expose that).
 SEVERITY_ORDER = {
     "UNKNOWN": 0,
     "LOW": 1,
@@ -51,7 +48,6 @@ SEVERITY_ORDER = {
 }
 
 
-# ─── Data shapes ──────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -60,8 +56,8 @@ class Component:
 
     name: str
     version: str
-    ecosystem: str  # "PyPI" | "npm" — exactly as OSV expects
-    source: str    # human-readable origin, e.g. "venv", "plugin:foo", "mcp:bar"
+    ecosystem: str
+    source: str
 
 
 @dataclass
@@ -78,7 +74,6 @@ class Finding:
     vuln: Vulnerability
 
 
-# ─── Component discovery ──────────────────────────────────────────────────────
 
 
 def _discover_venv() -> list[Component]:
@@ -103,7 +98,6 @@ def _discover_venv() -> list[Component]:
     return out
 
 
-# requirements.txt line: drop comments, environment markers, options, extras
 _REQ_LINE = re.compile(
     r"""^\s*
         (?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)
@@ -200,16 +194,7 @@ def _discover_plugins(daedalus_home: Path) -> list[Component]:
     return out
 
 
-# npx forms we recognise:
-#   npx -y @scope/pkg@1.2.3
-#   npx --yes pkg@1.2.3
-#   npx pkg@1.2.3 [...args]
-# We deliberately don't try to resolve unversioned names — that maps to
-# "latest" at runtime and isn't a stable audit subject.
 _NPX_PKG = re.compile(r"^(@[A-Za-z0-9._-]+/[A-Za-z0-9._-]+|[A-Za-z0-9._-]+)@([A-Za-z0-9._+-]+)$")
-# uvx forms:
-#   uvx pkg==1.2.3
-#   uvx --with pkg==1.2.3 entrypoint
 _UVX_PKG = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9._+!-]+)$")
 
 
@@ -223,9 +208,7 @@ def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> O
     cmd = (command or "").strip().lower()
     if not args:
         return None
-    # npx (any prefix path)
     if cmd.endswith("npx") or cmd == "npx":
-        # Skip flag tokens until we see the first thing that looks like a pkg ref
         for token in args:
             if token.startswith("-"):
                 continue
@@ -237,8 +220,7 @@ def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> O
                     ecosystem="npm",
                     source=f"mcp:{server_name}",
                 )
-            return None  # First non-flag token isn't a pinned ref
-    # uvx (any prefix path)
+            return None
     if cmd.endswith("uvx") or cmd == "uvx":
         for token in args:
             if token.startswith("-"):
@@ -279,7 +261,6 @@ def _discover_mcp() -> list[Component]:
     return out
 
 
-# ─── OSV client ───────────────────────────────────────────────────────────────
 
 
 def _http_post_json(url: str, payload: dict) -> dict:
@@ -331,22 +312,16 @@ def _osv_query_batch(components: list[Component]) -> dict[Component, list[str]]:
 
 def _osv_severity_from_record(record: dict) -> str:
     """Extract CVSS-derived severity tier from an OSV vuln record."""
-    # OSV puts CVSS in `severity` (top-level or per-affected) and a
-    # human-readable bucket in `database_specific.severity` for GHSAs.
     db_specific = record.get("database_specific") or {}
     raw = db_specific.get("severity")
     if isinstance(raw, str) and raw.strip():
         upper = raw.strip().upper()
         if upper in SEVERITY_ORDER:
             return upper
-    # Fall back to CVSS score → tier
     score: Optional[float] = None
     for sev_entry in record.get("severity") or []:
         s = sev_entry.get("score")
         if isinstance(s, str):
-            # CVSS vector strings look like "CVSS:3.1/AV:N/..." — we can't
-            # parse without a lib. Look for an explicit numeric in
-            # affected[].ecosystem_specific later if present.
             continue
     affected = record.get("affected") or []
     for entry in affected:
@@ -373,7 +348,6 @@ def _osv_fixed_versions(record: dict) -> list[str]:
             for event in rng.get("events") or []:
                 if "fixed" in event:
                     fixes.append(str(event["fixed"]))
-    # Dedupe, preserve order
     seen: set[str] = set()
     out: list[str] = []
     for f in fixes:
@@ -408,7 +382,6 @@ def _osv_fetch_details(vuln_ids: Iterable[str]) -> dict[str, Vulnerability]:
     return out
 
 
-# ─── Orchestration ────────────────────────────────────────────────────────────
 
 
 def _discover_components(
@@ -481,7 +454,6 @@ def run_audit(
     return findings
 
 
-# ─── Rendering ────────────────────────────────────────────────────────────────
 
 
 def _render_human(findings: list[Finding], total_components: int) -> str:
@@ -533,7 +505,6 @@ def _render_json(findings: list[Finding], total_components: int) -> str:
     return json.dumps(payload, indent=2)
 
 
-# ─── CLI entrypoint ───────────────────────────────────────────────────────────
 
 
 def cmd_security_audit(args: argparse.Namespace) -> int:
@@ -581,7 +552,6 @@ def cmd_security_audit(args: argparse.Namespace) -> int:
     else:
         print(_render_human(findings, total))
 
-    # Exit code: 1 iff any finding meets or exceeds the --fail-on threshold.
     threshold = SEVERITY_ORDER[fail_on]
     for f in findings:
         if SEVERITY_ORDER.get(f.vuln.severity, 0) >= threshold:

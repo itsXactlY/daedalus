@@ -35,16 +35,12 @@ class TestGatewayPidState:
 
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
 
-        # First write wins.
         status.write_pid_file()
         assert (tmp_path / "gateway.pid").exists()
 
-        # Second write (simulating a racing --replace that missed the earlier
-        # guards) must raise FileExistsError rather than clobber the record.
         with pytest.raises(FileExistsError):
             status.write_pid_file()
 
-        # Original record is preserved.
         payload = json.loads((tmp_path / "gateway.pid").read_text())
         assert payload["pid"] == os.getpid()
 
@@ -151,21 +147,18 @@ class TestGatewayPidState:
         profile_home.mkdir(parents=True)
         monkeypatch.setenv("DAEDALUS_HOME", str(process_home))
 
-        # Simulate a profile context override being active during write.
         token = set_daedalus_home_override(str(profile_home))
         try:
             status.write_pid_file()
         finally:
             reset_daedalus_home_override(token)
 
-        # PID file must land in the process-level home, not the profile home.
         assert (process_home / "gateway.pid").exists()
         assert not (profile_home / "gateway.pid").exists()
 
         payload = json.loads((process_home / "gateway.pid").read_text())
         assert payload["pid"] == os.getpid()
 
-        # Cleanup for atexit hooks.
         monkeypatch.setenv("DAEDALUS_HOME", str(process_home))
         (process_home / "gateway.pid").unlink(missing_ok=True)
 
@@ -176,7 +169,6 @@ class TestGatewayRuntimeStatus:
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
 
-        # Simulate a previous gateway run that left a state file with a stale PID
         state_path = tmp_path / "gateway_state.json"
         state_path.write_text(json.dumps({
             "pid": 99999,
@@ -214,7 +206,6 @@ class TestGatewayRuntimeStatus:
 
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
-        # PID 139 is now the live DEFAULT gateway (bare, no -p coder).
         monkeypatch.setattr(
             status, "_read_process_cmdline", lambda pid: "daedalus gateway run --replace"
         )
@@ -305,7 +296,7 @@ class TestGetProcessStartTime:
             time.sleep(0.2)
             b = status._get_process_start_time(p.pid)
             assert a is not None and isinstance(a, int)
-            assert a == b  # same process → identical fingerprint
+            assert a == b
         finally:
             p.kill()
             p.wait()
@@ -314,9 +305,6 @@ class TestGetProcessStartTime:
 class TestTerminatePid:
     @pytest.mark.windows_only
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
-        # Faking _IS_WINDOWS on POSIX could not reproduce the real
-        # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
-        # returns only on Windows (it is 0 elsewhere).
         calls = []
 
         def fake_run(cmd, capture_output=False, text=False, timeout=None, creationflags=0, **kwargs):
@@ -327,8 +315,6 @@ class TestTerminatePid:
 
         status.terminate_pid(123, force=True)
 
-        # taskkill is spawned with the no-window flag so the windowless
-        # pythonw.exe backend doesn't flash a conhost window on force-kill.
         from daedalus_cli._subprocess_compat import windows_hide_flags
 
         assert calls == [
@@ -339,9 +325,6 @@ class TestTerminatePid:
 class TestScopedLocks:
     @pytest.mark.windows_only
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
-        # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
-        # byte-range locking path at all: msvcrt does not exist off Windows,
-        # so the stub below had to invent the module as well as the host.
         lock_path = tmp_path / "gateway.lock"
         handle = open(lock_path, "a+", encoding="utf-8")
         fd = handle.fileno()
@@ -379,8 +362,6 @@ class TestScopedLocks:
             "kind": "daedalus-gateway",
         }))
 
-        # Post-#21561 the liveness probe routes through
-        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows).
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
 
@@ -407,14 +388,9 @@ class TestScopedLocks:
             "argv": ["/Users/user/.daedalus/daedalus/daedalus_cli/main.py", "gateway", "run", "--replace"],
         }))
 
-        # Post-#21561 the liveness probe routes through
-        # ``gateway.status._pid_exists`` (psutil-first, safe on Windows),
-        # not ``os.kill``.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
         monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: False)
-        # On macOS ``ps`` is available, so _read_process_cmdline returns the
-        # unrelated process's name.  This confirms the PID was reused.
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
@@ -445,11 +421,7 @@ class TestScopedLocks:
             "scope": "discord-bot-token",
         }))
 
-        # Live process can resolve start_time; disk cannot — the mismatch
-        # that previously failed the self-reacquire short-circuit.
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 987654321)
-        # If we wrongly fall through to staleness, a gateway-looking self PID
-        # would be treated as a live foreign holder (return False).
         monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
         monkeypatch.setattr(status, "_looks_like_gateway_process", lambda pid: True)
 
@@ -538,8 +510,6 @@ class TestScopedLocks:
 
         def racing_replace(src, dst, *args, **kwargs):
             if str(src) == str(lock_path):
-                # Simulate the winner completing removal + O_EXCL create
-                # between our staleness check and our removal attempt.
                 lock_path.write_text(json.dumps(winner_record))
                 raise FileNotFoundError(2, "No such file or directory", str(src))
             return real_replace(src, dst, *args, **kwargs)
@@ -551,7 +521,6 @@ class TestScopedLocks:
         assert acquired is False
         assert existing is not None
         assert existing["pid"] == 424242
-        # The winner's fresh lock must be untouched on disk.
         assert json.loads(lock_path.read_text())["pid"] == 424242
 
 
@@ -565,7 +534,6 @@ class TestScopedLocks:
             "kind": "daedalus-gateway",
         }))
 
-        # Post-#21561: simulate "PID gone" via _pid_exists returning False.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
 
         acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
@@ -643,7 +611,6 @@ class TestTakeoverMarker:
         unavailable we fall back to PID equality alone, bounded by the TTL.
         """
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
-        # Simulate Windows: no start_time available for any PID.
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
 
         ok = status.write_takeover_marker(target_pid=os.getpid())
@@ -678,8 +645,6 @@ class TestTakeoverMarker:
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         marker_path = tmp_path / ".gateway-takeover.json"
         from datetime import datetime, timezone
-        # Marker names OUR pid + start_time (the coincidental match the bug
-        # relied on) but was written by a gateway in a different profile.
         marker_path.write_text(json.dumps({
             "target_pid": os.getpid(),
             "target_start_time": 100,
@@ -691,7 +656,6 @@ class TestTakeoverMarker:
         result = status.consume_takeover_marker_for_self()
 
         assert result is False
-        # Left in place for the correct profile, not griefed away.
         assert marker_path.exists()
 
     def test_consume_accepts_legacy_marker_without_daedalus_home(self, tmp_path, monkeypatch):
@@ -773,8 +737,6 @@ class TestScopedLockTakeover:
     def test_handoff_rejects_uncorroborated_target_home(self, tmp_path, monkeypatch):
         target_home = tmp_path / "target"
         record = self._owner_record(target_home)
-        # The lock claims target_home, but that home's PID record names a
-        # different process identity.
         bad_pid_record = dict(record, pid=9999)
         (target_home / "gateway.pid").write_text(json.dumps(bad_pid_record))
 
@@ -830,12 +792,10 @@ class TestPlannedStopMarker:
         equality alone, bounded by the marker TTL.
         """
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
-        # Simulate Windows: no start_time available for any PID.
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
 
         ok = status.write_planned_stop_marker(target_pid=os.getpid())
         assert ok is True
-        # Marker carries a null start_time, exactly as written on Windows.
         payload = json.loads((tmp_path / ".gateway-planned-stop.json").read_text())
         assert payload["target_start_time"] is None
 
@@ -858,7 +818,6 @@ class TestPlannedStopMarker:
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 100)
         status.write_planned_stop_marker(target_pid=os.getpid())
 
-        # Simulate PID reuse: same PID, different start_time.
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 9999)
 
         result = status.consume_planned_stop_marker_for_self()
@@ -924,17 +883,13 @@ class TestActiveAgentsTurnBoundaryWrite:
     def test_active_agents_only_write_preserves_gateway_state(self, tmp_path, monkeypatch):
         monkeypatch.setenv("DAEDALUS_HOME", str(tmp_path))
 
-        # Lifecycle transition sets running.
         status.write_runtime_status(gateway_state="running", active_agents=0)
         assert status.read_runtime_status()["gateway_state"] == "running"
 
-        # Turn-boundary write: ONLY active_agents (gateway_state left _UNSET).
         status.write_runtime_status(active_agents=2)
 
         rec = status.read_runtime_status()
         assert rec["active_agents"] == 2
-        # The state must survive the per-turn write — this is what makes the
-        # _persist_active_agents helper safe to call on every turn.
         assert rec["gateway_state"] == "running"
 
 
@@ -952,7 +907,6 @@ class TestGatewayBusyDerivation:
 
 
     def test_drainable_is_running_and_live_independent_of_count(self):
-        # Idle running gateway is drainable but NOT busy.
         assert status.derive_gateway_drainable(
             gateway_running=True, gateway_state="running"
         ) is True
@@ -1044,9 +998,6 @@ class TestPermissionErrorOnLockFile:
         real_open = open
 
         def deny_write(path, *args, **kwargs):
-            # Simulate a root-owned file: opening fails while the ORIGINAL
-            # stale file is still on disk; after unlink, the fresh file the
-            # retry creates opens fine.
             if (
                 str(path) == str(lock_path)
                 and lock_path.exists()
@@ -1102,7 +1053,7 @@ class TestNormalizeUpdatedAt:
 
     def test_epoch_before_2000_rejected(self):
         assert status.normalize_updated_at(0) is None
-        assert status.normalize_updated_at(946684799) is None  # 1999-12-31T23:59:59Z
+        assert status.normalize_updated_at(946684799) is None
         assert status.normalize_updated_at(-1750000000) is None
 
 
@@ -1122,7 +1073,6 @@ class TestRuntimeStatusUpdatedAtContract:
         assert isinstance(updated_at, str)
         parsed = datetime.fromisoformat(updated_at)
         assert parsed.tzinfo is not None
-        # And it survives the normalization funnel unchanged (canonical form).
         assert status.normalize_updated_at(updated_at) == updated_at
 
 
@@ -1156,7 +1106,6 @@ class TestResolveGatewayLiveness:
         assert result.running is True
         assert result.pid == 4242
         assert result.source == "pid"
-        # The authoritative rung answered: no lower rung should have run.
         assert calls == {"health": 0, "runtime_pid": 0}
 
 
@@ -1177,8 +1126,6 @@ class TestResolveGatewayLiveness:
         )
 
         assert result.running is False
-        # probe_error distinguishes "down" from "couldn't tell" for callers
-        # that must fail OPEN (the kanban dispatcher warning).
         assert result.probe_error is True
 
 
@@ -1216,7 +1163,5 @@ class TestResolveGatewayLiveness:
 
         assert seen["pid_path"] == profile_dir / "gateway.pid"
         assert seen["status_path"] == profile_dir / "gateway_state.json"
-        # expected_home is what stops a recycled PID belonging to another
-        # profile's live gateway from being reported as this profile's.
         assert seen["expected_home"] == profile_dir
 

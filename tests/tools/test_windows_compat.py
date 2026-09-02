@@ -8,7 +8,6 @@ import ast
 import pytest
 from pathlib import Path
 
-# Files that must have Windows-safe process management
 GUARDED_FILES = [
     "tools/environments/local.py",
     "tools/process_registry.py",
@@ -40,7 +39,6 @@ class TestNoUnconditionalSetsid:
             pytest.skip(f"{relpath} not found")
         values = _get_preexec_fn_values(filepath)
         for val in values:
-            # A bare os.setsid would be: Attribute(value=Name(id='os'), attr='setsid')
             assert "attr='setsid'" not in val or "IfExp" in val or "None" in val, (
                 f"{relpath} has unconditional preexec_fn=os.setsid"
             )
@@ -73,7 +71,6 @@ class TestKillpgGuarded:
         for i, line in enumerate(lines):
             stripped = line.strip()
             if "os.killpg" in stripped or "os.getpgid" in stripped:
-                # Check that there's an _IS_WINDOWS guard in the surrounding context
                 context = "\n".join(lines[max(0, i - 15):i + 1])
                 assert "_IS_WINDOWS" in context or "else:" in context, (
                     f"{relpath}:{i + 1} has unguarded os.killpg/os.getpgid call"

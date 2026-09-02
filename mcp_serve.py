@@ -42,9 +42,6 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger("daedalus.mcp_serve")
 
-# ---------------------------------------------------------------------------
-# Lazy MCP SDK import
-# ---------------------------------------------------------------------------
 
 _MCP_SERVER_AVAILABLE = False
 try:
@@ -55,9 +52,6 @@ except ImportError:
     FastMCP = None  # type: ignore[assignment,misc]
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 def _get_sessions_dir() -> Path:
     """Return the sessions directory using DAEDALUS_HOME."""
@@ -136,7 +130,6 @@ def _extract_attachments(msg: dict) -> List[dict]:
     attachments = []
     content = msg.get("content", "")
 
-    # Multi-part content blocks (image_url, file, etc.)
     if isinstance(content, list):
         for part in content:
             if not isinstance(part, dict):
@@ -151,10 +144,8 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 if url:
                     attachments.append({"type": "image", "url": url})
             elif ptype not in ("text",):
-                # Unknown non-text content type
                 attachments.append({"type": ptype, "data": part})
 
-    # MEDIA: tags in text content
     text = _extract_message_content(msg)
     if text:
         media_pattern = re.compile(r'MEDIA:\s*(\S+)')
@@ -165,19 +156,16 @@ def _extract_attachments(msg: dict) -> List[dict]:
     return attachments
 
 
-# ---------------------------------------------------------------------------
-# Event Bridge — polls SessionDB for new messages, maintains event queue
-# ---------------------------------------------------------------------------
 
 QUEUE_LIMIT = 1000
-POLL_INTERVAL = 0.2  # seconds between DB polls (200ms)
+POLL_INTERVAL = 0.2
 
 
 @dataclass
 class QueueEvent:
     """An event in the bridge's in-memory queue."""
     cursor: int
-    type: str  # "message", "approval_requested", "approval_resolved"
+    type: str
     session_key: str = ""
     data: dict = field(default_factory=dict)
 
@@ -197,10 +185,8 @@ class EventBridge:
         self._new_event = threading.Event()
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        # In-memory approval tracking (populated from events)
+        self._last_poll_timestamps: Dict[str, float] = {}
         self._pending_approvals: Dict[str, dict] = {}
-        # mtime cache — skip expensive work when files haven't changed
         self._sessions_json_mtime: float = 0.0
         self._state_db_mtime: float = 0.0
         self._cached_sessions_index: dict = {}
@@ -217,7 +203,7 @@ class EventBridge:
     def stop(self):
         """Stop the background polling thread."""
         self._running = False
-        self._new_event.set()  # Wake any waiters
+        self._new_event.set()
         if self._thread:
             self._thread.join(timeout=5)
         logger.debug("EventBridge stopped")
@@ -291,7 +277,7 @@ class EventBridge:
             return {"error": f"Approval not found: {approval_id}"}
 
         self._enqueue(QueueEvent(
-            cursor=0,  # Will be set by _enqueue
+            cursor=0,
             type="approval_resolved",
             session_key=approval.get("session_key", ""),
             data={"approval_id": approval_id, "decision": decision},
@@ -305,7 +291,6 @@ class EventBridge:
             self._cursor += 1
             event.cursor = self._cursor
             self._queue.append(event)
-            # Trim queue to limit
             while len(self._queue) > QUEUE_LIMIT:
                 self._queue.pop(0)
         self._new_event.set()
@@ -330,7 +315,6 @@ class EventBridge:
         Uses mtime checks on sessions.json and state.db to skip work
         when nothing has changed — makes 200ms polling essentially free.
         """
-        # Check if sessions.json has changed (mtime check is ~1μs)
         sessions_file = _get_sessions_dir() / "sessions.json"
         try:
             sj_mtime = sessions_file.stat().st_mtime if sessions_file.exists() else 0.0
@@ -341,7 +325,6 @@ class EventBridge:
             self._sessions_json_mtime = sj_mtime
             self._cached_sessions_index = _load_sessions_index()
 
-        # Check if state.db has changed
         try:
             from daedalus_constants import get_daedalus_home
             db_file = get_daedalus_home() / "state.db"
@@ -354,7 +337,7 @@ class EventBridge:
             db_mtime = 0.0
 
         if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
-            return  # Nothing changed since last poll — skip entirely
+            return
 
         self._state_db_mtime = db_mtime
         entries = self._cached_sessions_index
@@ -374,7 +357,6 @@ class EventBridge:
             if not messages:
                 continue
 
-            # Normalize timestamps to float for comparison
             def _ts_float(ts) -> float:
                 if isinstance(ts, (int, float)):
                     return float(ts)
@@ -382,7 +364,6 @@ class EventBridge:
                     try:
                         return float(ts)
                     except ValueError:
-                        # ISO string — parse to epoch
                         try:
                             from datetime import datetime
                             return datetime.fromisoformat(ts).timestamp()
@@ -390,7 +371,6 @@ class EventBridge:
                             return 0.0
                 return 0.0
 
-            # Find messages newer than our last seen timestamp
             new_messages = []
             for msg in messages:
                 ts = _ts_float(msg.get("timestamp", 0))
@@ -416,7 +396,6 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp
             all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
             if all_ts:
                 latest = max(all_ts)
@@ -424,9 +403,6 @@ class EventBridge:
                     self._last_poll_timestamps[session_key] = latest
 
 
-# ---------------------------------------------------------------------------
-# MCP Server
-# ---------------------------------------------------------------------------
 
 def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     """Create and return the Daedalus MCP server with all tools registered."""
@@ -447,7 +423,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
     bridge = event_bridge or EventBridge()
 
-    # -- conversations_list ------------------------------------------------
 
     @mcp.tool()
     def conversations_list(
@@ -503,7 +478,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             "conversations": conversations,
         }, indent=2)
 
-    # -- conversation_get --------------------------------------------------
 
     @mcp.tool()
     def conversation_get(session_key: str) -> str:
@@ -536,7 +510,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             "total_tokens": entry.get("total_tokens", 0),
         }, indent=2)
 
-    # -- messages_read -----------------------------------------------------
 
     @mcp.tool()
     def messages_read(
@@ -592,7 +565,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             "messages": messages,
         }, indent=2)
 
-    # -- attachments_fetch -------------------------------------------------
 
     @mcp.tool()
     def attachments_fetch(
@@ -626,7 +598,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         except Exception as e:
             return json.dumps({"error": f"Failed to read messages: {e}"})
 
-        # Find the target message
         target_msg = None
         for msg in all_messages:
             if str(msg.get("id", "")) == message_id:
@@ -644,7 +615,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             "attachments": attachments,
         }, indent=2)
 
-    # -- events_poll -------------------------------------------------------
 
     @mcp.tool()
     def events_poll(
@@ -671,7 +641,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         )
         return json.dumps(result, indent=2)
 
-    # -- events_wait -------------------------------------------------------
 
     @mcp.tool()
     def events_wait(
@@ -692,13 +661,12 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         event = bridge.wait_for_event(
             after_cursor=after_cursor,
             session_key=session_key,
-            timeout_ms=min(timeout_ms, 300000),  # Cap at 5 minutes
+            timeout_ms=min(timeout_ms, 300000),
         )
         if event:
             return json.dumps({"event": event}, indent=2)
         return json.dumps({"event": None, "reason": "timeout"}, indent=2)
 
-    # -- messages_send -----------------------------------------------------
 
     @mcp.tool()
     def messages_send(
@@ -734,7 +702,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         except Exception as e:
             return json.dumps({"error": f"Send failed: {e}"})
 
-    # -- channels_list -----------------------------------------------------
 
     @mcp.tool()
     def channels_list(platform: Optional[str] = None) -> str:
@@ -788,7 +755,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
 
         return json.dumps({"count": len(channels), "channels": channels}, indent=2)
 
-    # -- permissions_list_open ---------------------------------------------
 
     @mcp.tool()
     def permissions_list_open() -> str:
@@ -804,7 +770,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             "approvals": approvals,
         }, indent=2)
 
-    # -- permissions_respond -----------------------------------------------
 
     @mcp.tool()
     def permissions_respond(
@@ -829,9 +794,6 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
     return mcp
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def run_mcp_server(verbose: bool = False) -> None:
     """Start the Daedalus MCP server on stdio."""

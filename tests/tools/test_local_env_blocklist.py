@@ -169,7 +169,6 @@ class TestForceEnvOptIn:
 
         assert "OPENAI_API_KEY" in result_env
         assert result_env["OPENAI_API_KEY"] == "sk-explicit"
-        # The force-prefixed key itself must not appear
         assert f"{_DAEDALUS_PROVIDER_ENV_FORCE_PREFIX}OPENAI_API_KEY" not in result_env
 
     def test_force_prefix_overrides_os_environ_block(self):
@@ -317,5 +316,4 @@ class TestSanePathIncludesHomebrew:
         full_env = {"PATH": "/usr/bin:/bin"}
         with patch.dict(os.environ, full_env, clear=True):
             result = _make_run_env({})
-        # Should keep existing PATH unchanged
         assert result["PATH"] == "/usr/bin:/bin"

@@ -14,9 +14,6 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
-# ---------------------------------------------------------------------------
-# OLLAMA_API_KEY credential resolution
-# ---------------------------------------------------------------------------
 
 class TestOllamaCloudCredentials:
     """runtime_provider should use OLLAMA_API_KEY for ollama.com endpoints."""
@@ -27,7 +24,6 @@ class TestOllamaCloudCredentials:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-        # Mock config to return custom provider with ollama base_url
         mock_config = {
             "model": {
                 "default": "qwen3.5:397b",
@@ -67,13 +63,9 @@ class TestOllamaCloudCredentials:
         from daedalus_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested="custom")
 
-        # Should fall through to no-key-required for local endpoints
         assert runtime["api_key"] != "test-ollama-key"
 
 
-# ---------------------------------------------------------------------------
-# Direct alias resolution
-# ---------------------------------------------------------------------------
 
 class TestDirectAliases:
     """model_switch direct aliases from config.yaml model_aliases."""
@@ -129,7 +121,6 @@ class TestDirectAliases:
         }
         monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
 
-        # Typing full model name should resolve through the alias
         result = resolve_alias("kimi-k2.5", "openrouter")
         assert result is not None
         provider, model, alias = result
@@ -152,9 +143,6 @@ class TestDirectAliases:
         assert result[1] == "GLM-4.7"
 
 
-# ---------------------------------------------------------------------------
-# /model command persistence
-# ---------------------------------------------------------------------------
 
 class TestModelSwitchPersistence:
     """CLI /model command should update requested_provider for session persistence."""
@@ -180,9 +168,6 @@ class TestModelSwitchPersistence:
         assert result.base_url == "https://api.anthropic.com"
 
 
-# ---------------------------------------------------------------------------
-# /model tab completion
-# ---------------------------------------------------------------------------
 
 class TestModelTabCompletion:
     """SlashCommandCompleter provides model alias completions for /model."""
@@ -246,16 +231,12 @@ class TestModelTabCompletion:
         assert "custom" in meta_str
 
 
-# ---------------------------------------------------------------------------
-# Fallback base_url passthrough
-# ---------------------------------------------------------------------------
 
 class TestFallbackBaseUrlPassthrough:
     """_try_activate_fallback should pass base_url from fallback config."""
 
     def test_fallback_config_has_base_url(self):
         """Verify fallback_providers config structure supports base_url."""
-        # This tests the contract: fallback dicts can have base_url
         fb = {
             "provider": "custom",
             "model": "qwen3.5:397b",
@@ -283,9 +264,6 @@ class TestFallbackBaseUrlPassthrough:
         assert fb_base_url_hint == "https://ollama.com/v1"
 
 
-# ---------------------------------------------------------------------------
-# Edge cases: _load_direct_aliases
-# ---------------------------------------------------------------------------
 
 class TestLoadDirectAliasesEdgeCases:
     """Edge cases for _load_direct_aliases parsing."""
@@ -422,9 +400,6 @@ class TestLoadDirectAliasesEdgeCases:
         assert "good" in aliases
 
 
-# ---------------------------------------------------------------------------
-# _ensure_direct_aliases idempotency
-# ---------------------------------------------------------------------------
 
 class TestEnsureDirectAliases:
     """_ensure_direct_aliases lazy-loading behavior."""
@@ -466,9 +441,6 @@ class TestEnsureDirectAliases:
         assert "pre" in ms.DIRECT_ALIASES
 
 
-# ---------------------------------------------------------------------------
-# resolve_alias: fallthrough and edge cases
-# ---------------------------------------------------------------------------
 
 class TestResolveAliasEdgeCases:
     """Edge cases for resolve_alias."""
@@ -496,9 +468,6 @@ class TestResolveAliasEdgeCases:
         assert result[1] == "my-model"
 
 
-# ---------------------------------------------------------------------------
-# switch_model: direct alias base_url override
-# ---------------------------------------------------------------------------
 
 class TestSwitchModelDirectAliasOverride:
     """switch_model should use base_url from direct alias."""
@@ -557,9 +526,6 @@ class TestSwitchModelDirectAliasOverride:
         assert result.base_url == "http://localhost:11434/v1"
 
 
-# ---------------------------------------------------------------------------
-# CLI state update: requested_provider persistence
-# ---------------------------------------------------------------------------
 
 class TestCLIStateUpdate:
     """CLI /model handler should update requested_provider and explicit fields."""
@@ -597,9 +563,6 @@ class TestCLIStateUpdate:
         assert result.base_url is None or result.base_url == ""
 
 
-# ---------------------------------------------------------------------------
-# Fallback: OLLAMA_API_KEY edge cases
-# ---------------------------------------------------------------------------
 
 class TestFallbackEdgeCases:
     """Edge cases for fallback OLLAMA_API_KEY logic."""

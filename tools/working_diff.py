@@ -25,7 +25,7 @@ import subprocess
 from typing import Dict, List
 
 _GIT_TIMEOUT = 15
-_MAX_UNTRACKED_FILES = 50  # sanity cap so a node_modules explosion can't hang us
+_MAX_UNTRACKED_FILES = 50
 
 VALID_MODES = ("working", "staged", "all")
 
@@ -52,8 +52,6 @@ def _untracked_diff(cwd: str, files: List[str]) -> str:
     chunks: List[str] = []
     for rel in files[:_MAX_UNTRACKED_FILES]:
         try:
-            # --no-index exits 1 when the files differ — that's the success
-            # path here, so ignore the return code and keep the output.
             _, out = _run(
                 ["diff", "--no-index", "--", os.devnull, rel], cwd,
             )
@@ -95,7 +93,7 @@ def collect_working_diff(cwd: str, mode: str = "working",
         base_args = ["diff", "--cached"]
     elif mode == "all":
         base_args = ["diff", "HEAD"]
-    else:  # working
+    else:
         base_args = ["diff"]
 
     pathspec = ["--", *paths] if paths else []

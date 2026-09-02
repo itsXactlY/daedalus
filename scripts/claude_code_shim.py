@@ -42,12 +42,6 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# Claude Code inherits the invoking user's whole environment by default: every
-# tool, MCP server and slash command configured in ~/.claude. For a transport
-# that is contamination -- the agent supplies its own tools and expects the
-# model to do nothing but answer. These flags reduce it to a completion
-# endpoint. Verified: with them the init event reports tools [], mcp_servers []
-# and 0 slash commands.
 ISOLATION_FLAGS = [
     "--exclude-dynamic-system-prompt-sections",
     "--tools", "",
@@ -55,14 +49,6 @@ ISOLATION_FLAGS = [
     "--strict-mcp-config",
 ]
 
-# Advertised context window. Daedalus asks /v1/models for this and sizes its
-# compaction threshold from the answer, so a wrong number here makes it compact
-# at the wrong point -- reporting 200K for a 1M model means throwing away 800K
-# of usable context and paying to rebuild it.
-#
-# Seeded from the published windows, then corrected at runtime: every completion
-# reports the real window in modelUsage[...].contextWindow, so the first call on
-# a model replaces the guess with the truth.
 DEFAULT_CONTEXT = 200000
 SEED_CONTEXT = {
     "sonnet": 1000000, "opus": 1000000, "fable": 1000000, "mythos": 1000000,
@@ -108,7 +94,7 @@ def _render_messages(messages):
     for m in messages or []:
         role = m.get("role", "")
         content = m.get("content", "")
-        if isinstance(content, list):  # multimodal blocks -> take the text parts
+        if isinstance(content, list):
             content = "".join(
                 b.get("text", "") for b in content
                 if isinstance(b, dict) and b.get("type") == "text"
@@ -141,10 +127,6 @@ def _render_messages(messages):
 def _build_argv(body, default_model, claude_bin, stream):
     system_prompt, transcript = _render_messages(body.get("messages"))
 
-    # Tool schemas go into the prompt, not into Claude Code. With --tools ""
-    # the CLI will not execute anything and will not emit native tool_use
-    # blocks, so the model is asked to emit calls as text and the agent's own
-    # tool_call_parsers pick them up -- the same path its local models use.
     tools = body.get("tools") or []
     if tools:
         catalogue = []
@@ -169,17 +151,6 @@ def _build_argv(body, default_model, claude_bin, stream):
     return argv
 
 
-# The model improvises the wrapper tag. Across runs it has emitted
-# <tool_call>, <call> and <function_calls> for the same instruction -- it is
-# trained on native tool use, so a prompt-specified tag is a suggestion, not a
-# contract. Matching a fixed tag therefore drops calls silently, which the agent
-# sees as the model refusing to act. Match ANY tag wrapping a JSON object, and
-# fall back to a bare object, then validate on shape instead of on syntax.
-# A tagged block may hold one object or an array of them -- the model emits
-# both shapes for the same instruction.
-# Closing tags are not required to match the opening one: the model has been
-# observed emitting "<call>{...}</tool_call>". Requiring a matched pair drops
-# the call silently, which the agent experiences as the model refusing to act.
 _TAGGED_RE = re.compile(r"<[A-Za-z_][\w.\-]*\s*>\s*([\[{].*?[\]}])\s*</[A-Za-z_][\w.\-]*\s*>", re.S)
 _BARE_RE = re.compile(r"\{[^{}]*\"name\"\s*:.*?\}(?=\s*$|\s*\n)", re.S)
 _EMPTY_TAG_RE = re.compile(r"<([A-Za-z_][\w.\-]*)\s*>\s*</\1\s*>", re.S)
@@ -195,7 +166,7 @@ def _as_call(obj):
     args = obj.get("arguments")
     if args is None:
         args = obj.get("parameters", obj.get("args", {}))
-    if not isinstance(args, str):          # OpenAI carries arguments as a string
+    if not isinstance(args, str):
         args = json.dumps(args if args is not None else {}, ensure_ascii=False)
     return {"id": "call_" + uuid.uuid4().hex[:24], "type": "function",
             "function": {"name": name, "arguments": args}}
@@ -231,15 +202,8 @@ def _extract_tool_calls(text):
                 calls.append(c); spans.append(m.span())
     if not calls:
         return text.strip(), []
-    # Keep only what came BEFORE the first call. Anything after it is the model
-    # narrating results it never received -- it emits a call and then invents
-    # the output, because it is trained to see real tool results at that point.
-    # Passing that through would hand the agent fabricated data alongside a
-    # genuine tool call.
     leftover = text[:spans[0][0]]
-    # A wrapper tag opened just before the call leaves a dangling fragment.
     leftover = re.sub(r"<[A-Za-z_][\w.\-]*\s*>\s*$", "", leftover)
-    # Outer wrappers (e.g. <function_calls> around the call) are now empty.
     prev = None
     while prev != leftover:
         prev = leftover
@@ -284,9 +248,6 @@ def _usage(result_obj):
         "total_tokens": prompt + out,
         "prompt_tokens_details": {"cached_tokens": cache_r},
     }
-    # Non-standard, and deliberate: the CLI knows the actual dollar cost of the
-    # turn. Passing it through makes a session's spend auditable instead of
-    # estimated. Clients that do not know the field ignore it.
     cost = result_obj.get("total_cost_usd")
     if isinstance(cost, (int, float)):
         usage["total_cost_usd"] = cost
@@ -301,7 +262,6 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "claude-code-shim"
 
-    # ---- plumbing --------------------------------------------------------
     def log_message(self, fmt, *a):
         if self.server.verbose:
             sys.stderr.write("  %s\n" % (fmt % a))
@@ -325,14 +285,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
         self.wfile.flush()
 
-    # ---- routes ----------------------------------------------------------
     def do_GET(self):
         if self.path.rstrip("/").endswith("/models"):
             now = int(time.time())
             learned = self.server.learned_ctx
             def ctx_for(alias):
-                # A learned value for a full id (claude-sonnet-5) also answers
-                # for its alias (sonnet), which is what the config usually says.
                 for mid, cw in learned.items():
                     if alias in mid or mid in alias:
                         return cw
@@ -377,10 +334,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self._fail(cid, created, model, stream, f"{type(exc).__name__}: {exc}")
 
-    # ---- execution -------------------------------------------------------
     def _spawn(self, argv, stream):
-        # stdin from DEVNULL is not optional: the CLI waits ~3s for piped input
-        # and warns, adding that latency to every single call.
         return subprocess.Popen(
             argv, stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -402,9 +356,6 @@ class Handler(BaseHTTPRequestHandler):
         _learn_context(self.server, result)
         raw = result.get("result") or ""
         text, calls = _extract_tool_calls(raw)
-        # An empty turn is the one failure the agent cannot recover from: it
-        # renders as a blank answer with no error. Always record what the CLI
-        # actually returned so the cause is visible instead of inferred.
         if not text and not calls:
             sys.stderr.write(
                 "[shim] EMPTY TURN stop_reason=%r raw_len=%d raw=%r\n"
@@ -447,14 +398,7 @@ class Handler(BaseHTTPRequestHandler):
             if ev.get("type") != "content_block_delta":
                 continue
             d = ev.get("delta") or {}
-            # Thinking is surfaced as reasoning_content, which the agent already
-            # consumes and stores separately from the answer.
             if d.get("type") == "text_delta" and d.get("text"):
-                # When the turn may contain tool calls the answer text cannot be
-                # streamed: a <tool_call> block has to be lifted out of the full
-                # text and returned as structured tool_calls, and a fragment
-                # already sent to the client cannot be taken back. Reasoning
-                # still streams, so the turn stays visibly alive.
                 if has_tools:
                     buffered.append(d["text"])
                     continue

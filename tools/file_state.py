@@ -41,18 +41,10 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
-# ── Public stamp type ────────────────────────────────────────────────
-# (mtime, read_ts, partial).  partial=True when read_file returned a
-# windowed view (offset > 1 or limit < total_lines) — writes that happen
-# after a partial read should still warn so the model re-reads in full.
 ReadStamp = Tuple[float, float, bool]
 
-# Number of resolved-path entries retained per agent.  Bounded to keep
-# long sessions from accumulating unbounded state.  On overflow we drop
-# the oldest entries by insertion order.
 _MAX_PATHS_PER_AGENT = 4096
 
-# Global last-writer map cap.  Same policy.
 _MAX_GLOBAL_WRITERS = 4096
 
 
@@ -63,10 +55,9 @@ class FileStateRegistry:
         self._reads: Dict[str, Dict[str, ReadStamp]] = defaultdict(dict)
         self._last_writer: Dict[str, Tuple[str, float]] = {}
         self._path_locks: Dict[str, threading.Lock] = {}
-        self._meta_lock = threading.Lock()  # guards _path_locks
-        self._state_lock = threading.Lock()  # guards _reads + _last_writer
+        self._meta_lock = threading.Lock()
+        self._state_lock = threading.Lock()
 
-    # ── Path lock management ────────────────────────────────────────
     def _lock_for(self, resolved: str) -> threading.Lock:
         with self._meta_lock:
             lock = self._path_locks.get(resolved)
@@ -89,7 +80,6 @@ class FileStateRegistry:
         finally:
             lock.release()
 
-    # ── Read/write accounting ───────────────────────────────────────
     def record_read(
         self,
         task_id: str,
@@ -135,7 +125,6 @@ class FileStateRegistry:
         with self._state_lock:
             self._last_writer[resolved] = (task_id, now)
             _cap_dict(self._last_writer, _MAX_GLOBAL_WRITERS)
-            # Writer's own view is now up-to-date.
             self._reads[task_id][resolved] = (float(mtime), now, False)
             _cap_dict(self._reads[task_id], _MAX_PATHS_PER_AGENT)
 
@@ -157,19 +146,14 @@ class FileStateRegistry:
             stamp = self._reads.get(task_id, {}).get(resolved)
             last_writer = self._last_writer.get(resolved)
 
-        # Case 3: never read AND we have no write record — net-new file or
-        # first touch by this agent.  Let existing _check_sensitive_path
-        # and file-exists logic handle it; nothing to warn about here.
         if stamp is None and last_writer is None:
             return None
 
         try:
             current_mtime = os.path.getmtime(resolved)
         except OSError:
-            # File doesn't exist — write will create it; not stale.
             return None
 
-        # Case 1: sibling subagent modified after our last read.
         if last_writer is not None:
             writer_tid, writer_ts = last_writer
             if writer_tid != task_id:
@@ -189,7 +173,6 @@ class FileStateRegistry:
                         "Re-read the file before writing."
                     )
 
-        # Case 2: external / unknown modification (mtime drifted).
         if stamp is not None:
             read_mtime, _read_ts, partial = stamp
             if current_mtime != read_mtime:
@@ -205,7 +188,6 @@ class FileStateRegistry:
                     "overwriting it."
                 )
 
-        # Case 3b: agent truly never read the file.
         if stamp is None:
             return (
                 f"{resolved} was not read by this agent. "
@@ -214,7 +196,6 @@ class FileStateRegistry:
 
         return None
 
-    # ── Reminder helper for delegate_tool ───────────────────────────
     def writes_since(
         self,
         exclude_task_id: str,
@@ -248,7 +229,6 @@ class FileStateRegistry:
         with self._state_lock:
             return list(self._reads.get(task_id, {}).keys())
 
-    # ── Testing hooks ───────────────────────────────────────────────
     def clear(self) -> None:
         """Reset all state.  Intended for tests only."""
         with self._state_lock:
@@ -258,7 +238,6 @@ class FileStateRegistry:
             self._path_locks.clear()
 
 
-# ── Module-level singleton + helpers ─────────────────────────────────
 _registry = FileStateRegistry()
 
 
@@ -267,13 +246,10 @@ def get_registry() -> FileStateRegistry:
 
 
 def _disabled() -> bool:
-    # Re-read each call so tests can toggle via monkeypatch.setenv.
     return os.environ.get("DAEDALUS_DISABLE_FILE_STATE_GUARD", "").strip() == "1"
 
 
 def _fmt_ts(ts: float) -> str:
-    # Short relative wall-clock for error messages; avoids pulling in
-    # datetime formatting overhead on the hot path.
     return time.strftime("%H:%M:%S", time.localtime(ts))
 
 
@@ -282,7 +258,6 @@ def _cap_dict(d: dict, limit: int) -> None:
     over = len(d) - limit
     if over <= 0:
         return
-    # dict preserves insertion order (PY>=3.7) — pop the oldest keys.
     it = iter(d)
     for _ in range(over):
         try:
@@ -291,7 +266,6 @@ def _cap_dict(d: dict, limit: int) -> None:
             break
 
 
-# ── Convenience wrappers (short names used at call sites) ────────────
 def record_read(task_id: str, resolved_or_path: str | Path, *, partial: bool = False) -> None:
     _registry.record_read(task_id, str(resolved_or_path), partial=partial)
 

@@ -103,7 +103,7 @@ class TestDirHash:
 
     def test_nonexistent_dir(self, tmp_path):
         h = _dir_hash(tmp_path / "nope")
-        assert isinstance(h, str)  # returns hash of empty content
+        assert isinstance(h, str)
 
 
 class TestDiscoverBundledSkills:
@@ -196,7 +196,6 @@ class TestSyncSkills:
 
         assert "new-skill" in manifest
         assert "old-skill" in manifest
-        # Hashes should be non-empty MD5 strings
         assert len(manifest["new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
@@ -206,7 +205,6 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
         skills_dir.mkdir(parents=True)
-        # old-skill is in manifest (v2 format) but NOT on disk
         old_hash = _dir_hash(bundled / "old-skill")
         manifest_file.write_text(f"old-skill:{old_hash}\n")
 
@@ -224,20 +222,16 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # Simulate: user has old version that was synced from an older bundled
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old v1")
         old_origin_hash = _dir_hash(user_skill)
 
-        # Record origin hash = hash of what was synced (the old version)
         manifest_file.write_text(f"old-skill:{old_origin_hash}\n")
 
-        # Now bundled has a newer version ("# Old" != "# Old v1")
         with self._patches(bundled, skills_dir, manifest_file):
             result = sync_skills(quiet=True)
 
-        # Should be updated because user copy matches origin (unmodified)
         assert "old-skill" in result["updated"]
         assert (user_skill / "SKILL.md").read_text() == "# Old"
 
@@ -247,22 +241,18 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # Simulate: user had the old version synced, then modified it
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old v1")
         old_origin_hash = _dir_hash(user_skill)
 
-        # Record origin hash from what was originally synced
         manifest_file.write_text(f"old-skill:{old_origin_hash}\n")
 
-        # User modifies their copy
         (user_skill / "SKILL.md").write_text("# My custom version")
 
         with self._patches(bundled, skills_dir, manifest_file):
             result = sync_skills(quiet=True)
 
-        # Should NOT update — user modified it
         assert "old-skill" in result["user_modified"]
         assert "old-skill" not in result.get("updated", [])
         assert (user_skill / "SKILL.md").read_text() == "# My custom version"
@@ -273,7 +263,6 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # Copy bundled to user dir (simulating perfect sync state)
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old")
@@ -293,23 +282,19 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # Pre-create skill on disk
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old modified by user")
 
-        # v1 manifest (no hashes)
         manifest_file.write_text("old-skill\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
             result = sync_skills(quiet=True)
-            # Should skip (migration baseline set), NOT update
             assert "old-skill" not in result.get("updated", [])
             assert "old-skill" not in result.get("user_modified", [])
 
-            # Now check manifest was upgraded to v2 with user's hash as baseline
             manifest = _read_manifest()
-            assert len(manifest["old-skill"]) == 32  # MD5 hash
+            assert len(manifest["old-skill"]) == 32
 
     def test_v1_migration_then_bundled_update_detected(self, tmp_path):
         """After v1 migration, a subsequent sync should detect bundled updates."""
@@ -317,22 +302,17 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # User has the SAME content as bundled (in sync)
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old")
 
-        # v1 manifest
         manifest_file.write_text("old-skill\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
-            # First sync: migration — sets baseline
             sync_skills(quiet=True)
 
-            # Now change bundled content
             (bundled / "old-skill" / "SKILL.md").write_text("# Old v2 — improved")
 
-            # Second sync: should detect bundled changed + user unmodified → update
             result = sync_skills(quiet=True)
 
         assert "old-skill" in result["updated"]
@@ -387,7 +367,6 @@ class TestSyncSkills:
         manifest_file = skills_dir / ".bundled_manifest"
 
         with self._patches(bundled, skills_dir, manifest_file):
-            # Patch copytree to fail for new-skill
             original_copytree = __import__("shutil").copytree
 
             def failing_copytree(src, dst, *a, **kw):
@@ -398,17 +377,14 @@ class TestSyncSkills:
             with patch("shutil.copytree", side_effect=failing_copytree):
                 result = sync_skills(quiet=True)
 
-            # new-skill should NOT be in copied (it failed)
             assert "new-skill" not in result["copied"]
 
-            # Critical: new-skill must NOT be in the manifest
             manifest = _read_manifest()
             assert "new-skill" not in manifest, (
                 "Failed copy was recorded in manifest — next sync will "
                 "treat it as 'user deleted' and never retry"
             )
 
-            # Now run sync again (copytree works this time) — it should retry
             result2 = sync_skills(quiet=True)
             assert "new-skill" in result2["copied"]
             assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
@@ -419,7 +395,6 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # Start with old synced version
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old v1")
@@ -427,7 +402,6 @@ class TestSyncSkills:
         manifest_file.write_text(f"old-skill:{old_hash}\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
-            # Patch copytree to fail (rmtree succeeds, copytree fails)
             original_copytree = __import__("shutil").copytree
 
             def failing_copytree(src, dst, *a, **kw):
@@ -438,11 +412,8 @@ class TestSyncSkills:
             with patch("shutil.copytree", side_effect=failing_copytree):
                 result = sync_skills(quiet=True)
 
-            # old-skill should NOT be in updated (it failed)
             assert "old-skill" not in result.get("updated", [])
 
-            # The skill directory should still exist (rmtree destroyed it
-            # but copytree failed to replace it — this is data loss)
             assert user_skill.exists(), (
                 "Update failure destroyed user's skill copy without replacing it"
             )
@@ -453,7 +424,6 @@ class TestSyncSkills:
         skills_dir = tmp_path / "user_skills"
         manifest_file = skills_dir / ".bundled_manifest"
 
-        # Start with old synced version
         user_skill = skills_dir / "old-skill"
         user_skill.mkdir(parents=True)
         (user_skill / "SKILL.md").write_text("# Old v1")
@@ -461,10 +431,9 @@ class TestSyncSkills:
         manifest_file.write_text(f"old-skill:{old_hash}\n")
 
         with self._patches(bundled, skills_dir, manifest_file):
-            sync_skills(quiet=True)  # updates to "# Old"
+            sync_skills(quiet=True)
             manifest = _read_manifest()
 
-        # New origin hash should match the bundled version
         new_bundled_hash = _dir_hash(bundled / "old-skill")
         assert manifest["old-skill"] == new_bundled_hash
         assert manifest["old-skill"] != old_hash

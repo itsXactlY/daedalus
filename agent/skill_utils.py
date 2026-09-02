@@ -16,7 +16,6 @@ from daedalus_constants import get_config_path, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
-# ── Platform mapping ──────────────────────────────────────────────────────
 
 PLATFORM_MAP = {
     "macos": "darwin",
@@ -43,27 +42,12 @@ EXCLUDED_SKILL_DIRS = frozenset(
     )
 )
 
-# Supporting files live inside a skill package and are loaded explicitly via
-# skill_view(skill, file_path=...). They are not standalone skills and must not
-# be scanned for active SKILL.md/DESCRIPTION.md entries, even if a Curator or
-# archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
-# ── Org-shared skills (sync contract) ───────────────────────────
-# Org mirrors live under ~/.daedalus/skills/_org/<org_id>/. Resolution is
-# TOKEN-GATED via a marker file the sync client writes after verifying the
-# token (skills_sync_client.pull_org_skills): only the marked org's mirror is
-# scanned. No marker ⇒ no org skills load. The marker is plain data (org_id
-# string) so this module stays import-light; the VERIFICATION lives in the
-# sync client, which is the only writer. Offline grace: the marker persists,
-# so already-pulled org skills keep working without connectivity; a VERIFIED
-# org change (or personal-org token) rewrites/removes it.
 
 ORG_MIRROR_DIR_NAME = "_org"
 ORG_ACTIVE_MARKER = ".active_org"
 ORG_PROVENANCE_FILE = ".org-provenance.json"
-# Records the fingerprint of each skill exactly as upstream sent it, so a
-# later local edit is detectable and an org pull can refuse to clobber it.
 ORG_BASELINE_FILE = ".org-baseline.json"
 
 
@@ -110,7 +94,7 @@ def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     Accepts a Path or string.
     """
     try:
-        parts = path.parts  # Path
+        parts = path.parts
     except AttributeError:
         from pathlib import PurePath
         parts = PurePath(str(path)).parts
@@ -135,8 +119,6 @@ def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
     """
     path_obj = path if isinstance(path, Path) else Path(str(path))
     parts = path_obj.parts
-    # Last component may be a file or candidate skill directory name. Only
-    # components before the leaf can be containing support directories.
     for idx, part in enumerate(parts[:-1]):
         if part not in SKILL_SUPPORT_DIRS or idx == 0:
             continue
@@ -148,7 +130,6 @@ def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
     return False
 
 
-# ── Lazy YAML loader ─────────────────────────────────────────────────────
 
 _yaml_load_fn = None
 
@@ -168,7 +149,6 @@ def yaml_load(content: str):
     return _yaml_load_fn(content)
 
 
-# ── Frontmatter parsing ──────────────────────────────────────────────────
 
 
 def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
@@ -190,7 +170,6 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     """
     frontmatter: Dict[str, Any] = {}
 
-    # Strip only a leading BOM; a BOM mid-content is data, not a marker.
     if content.startswith("\ufeff"):
         content = content[1:]
     body = content
@@ -210,7 +189,6 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         if isinstance(parsed, dict):
             frontmatter = parsed
     except Exception:
-        # Fallback: simple key:value parsing for malformed YAML
         for line in yaml_content.strip().split("\n"):
             if ":" not in line:
                 continue
@@ -220,7 +198,6 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
-# ── Platform matching ─────────────────────────────────────────────────────
 
 
 def skill_matches_platform_list(platforms: Any) -> bool:
@@ -236,13 +213,8 @@ def skill_matches_platform_list(platforms: Any) -> bool:
         mapped = PLATFORM_MAP.get(normalized, normalized)
         if current.startswith(mapped):
             return True
-        # Termux runs a Linux userland on Android. Accept linux-tagged
-        # skills regardless of whether sys.platform is "linux" (pre-3.13
-        # Termux) or "android" (Python 3.13+ Termux, and any other
-        # Android runtime).
         if running_in_termux and mapped == "linux":
             return True
-        # Explicit termux/android tags match a Termux session too.
         if running_in_termux and mapped in ("termux", "android"):
             return True
     return False
@@ -271,16 +243,7 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     return skill_matches_platform_list(frontmatter.get("platforms"))
 
 
-# ── Environment matching ──────────────────────────────────────────────────
 
-# Recognized environment tags and how each is detected. An environment tag is
-# a *relevance* gate, not a hard-compatibility gate (that is what ``platforms:``
-# is for). A skill tagged for an environment it isn't relevant to is hidden from
-# the skills index / offer surfaces so it does not add noise for users who will
-# never need it — but it can ALWAYS still be loaded explicitly (``skill_view``,
-# ``--skills``), because an explicit request is explicit consent.
-#
-# Detection is cached for the process lifetime via ``_ENV_DETECT_CACHE``.
 _KNOWN_ENVIRONMENTS = frozenset({"kanban", "docker", "s6"})
 
 _ENV_DETECT_CACHE: Dict[str, bool] = {}
@@ -299,16 +262,7 @@ def _detect_environment(env: str) -> bool:
 
     result = True
     if env == "kanban":
-        # Kanban is "active" either as a dispatcher-spawned worker (the
-        # dispatcher sets ``DAEDALUS_KANBAN_TASK`` / ``DAEDALUS_KANBAN_BOARD`` in the
-        # worker env) or as an orchestrator profile that has opted into the
-        # kanban toolset. Mirror the same signals the kanban tools themselves
-        # gate on (``tools/kanban_tools.py``) so the offer filter agrees with
-        # tool availability.
         if os.getenv("DAEDALUS_KANBAN_TASK") or os.getenv("DAEDALUS_KANBAN_BOARD"):
-            # ...but only when this execution actually owns the dispatcher's
-            # task. A delegate_task child or a cron job fired in-process from a
-            # worker sees the worker's vars without being that worker.
             try:
                 from agent.delegation_context import (
                     is_dispatcher_owned_worker_context,
@@ -336,10 +290,6 @@ def _detect_environment(env: str) -> bool:
         except Exception:
             result = False
     elif env == "s6":
-        # The Daedalus Docker image runs s6-overlay as PID 1 (/init). s6 plants
-        # its runtime scaffolding under /run/s6 and ships its admin tree under
-        # /package/admin/s6-overlay. Either marker means we're inside an
-        # s6-supervised container.
         result = os.path.isdir("/run/s6") or os.path.isdir(
             "/package/admin/s6-overlay"
         )
@@ -380,14 +330,12 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
         if not normalized:
             continue
         if normalized not in _KNOWN_ENVIRONMENTS:
-            # Tag we don't understand — don't hide the skill over it.
             return True
         if _detect_environment(normalized):
             return True
     return False
 
 
-# ── Disabled skills ───────────────────────────────────────────────────────
 
 
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
@@ -479,14 +427,7 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
-# ── External skills directories ──────────────────────────────────────────
 
-# (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
-# mtime_ns so a config.yaml edit mid-run is picked up automatically;
-# otherwise every call would re-read + re-YAML-parse the 15KB config,
-# which becomes the dominant cost of ``daedalus`` startup when ~120 skills
-# each trigger a category lookup during banner construction (10+ seconds
-# of pure waste).
 _EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
 
 
@@ -512,8 +453,6 @@ def get_external_skills_dirs() -> List[Path]:
     if not config_path.exists():
         return []
 
-    # Cache key: (absolute path, mtime_ns).  stat() is ~2us vs ~85ms for
-    # the full YAML parse, so the fast path is nearly free.
     try:
         stat = config_path.stat()
         cache_key: Tuple[str, int] = (str(config_path), stat.st_mtime_ns)
@@ -523,7 +462,6 @@ def get_external_skills_dirs() -> List[Path]:
     if cache_key is not None:
         cached = _EXTERNAL_DIRS_CACHE.get(cache_key)
         if cached is not None:
-            # Return a copy so callers can't mutate the cached list.
             return list(cached)
 
     parsed = _load_raw_config()
@@ -556,10 +494,8 @@ def get_external_skills_dirs() -> List[Path]:
         entry = str(entry).strip()
         if not entry:
             continue
-        # Expand ~ and environment variables
         expanded = os.path.expanduser(os.path.expandvars(entry))
         p = Path(expanded)
-        # Resolve relative paths against DAEDALUS_HOME, not cwd
         if not p.is_absolute():
             p = (daedalus_home / p).resolve()
         else:
@@ -607,12 +543,6 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     if not identifier_path.is_absolute():
         return raw_identifier.lstrip("/")
 
-    # Look the primary skills root up on tools.skills_tool at CALL time
-    # (not via get_skills_dir()): callers and tests patch
-    # ``tools.skills_tool.SKILLS_DIR`` and skill_view() itself resolves
-    # against that module attribute, so normalization must agree with the
-    # exact root skill_view() will enforce.  Import deferred to avoid a
-    # module cycle (tools.skills_tool imports agent.skill_utils).
     try:
         from tools import skills_tool as _skills_tool
         primary_root = Path(_skills_tool.SKILLS_DIR)
@@ -625,11 +555,6 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     except Exception:
         pass
 
-    # Prefer the lexical path under a trusted skill root before resolving
-    # symlinks. Slash-command discovery can legitimately find a skill via
-    # ~/.daedalus/skills/<name> where <name> is a symlink to a checked-out
-    # skill elsewhere. Resolving first turns that trusted visible path into
-    # an arbitrary absolute path that skill_view() refuses to load.
     for root in trusted_roots:
         try:
             return str(identifier_path.relative_to(root))
@@ -675,13 +600,11 @@ def is_external_skill_path(path) -> bool:
     return False
 
 
-# ── Condition extraction ──────────────────────────────────────────────────
 
 
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter."""
     metadata = frontmatter.get("metadata")
-    # Handle cases where metadata is not a dict (e.g., a string from malformed YAML)
     if not isinstance(metadata, dict):
         metadata = {}
     daedalus = metadata.get("daedalus") or {}
@@ -695,7 +618,6 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
-# ── Skill config extraction ───────────────────────────────────────────────
 
 
 def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -736,7 +658,6 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
         key = str(item.get("key", "")).strip()
         if not key or key in seen:
             continue
-        # Must have at least key and description
         desc = str(item.get("description", "")).strip()
         if not desc:
             continue
@@ -796,9 +717,6 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
     return all_vars
 
 
-# Storage prefix: all skill config vars are stored under skills.config.*
-# in config.yaml.  Skill authors declare logical keys (e.g. "wiki.path");
-# the system adds this prefix for storage and strips it for display.
 SKILL_CONFIG_PREFIX = "skills.config"
 
 
@@ -835,7 +753,6 @@ def resolve_skill_config_values(
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
 
-        # Expand ~ in path-like values
         if isinstance(value, str) and ("~" in value or "${" in value):
             value = os.path.expanduser(os.path.expandvars(value))
 
@@ -844,7 +761,6 @@ def resolve_skill_config_values(
     return resolved
 
 
-# ── Description extraction ────────────────────────────────────────────────
 
 SKILL_PROMPT_DESC_LIMIT = 60
 
@@ -871,7 +787,6 @@ def is_skill_description_truncated_for_prompt(frontmatter: Dict[str, Any]) -> bo
     return len(desc) > SKILL_PROMPT_DESC_LIMIT
 
 
-# ── File iteration ────────────────────────────────────────────────────────
 
 
 def iter_skill_index_files(skills_dir: Path, filename: str):
@@ -898,7 +813,6 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
         if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
-            # Inside _org/: descend ONLY into the active org's mirror.
             dirs[:] = [d for d in dirs if d == active_org]
         dirs[:] = [
             d
@@ -912,7 +826,6 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
         yield Path(path)
 
 
-# ── Namespace helpers for plugin-provided skills ───────────────────────────
 
 _NAMESPACE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 

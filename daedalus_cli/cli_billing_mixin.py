@@ -52,10 +52,6 @@ class CLIBillingMixin:
                 _cprint(f"  {_b(f'Plan: {plan}{renews}')}")
                 printed_any = True
 
-            # All lines below go through _cprint (same renderer as the Plan line) so
-            # ordering is deterministic: raw print() and _cprint() flush to different
-            # buffers under patch_stdout and interleave nondeterministically (the bar
-            # would race above/below the Plan line across states). Keep one path.
             for _bar_ln in self._usage_bar_lines(usage, usage.plan_name):
                 _cprint(_bar_ln)
                 printed_any = True
@@ -74,7 +70,6 @@ class CLIBillingMixin:
             if printed_any:
                 return True
 
-        # Fallback: legacy text lines (only when the model is unavailable).
         from agent.account_usage import nous_credits_lines
 
         lines = nous_credits_lines()
@@ -96,9 +91,6 @@ class CLIBillingMixin:
 
         _cprint(f"  {_d('Run /subscription to change plan · /topup to add to your balance')}")
 
-    # ------------------------------------------------------------------
-    # /subscription — view plan + change it in the browser (CLI surface)
-    # ------------------------------------------------------------------
 
     def _show_subscription(self):
         """`/subscription` (alias `/upgrade`) — view the Nous plan + browser hand-off.
@@ -127,7 +119,6 @@ class CLIBillingMixin:
                 print("  Run `daedalus portal` to log in, then /subscription.")
             return
 
-        # Team context: no personal plan — teams run on a shared balance.
         if state.context == "team":
             print()
             _cprint(f"  ⚕ {_b('Team subscription')}")
@@ -154,7 +145,6 @@ class CLIBillingMixin:
         """
         from cli import _cprint, _b, _d
 
-        # Shared dollar usage model (the only source with top-up dollars).
         from agent.billing_usage import format_renews
         try:
             from agent.billing_usage import build_usage_model
@@ -174,8 +164,6 @@ class CLIBillingMixin:
         if not renews_display and c and c.cycle_ends_at:
             renews_display = format_renews(c.cycle_ends_at)
 
-        # Status line — dollars-only, with a "→ Plus" echo of a pending change so
-        # the headline itself carries a scheduled downgrade/cancellation.
         _flip = ""
         if c and c.cancel_at_period_end:
             _flip = " → cancels"
@@ -192,9 +180,6 @@ class CLIBillingMixin:
             _tail = " · view only" if view_only else (f" · renews {renews_display}" if renews_display else "")
             status = f"Plan: {plan_name}{_flip}{_left}{_tail}"
 
-        # Lead with the scheduled change (cancel > downgrade) so it can't read as
-        # "nothing happened" — mirrors the TUI banner. All-`_cprint` (blanks
-        # included) so the block orders deterministically even when piped.
         _trans = None
         if c and c.cancel_at_period_end:
             _when = format_renews(c.cancellation_effective_at) or "the end of the billing period"
@@ -213,13 +198,11 @@ class CLIBillingMixin:
         _cprint(f"  ⚕ {_b(status)}")
         print(f"  {'─' * 41}")
 
-        # Two-bar dollar usage view — plan name labels the plan bar.
         for _bar_ln in self._usage_bar_lines(usage, plan_name):
             print(_bar_ln)
         if usage and getattr(usage, "has_topup", False) and getattr(usage, "total_spendable_usd", None) is not None:
             print(f"  Total spendable: ${usage.total_spendable_usd:,.2f}")
 
-        # State-matched nudge (free upsell / low alert; healthy stays silent).
         if is_free:
             _cprint(f"  {_d('> Paid models need a subscription. Start one to reach them.')}")
         elif u_status == "low":
@@ -233,9 +216,6 @@ class CLIBillingMixin:
             _cprint(f"  {_d(_org_line)}")
         print(f"  {'─' * 41}")
 
-        # ── Actions ── Members (non-admin) and non-interactive contexts fall back
-        # to the portal hand-off; a paid admin/owner gets the full in-terminal
-        # change flow (parity with the TUI overlay).
         if not can_change:
             print()
             _cprint(f"  {_d('Plan changes need an org admin/owner.')}")
@@ -244,7 +224,6 @@ class CLIBillingMixin:
             return
 
         if not getattr(self, "_app", None):
-            # Non-interactive (TUI slash-worker / piped): the modal can't run.
             print()
             if manage_url:
                 print(f"  Manage your subscription: {manage_url}")
@@ -252,13 +231,9 @@ class CLIBillingMixin:
             return
 
         if is_free:
-            # Starting a NEW subscription needs a fresh card — deep-link only.
-            # Show the plan catalog, let the user pick, and carry ``plan=<tier_id>``
-            # into the portal deep-link so it preselects the chosen plan.
             self._subscription_free_catalog(state, manage_url)
             return
 
-        # Paid + admin/owner + interactive → the in-terminal change flow.
         self._subscription_change_menu(state, manage_url)
 
     def _open_url_in_browser(self, url: str) -> bool:
@@ -280,7 +255,6 @@ class CLIBillingMixin:
             if _is_remote_session() or not _can_open_graphical_browser():
                 return False
         except Exception:
-            # Guard unavailable → fall through to a plain best-effort open.
             pass
         try:
             import webbrowser
@@ -310,7 +284,6 @@ class CLIBillingMixin:
 
         tiers = selectable_tiers(state)
         if not tiers:
-            # No catalog to show → the plain portal hand-off (no plan= to append).
             self._subscription_open_portal(state, manage_url, verb="Start a subscription")
             return
 
@@ -328,8 +301,6 @@ class CLIBillingMixin:
             detail="Pick a plan to open it on the portal.",
             choices=choices,
         )
-        # The rows are printed numbered, so accept a bare number as a pick (the
-        # shared normalizer only knows the confirm-dialog digit aliases).
         _digit = (raw or "").strip()
         if _digit.isdigit() and 1 <= int(_digit) <= len(tiers):
             choice = tiers[int(_digit) - 1].tier_id
@@ -338,8 +309,6 @@ class CLIBillingMixin:
         if not choice or choice == "cancel":
             print("  🟡 Cancelled. No plan started.")
             return
-        # Numbered pick → open the portal deep-link directly, with the picked tier's
-        # plan= param so the portal preselects it (spec: pick → opens the portal).
         tier_url = subscription_manage_url(state, tier_id=choice) or manage_url
         if not tier_url:
             _cprint(f"  {_d('No manage URL available — is your portal configured?')}")
@@ -349,8 +318,6 @@ class CLIBillingMixin:
         if self._open_url_in_browser(tier_url):
             print(f"  Opening the portal to start {label}…")
         else:
-            # No graphical browser (headless / SSH / console browser): print the
-            # link so it stays actionable.
             print(f"  Open this URL to start {label}: {tier_url}")
         print("  Finish in your browser, then re-run /subscription.")
 
@@ -389,10 +356,6 @@ class CLIBillingMixin:
         c = state.current
         has_pending = bool(c and (c.cancel_at_period_end or c.pending_downgrade_tier_name))
         keep_name = (c.tier_name if c else None) or "your plan"
-        # When a change is already scheduled, undo is the most likely next intent →
-        # promote it first (parity with the TUI). The Close row uses value "close"
-        # (not "cancel") so typing the word "cancel" — which the alias table would
-        # map to a Close row — can't be confused with "Cancel subscription".
         if has_pending:
             choices = [
                 ("keep", f"Keep {keep_name} (undo the scheduled change)", "cancel the pending change"),
@@ -423,9 +386,6 @@ class CLIBillingMixin:
         from agent.subscription_view import format_tier_row, is_upgrade, selectable_tiers
 
         c = state.current
-        # Selectable = enabled paid tiers other than current (free/no-sub excluded;
-        # dropping to free is a cancellation, on the change menu). Sorted by price.
-        # Shared with the Free catalog + blocked-preview branch (one derivation).
         selectable = selectable_tiers(state)
         if not selectable:
             print("  No other plans are available to switch to right now.")
@@ -478,12 +438,6 @@ class CLIBillingMixin:
             _cprint(f"  {_d(f'You are already on {target} — nothing to change.')}")
             return
         if effect not in ("charge_now", "scheduled"):
-            # blocked OR an unknown/unexpected effect → fail SAFE (never schedule a
-            # real change on an unrecognized string, unlike a bare `else`), and
-            # re-offer the portal hand-off like the TUI's blocked branch. The picked
-            # tier rides along as plan= only for an UPGRADE hand-off — new-sub /
-            # upgrade deep-links carry the plan; downgrades stay native (binding
-            # ruling), so a blocked downgrade keeps the generic manage link.
             from agent.subscription_view import is_upgrade, subscription_manage_url
 
             _plan = tier_id if is_upgrade(state, tier_id) else None
@@ -499,10 +453,6 @@ class CLIBillingMixin:
                 _cprint(f"  Upgrade to {target}. You will be charged {_amt} now (prorated).")
             else:
                 _cprint(f"  Upgrade to {target}. You will be charged the prorated amount now.")
-            # Best-effort: name the exact card (billing.state), but only when the
-            # resolver rung matches what a subscription charge actually uses
-            # (subPin / customerDefault — Stripe's own precedence). Any failure or
-            # older NAS → the generic line stands.
             _card_line = "The card on your subscription will be charged."
             try:
                 from agent.billing_view import build_billing_state
@@ -516,13 +466,11 @@ class CLIBillingMixin:
             _cprint(f"  {_d(_card_line)}")
             pay_label = f"Pay {_amt} & upgrade now" if _amt else "Upgrade now (prorated charge)"
             action = ("upgrade", tier_id)
-            # The money-moving row is NOT the default — a bare Enter hits "Go back",
-            # so a single stray keystroke can't charge the card.
             confirm_choices = [
                 ("cancel", "Go back", "do not charge"),
                 ("yes", pay_label, "charge + upgrade now"),
             ]
-        else:  # scheduled (whitelisted above)
+        else:
             _when = p.effective_at[:10] if (p.effective_at and len(p.effective_at) >= 10) else "the end of the billing period"
             _cprint(f"  {_b('Confirm plan change')}  {_d('· scheduled · not today')}")
             _cprint(f"  Change to {target} — takes effect {_when}. No charge now; you keep your current plan until then.")
@@ -595,25 +543,16 @@ class CLIBillingMixin:
                 try:
                     res = post_subscription_upgrade(subscription_type_id=arg, idempotency_key=key) or {}
                 except BillingScopeRequired:
-                    raise  # a scope denial rejects BEFORE charging → route to the step-up
+                    raise
                 except (BillingTransient, BillingSessionRevoked, BillingRemoteSpendingRevoked) as exc:
-                    # Deterministic PRE-charge typed rejections (429 / 401 / 403) never
-                    # reached Stripe → surface the CORRECT recovery (retry_after / re-login /
-                    # reconnect), NOT the "maybe charged" ambiguity copy.
                     self._subscription_render_error(state, exc)
                     return
                 except BillingError as exc:
                     _status = getattr(exc, "status", None)
                     _code = getattr(exc, "error", None)
                     if _code in ("network_error", "endpoint_unavailable") or _status is None or _status >= 500:
-                        # Genuinely INDETERMINATE — transport / unparseable 2xx / a 5xx the
-                        # server hit mid-request: NAS may have already prorated + charged.
-                        # Steer to a re-check, never a blind retry (a fresh key can't dedup →
-                        # a real second charge).
                         self._subscription_render_upgrade_ambiguous(exc)
                     else:
-                        # A deterministic 4xx (role_required / no_payment_method / …) → the
-                        # normal error copy, not "maybe charged".
                         self._subscription_render_error(state, exc)
                     return
                 status = res.get("status")
@@ -632,7 +571,6 @@ class CLIBillingMixin:
                     if _url:
                         _cprint(f"  Portal: {_url}")
                 else:
-                    # Unknown / absent 2xx status → also ambiguous, not a flat failure.
                     self._subscription_render_upgrade_ambiguous(None)
                 return
             if kind == "schedule":
@@ -692,18 +630,12 @@ class CLIBillingMixin:
             print("  Couldn't allow Remote Spending — an org admin or owner has to approve it for this org.")
             return
         _cprint(f"  {_DIM}✓ Remote Spending allowed.{_RST}")
-        # Bust the 30s token cache so the replay uses the freshly-scoped token. The
-        # cache still holds the pre-grant unscoped token, and _request only busts it
-        # on a 401 (not a 403 scope denial) — without this, the replay would 403
-        # again and (before the allow_stepup guard) re-prompt in a loop.
         try:
             from daedalus_cli import nous_billing as _nb
 
             _nb.invalidate_cached_token()
         except Exception:
             pass
-        # Re-fetch fresh state, then replay the held action ONCE (allow_stepup=False
-        # so a repeated scope denial can't re-enter the step-up).
         from agent.subscription_view import build_subscription_state
 
         try:
@@ -723,7 +655,6 @@ class CLIBillingMixin:
         code = getattr(exc, "error", None)
         msg = str(exc) or "Something went wrong."
         if code == "insufficient_scope":
-            # Defensive: the flow routes scope to the step-up before reaching here.
             _cprint("  🟡 Remote Spending isn't allowed yet. Allow it, then retry.")
         elif code in ("subscription_mutation_rejected", "preview_rejected"):
             _cprint(f"  🟡 {msg}")
@@ -747,9 +678,6 @@ class CLIBillingMixin:
         if _url:
             _cprint(f"  Portal: {_url}")
 
-    # ------------------------------------------------------------------
-    # /billing — Phase 2b Remote Spending (CLI surface, all 5 screens)
-    # ------------------------------------------------------------------
 
     def _show_billing(self, command: str = "/topup"):
         """`/topup` — Remote Spending for Nous (one interactive modal).
@@ -780,7 +708,6 @@ class CLIBillingMixin:
                 print("  Run `daedalus portal` to log in, then /topup.")
             return
 
-        # Any sub-arg is intentionally ignored — always open the menu.
         self._billing_overview(state)
 
     def _billing_portal_hint(self, state, *, reason: str = "") -> None:
@@ -804,7 +731,6 @@ class CLIBillingMixin:
 
         from agent.billing_view import format_money
 
-        # Shared dollar usage model (plan + top-up bars), same source as /usage.
         try:
             from agent.billing_usage import build_usage_model
 
@@ -820,7 +746,6 @@ class CLIBillingMixin:
             _cprint(f"  {_d(_org_line)}")
         print(f"  {'─' * 41}")
 
-        # Two-bar dollar usage view (plan name on the plan bar; top-up below).
         for _bar_ln in self._usage_bar_lines(usage, getattr(usage, "plan_name", None)):
             print(_bar_ln)
 
@@ -833,9 +758,6 @@ class CLIBillingMixin:
                 )
             else:
                 print("  Auto-reload: off")
-        # Card presence at a glance: which card a charge would use (with why —
-        # "the card on your subscription"), or that none is saved. Only for the
-        # full-menu case (admin + billing on) — others get the portal note below.
         if state.can_change_plan and state.cli_billing_enabled:
             if state.card is not None:
                 print(f"  Card: {state.card.display}")
@@ -843,7 +765,6 @@ class CLIBillingMixin:
                 _cprint(f"  {_d('No saved card on file — “Add funds” walks you through adding one.')}")
         print(f"  {'─' * 41}")
 
-        # Action gating: admin + kill-switch for charge/auto-reload; everyone gets portal.
         if not state.can_change_plan:
             _cprint(f"  {_d('Billing actions require an org admin/owner.')}")
             self._billing_portal_hint(state)
@@ -856,21 +777,11 @@ class CLIBillingMixin:
             )
             return
 
-        # A missing card does NOT gate the whole overview — the org may already have
-        # balance, auto-reload, or a limit to view/manage. The card only matters at
-        # CHARGE time: "Add funds" -> _billing_buy_flow, which detects no card and
-        # hands off to the portal there. So always show the full menu below.
 
-        # Non-interactive (slash-worker / no live app): no modal, no sub-command
-        # advertising — just the portal funnel (the URL is the affordance).
         if not getattr(self, "_app", None):
             self._billing_portal_hint(state)
             return
 
-        # One-time vs automatic — the two ways to add funds, the distinction stated
-        # up front in each first sentence (parity with the desktop revamp's split
-        # copy). "credits" stays out of the dollars-only /topup surface: "Add funds
-        # now" carries the one-time meaning without it.
         _cprint(f"  {_d('Add funds now — a single charge, added to your balance today.')}")
         if (
             ar is not None
@@ -892,12 +803,6 @@ class CLIBillingMixin:
         _cprint(f"  {_d(_auto_line)}")
         print(f"  {'─' * 41}")
 
-        # Add funds first, then settings, then the scopeless browser handoff.
-        # No "Allow Remote Spending" item — that's discovered at pay time.
-        # "Add funds" charges in-terminal against the org's portal-saved card
-        # (server-held via POST /charge — no card ref leaves the client). A
-        # missing card is NOT gated here: the buy flow reacts to the server's
-        # no_payment_method 403 and hands off to the portal at charge time.
         choices = [
             ("buy", "Add funds", "a single charge, added to your balance today"),
             ("auto", "Auto-reload", "refill automatically when your balance runs low"),
@@ -905,8 +810,6 @@ class CLIBillingMixin:
             ("portal", "Manage on portal", "open the billing page in your browser"),
             ("cancel", "Cancel", "do nothing"),
         ]
-        # The overview summary is already printed above; the modal only needs to
-        # present the action menu — repeating the title/balance reads as a dupe.
         raw = self._prompt_text_input_modal(
             title="Top up your balance", detail="",
             choices=choices,
@@ -991,7 +894,7 @@ class CLIBillingMixin:
             ("recheck", "I've added it — check again", "re-check for the card and continue"),
             ("cancel", "Back", "do nothing"),
         ]
-        for _ in range(8):  # bounded: portal-open plus a handful of re-checks
+        for _ in range(8):
             raw = self._prompt_text_input_modal(title="Add a card", detail="", choices=choices)
             choice = self._normalize_slash_confirm_choice(raw, choices)
             if choice == "portal":
@@ -1025,13 +928,7 @@ class CLIBillingMixin:
         if not self._billing_require_admin(state):
             return
 
-        # No card / scope preflight here — that's the rejected anti-pattern. We let
-        # the charge fly and react to whatever 403 the server returns: scope first
-        # (insufficient_scope → in-flight reauth), then card (no_payment_method →
-        # portal handoff via _billing_render_charge_error). Mirrors the server's gate
-        # order; the user only hits the flow they actually need.
 
-        # Screen 3 — preset selection.
         if not getattr(self, "_app", None):
             presets = ", ".join(format_money(p) for p in state.charge_presets)
             print()
@@ -1041,9 +938,6 @@ class CLIBillingMixin:
             self._billing_portal_hint(state)
             return
 
-        # No card on file → the guided ADD-CARD path first (portal + re-check),
-        # so the user isn't walked through picking an amount that will 403.
-        # Returns refreshed state with a card, or None (abandoned).
         if state.card is None:
             state = self._billing_add_card_flow(state)
             if state is None or state.card is None:
@@ -1070,7 +964,6 @@ class CLIBillingMixin:
         if choice == "custom":
             entered = self._prompt_text_input("  Amount (USD): ")
             if entered is None:
-                # None = cancelled (e.g. slash-worker can't prompt off-thread).
                 print("  Cancelled. No funds added.")
                 return
             v = validate_charge_amount(
@@ -1102,8 +995,6 @@ class CLIBillingMixin:
         print(f"  Total: {format_money(amount)}")
         if card:
             print(f"  Payment: {card.display}")
-            # Provenance-less payloads (older NAS) keep the generic line; when
-            # the resolver says WHY this card, the Payment line carries it.
             if card.provenance is None:
                 _cprint(f"  {_d('Your card saved on the portal will be charged.')}")
         print(f"  {'─' * 41}")
@@ -1133,7 +1024,6 @@ class CLIBillingMixin:
             print("  Cancelled. No funds added.")
             return
 
-        # Submit the charge with a fresh idempotency key (reused on retry).
         from daedalus_cli.nous_billing import (
             BillingError,
             BillingScopeRequired,
@@ -1144,8 +1034,6 @@ class CLIBillingMixin:
         try:
             result = post_charge(amount_usd=amount, idempotency_key=key)
         except BillingScopeRequired:
-            # In-flight reauth: allow remote spending, then resume THIS charge
-            # (press-Enter beat) — no command re-run. Reuses the same idem key.
             self._billing_handle_scope_required(state, amount=amount, idempotency_key=key)
             return
         except BillingError as exc:
@@ -1170,13 +1058,12 @@ class CLIBillingMixin:
             get_charge_status,
         )
 
-        deadline = _time.time() + 300  # 5-minute cap
+        deadline = _time.time() + 300
         interval = 2.0
         while _time.time() < deadline:
             try:
                 status = get_charge_status(charge_id)
             except BillingTransient as exc:
-                # Retry-after, NOT a failure — back off and keep polling.
                 wait = exc.retry_after or 5
                 _time.sleep(min(wait, 30))
                 continue
@@ -1195,10 +1082,8 @@ class CLIBillingMixin:
             if state_str == "failed":
                 self._billing_render_charge_failed(state, status.get("reason"))
                 return
-            # pending → wait and poll again
             _time.sleep(interval)
 
-        # Past the cap with no terminal state = timeout (not an error).
         print("  🟡 Still processing after 5 minutes — this is a timeout, not a "
               "failure. Check /billing or the portal shortly.")
         self._billing_portal_hint(state)
@@ -1229,7 +1114,6 @@ class CLIBillingMixin:
         actor = getattr(exc, "actor", None)
         portal_url = getattr(exc, "portal_url", None) or getattr(state, "portal_url", None)
         if isinstance(exc, BillingRemoteSpendingRevoked) or code == "remote_spending_revoked":
-            # CF-4: this terminal's spend was revoked. Recovery is reconnect.
             who = ("An admin stopped this terminal's spending."
                    if actor == "admin"
                    else "You stopped this terminal's spending.")
@@ -1256,8 +1140,6 @@ class CLIBillingMixin:
             mins = f" (try again in ~{max(1, round(wait / 60))} min)" if wait else ""
             print(f"  🟡 Too many charges right now{mins}. This isn't a payment failure.")
         elif code == "insufficient_scope":
-            # Never leak the raw billing:manage scope (the post-grant replay can
-            # re-raise it if the grant raced) — the concept is "Remote Spending".
             print("  🔴 Remote Spending needs approval — run /topup to allow it, then retry.")
         else:
             print(f"  🔴 {exc}")
@@ -1310,9 +1192,6 @@ class CLIBillingMixin:
             print("  Couldn't allow Remote Spending — an org admin or owner has to approve it. Your card was not charged.")
             return
 
-        # Granted. The token now carries the scope, but the ORG kill-switch
-        # (cli_billing_enabled) is a separate gate — re-fetch /state so we don't
-        # over-promise when a charge would still hit cli_billing_disabled.
         from agent.billing_view import build_billing_state
 
         fresh = build_billing_state()
@@ -1321,23 +1200,16 @@ class CLIBillingMixin:
             self._billing_portal_hint(fresh)
             return
 
-        # Scope granted + org kill-switch on — but a charge still needs a card on
-        # file. If there's none, this is a half-done state: say so and route to the
-        # portal to top up / manage billing, rather than a bare "✓ enabled" that reads as done.
         if fresh.card is None:
             print("  ✓ Remote Spending allowed — but there's no card on file yet.")
             _cprint(f"  {_d('Top up and manage billing on the portal to continue.')}")
             self._billing_portal_hint(fresh)
             return
 
-        # Nothing to resume (scope-required hit outside a charge, e.g. auto-reload
-        # config) → just tell the user it's ready.
         if amount is None:
             print("  ✓ Remote Spending allowed. Run /topup to continue.")
             return
 
-        # Press-Enter beat: the user is back from the browser; resume the held
-        # purchase on an explicit confirm (reassuring, not silent).
         print("  ✓ Remote Spending allowed.")
         resume_choices = [
             ("resume", f"Resume {format_money(amount)} top-up", "finish the held purchase"),
@@ -1352,8 +1224,6 @@ class CLIBillingMixin:
             print("  Cancelled. No funds added.")
             return
 
-        # Replay the held charge, reusing the original idempotency key so a
-        # double-submit collapses to one charge.
         from daedalus_cli.nous_billing import BillingError, post_charge
 
         from agent.billing_view import new_idempotency_key
@@ -1410,7 +1280,6 @@ class CLIBillingMixin:
             self._billing_portal_hint(state)
             return
 
-        # When already enabled, let the user turn it off without re-entering values.
         if currently_on:
             top_choices = [
                 ("edit", "Edit thresholds", "change when / how much to reload"),
@@ -1433,17 +1302,15 @@ class CLIBillingMixin:
                 print("  🟡 Cancelled.")
                 return
 
-        # Field 1 — threshold (prefilled when editing an existing config).
         cur_thr = format_money(ar.threshold_usd) if currently_on else None
         thr_prompt = "  When balance falls below (USD)"
         thr_prompt += f" [{cur_thr}]: " if cur_thr else ": "
         threshold_raw = self._prompt_text_input(thr_prompt)
         if threshold_raw is None:
-            # None = cancelled (e.g. slash-worker can't prompt off-thread).
             print("  🟡 Cancelled.")
             return
         if not (threshold_raw or "").strip() and currently_on:
-            threshold_amt = ar.threshold_usd  # keep current value on empty input
+            threshold_amt = ar.threshold_usd
         else:
             tv = validate_charge_amount(
                 threshold_raw or "", min_usd=state.min_usd, max_usd=state.max_usd
@@ -1453,7 +1320,6 @@ class CLIBillingMixin:
                 return
             threshold_amt = tv.amount
 
-        # Field 2 — reload-to (prefilled when editing an existing config).
         cur_rel = format_money(ar.reload_to_usd) if currently_on else None
         rel_prompt = "  Reload balance to (USD)"
         rel_prompt += f" [{cur_rel}]: " if cur_rel else ": "
@@ -1462,7 +1328,7 @@ class CLIBillingMixin:
             print("  🟡 Cancelled.")
             return
         if not (reload_raw or "").strip() and currently_on:
-            reload_amt = ar.reload_to_usd  # keep current value on empty input
+            reload_amt = ar.reload_to_usd
         else:
             rv = validate_charge_amount(
                 reload_raw or "", min_usd=state.min_usd, max_usd=state.max_usd

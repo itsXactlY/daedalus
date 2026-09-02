@@ -9,9 +9,6 @@ import time
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: shared interrupt module
-# ---------------------------------------------------------------------------
 
 class TestInterruptModule:
     """Tests for tools/interrupt.py"""
@@ -52,9 +49,6 @@ class TestInterruptModule:
         set_interrupt(False)
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: pre-tool interrupt check
-# ---------------------------------------------------------------------------
 
 class TestPreToolCheck:
     """Verify that _execute_tool_calls skips all tools when interrupted."""
@@ -63,7 +57,6 @@ class TestPreToolCheck:
         """Mock an interrupted agent and verify no tools execute."""
         from unittest.mock import MagicMock, patch
 
-        # Build a fake assistant_message with 3 tool calls
         tc1 = MagicMock()
         tc1.id = "tc_1"
         tc1.function.name = "terminal"
@@ -84,33 +77,24 @@ class TestPreToolCheck:
 
         messages = []
 
-        # Create a minimal mock agent with _interrupt_requested = True
         agent = MagicMock()
         agent._interrupt_requested = True
         agent.log_prefix = ""
         agent._persist_session = MagicMock()
 
-        # Import and call the method
         import types
         from run_agent import AIAgent
-        # Bind the real methods to our mock so dispatch works correctly
         agent._execute_tool_calls_sequential = types.MethodType(AIAgent._execute_tool_calls_sequential, agent)
         agent._execute_tool_calls_concurrent = types.MethodType(AIAgent._execute_tool_calls_concurrent, agent)
         AIAgent._execute_tool_calls(agent, assistant_msg, messages, "default")
 
-        # All 3 should be skipped
         assert len(messages) == 3
         for msg in messages:
             assert msg["role"] == "tool"
             assert "cancelled" in msg["content"].lower() or "interrupted" in msg["content"].lower()
 
-        # No actual tool handlers should have been called
-        # (handle_function_call should NOT have been invoked)
 
 
-# ---------------------------------------------------------------------------
-# Unit tests: message combining
-# ---------------------------------------------------------------------------
 
 class TestMessageCombining:
     """Verify multiple interrupt messages are joined."""
@@ -142,13 +126,11 @@ class TestMessageCombining:
         pending = {}
         key = "agent:main:telegram:dm"
 
-        # First message
         if key in pending:
             pending[key] += "\n" + "Stop!"
         else:
             pending[key] = "Stop!"
 
-        # Second message
         if key in pending:
             pending[key] += "\n" + "Do something else instead"
         else:
@@ -157,9 +139,6 @@ class TestMessageCombining:
         assert pending[key] == "Stop!\nDo something else instead"
 
 
-# ---------------------------------------------------------------------------
-# Integration tests (require local terminal)
-# ---------------------------------------------------------------------------
 
 class TestSIGKILLEscalation:
     """Test that SIGTERM-resistant processes get SIGKILL'd."""
@@ -176,7 +155,6 @@ class TestSIGKILLEscalation:
         set_interrupt(False)
         env = LocalEnvironment(cwd="/tmp", timeout=30)
 
-        # Start execution in a thread, interrupt after 0.5s
         result_holder = {"value": None}
 
         def _run():
@@ -199,9 +177,6 @@ class TestSIGKILLEscalation:
         assert "interrupted" in result_holder["value"]["output"].lower()
 
 
-# ---------------------------------------------------------------------------
-# Manual smoke test checklist (not automated)
-# ---------------------------------------------------------------------------
 
 SMOKE_TESTS = """
 Manual Smoke Test Checklist:

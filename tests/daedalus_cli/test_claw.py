@@ -9,9 +9,6 @@ import pytest
 from daedalus_cli import claw as claw_mod
 
 
-# ---------------------------------------------------------------------------
-# _find_migration_script
-# ---------------------------------------------------------------------------
 
 
 class TestFindMigrationScript:
@@ -40,9 +37,6 @@ class TestFindMigrationScript:
             assert claw_mod._find_migration_script() is None
 
 
-# ---------------------------------------------------------------------------
-# _find_openclaw_dirs
-# ---------------------------------------------------------------------------
 
 
 class TestFindOpenclawDirs:
@@ -72,9 +66,6 @@ class TestFindOpenclawDirs:
         assert found == []
 
 
-# ---------------------------------------------------------------------------
-# _scan_workspace_state
-# ---------------------------------------------------------------------------
 
 
 class TestScanWorkspaceState:
@@ -114,9 +105,6 @@ class TestScanWorkspaceState:
         assert findings == []
 
 
-# ---------------------------------------------------------------------------
-# _archive_directory
-# ---------------------------------------------------------------------------
 
 
 class TestArchiveDirectory:
@@ -136,7 +124,6 @@ class TestArchiveDirectory:
     def test_adds_timestamp_when_archive_exists(self, tmp_path):
         source = tmp_path / ".openclaw"
         source.mkdir()
-        # Pre-existing archive
         (tmp_path / ".openclaw.pre-migration").mkdir()
 
         archive_path = claw_mod._archive_directory(source)
@@ -150,12 +137,9 @@ class TestArchiveDirectory:
 
         archive_path = claw_mod._archive_directory(source, dry_run=True)
         assert archive_path == tmp_path / ".openclaw.pre-migration"
-        assert source.is_dir()  # Still exists
+        assert source.is_dir()
 
 
-# ---------------------------------------------------------------------------
-# claw_command routing
-# ---------------------------------------------------------------------------
 
 
 class TestClawCommand:
@@ -189,9 +173,6 @@ class TestClawCommand:
         assert "cleanup" in captured.out
 
 
-# ---------------------------------------------------------------------------
-# _cmd_migrate
-# ---------------------------------------------------------------------------
 
 
 class TestCmdMigrate:
@@ -231,7 +212,6 @@ class TestCmdMigrate:
         script = tmp_path / "script.py"
         script.write_text("# placeholder")
 
-        # Build a fake migration module
         fake_mod = ModuleType("openclaw_to_daedalus")
         fake_mod.resolve_selected_options = MagicMock(return_value={"soul", "memory"})
         fake_migrator = MagicMock()
@@ -467,7 +447,7 @@ class TestCmdMigrate:
         args = Namespace(
             source=str(openclaw_dir),
             dry_run=True, preset="full", overwrite=False,
-            migrate_secrets=False,  # Not explicitly set by user
+            migrate_secrets=False,
             workspace_target=None,
             skill_conflict="skip", yes=False,
         )
@@ -481,14 +461,10 @@ class TestCmdMigrate:
         ):
             claw_mod._cmd_migrate(args)
 
-        # Migrator should have been called with migrate_secrets=True
         call_kwargs = fake_mod.Migrator.call_args[1]
         assert call_kwargs["migrate_secrets"] is True
 
 
-# ---------------------------------------------------------------------------
-# _offer_source_archival
-# ---------------------------------------------------------------------------
 
 
 class TestOfferSourceArchival:
@@ -516,12 +492,12 @@ class TestOfferSourceArchival:
 
         captured = capsys.readouterr()
         assert "Skipped" in captured.out
-        assert source.is_dir()  # Still exists
+        assert source.is_dir()
 
     def test_noop_when_source_missing(self, tmp_path, capsys):
         claw_mod._offer_source_archival(tmp_path / "nonexistent", auto_yes=True)
         captured = capsys.readouterr()
-        assert captured.out == ""  # No output
+        assert captured.out == ""
 
     def test_shows_state_files(self, tmp_path, capsys):
         source = tmp_path / ".openclaw"
@@ -547,9 +523,6 @@ class TestOfferSourceArchival:
         assert "Could not archive" in captured.out
 
 
-# ---------------------------------------------------------------------------
-# _cmd_cleanup
-# ---------------------------------------------------------------------------
 
 
 class TestCmdCleanup:
@@ -575,7 +548,7 @@ class TestCmdCleanup:
 
         captured = capsys.readouterr()
         assert "Would archive" in captured.out
-        assert openclaw.is_dir()  # Not actually archived
+        assert openclaw.is_dir()
 
     def test_archives_with_yes(self, tmp_path, capsys):
         openclaw = tmp_path / ".openclaw"
@@ -652,9 +625,6 @@ class TestCmdCleanup:
         assert not clawdbot.exists()
 
 
-# ---------------------------------------------------------------------------
-# _print_migration_report
-# ---------------------------------------------------------------------------
 
 
 class TestPrintMigrationReport:

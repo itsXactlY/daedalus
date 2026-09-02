@@ -33,12 +33,12 @@ class TestOldFilterBrokenOnWindows:
     def test_old_filter_misses_hub_on_windows_path(self):
         """Old filter fails to catch .hub in a Windows-style path string."""
         win_path = r"C:\Users\me\.daedalus\skills\.hub\quarantine\evil-skill\SKILL.md"
-        assert _old_filter_matches(win_path) is False  # Bug: should be True
+        assert _old_filter_matches(win_path) is False
 
     def test_old_filter_misses_git_on_windows_path(self):
         """Old filter fails to catch .git in a Windows-style path string."""
         win_path = r"C:\Users\me\.daedalus\skills\.git\config\SKILL.md"
-        assert _old_filter_matches(win_path) is False  # Bug: should be True
+        assert _old_filter_matches(win_path) is False
 
     def test_old_filter_works_on_unix_path(self):
         """Old filter works fine on Unix paths (the original platform)."""
@@ -91,5 +91,4 @@ class TestWindowsPathParts:
     def test_parts_does_not_contain_combined_string(self, tmp_path):
         """Path.parts splits by separator, not by substring."""
         p = tmp_path / "skills" / "my-hub-skill" / "SKILL.md"
-        # ".hub" should NOT match "my-hub-skill" as a part
         assert ".hub" not in p.parts

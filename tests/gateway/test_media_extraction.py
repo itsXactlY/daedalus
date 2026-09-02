@@ -26,7 +26,6 @@ def extract_media_tags_fixed(result_messages, history_len):
     media_tags = []
     has_voice_directive = False
     
-    # Only process new messages from this turn
     new_messages = result_messages[history_len:] if len(result_messages) > history_len else []
     
     for msg in new_messages:
@@ -70,7 +69,6 @@ class TestMediaExtraction:
     
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""
-        # Simulate conversation history with a TTS call from a previous turn
         history = [
             {"role": "user", "content": "Say hello as audio"},
             {"role": "assistant", "content": None, "tool_calls": [{"id": "1", "function": {"name": "text_to_speech"}}]},
@@ -78,7 +76,6 @@ class TestMediaExtraction:
             {"role": "assistant", "content": "I've said hello for you!"},
         ]
         
-        # New turn: user asks a simple question
         new_messages = [
             {"role": "user", "content": "What time is it?"},
             {"role": "assistant", "content": "It's 3:30 AM."},
@@ -87,25 +84,21 @@ class TestMediaExtraction:
         all_messages = history + new_messages
         history_len = len(history)
         
-        # Fixed behavior: should extract NO media tags (none in new messages)
         tags, voice_directive = extract_media_tags_fixed(all_messages, history_len)
         assert tags == [], "Fixed extraction should not find tags in history"
         assert voice_directive is False
         
-        # Broken behavior: would incorrectly extract the old media tag
         broken_tags, broken_voice = extract_media_tags_broken(all_messages)
         assert len(broken_tags) == 1, "Broken extraction finds tags in history"
         assert "audio1.ogg" in broken_tags[0]
     
     def test_media_tags_extracted_from_current_turn(self):
         """MEDIA tags from the current turn SHOULD be extracted."""
-        # History without TTS
         history = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
         ]
         
-        # New turn with TTS call
         new_messages = [
             {"role": "user", "content": "Say goodbye as audio"},
             {"role": "assistant", "content": None, "tool_calls": [{"id": "2", "function": {"name": "text_to_speech"}}]},
@@ -116,7 +109,6 @@ class TestMediaExtraction:
         all_messages = history + new_messages
         history_len = len(history)
         
-        # Fixed behavior: should extract the new media tag
         tags, voice_directive = extract_media_tags_fixed(all_messages, history_len)
         assert len(tags) == 1, "Should extract media tag from current turn"
         assert "audio2.ogg" in tags[0]
@@ -124,7 +116,6 @@ class TestMediaExtraction:
     
     def test_multiple_tts_calls_in_history_not_accumulated(self):
         """Multiple TTS calls in history should NOT accumulate in new responses."""
-        # History with multiple TTS calls
         history = [
             {"role": "user", "content": "Say hello"},
             {"role": "tool", "tool_call_id": "1", "content": 'MEDIA:/audio/hello.ogg'},
@@ -137,7 +128,6 @@ class TestMediaExtraction:
             {"role": "assistant", "content": "Done!"},
         ]
         
-        # New turn: no TTS
         new_messages = [
             {"role": "user", "content": "What time is it?"},
             {"role": "assistant", "content": "3 PM"},
@@ -146,11 +136,9 @@ class TestMediaExtraction:
         all_messages = history + new_messages
         history_len = len(history)
         
-        # Fixed: no tags
         tags, _ = extract_media_tags_fixed(all_messages, history_len)
         assert tags == [], "Should not accumulate tags from history"
         
-        # Broken: would have 3 tags (all the old ones)
         broken_tags, _ = extract_media_tags_broken(all_messages)
         assert len(broken_tags) == 3, "Broken version accumulates all history tags"
     
@@ -158,11 +146,10 @@ class TestMediaExtraction:
         """Multiple MEDIA tags in current turn should be deduplicated."""
         history = []
         
-        # Current turn with multiple tool calls producing same media
         new_messages = [
             {"role": "user", "content": "Multiple TTS"},
             {"role": "tool", "tool_call_id": "1", "content": 'MEDIA:/audio/same.ogg'},
-            {"role": "tool", "tool_call_id": "2", "content": 'MEDIA:/audio/same.ogg'},  # duplicate
+            {"role": "tool", "tool_call_id": "2", "content": 'MEDIA:/audio/same.ogg'},
             {"role": "tool", "tool_call_id": "3", "content": 'MEDIA:/audio/different.ogg'},
             {"role": "assistant", "content": "Done!"},
         ]
@@ -170,14 +157,11 @@ class TestMediaExtraction:
         all_messages = history + new_messages
         
         tags, _ = extract_media_tags_fixed(all_messages, 0)
-        # Even though same.ogg appears twice, deduplication happens after extraction
-        # The extraction itself should get both, then caller deduplicates
-        assert len(tags) == 3  # Raw extraction gets all
+        assert len(tags) == 3
         
-        # Deduplication as done in the actual code:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
-        assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+        assert len(unique) == 2
 
 
 if __name__ == "__main__":

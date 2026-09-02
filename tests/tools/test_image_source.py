@@ -111,7 +111,6 @@ class TestNonLocalBackendConfinement:
         cached = home / "cache" / "images" / "inbound.png"
         cached.parent.mkdir(parents=True)
         cached.write_bytes(PNG)
-        # No sandbox env needed — a cache path is host-read directly.
         res = await isrc.resolve_image_source(str(cached), isrc.ResolveContext())
         assert res.data == PNG
         assert res.origin == "file"
@@ -132,8 +131,6 @@ class TestNonLocalBackendConfinement:
         upload = home / "images" / "upload_20260722_181019_1.png"
         upload.parent.mkdir(parents=True)
         upload.write_bytes(PNG)
-        # No sandbox env: an uploads path must be host-read directly, not routed
-        # to the in-sandbox exec-read.
         res = await isrc.resolve_image_source(str(upload), isrc.ResolveContext())
         assert res.data == PNG
         assert res.origin == "file"
@@ -146,12 +143,9 @@ class TestNonLocalBackendConfinement:
         isrc = _reload(monkeypatch, home)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-        # A real host file outside the caches, holding a "secret".
         secret = tmp_path / "id_rsa"
         secret.write_bytes(b"HOST-PRIVATE-KEY-DO-NOT-LEAK")
 
-        # Fake sandbox env: its exec-read returns a *different* (container) image,
-        # proving we read the container filesystem, not the host secret.
         container_png_b64 = base64.b64encode(PNG).decode()
         calls = {}
 
@@ -163,12 +157,10 @@ class TestNonLocalBackendConfinement:
                    return_value=SimpleNamespace(execute=fake_execute)):
             res = await isrc.resolve_image_source(str(secret), isrc.ResolveContext(task_id="t1"))
 
-        # Read came from the sandbox exec-read, returning the container image —
-        # the host secret bytes never appear.
         assert res.origin == "container"
         assert res.data == PNG
         assert b"HOST-PRIVATE-KEY" not in res.data
-        assert "head -c" in calls["cmd"] and "< " in calls["cmd"]  # bounded, redirect-safe form
+        assert "head -c" in calls["cmd"] and "< " in calls["cmd"]
 
     @pytest.mark.asyncio
     async def test_non_cache_path_fails_closed_without_sandbox(self, tmp_path, monkeypatch):
@@ -201,7 +193,6 @@ class TestNonLocalBackendConfinement:
         except (OSError, NotImplementedError):
             pytest.skip("symlinks unsupported")
 
-        # Fails closed (no sandbox) rather than host-reading the symlink target.
         with patch("tools.image_source._get_active_env", return_value=None):
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(str(link), isrc.ResolveContext(task_id="t1"))
@@ -261,7 +252,6 @@ class TestExecReadSafety:
         def fake_execute(cmd, **kw):
             calls["n"] += 1
             if calls["n"] == 1:
-                # First call: cold start — empty pipe, exit non-zero.
                 return {"returncode": 1, "output": ""}
             return {"returncode": 0, "output": b64}
 
@@ -292,7 +282,6 @@ class TestExecReadSafety:
             with pytest.raises(isrc.SourceNotFound) as excinfo:
                 await isrc.resolve_image_source(
                     "/workspace/missing.png", isrc.ResolveContext(task_id="t1"))
-        # Diagnostic surfaced — the user can act on it.
         assert "No such file or directory" in str(excinfo.value)
 
 
@@ -351,8 +340,6 @@ class TestLazySandboxBringUp:
         def fake_ensure(task_id):
             brought_up.append(task_id)
 
-        # Env is absent until the lazy bring-up runs, then available — exactly
-        # the SSH-handshake ordering the bug was about.
         def fake_get_active(task_id):
             return fake_env if brought_up else None
 
@@ -362,7 +349,7 @@ class TestLazySandboxBringUp:
 
         res = await isrc.resolve_image_source("/tmp/test.png", isrc.ResolveContext(task_id="t1"))
 
-        assert brought_up == ["t1"]  # bring-up was triggered before the read
+        assert brought_up == ["t1"]
         assert res.origin == "container"
         assert res.data == PNG
 

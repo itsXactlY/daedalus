@@ -28,10 +28,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-# ``websockets`` costs ~22 ms at import and is only needed when a supervisor
-# actually connects to a CDP endpoint (``_connect_ws``). With
-# ``from __future__ import annotations`` in force the ``ClientConnection``
-# annotation is string-only, so the type import stays under TYPE_CHECKING.
 if TYPE_CHECKING:
     from websockets.asyncio.client import ClientConnection
 
@@ -64,7 +60,6 @@ def _redact_supervisor_text(value: str) -> str:
     return redact_sensitive_text(value, force=True)
 
 
-# ── Config defaults ───────────────────────────────────────────────────────────
 
 DIALOG_POLICY_MUST_RESPOND = "must_respond"
 DIALOG_POLICY_AUTO_DISMISS = "auto_dismiss"
@@ -77,29 +72,16 @@ _VALID_POLICIES = frozenset(
 DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
 DEFAULT_DIALOG_TIMEOUT_S = 300.0
 
-# Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30
 FRAME_TREE_MAX_OOPIF_DEPTH = 2
 
-# Ring buffer of recent console-level events (used later by PR 2 diagnostics).
 CONSOLE_HISTORY_MAX = 50
 
-# Keep the last N closed dialogs in ``recent_dialogs`` so agents on backends
-# that auto-dismiss server-side (e.g. Browserbase) can still observe that a
-# dialog fired, even if they couldn't respond to it in time.
 RECENT_DIALOGS_MAX = 20
 
-# Magic host the injected dialog bridge XHRs to.  Intercepted via the CDP
-# Fetch domain before any network resolution happens, so the hostname never
-# has to exist.  Keep this ASCII + URL-safe; we also gate Fetch patterns on it.
 DIALOG_BRIDGE_HOST = "daedalus-dialog-bridge.invalid"
 DIALOG_BRIDGE_URL_PATTERN = f"http://{DIALOG_BRIDGE_HOST}/*"
 
-# Script injected into every frame via Page.addScriptToEvaluateOnNewDocument.
-# Overrides alert/confirm/prompt to round-trip through a sync XHR that we
-# intercept via Fetch.requestPaused. Works on Browserbase (whose CDP proxy
-# auto-dismisses REAL native dialogs) because the native dialogs never fire
-# in the first place — the overrides take precedence.
 _DIALOG_BRIDGE_SCRIPT = r"""
 (() => {
   if (window.__daedalusDialogBridgeInstalled) return;
@@ -154,7 +136,6 @@ _DIALOG_BRIDGE_SCRIPT = r"""
 """
 
 
-# ── Data model ────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -162,15 +143,12 @@ class PendingDialog:
     """A JS dialog currently open on some frame's session."""
 
     id: str
-    type: str  # "alert" | "confirm" | "prompt" | "beforeunload"
+    type: str
     message: str
     default_prompt: str
     opened_at: float
-    cdp_session_id: str  # which attached CDP session the dialog fired in
+    cdp_session_id: str
     frame_id: Optional[str] = None
-    # When set, the dialog was captured via the bridge XHR path (Fetch domain).
-    # Response must be delivered via Fetch.fulfillRequest, NOT
-    # Page.handleJavaScriptDialog — the native dialog never fired.
     bridge_request_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -198,7 +176,7 @@ class DialogRecord:
     message: str
     opened_at: float
     closed_at: float
-    closed_by: str  # "agent" | "auto_policy" | "remote" | "watchdog"
+    closed_by: str
     frame_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -251,7 +229,7 @@ class ConsoleEvent:
     """Ring buffer entry for console + exception traffic."""
 
     ts: float
-    level: str  # "log" | "error" | "warning" | "exception"
+    level: str
     text: str
     url: Optional[str] = None
 
@@ -268,7 +246,7 @@ class SupervisorSnapshot:
     recent_dialogs: Tuple[DialogRecord, ...]
     frame_tree: Dict[str, Any]
     console_errors: Tuple[ConsoleEvent, ...]
-    active: bool  # False if supervisor is detached/stopped
+    active: bool
     cdp_url: str
     task_id: str
 
@@ -283,7 +261,6 @@ class SupervisorSnapshot:
         return out
 
 
-# ── Supervisor core ───────────────────────────────────────────────────────────
 
 
 class CDPSupervisor:
@@ -321,7 +298,6 @@ class CDPSupervisor:
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
 
-        # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
         self._pending_dialogs: Dict[str, PendingDialog] = {}
         self._recent_dialogs: List[DialogRecord] = []
@@ -329,26 +305,21 @@ class CDPSupervisor:
         self._console_events: List[ConsoleEvent] = []
         self._active = False
 
-        # Supervisor loop machinery — populated in start().
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._thread: Optional[threading.Thread] = None
         self._ready_event = threading.Event()
         self._start_error: Optional[BaseException] = None
         self._stop_requested = False
 
-        # CDP call tracking (runs on supervisor loop only).
         self._next_call_id = 1
         self._pending_calls: Dict[int, asyncio.Future] = {}
         self._ws: Optional[ClientConnection] = None
         self._page_session_id: Optional[str] = None
-        self._child_sessions: Dict[str, Dict[str, Any]] = {}  # session_id -> info
+        self._child_sessions: Dict[str, Dict[str, Any]] = {}
 
-        # Dialog auto-dismiss watchdog handles (per dialog id).
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
-        # Monotonic id generator for dialogs (human-readable in snapshots).
         self._dialog_seq = 0
 
-    # ── Public sync API ──────────────────────────────────────────────────────
 
     def start(self, timeout: float = 15.0) -> None:
         """Launch the background loop and wait until attachment is complete.
@@ -383,11 +354,6 @@ class CDPSupervisor:
         if self._start_error is not None:
             err = self._start_error
             self.stop()
-            # ``err`` is a raw ``websockets`` exception whose message embeds the
-            # full cdp_url (token / userinfo). Re-raise a redacted RuntimeError
-            # and suppress the raw cause (``from None``) so no credential leaks
-            # via the message OR the traceback chain. Type is not load-bearing:
-            # the sole caller (_ensure_cdp_supervisor) only logs it.
             raise RuntimeError(
                 f"CDP supervisor failed to start: {_redact_cdp_error_text(err)}"
             ) from None
@@ -397,9 +363,6 @@ class CDPSupervisor:
         self._stop_requested = True
         loop = self._loop
         if loop is not None and loop.is_running():
-            # Close the WebSocket from inside the loop — this makes ``async for
-            # raw in self._ws`` return cleanly, ``_run`` hits its ``finally``,
-            # pending tasks get cancelled in order, THEN the thread exits.
             async def _close_ws():
                 ws = self._ws
                 self._ws = None
@@ -418,7 +381,7 @@ class CDPSupervisor:
                     except Exception:
                         pass
             except RuntimeError:
-                pass  # loop already shutting down
+                pass
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         with self._state_lock:
@@ -545,8 +508,6 @@ class CDPSupervisor:
                     "expression": expression,
                     "returnByValue": by_value,
                     "awaitPromise": await_promise,
-                    # userGesture matters for things like clipboard / fullscreen
-                    # APIs that require a user-activation context.
                     "userGesture": True,
                 },
                 session_id=session_id,
@@ -564,14 +525,6 @@ class CDPSupervisor:
         try:
             response = _run_eval(return_by_value)
         except Exception as exc:
-            # ``returnByValue=True`` asks Chrome to deep-serialize the result.
-            # For live DOM nodes / NodeLists / Window that serialization can
-            # blow past CDP's recursion guard and fail the whole call with
-            # ``Object reference chain is too long`` (a protocol-level error,
-            # not a JS exception).  Retry once with ``returnByValue=False`` so
-            # Chrome returns the object's description string instead — the same
-            # graceful degradation path used for ``document.querySelector(...)``
-            # results — rather than crashing the eval.
             if return_by_value and "reference chain is too long" in str(exc).lower():
                 try:
                     response = _run_eval(False)
@@ -580,13 +533,9 @@ class CDPSupervisor:
             else:
                 return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-        # Runtime.evaluate response shape:
-        #   {"id": N, "result": {"result": {"type": "...", "value": ..., ...},
-        #                         "exceptionDetails": {...} (only on error)}}
         result_payload = response.get("result", {}) if isinstance(response, dict) else {}
         exception_details = result_payload.get("exceptionDetails")
         if exception_details:
-            # Surface the JS-side exception with a clean message.
             exc_text = exception_details.get("text") or "JavaScript exception"
             exc_obj = exception_details.get("exception") or {}
             description = exc_obj.get("description")
@@ -602,13 +551,10 @@ class CDPSupervisor:
         elif result_type == "undefined":
             value = None
         else:
-            # Non-serializable (functions, DOM nodes, etc.) — return the
-            # browser's string description so the model gets *something*.
             value = result_obj.get("description") or result_obj.get("unserializableValue")
 
         return {"ok": True, "result": value, "result_type": result_type}
 
-    # ── Supervisor loop internals ────────────────────────────────────────────
 
     def _thread_main(self) -> None:
         """Entry point for the supervisor's dedicated thread."""
@@ -624,8 +570,6 @@ class CDPSupervisor:
             else:
                 logger.warning("CDP supervisor %s crashed: %s", self.task_id, e)
         finally:
-            # Flush any remaining tasks before closing the loop so we don't
-            # emit "Task was destroyed but it is pending" warnings.
             try:
                 pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
                 for t in pending:
@@ -653,7 +597,7 @@ class CDPSupervisor:
         attempt = 0
         last_success_at = 0.0
         backoff = 0.5
-        import websockets  # deferred: only supervisors that connect pay the import
+        import websockets
         while not self._stop_requested:
             try:
                 self._ws = await asyncio.wait_for(
@@ -663,7 +607,6 @@ class CDPSupervisor:
             except Exception as e:
                 attempt += 1
                 if not self._ready_event.is_set():
-                    # Never connected once — fatal for start().
                     self._start_error = e
                     self._ready_event.set()
                     return
@@ -677,28 +620,18 @@ class CDPSupervisor:
 
             reader_task = asyncio.create_task(self._read_loop(), name="cdp-reader")
             try:
-                # Reset per-connection session state so stale ids don't hang
-                # around after a reconnect.
                 self._page_session_id = None
                 self._child_sessions.clear()
-                # We deliberately keep `_pending_dialogs` and `_frames` —
-                # they're reconciled as the supervisor resubscribes and
-                # receives fresh events.  Worst case: an agent sees a stale
-                # dialog entry that the new session's handleJavaScriptDialog
-                # call rejects with "no dialog is showing" (logged, not
-                # surfaced).
                 await self._attach_initial_page()
                 with self._state_lock:
                     self._active = True
                 last_success_at = time.time()
-                backoff = 0.5  # reset after a successful attach
+                backoff = 0.5
                 if not self._ready_event.is_set():
                     self._ready_event.set()
-                # Run until the reader returns.
                 await reader_task
             except BaseException as e:
                 if not self._ready_event.is_set():
-                    # Never got to ready — propagate to start().
                     self._start_error = e
                     self._ready_event.set()
                     raise
@@ -731,7 +664,6 @@ class CDPSupervisor:
             if self._stop_requested:
                 return
 
-            # Reconnect: brief backoff, then reattach.
             logger.debug(
                 "CDP supervisor %s: reconnecting in %.1fs...", self.task_id, backoff,
             )
@@ -761,10 +693,6 @@ class CDPSupervisor:
             {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True},
             session_id=self._page_session_id,
         )
-        # Install the dialog bridge — overrides native alert/confirm/prompt with
-        # a synchronous XHR we intercept via Fetch domain. This is how we make
-        # dialog response work on Browserbase (whose CDP proxy auto-dismisses
-        # real native dialogs before we can call handleJavaScriptDialog).
         await self._install_dialog_bridge(self._page_session_id)
 
     async def _install_dialog_bridge(self, session_id: str) -> None:
@@ -813,8 +741,6 @@ class CDPSupervisor:
                 "dialog bridge: Fetch.enable failed on sid=%s: %s",
                 (session_id or "")[:16], e,
             )
-        # Also try to inject into the already-loaded document so existing
-        # pages pick up the override on reconnect. Best-effort.
         try:
             await self._cdp(
                 "Runtime.evaluate",
@@ -877,7 +803,6 @@ class CDPSupervisor:
         except Exception as e:
             logger.debug("CDP read loop exited: %s", e)
 
-    # ── Event dispatch ──────────────────────────────────────────────────────
 
     async def _on_event(
         self, method: str, params: Dict[str, Any], session_id: Optional[str]
@@ -918,9 +843,6 @@ class CDPSupervisor:
         )
 
         if self.dialog_policy == DIALOG_POLICY_AUTO_DISMISS:
-            # Archive immediately with the policy tag so the ``closed`` event
-            # arriving right after our handleJavaScriptDialog call doesn't
-            # re-archive it as "remote".
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
             asyncio.create_task(
@@ -935,7 +857,6 @@ class CDPSupervisor:
                 )
             )
         else:
-            # must_respond → add to pending and arm watchdog.
             with self._state_lock:
                 self._pending_dialogs[dialog.id] = dialog
             loop = asyncio.get_running_loop()
@@ -979,13 +900,10 @@ class CDPSupervisor:
             self.dialog_timeout_s,
         )
         try:
-            # Archive with watchdog tag BEFORE fulfilling / dismissing.
             with self._state_lock:
                 if dialog_id in self._pending_dialogs:
                     self._pending_dialogs.pop(dialog_id, None)
                     self._archive_dialog_locked(dialog, "watchdog")
-            # Unblock the page — via bridge Fetch fulfill for bridge dialogs,
-            # else native Page.handleJavaScriptDialog for real dialogs.
             if dialog.bridge_request_id:
                 await self._fulfill_bridge_request(dialog, accept=False, prompt_text="")
             else:
@@ -1047,8 +965,6 @@ class CDPSupervisor:
                 timeout=5.0,
             )
         finally:
-            # Clear regardless — the CDP error path usually means the dialog
-            # already closed (browser auto-dismissed after navigation, etc.).
             with self._state_lock:
                 if dialog.id in self._pending_dialogs:
                     self._pending_dialogs.pop(dialog.id, None)
@@ -1060,21 +976,11 @@ class CDPSupervisor:
     async def _on_dialog_closed(
         self, params: Dict[str, Any], session_id: Optional[str]
     ) -> None:
-        # ``Page.javascriptDialogClosed`` spec has only ``result`` (bool) and
-        # ``userInput`` (string), not the original ``message``.  Match by
-        # session id and clear the oldest dialog on that session — if Chrome
-        # closed one on us (e.g. our disconnect auto-dismissed it, or the
-        # browser navigated, or Browserbase's CDP proxy auto-dismissed), there
-        # shouldn't be more than one in flight per session anyway because the
-        # JS thread is blocked while a dialog is up.
         with self._state_lock:
             candidate_ids = [
                 d.id
                 for d in self._pending_dialogs.values()
                 if d.cdp_session_id == session_id
-                # Bridge-captured dialogs aren't cleared by native close events;
-                # they're resolved via Fetch.fulfillRequest instead. Only the
-                # real-native-dialog path uses Page.javascriptDialogClosed.
                 and d.bridge_request_id is None
             ]
             if candidate_ids:
@@ -1102,10 +1008,7 @@ class CDPSupervisor:
         request_id = params.get("requestId")
         if not request_id:
             return
-        # Only care about our bridge URLs. Fetch can still deliver other
-        # intercepted requests if patterns were ever broadened.
         if DIALOG_BRIDGE_HOST not in url:
-            # Not ours — forward unchanged so the page sees its own request.
             try:
                 await self._cdp(
                     "Fetch.continueRequest", {"requestId": request_id},
@@ -1115,7 +1018,6 @@ class CDPSupervisor:
                 pass
             return
 
-        # Parse query string for dialog metadata. Use urllib to be robust.
         from urllib.parse import urlparse, parse_qs
         q = parse_qs(urlparse(url).query)
 
@@ -1139,7 +1041,6 @@ class CDPSupervisor:
             bridge_request_id=str(request_id),
         )
 
-        # Apply policy exactly as for native dialogs.
         if self.dialog_policy == DIALOG_POLICY_AUTO_DISMISS:
             with self._state_lock:
                 self._archive_dialog_locked(dialog, "auto_policy")
@@ -1155,7 +1056,6 @@ class CDPSupervisor:
                 )
             )
         else:
-            # must_respond — add to pending + arm watchdog.
             with self._state_lock:
                 self._pending_dialogs[dialog.id] = dialog
             loop = asyncio.get_running_loop()
@@ -1196,7 +1096,6 @@ class CDPSupervisor:
         except Exception as e:
             logger.debug("bridge fulfill failed for %s: %s", dialog.id, e)
 
-    # ── Frame / target tracking ─────────────────────────────────────────────
 
     def _on_frame_attached(
         self, params: Dict[str, Any], session_id: Optional[str]
@@ -1262,11 +1161,6 @@ class CDPSupervisor:
             return
         with self._state_lock:
             existing = self._frames.get(frame_id)
-            # Keep OOPIF records even when the parent says the frame was
-            # "removed" — the iframe is still visible, just in a different
-            # process. If the frame truly goes away later, Target.detached
-            # + the next Page.frameDetached without a live session will
-            # clear it.
             if existing and existing.is_oopif and existing.cdp_session_id:
                 return
             self._frames.pop(frame_id, None)
@@ -1279,7 +1173,6 @@ class CDPSupervisor:
             return
         self._child_sessions[sid] = {"info": info, "type": target_type}
 
-        # Record the frame with its OOPIF session id for interaction routing.
         if target_type == "iframe":
             target_id = info.get("targetId")
             with self._state_lock:
@@ -1287,16 +1180,13 @@ class CDPSupervisor:
                 self._frames[target_id] = FrameInfo(
                     frame_id=target_id,
                     url=str(info.get("url") or ""),
-                    origin="",  # filled by frameNavigated on the child session
+                    origin="",
                     parent_frame_id=(existing.parent_frame_id if existing else None),
                     is_oopif=True,
                     cdp_session_id=sid,
                     name=str(info.get("title") or (existing.name if existing else "")),
                 )
 
-        # Enable domains on the child off-loop so the reader keeps pumping.
-        # Awaiting the CDP replies here would deadlock because only the
-        # reader can resolve those replies' Futures.
         asyncio.create_task(self._enable_child_domains(sid))
 
     async def _enable_child_domains(self, sid: str) -> None:
@@ -1316,7 +1206,6 @@ class CDPSupervisor:
             )
         except Exception as e:
             logger.debug("child session %s setup failed: %s", sid[:16], e)
-        # Install the dialog bridge on the child so iframe dialogs are captured.
         await self._install_dialog_bridge(sid)
 
     def _on_target_detached(self, params: Dict[str, Any]) -> None:
@@ -1337,8 +1226,6 @@ class CDPSupervisor:
         with self._state_lock:
             for fid, frame in list(self._frames.items()):
                 if frame.cdp_session_id == sid:
-                    # Replace with a copy that has cdp_session_id cleared so
-                    # routing falls back to top-level page session if retried.
                     self._frames[fid] = FrameInfo(
                         frame_id=frame.frame_id,
                         url=frame.url,
@@ -1349,7 +1236,6 @@ class CDPSupervisor:
                         name=frame.name,
                     )
 
-    # ── Console / exception ring buffer ─────────────────────────────────────
 
     def _on_console(self, params: Dict[str, Any], *, level_from: str) -> None:
         if level_from == "exception":
@@ -1371,10 +1257,8 @@ class CDPSupervisor:
         with self._state_lock:
             self._console_events.append(event)
             if len(self._console_events) > CONSOLE_HISTORY_MAX * 2:
-                # Keep last CONSOLE_HISTORY_MAX; allow 2x slack to reduce churn.
                 self._console_events = self._console_events[-CONSOLE_HISTORY_MAX:]
 
-    # ── Frame tree building (bounded) ───────────────────────────────────────
 
     def _build_frame_tree_locked(self) -> Dict[str, Any]:
         """Build the capped frame_tree payload. Must be called under state lock."""
@@ -1382,12 +1266,9 @@ class CDPSupervisor:
         if not frames:
             return {"top": None, "children": [], "truncated": False}
 
-        # Identify a top frame — one with no parent, preferring oopif=False.
         tops = [f for f in frames.values() if not f.parent_frame_id]
         top = next((f for f in tops if not f.is_oopif), tops[0] if tops else None)
 
-        # BFS from top, capped by FRAME_TREE_MAX_ENTRIES and
-        # FRAME_TREE_MAX_OOPIF_DEPTH for OOPIF branches.
         children: List[Dict[str, Any]] = []
         truncated = False
         if top is None:
@@ -1419,7 +1300,6 @@ class CDPSupervisor:
         }
 
 
-# ── Registry ─────────────────────────────────────────────────────────────────
 
 
 class _SupervisorRegistry:
@@ -1460,8 +1340,6 @@ class _SupervisorRegistry:
                     loop_ok = existing._loop is not None and existing._loop.is_running()
                     if thread_ok and loop_ok:
                         return existing
-                    # Unhealthy — tear down and recreate.
-                # URL changed or unhealthy — tear down, fall through to re-create.
                 self._by_task.pop(task_id, None)
         if existing is not None:
             existing.stop()
@@ -1474,7 +1352,6 @@ class _SupervisorRegistry:
         )
         supervisor.start(timeout=start_timeout)
         with self._lock:
-            # Guard against a concurrent get_or_start from another thread.
             already = self._by_task.get(task_id)
             if already is not None and already.cdp_url == cdp_url:
                 supervisor.stop()

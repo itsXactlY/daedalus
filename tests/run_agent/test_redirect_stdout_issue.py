@@ -24,24 +24,20 @@ class TestRedirectStdoutIsProcessWide(unittest.TestCase):
 
         def other_thread_work():
             """Runs in a different thread, tries to use sys.stdout."""
-            time.sleep(0.2)  # Let redirect_stdout take effect
-            # Check what sys.stdout is
+            time.sleep(0.2)
             if sys.stdout is not real_stdout:
                 other_thread_saw_devnull.set()
-            # Try to print — this should go to devnull
             captured_from_other_thread.append(sys.stdout)
 
         t = threading.Thread(target=other_thread_work, daemon=True)
         t.start()
 
-        # redirect_stdout in main thread
         devnull = io.StringIO()
         with contextlib.redirect_stdout(devnull):
-            time.sleep(0.5)  # Let the other thread check during redirect
+            time.sleep(0.5)
 
         t.join(timeout=2)
 
-        # The other thread should have seen devnull, NOT the real stdout
         self.assertTrue(
             other_thread_saw_devnull.is_set(),
             "redirect_stdout was NOT process-wide — other thread still saw real stdout. "

@@ -81,7 +81,6 @@ class TestUpdateOutputStream:
                 raise BrokenPipeError()
 
         stream = _UpdateOutputStream(_Broken(), log_file)
-        # Must not raise, and must still record to the log.
         stream.write("still logged\n")
         log_file.flush()
         assert log_path.read_text() == "still logged\n"

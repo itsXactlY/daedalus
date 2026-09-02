@@ -65,6 +65,14 @@ words = struct.unpack(f'<{len(data)//4}I', data)
 "
 ```
 
+## Hard rules learned 2026-08-22 (comic voxel-storm session)
+
+- **Assume crews NEVER verify.** Both parallel crews hit their tool-iteration cap immediately after writing their file — zero runtime proof delivered despite explicit instructions to verify first. Budget the parent's time for full verification of every crew artifact.
+- **Export-name drift is the #1 integration kill.** A crew module exporting `createWall3D` was imported as `{ create as createWall3D }` from the parent's own integration snippet → SyntaxError AT IMPORT RESOLUTION, killing the entire downstream import graph (all rooms) while `node --check` passed on every file. Before wiring, grep the module's actual `export` lines; never trust your own brief's phrasing.
+- **Isolate crews to ONE file each; parent owns ALL shared-file edits.** Zero merge conflicts, and contract violations stay greppable. Require every crew module to expose a QA gate object (`window.__GATES__.<mod>` mutated in place) so parent CDP gates read receipts without reaching into closures.
+- **Give crews the harness path** (`_build/*.py` CDP patterns, fresh user-data-dir, awaitPromise:true) — they crib it if they get far enough, and the parent reuses it verbatim for final proof.
+- **CSP audit BEFORE accepting injected markup/styles from crews.** A crew injected a `<style>` tag into a site with `style-src 'self'` — silently dropped, overlay rendered unstyled. Styles belong in the site-owned stylesheet.
+
 ## Lessons Learned
 
 - **Incremental patches > rewrites** when existing code is 500+ lines

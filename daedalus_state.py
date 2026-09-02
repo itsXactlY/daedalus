@@ -79,7 +79,7 @@ from daedalus_state_portability import SessionPortabilityMixin
 from daedalus_state_schema import SessionSchemaMixin
 from daedalus_state_search import SessionSearchMixin
 
-try:  # Hard dependency, but tolerate scaffold-phase imports before pip install.
+try:
     import psutil
 except ImportError:  # pragma: no cover - stripped/scaffold installs only
     psutil = None  # type: ignore[assignment]
@@ -188,25 +188,16 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     if pid <= 0:
         return False
     if pid == os.getpid():
-        # Same-process holder (e.g. another thread's live lease): never
-        # self-reclaim — the lease refresher and release path own it.
         return False
     if psutil is not None:
         try:
-            # psutil is the canonical cross-platform liveness answer
-            # (CONTRIBUTING.md "Critical rules" #1). pid_exists() reports
-            # recycled PIDs as alive — conservative, the TTL still applies.
             return not psutil.pid_exists(pid)
         except Exception:
-            return False  # any doubt → keep the lease until TTL expiry
-    # Scaffold-phase fallback only (psutil missing), and POSIX-only: stdlib
-    # os.kill(pid, 0) is NOT a no-op probe on Windows (bpo-14484 — sig=0 maps
-    # to CTRL_C_EVENT and can kill the target's console group). Without psutil
-    # a Windows host stays TTL-only; the lease TTL remains the recovery path.
+            return False
     if os.name == "nt":
         return False
     try:
-        os.kill(pid, 0)  # windows-footgun: ok — nt early-returns just above
+        os.kill(pid, 0)
     except ProcessLookupError:
         return True
     except (PermissionError, OSError, OverflowError):
@@ -246,19 +237,11 @@ def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
 
-# Sentinel returned by SessionDB._merge_model_config_json when the session row
-# doesn't exist and on_missing="skip" — distinguishes "no row" from the legal
-# None result ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
 
 
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
-    # ``_`` and ``%`` are LIKE wildcards but ordinary characters in a path
-    # (``my_project``), so an unescaped prefix also matches sibling directories.
-    # Escape the needle and pair it with ESCAPE; the literal separator
-    # backslash in the Windows pattern needs escaping for the same reason. The
-    # ``=`` arm is an exact compare and keeps the raw prefix.
     esc = _escape_like(prefix)
     return (
         "(s.cwd = ? OR s.cwd LIKE ? ESCAPE '\\' OR s.cwd LIKE ? ESCAPE '\\')",
@@ -294,13 +277,6 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     """
     df = _delegate_from_json()
     seeds = {sid for sid in parent_ids if sid}
-    # Seed the visited set with the parents themselves. A delegation marker
-    # chain can loop back onto a parent — a cycle, or a parent that is also
-    # another parent's delegate child when several ids are deleted at once —
-    # and without this guard that parent would be collected as one of its own
-    # descendants and cascade-deleted along with all of its messages. Callers
-    # delete the parents separately, so parents must never appear in the
-    # returned child set. (#49148)
     found: set[str] = set(seeds)
     frontier = list(seeds)
     while frontier:
@@ -312,7 +288,6 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
         )
         frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
         found.update(frontier)
-    # Return only the discovered children — never the parents themselves.
     return [sid for sid in found if sid not in seeds]
 
 
@@ -321,7 +296,6 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     if ids:
         ph = ",".join("?" * len(ids))
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
-        # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(
             f"UPDATE sessions SET parent_session_id = NULL "
             f"WHERE parent_session_id IN ({ph})",
@@ -334,31 +308,10 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_daedalus_home() / "state.db"
 
-# How long SessionDB stops attempting read-only opens after one fails, before
-# probing again. Long enough that a genuinely unreadable file isn't retried per
-# query; short enough that transient fd pressure doesn't strand the read pool.
 _READ_OPEN_RETRY_SECONDS = 60.0
 
-# Hard ceiling on read-only connections ALIVE at once per SessionDB — pooled
-# idle ones and checked-out ones together.
-#
-# Deliberately one constant for both the pool's maxsize and the permit count,
-# because bounding only the pool bounds the wrong thing. A LifoQueue caps how
-# many connections are *returned*; it says nothing about how many are *open*.
-# With an open-on-miss checkout, N readers arriving on an empty pool all miss,
-# all open, and peak at N — the surplus is closed on release, so nothing
-# accumulates forever, but EMFILE is a peak-instant condition and the burst
-# that empties the pool is exactly the burst that exhausts the fd table.
-#
-# So a connection holds a permit for its whole lifetime: acquired in
-# _get_read_conn() before the open, released in _close_read_conn() after the
-# close. Once permits are gone the read path degrades to the locked writer
-# connection instead of opening more descriptors — slower under load, which is
-# the correct trade against a process-wide wedge the supervisor cannot see.
 _READ_POOL_MAX = 8
 
-# Import-time snapshot used by _default_db_path() to detect a deliberately
-# re-pointed DEFAULT_DB_PATH (tests monkeypatch the constant directly).
 _IMPORT_DEFAULT_DB_PATH = DEFAULT_DB_PATH
 
 
@@ -382,37 +335,9 @@ def _default_db_path() -> Path:
     return get_daedalus_home() / "state.db"
 
 
-# ---------------------------------------------------------------------------
-# Live-DB test-isolation guard
-# ---------------------------------------------------------------------------
-# Forensic evidence (Aug 2026, live developer machine): the production
-# ~/.daedalus/state.db accumulated pytest fixture rows — sessions with
-# chat_id='chat-1'/'123'/'wx-chat' and gateway_routing scopes literally under
-# /tmp/pytest-of-*/ — and a pytest-spawned process flipped the journal mode
-# out from under the WAL-mode gateway writer, destroying committed
-# transcripts ("Persisted transcript lagged live cached history ... possible
-# FTS write corruption").  The hermetic conftest redirects DAEDALUS_HOME per
-# test, but any escape (a session-scoped fixture running before the autouse
-# fixture, a subprocess child launched without DAEDALUS_HOME, a stale worktree
-# without the re-pin, or a developer shell that exports DAEDALUS_HOME to the
-# real home so the conftest session sandbox is skipped) silently fell
-# through to the real database.
-#
-# This guard is the single choke point: EVERY ``SessionDB`` construction
-# resolves its path here, so under pytest a resolution that lands on a
-# production state.db fails hard instead of corrupting live data.  It is
-# env-based (``PYTEST_CURRENT_TEST`` / ``PYTEST_VERSION`` are set by pytest
-# and inherited by subprocess children), so it also protects children that
-# never import the test conftest.
 
-#: Escape hatch for the rare legitimate case (a test that genuinely needs
-#: the real DB).  The in-tree conftest sets this for tests marked
-#: ``@pytest.mark.live_system_guard_bypass``; scripts may set it explicitly.
 _STATE_DB_GUARD_BYPASS = False
 
-#: Additional production roots to refuse (beyond the platform default
-#: ``~/.daedalus``).  The test conftest injects the pre-sandbox production
-#: root here so custom-``DAEDALUS_HOME`` deployments are covered too.
 _STATE_DB_GUARD_EXTRA_DENY_ROOTS: Tuple[Path, ...] = ()
 
 
@@ -507,58 +432,18 @@ def _ensure_test_isolation(db_path: Path) -> None:
                 "@pytest.mark.live_system_guard_bypass."
             )
 
-# ---------------------------------------------------------------------------
-# WAL-compatibility fallback
-# ---------------------------------------------------------------------------
-# SQLite's WAL mode requires shared-memory (mmap) coordination and fcntl
-# byte-range locks that don't reliably work on network filesystems (NFS,
-# SMB/CIFS, some FUSE mounts, WSL1).  Upstream documents this explicitly:
-# https://www.sqlite.org/wal.html#sometimes_queries_return_sqlite_busy_in_wal_mode
-#
-# On those filesystems ``PRAGMA journal_mode=WAL`` raises
-# ``sqlite3.OperationalError: locking protocol`` (SQLITE_PROTOCOL).  If we
-# propagate that, every feature backed by state.db / kanban.db breaks
-# silently — /resume, /title, /history, /branch, kanban dispatcher, etc.
-#
-# ZFS is a separate case: its COW + mmap semantics can corrupt the WAL
-# shared-memory (-shm) file under concurrent connection bursts, presenting
-# as ``disk I/O error`` rather than ``locking protocol``.
-#
-# Instead, fall back to ``journal_mode=DELETE`` (the pre-WAL default) which
-# works on NFS and ZFS.  Concurrency drops — concurrent readers are blocked
-# during a write — but the feature works.
-#
-# Separately, SQLite's WAL-reset bug can corrupt multi-process WAL databases
-# on unfixed library builds (issue #69784).  See:
-# https://sqlite.org/wal.html#walresetbug
-# Fixed in 3.51.3+ with backports 3.50.7 and 3.44.6.  On vulnerable builds we
-# refuse to *enable* WAL for fresh / non-WAL databases (prefer DELETE).  We do
-# NOT live-downgrade an on-disk WAL database — other gateway/cron/worker
-# connections may still hold it open, and flipping journal_mode under them is
-# unsafe (same invariant as the NFS path below).
 _WAL_INCOMPAT_MARKERS = (
-    "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
-    "not authorized",         # Some FUSE mounts block WAL pragma outright
-    "disk i/o error",         # ZFS SHM corruption under concurrent connections
+    "locking protocol",
+    "not authorized",
+    "disk i/o error",
 )
 
-# Last SessionDB() init error, per-process.  Surfaced in /resume and
-# related slash-command error strings so users know WHY the DB is
-# unavailable instead of getting a bare "Session database not available."
-# Only SessionDB.__init__ writes to this; kanban_db.connect() failures
-# do not update it (by design — kanban failures are reported via their
-# own caller's error handling, not via /resume-style slash commands).
 _last_init_error: Optional[str] = None
 _last_init_error_lock = threading.Lock()
 
-# Paths for which we've already logged a WAL-fallback WARNING.  Without
-# this, kanban_db.connect() (called on every kanban operation — see
-# daedalus_cli/kanban_db.py for ~30 call sites) would re-log the same
-# filesystem-incompat warning on every connection, filling errors.log.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
-# Dedup WARNING for the WAL-reset vulnerability fallback (issue #69784).
 _wal_reset_bug_warned_paths: set[str] = set()
 _wal_reset_bug_warned_lock = threading.Lock()
 
@@ -590,9 +475,6 @@ def get_last_init_error() -> Optional[str]:
     return _last_init_error
 
 
-# Distinctive opening shared by both background-review harness prompts
-# (_SKILL_REVIEW_PROMPT and _MEMORY_REVIEW_PROMPT in agent/background_review.py).
-# Matched case-sensitively against the leading content of a user/system message.
 _REVIEW_HARNESS_PREFIXES = (
     "Review the conversation above and update the skill library",
     "Review the conversation above and consider saving to memory",
@@ -639,13 +521,11 @@ def _strip_background_review_harness(
         if skip_next_assistant:
             skip_next_assistant = False
             if isinstance(msg, dict) and msg.get("role") == "assistant":
-                # The curator-mode reply to the harness prompt — drop it.
                 continue
         out.append(msg)
     return out
 
 
-# Matches a bare protocol/tool-name marker such as "[memory]" or "[skill_manage]".
 _STALE_TOOL_CALL_MARKER_RE = re.compile(r"^\[[A-Za-z_][A-Za-z0-9_.-]*\]$")
 
 
@@ -732,7 +612,7 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
     if row is None:
         return None
     mode = row[0]
-    if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
+    if isinstance(mode, bytes):
         try:
             mode = mode.decode("ascii")
         except UnicodeDecodeError:
@@ -931,10 +811,6 @@ def apply_wal_with_fallback(
     """
     configured = resolve_journal_mode()
 
-    # Vulnerable SQLite: do not enable WAL on new/non-WAL files. Resolve the
-    # operator setting first so an explicit DELETE request still verifies that
-    # SQLite actually accepted DELETE rather than silently returning MEMORY or
-    # another connection-specific mode.
     if is_sqlite_wal_reset_vulnerable():
         return _apply_delete_for_wal_reset_bug(
             conn,
@@ -942,24 +818,14 @@ def apply_wal_with_fallback(
             require_delete=configured == "delete",
         )
 
-    # Read-only probe — no flock, no checkpoint, no WAL/SHM unlink.
-    # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     current_mode = _on_disk_journal_mode(conn)
     if current_mode == "wal":
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
         return "wal"
 
-    # #68545: honor the canonical database.journal_mode setting. Existing
-    # on-disk WAL databases were returned above and are never live-downgraded.
     if configured == "delete":
         if current_mode is None:
-            # The mode probe failed (database locked / busy): another
-            # process may hold this DB open in WAL. Ownership is not
-            # provably exclusive, so flipping journal modes here could
-            # destroy committed-but-uncheckpointed WAL transactions of a
-            # concurrent writer. Fail loudly instead of downgrading — the
-            # operator explicitly requested DELETE and we cannot verify it.
             raise sqlite3.OperationalError(
                 "could not verify journal mode before applying configured "
                 "journal_mode=delete (database is locked — possible "
@@ -974,23 +840,12 @@ def apply_wal_with_fallback(
         return actual
 
     try:
-        # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
-        # resulting journal mode. Network filesystems that refuse WAL by
-        # *raising* SQLITE_PROTOCOL ("locking protocol") are handled in the
-        # except branch below. But macOS NFS — and SMB/CIFS, and the AgentFS
-        # NFS overlay — refuse the switch WITHOUT raising: the pragma simply
-        # returns the still-effective mode (e.g. ``delete``). Trust the
-        # returned row, not the mere absence of an exception; otherwise we
-        # report a false ``"wal"`` AND skip the fallback WARNING, leaving the
-        # DB silently in DELETE (reader-blocks-writer) with no signal.
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
             _apply_macos_checkpoint_barrier(conn)
             _enforce_macos_synchronous_full(conn)
             return "wal"
-        # Silent refusal (macOS NFS / SMB / AgentFS overlay): WAL was not
-        # honored, but nothing raised.
         silent_exc = WalUnsupportedError(
             f"journal_mode=WAL refused without raising (still {mode!r})"
         )
@@ -999,25 +854,11 @@ def apply_wal_with_fallback(
         _log_wal_fallback_once(db_label, silent_exc)
         return mode or "delete"
     except sqlite3.OperationalError as exc:
-        # The require_wal silent-refusal raise above is a WalUnsupportedError
-        # (an OperationalError subclass) and lands here — propagate it
-        # unchanged rather than re-running it through the marker logic.
         if isinstance(exc, WalUnsupportedError):
             raise
         msg = str(exc).lower()
         if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
-            # Unrelated OperationalError — don't silently swallow.
             raise
-        # ``disk i/o error`` is ambiguous: on ZFS / APFS-CoW it is a
-        # deterministic WAL-incompatibility (SHM corruption under concurrent
-        # connection bursts — #55305, #71498), but it can also be a one-shot
-        # transient EIO (page-cache pressure, brief lock contention).
-        # Treating a transient EIO as a permanent downgrade signal produced
-        # the mixed-journal-mode corruption pattern fixed in 5c49cd0ed0
-        # (process A downgrades to DELETE while sibling processes set WAL).
-        # Disambiguate by retrying the pragma a couple of times: transient
-        # EIO clears and we return "wal"; the deterministic filesystem cases
-        # keep failing and fall through to the guarded DELETE fallback.
         if "disk i/o error" in msg:
             for _ in range(2):
                 time.sleep(0.05)
@@ -1038,14 +879,10 @@ def apply_wal_with_fallback(
                     _enforce_macos_synchronous_full(conn)
                     return "wal"
                 break
-        # Don't downgrade if another process already set WAL on disk, or if
-        # the mode cannot be verified at all (probe blocked by a concurrent
-        # opener's locks) — ownership is not provably exclusive either way.
         existing = _on_disk_journal_mode(conn)
         if existing == "wal" or existing is None:
             raise
         if require_wal:
-            # Caller mandates WAL — fail loudly instead of degrading to DELETE.
             raise WalUnsupportedError(str(exc)) from exc
         _log_wal_fallback_once(db_label, exc)
         _set_journal_mode_no_wait(conn, "DELETE")
@@ -1110,17 +947,12 @@ def _apply_delete_for_wal_reset_bug(
     current = _on_disk_journal_mode(conn)
 
     if current == "wal":
-        # Do not TRUNCATE / journal_mode=DELETE while other processes may
-        # still hold this WAL DB open — same safety rule as the NFS path.
         _log_wal_reset_bug_once(db_label, kept_wal=True)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
         return "wal"
 
     if current is None:
-        # The mode probe itself failed — another opener's locks are the
-        # most likely cause, and the DB may well be in WAL under a live
-        # writer.  Never flip a journal mode we cannot even read.
         if require_delete:
             raise sqlite3.OperationalError(
                 "could not verify journal mode before applying configured "
@@ -1139,13 +971,8 @@ def _apply_delete_for_wal_reset_bug(
             raise
         lowered = str(exc).lower()
         if "locked" in lowered or "busy" in lowered:
-            # A concurrent opener appeared between the probe and the flip
-            # (or already held the DB): SQLite refused the exclusive lock.
-            # Leave the journal mode exactly as it is.
             _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
             return current or "delete"
-        # Best-effort for the automatic vulnerable-runtime fallback: DELETE is
-        # normally already the default for new file-backed databases.
     if require_delete and actual != "delete":
         raise sqlite3.OperationalError(
             "could not set configured journal_mode=delete "
@@ -1173,7 +1000,6 @@ def _wal_reset_repair_hint() -> str:
             return f"Daedalus-managed installs can repair the embedded runtime with `{cmd}`"
         if method == "docker":
             return f"update the container image with `{cmd}`"
-        # nix/nixos
         return cmd
     except Exception:
         pass
@@ -1208,9 +1034,6 @@ def _log_wal_reset_bug_once(
         )
     else:
         action = "using journal_mode=DELETE instead of enabling WAL"
-    # Check whether this is a Daedalus-managed install (uv-managed venv)
-    # so the warning doesn't promise a repair path that doesn't exist
-    # for git/pip/system Python installs (#75153).
     repair_hint = _wal_reset_repair_hint()
     logger.warning(
         "%s: linked SQLite %s is vulnerable to the WAL-reset corruption "
@@ -1251,9 +1074,6 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Config-driven database pragmas
-# ---------------------------------------------------------------------------
 def apply_database_pragmas(
     conn: sqlite3.Connection,
     *,
@@ -1281,15 +1101,12 @@ def apply_database_pragmas(
     never breaks on a malformed ``database:`` section.
     """
     try:
-        # Local import avoids a circular import with daedalus_cli.config.
         from daedalus_cli.config import cfg_get, load_config_readonly
 
         cfg = load_config_readonly()
     except Exception:
         return
 
-    # Performance PRAGMAs (applied to ALL connection types: writer, read_only,
-    # and WAL per-thread readers).
     for pragma_name in (
         "cache_size",
         "mmap_size",
@@ -1316,36 +1133,11 @@ def apply_database_pragmas(
             pass
 
 
-# ---------------------------------------------------------------------------
-# Malformed-schema recovery
-# ---------------------------------------------------------------------------
-# A distinct, nastier failure class than a malformed FTS *inverted index*:
-# the ``sqlite_master`` schema table itself becomes inconsistent — most
-# commonly a DUPLICATE object definition, e.g. two ``CREATE VIRTUAL TABLE
-# messages_fts`` rows.  SQLite parses the entire schema while preparing the
-# FIRST statement on a connection, so on this class *every* statement raises
-# before it runs — including ``PRAGMA journal_mode`` (which is why this trips
-# in ``apply_wal_with_fallback`` during ``SessionDB.__init__``, long before
-# ``_init_schema`` is reached) and even ``PRAGMA integrity_check`` and a plain
-# ``DROP TABLE``.  The only operations that still work are
-# ``PRAGMA writable_schema=ON`` plus direct ``sqlite_master`` surgery.
-#
-# Symptom users hit (Desktop/Dashboard show "no sessions" while 200+ JSON
-# files sit on disk):
-#   sqlite3.DatabaseError: malformed database schema (messages_fts) -
-#   table messages_fts already exists
-#
-# The canonical ``sessions`` / ``messages`` data is intact in these cases —
-# only the derived schema is broken — so recovery preserves all transcripts
-# and merely rebuilds the FTS layer.
 _MALFORMED_SCHEMA_MARKERS = (
     "malformed database schema",
     "database disk image is malformed",
 )
 
-# Process-global guard so auto-repair is attempted at most once per DB path
-# per process (prevents repair loops and serialises concurrent web_server /
-# gateway opens against the same malformed file).
 _repair_attempted_paths: set[str] = set()
 _repair_attempt_lock = threading.Lock()
 
@@ -1362,13 +1154,10 @@ def is_malformed_db_error(exc: BaseException) -> bool:
     return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
 
 
-# Markers that mean the host filesystem cannot accept another write. Kept as
-# plain substrings so OSError, sqlite3.OperationalError, and wrapped RPC
-# error strings all match the same helper.
 _DISK_FULL_MARKERS = (
     "no space left on device",
     "not enough space",
-    "database or disk is full",  # SQLITE_FULL
+    "database or disk is full",
     "disk full",
     "full disk",
     "enospc",
@@ -1392,10 +1181,6 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
     return any(marker in lowered for marker in _DISK_FULL_MARKERS)
 
 
-# Every cause bucket classify_persistence_error can return. Consumers that
-# enumerate causes (e.g. the cron scheduler's explainer-variant suppression)
-# must iterate this tuple instead of hardcoding the list, so adding a bucket
-# can never silently desynchronize them.
 PERSISTENCE_ERROR_CAUSES = ("locked", "disk", "unknown")
 
 
@@ -1419,11 +1204,6 @@ def classify_persistence_error(exc_or_str) -> str:
     """
     if exc_or_str is None:
         return "unknown"
-    # A refused write during a live compression lease is contention, not
-    # storage damage — but its message ("is being compressed by another
-    # writer" / "Compression lease lost") contains neither "locked" nor
-    # "busy", so it must be matched by type and by phrase (for strings that
-    # survived RPC wrapping).
     if isinstance(exc_or_str, CompressionSessionBusyError):
         return "locked"
     text = str(exc_or_str).lower()
@@ -1583,8 +1363,6 @@ def preflight_db_writability(
 
     parent = db_path.parent
     if parent.is_dir():
-        # SQLite needs a writable directory in every journal mode (WAL and
-        # SHM sidecars in WAL mode; the rollback journal in DELETE mode).
         _ensure_writable(parent, is_dir=True)
 
     for suffix in ("", "-wal", "-shm"):
@@ -1606,12 +1384,6 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
-        # Best-effort tokenizer load: a DB carrying the messages_fts_cjk
-        # index needs the cjk_unicode61 extension before any statement can
-        # touch that table — including the trigger-driven write probe below.
-        # Without it, this probe sees the DB exactly as a tokenizer-less
-        # SessionDB open would (which drops the cjk triggers to keep writes
-        # working), so tokenizer absence must never classify as corruption.
         load_fts5_cjk_extension(conn)
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()
@@ -1620,69 +1392,21 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             return "; ".join(problems[:3])
         conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
 
-        # FTS5 read probe: run a representative MATCH query against the
-        # messages_fts* virtual tables. The FTS *write* probe below catches
-        # the corruption class where base tables read fine but writes fail
-        # through the triggers (#50502). It does NOT catch partial FTS5
-        # index corruption — bad shadow-table segments where reads still
-        # parse but MATCH / snippet / rank queries error out with
-        # "database disk image is malformed" (a `sqlite3.DatabaseError`,
-        # not `OperationalError`). session_search, /resume title resolution,
-        # and any feature relying on FTS5 discovery then break silently
-        # because the official repair tool's check-only path reports the
-        # DB as healthy. #66724.
-        # Catch the full sqlite3 exception hierarchy (not just
-        # OperationalError) so the malformed-shadow-table class is reported
-        # rather than letting it crash the caller.
         for fts_table in ("messages_fts", "messages_fts_trigram", "messages_fts_cjk"):
             try:
-                # No-op queries against the actual FTS5 APIs the search
-                # tools use. The trigram table is included because it backs
-                # the title-resolution path; either corruption mode would
-                # break session recall without this probe. MATCH '""' is
-                # the empty phrase-token probe — FTS5 rejects MATCH ''
-                # outright ("fts5: syntax error"), but a quoted empty
-                # phrase parses, scans zero rows, and exercises the same
-                # shadow-table read path the search tools use.
                 conn.execute(
                     f"SELECT 1 FROM {fts_table} WHERE {fts_table} MATCH '\"\"' LIMIT 1"
                 ).fetchone()
             except sqlite3.OperationalError as exc:
-                # Use the canonical capability classifier instead of a
-                # hand-rolled substring check. On SQLite builds without the
-                # fts5 module, the legacy messages_fts table may exist on
-                # disk (from a prior build that had FTS5) and MATCH queries
-                # against it raise OperationalError("no such module: fts5");
-                # the substring check below would misclassify that as
-                # corruption and send the DB into the repair path, whose
-                # final fallback deletes the messages_fts% schema
-                # (daedalus_state.py:645-723). The supported degraded-runtime
-                # path (SessionDB._is_fts5_unavailable_error + the
-                # regression suite in tests/test_daedalus_state.py:600-632)
-                # treats both "no such module: fts5" and
-                # "no such tokenizer: trigram" as the capability error.
                 if SessionDB._is_fts5_unavailable_error(exc):
-                    # Degraded runtime — not the corruption class we probe.
                     continue
                 msg = str(exc).lower()
                 if "no such table" in msg or "no such column" in msg:
-                    # FTS5 not built yet (brand new file mid-init) — not the
-                    # corruption class we probe.
                     continue
                 return f"fts5 read probe failed on {fts_table}: {exc}"
             except sqlite3.DatabaseError as exc:
-                # This is the corruption class #66724 actually wants caught:
-                # partial shadow-table damage where MATCH / snippet / rank
-                # queries raise DatabaseError("database disk image is malformed")
-                # while reads of the FTS5 table itself parse fine.
                 return f"fts5 read probe failed on {fts_table}: {exc}"
 
-        # FTS write probe: drive a row through the messages_fts* triggers in a
-        # transaction that is always rolled back, so a corrupt FTS index that
-        # rejects writes is caught even though reads look healthy. The probe is
-        # best-effort — if the messages/sessions tables don't exist yet (brand
-        # new file mid-init) the OperationalError is treated as "not yet a
-        # populated DB", not corruption.
         probe_session_id = f"_daedalus_fts_health_probe_{time.time_ns()}"
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -1697,7 +1421,6 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             )
             conn.execute("ROLLBACK")
         except sqlite3.OperationalError as exc:
-            # Missing tables / FTS disabled — not the corruption class we probe.
             try:
                 conn.execute("ROLLBACK")
             except sqlite3.Error:
@@ -1706,10 +1429,6 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             if "no such table" in msg or "no such column" in msg:
                 return None
             if "no such tokenizer: cjk_unicode61" in msg:
-                # This probe process couldn't load the cjk extension while
-                # the DB carries the cjk index — capability gap, not
-                # corruption. A tokenizer-capable SessionDB serves it fine;
-                # a tokenizer-less one self-heals by dropping the triggers.
                 return None
             return str(exc)
         return None
@@ -1767,15 +1486,9 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         bpath = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
 
-    # ── Strategy 0: rebuild FTS indexes in place (FTS write-corruption) ──
-    # The FTS5 'rebuild' command rewrites the internal index from the canonical
-    # content table. This is the recommended, least-destructive recovery for a
-    # corrupt FTS index that rejects message writes while reads still succeed.
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
-            # The cjk index can only be rebuilt with its tokenizer loaded;
-            # best-effort (a tokenizer-less host skips it at the probe below).
             load_fts5_cjk_extension(conn)
             for table_name in (
                 "messages_fts", "messages_fts_trigram", "messages_fts_cjk"
@@ -1785,8 +1498,6 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                         f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
                     )
                 except sqlite3.OperationalError:
-                    # Table absent (FTS disabled / trigram off / cjk not
-                    # present or tokenizer unavailable) — skip it.
                     continue
         finally:
             conn.close()
@@ -1801,12 +1512,6 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db FTS in-place rebuild pass failed: %s", exc)
 
-    # ── Strategy 0.5: rebuild stale B-tree indexes (#63386) ──
-    # PRAGMA integrity_check can report "wrong # of entries in index" when a
-    # B-tree index (e.g. idx_sessions_handoff_state) falls out of sync with its
-    # base table. REINDEX rewrites the index b-tree from the canonical table
-    # rows using the existing index definition, fixing the mismatch without
-    # touching data or FTS schema.
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
@@ -1824,7 +1529,6 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db REINDEX pass failed: %s", exc)
 
-    # ── Strategy 1: de-duplicate sqlite_master (keeps FTS index) ──
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
@@ -1854,7 +1558,6 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     except sqlite3.DatabaseError as exc:
         logger.warning("state.db dedup repair pass failed: %s", exc)
 
-    # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
@@ -1887,40 +1590,6 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     return report
 
 
-# ── CJK-bigram FTS index (replaces the trigram index when available) ────
-#
-# The trigram tokenizer needs >=3 chars per query term, so 1-2 char CJK
-# terms (ubiquitous in Korean/Chinese: 일본, 구글, 项目, ...) fall through
-# to a LIKE full-table scan — measured 3-6s CPU per query on multi-GB
-# installs and the dominant base cost of session_search on CJK workloads.
-#
-# ``cjk_unicode61`` (native/fts5_cjk/, a ~250-line loadable FTS5 tokenizer
-# with no dependencies) wraps unicode61: maximal CJK runs are re-emitted as
-# overlapping character bigrams (Lucene CJKAnalyzer semantics), everything
-# else passes through unchanged. FTS5 phrase semantics turn a query term's
-# consecutive bigrams into exact substring matching down to 2 chars at
-# index speed. Contributed by Soju06 (PR #65544).
-#
-# Same v23 storage discipline as the trigram table it replaces:
-# external-content over a tool-row-excluding view (zero inline text
-# copies; tool rows stay searchable via ``messages_fts``), triggers gated
-# on a DEDICATED marker pair (``fts_cjk_rebuild_high_water`` /
-# ``fts_cjk_rebuild_progress``) so a cjk-only backfill — e.g. the
-# trigram→cjk upgrade on an already-optimized DB — never gates the
-# complete ``messages_fts`` index's triggers.
-#
-# The table exists ONLY when the loadable tokenizer is available
-# (``~/.daedalus/lib/libfts5_cjk.so``, built by ``native/fts5_cjk/build.sh``).
-# A process that cannot load it self-heals by dropping the cjk triggers
-# (message writes keep working; the index goes stale and is rebuilt by the
-# next ``daedalus sessions optimize-storage`` on a capable host).
-#
-# Split DDL: the table/view part is safe to ensure any time; the triggers
-# are created ONLY while the index is complete-or-marker-gated. A stale
-# index (trigger gap of unknown extent) must keep its triggers DROPPED —
-# an external-content 'delete' op for a rowid the index never held is the
-# canonical FTS5 index-corruption hazard the v23 marker gating exists to
-# prevent.
 FTS_CJK_TABLE_SQL = """
 CREATE VIEW IF NOT EXISTS messages_fts_cjk_src AS
     SELECT id, role, content, tool_name, tool_calls
@@ -2075,9 +1744,6 @@ def _connect_tracked_db(path, tracking_path=None, **kwargs):
         )
         return sqlite3.connect(str(path), **kwargs)
 
-    # Open through THIS module's sqlite3.connect so callers (and tests) that
-    # patch daedalus_state.sqlite3.connect keep control of connection creation;
-    # the helper still owns tracking.
     return connect_tracked(
         path,
         tracking_path=tracking_path,
@@ -2165,9 +1831,6 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
                         break
                     time.sleep(0.020)
         if not acquired:
-            # Fail closed: do NOT proceed without the lock. A slow or paused
-            # startup that still owns the lock can overlap this fallback and
-            # the two processes can act on the same live file (#68805 review).
             logger.error(
                 "quarantine lock for %s not acquired within 5s — refusing to "
                 "quarantine without the cross-process lock. The zeroed file "
@@ -2177,8 +1840,6 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
                 path,
             )
             return None
-        # Re-check under the lock: another process may have already quarantined
-        # the file, leaving a fresh DB (or no file at all) in its place.
         if not path.exists():
             logger.info(
                 "quarantine_zeroed_state_db: %s already moved by another process",
@@ -2197,12 +1858,9 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
             ts = time.strftime("%Y%m%d-%H%M%S")
         except Exception:
             ts = "unknown"
-        # Unique destination with PID suffix to avoid collision across
-        # concurrent startups that somehow both enter the lock.
         dest = path.with_name(
             f"{path.name}.zeroed-{ts}-{os.getpid()}.bak"
         )
-        # Non-clobbering: if dest somehow exists, append a counter.
         n = 0
         while dest.exists():
             n += 1
@@ -2214,7 +1872,6 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
         except OSError as exc:
             logger.error("Failed to quarantine zeroed %s: %s", path, exc)
             return None
-        # Also move empty WAL/SHM if present so a fresh open is clean
         for suffix in ("-wal", "-shm"):
             side = Path(str(path) + suffix)
             if side.exists():
@@ -2239,7 +1896,6 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
             handle.close()
 
 
-# ── Read-only health/stats probes (daedalus doctor, dashboards) ──────────
 
 
 def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
@@ -2286,7 +1942,6 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
         "fts_rebuild_progress": None,
     }
 
-    # WAL sidecar size needs no connection at all.
     try:
         wal_path = Path(str(db_path) + "-wal")
         stats["wal_size_bytes"] = wal_path.stat().st_size if wal_path.exists() else 0
@@ -2295,11 +1950,6 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
 
     conn = None
     try:
-        # mode=ro refuses to create the file and refuses every write; a
-        # short timeout keeps doctor snappy when a writer holds the lock.
-        # Route through the tracked connect so byte-probe helpers
-        # (read_header_bytes_preopen) see this connection and refuse raw
-        # opens that could cancel our POSIX locks mid-read.
         conn = _connect_tracked_db(
             f"file:{Path(db_path)}?mode=ro",
             tracking_path=Path(db_path),
@@ -2337,8 +1987,6 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
         sess = _scalar("SELECT COUNT(*) FROM sessions")
         stats["sessions"] = int(sess) if sess is not None else None
 
-        # FTS table presence via sqlite_master (never SELECTs from the
-        # virtual tables themselves — a corrupt index must not fail stats).
         try:
             names = {
                 row[0]
@@ -2355,7 +2003,6 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
         except Exception:
             pass
 
-        # Raw state_meta reads — cheap, and independent of SessionDB.
         def _meta_int(key: str) -> Optional[int]:
             try:
                 row = conn.execute(
@@ -2404,12 +2051,12 @@ def count_db_holders(db_path: Path) -> Optional[int]:
             try:
                 fds = os.listdir(fd_dir)
             except OSError:
-                continue  # process gone or not ours
+                continue
             for fd in fds:
                 try:
                     if os.readlink(f"{fd_dir}/{fd}") == target:
                         holders += 1
-                        break  # one hit per PID
+                        break
                 except OSError:
                     continue
         return holders
@@ -2425,77 +2072,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     single writer via WAL mode). Each method opens its own cursor.
     """
 
-    # ── Write-contention tuning ──
-    # With multiple daedalus processes (gateway + CLI sessions + worktree agents)
-    # all sharing one state.db, WAL write-lock contention causes visible TUI
-    # freezes.  SQLite's built-in busy handler uses a deterministic sleep
-    # schedule that causes convoy effects under high concurrency.
-    #
-    # Instead, we keep the SQLite timeout short (1s) and handle retries at the
-    # application level with random jitter, which naturally staggers competing
-    # writers and avoids the convoy.
-    #
-    # Patience is TIME-based, not attempt-based.  A shared state.db is
-    # legitimately held for multi-second stretches by sibling Daedalus
-    # processes: a TRUNCATE checkpoint at close on a large WAL, VACUUM after
-    # an auto-prune, offline recovery, or an older still-running process
-    # whose FTS maintenance predates the bounded-merge protocol (every
-    # `daedalus update` leaves mixed-version processes sharing the DB until
-    # the old ones exit).  An attempt-counted budget (~15s incidental worst
-    # case) silently loses that race and surfaces as
-    # session_persistence_failed — a destroyed turn — even though the store
-    # is healthy and merely busy (#74478).
-    #
-    # Two budgets: routine writes give up after _WRITE_PATIENCE_S so
-    # background/UI callers don't stall excessively, while transcript
-    # writes (append_message / session-row creation — the ones whose
-    # failure aborts the user's turn) ride out anything shorter than
-    # _TRANSCRIPT_WRITE_PATIENCE_S.  Jitter stays small for the first
-    # _WRITE_RETRY_SLOW_AFTER_S (fast reclaim on millisecond contention),
-    # then backs off so a long hold isn't hammered with BEGIN IMMEDIATE
-    # attempts.
     _WRITE_PATIENCE_S = 20.0
     _TRANSCRIPT_WRITE_PATIENCE_S = 60.0
-    # Observation-only activity heartbeat/label writes (#76354 review S1):
-    # these run on (or adjacent to) the response-critical path and must never
-    # wait out the full routine patience under contention. Sub-second budget;
-    # a skipped write is retried naturally at the next heartbeat window.
     _ACTIVITY_WRITE_PATIENCE_S = 0.5
-    # A live compression lock gets its own, much shorter budget than the write
-    # lock. Compression publishes in a couple of seconds, so a brief wait saves
-    # the overwhelming majority of concurrent turns (#75083). It deliberately
-    # stays short: the lease is a correctness boundary, not just a busy signal
-    # (see test_compression_lease_blocks_non_owner_but_allows_owner_flush), so
-    # a writer that is still locked out after this budget must still be
-    # refused rather than allowed to land a stale turn in a session whose
-    # compression is genuinely long-running or wedged.
     _COMPRESSION_BUSY_WAIT_S = 5.0
-    _WRITE_RETRY_MIN_S = 0.020   # 20ms
-    _WRITE_RETRY_MAX_S = 0.150   # 150ms
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
     _WRITE_RETRY_SLOW_AFTER_S = 2.0
-    _WRITE_RETRY_SLOW_MIN_S = 0.250  # 250ms
-    _WRITE_RETRY_SLOW_MAX_S = 1.000  # 1s
-    # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
+    _WRITE_RETRY_SLOW_MIN_S = 0.250
+    _WRITE_RETRY_SLOW_MAX_S = 1.000
     _CHECKPOINT_EVERY_N_WRITES = 50
-    # Retain the existing coarse 1000-write maintenance cadence, but replace
-    # the unbounded FTS5 ``'optimize'`` (measured holding the write lock for
-    # 9-18 s per index on a 10 GB production DB — longer than a competing
-    # writer's full retry patience, surfacing as "database is locked" /
-    # session_persistence_failed) with bounded ``'merge'`` commands. A
-    # positive merge rank is an approximate output-page budget, so each
-    # command holds the write lock for milliseconds; up to
-    # ``_FTS_MERGE_COMMANDS_PER_PASS`` commands run per index per cadence,
-    # stopping early on the documented no-progress signal. ``usermerge`` is
-    # lowered to 2 so positive merges act on any level with >= 2 segments —
-    # without that, levels below the default threshold of 4 are skipped and
-    # a fragmented index never converges (SQLite FTS5 §6.8-6.9).
     _FTS_MERGE_EVERY_N_WRITES = 1000
     _FTS_MERGE_MAX_PAGES_PER_INDEX = 500
     _FTS_MERGE_COMMANDS_PER_PASS = 4
-    # Session imports intentionally use a lower cap than exports: import holds
-    # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
-    # gateway/CLI writers. The dashboard accepts one exported JSON/JSONL file
-    # at a time, so these still cover normal history restores.
     _IMPORT_MAX_SESSIONS = 500
     _IMPORT_MAX_MESSAGES_PER_SESSION = 10_000
     _IMPORT_MAX_TOTAL_MESSAGES = 50_000
@@ -2534,89 +2123,29 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or _default_db_path()
-        # Fail hard (before any connection/pragma/mkdir) if a pytest-context
-        # process resolved the developer's production state.db — see the
-        # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
 
         self._lock = threading.Lock()
-        # Read-path split (WAL only): recall/browse queries borrow a
-        # read-only connection from a bounded pool so they never queue
-        # behind writer flushes on self._lock. See _read_ctx().
-        #
-        # The pool is BOUNDED because the previous per-thread
-        # (threading.local + strong set) scheme pinned one connection per
-        # (SessionDB x thread) for the life of the process. Starlette
-        # dispatches sync routes on anyio worker threads, so a SessionDB
-        # that is never closed accumulated a connection — and two fds, the
-        # database and its -wal — for every worker thread that ever read,
-        # until the process hit the 256 soft RLIMIT_NOFILE a service manager
-        # hands it and every request failed with EMFILE while the process
-        # stayed alive, so the supervisor's restart-on-exit never fired.
-        # Same bug class as the closing(...) fix in gateway/readiness.py
-        # (#69678 / #69567).
         self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(
             maxsize=_READ_POOL_MAX
         )
-        # One permit per live read connection, held from before the open in
-        # _get_read_conn() until after the close in _close_read_conn().  This
-        # is what bounds PEAK descriptors; _read_pool alone bounds only the
-        # idle set.  See _READ_POOL_MAX.  Acquired non-blocking on purpose: a
-        # reader that cannot get a permit must degrade to the writer lock, not
-        # queue here — blocking would convert fd exhaustion into a stall, which
-        # is the same outage with a different stack trace.
         self._read_permits = threading.BoundedSemaphore(_READ_POOL_MAX)
-        # Count of reads that found no permit and fell back to the locked
-        # writer connection. Not load-bearing; it is the only externally
-        # visible signal that the ceiling is actually being reached, so a
-        # too-small _READ_POOL_MAX is diagnosable from a running process
-        # instead of inferred from latency.
         self._read_permit_exhausted = 0
         self._read_conns_lock = threading.Lock()
-        # Set when close() begins.  _read_ctx checks this under the lock
-        # before returning a connection to the pool, so a reader still in
-        # flight during the drain closes its own connection instead of
-        # re-populating a pool nobody will drain again.
         self._read_conns_closed = False
-        # "read-only opens are failing against this file" backoff stamp.
-        # Instance-wide rather than per-thread: with a shared pool the open
-        # is no longer a per-thread event, and retrying a known-bad open on
-        # every query is a syscall storm for no benefit. The locked writer
-        # connection still serves reads while the backoff holds.
-        # Deliberately a TIMESTAMP, not a sticky bool: the likeliest trigger
-        # is transient fd pressure (EMFILE) — the very condition this pool
-        # exists to prevent — and a permanent flag would demote every reader
-        # on this instance to the writer lock for the life of the process.
-        # The gateway shares one SessionDB across every agent, so that turns
-        # a momentary blip into a permanent global convoy. Expires after
-        # _READ_OPEN_RETRY_SECONDS so the read path self-heals.
         self._read_open_failed_at = 0.0
         self._wal_active = False
         self._write_count = 0
-        # One-shot guard for the runtime FTS rebuild recovery on the write
-        # path. A corrupt FTS shadow table makes EVERY message write raise
-        # the malformed/corrupt error class via the sync triggers; we repair
-        # in place at most once per SessionDB instance so a genuinely
-        # unrecoverable database can't put writers into a rebuild loop.
         self._fts_runtime_rebuild_attempted = False
-        # One-shot guard for the usermerge-floor config write on the
-        # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
         self._fts_enabled = False
         self._fts_stale = False
         self._trigram_available = False
-        # CJK-bigram index (cjk_unicode61 loadable tokenizer). _fts_cjk_loaded:
-        # extension present on the writer connection; _fts_cjk_available: the
-        # messages_fts_cjk table is queryable AND not marked stale. Set during
-        # _init_schema / _probe_fts_cjk.
         self._fts_cjk_loaded = False
         self._fts_cjk_available = False
         self._fts_unavailable_warned = False
         self._conn = None
-        # Async token accounting (see queue_token_counts). The condition
-        # guards queue + writer state; it is distinct from self._lock so
-        # enqueue/flush bookkeeping never contends with SQLite writes.
         self._token_queue: deque = deque()
         self._token_queue_cond = threading.Condition(threading.Lock())
         self._token_writer_thread: Optional[threading.Thread] = None
@@ -2624,14 +2153,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._token_writer_busy = False
         try:
             if read_only:
-                # Read-only attach for cross-profile aggregation: SELECT-only,
-                # so we skip schema init entirely (no DDL, no FTS probe, no
-                # column reconcile). Crucially this takes NO write lock, so
-                # polling another profile's live DB on every sidebar refresh
-                # never contends with that profile's running backend. The DB
-                # must already exist + be initialised (callers guard on
-                # db_path.exists()); a SELECT against an empty file raises and
-                # the caller degrades per-profile.
                 self._conn = _connect_tracked_db(
                     f"file:{self.db_path}?mode=ro",
                     tracking_path=self.db_path,
@@ -2641,15 +2162,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
-                # FTS capability flags normally come from writable schema
-                # initialisation. Probe existing virtual tables with SELECTs
-                # only so read-only search keeps its FTS and trigram paths.
-                # Close the connection on ANY probe failure (e.g. malformed
-                # schema raises DatabaseError, not the OperationalError the
-                # probe handles): the outer except re-raises without cleanup,
-                # and a leaked tracked connection blocks _backup_db_file's
-                # raw-copy for the rest of the process — the writable heal
-                # that follows would then repair WITHOUT its forensic backup.
                 try:
                     apply_database_pragmas(self._conn, db_label="state.db")
                     cursor = self._conn.cursor()
@@ -2675,17 +2187,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-            # Read-only file/sidecar preflight (port of kilocode#12508):
-            # repair-or-refuse BEFORE the first connection so users get an
-            # actionable message instead of an opaque "attempt to write a
-            # readonly database" from deep inside _init_schema.
             if not read_only:
                 preflight_db_writability(self.db_path, db_label="state.db")
 
-            # #68474: zeroed state.db (size>0, all-NUL header) used to fail as a
-            # generic "file is not a database" with no recovery path. Quarantine
-            # the bytes (do not delete) and continue so a fresh DB can open;
-            # point the operator at pre-update snapshots.
             if (
                 not read_only
                 and self.db_path.exists()
@@ -2706,8 +2210,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 logger.error(msg)
                 _set_last_init_error(msg)
-                # If quarantine failed, do not open the zeroed file (would fail
-                # opaquely or risk further damage). Raise with the clear message.
                 if qpath is None and self.db_path.exists() and is_zeroed_state_db(self.db_path):
                     raise sqlite3.DatabaseError(msg)
 
@@ -2715,13 +2217,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn = _connect_tracked_db(
                     str(self.db_path),
                     check_same_thread=False,
-                    # Short timeout — application-level retry with random
-                    # jitter handles contention instead of sitting in
-                    # SQLite's internal busy handler for up to 30s.
                     timeout=1.0,
-                    # auto-starts transactions on DML, which conflicts with
-                    # our explicit BEGIN IMMEDIATE.  None = we manage
-                    # transactions ourselves.
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
@@ -2734,16 +2230,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._init_schema()
 
             def _connect_and_init_with_lock_patience():
-                # Lock contention during open: _init_schema's DDL/reconcile
-                # statements run on a 1s-timeout connection with no retry, so
-                # a sibling process holding the write lock (VACUUM, TRUNCATE
-                # checkpoint at close, a long FTS pass from an older
-                # still-running install) used to fail the ENTIRE open —
-                # callers then disable persistence for the whole run
-                # ("Failed to initialize SessionDB ... database is locked",
-                # #74478). The store is healthy; wait it out with the same
-                # jittered patience the write path uses. Non-lock errors
-                # (including the malformed class) propagate immediately.
                 deadline = time.monotonic() + self._WRITE_PATIENCE_S
                 while True:
                     try:
@@ -2774,13 +2260,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             try:
                 _connect_and_init_with_lock_patience()
             except sqlite3.DatabaseError as exc:
-                # The malformed-schema class (e.g. a duplicate sqlite_master
-                # row for messages_fts) fails on the very first statement —
-                # before _init_schema can run — so it can't be caught at the
-                # FTS-rebuild layer. Recover by repairing sqlite_master in
-                # place (backup first; canonical sessions/messages preserved),
-                # then reopen once. This is what lets Desktop/Dashboard
-                # self-heal instead of silently showing "no sessions".
                 if not is_malformed_db_error(exc) or not _claim_repair_attempt(self.db_path):
                     raise
                 logger.error(
@@ -2797,30 +2276,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     raise
                 _connect_and_init_with_lock_patience()
 
-            # NOTE: the v23 FTS optimization is OPT-IN (`daedalus db optimize`),
-            # never auto-started on open. Legacy installs keep their working
-            # v22 inline FTS untouched here; only the explicit foreground
-            # command demotes + rebuilds. This avoids a background worker
-            # racing session lifecycle and the surprise disk/latency cost on
-            # an unattended open. (An interrupted optimize resumes when the
-            # user re-runs the command.)
         except Exception as exc:
-            # Capture the cause so /resume and friends can surface WHY the
-            # session DB is unavailable instead of a bare "Session database
-            # not available."  Callers that catch this exception keep their
-            # existing ``self._session_db = None`` degradation path.
-            #
-            # Note: we deliberately do NOT clear _last_init_error on the
-            # success path (no else branch).  In multi-threaded callers
-            # (gateway, web_server per-request SessionDB()), a concurrent
-            # successful open racing past this failure would erase the
-            # cause that another thread's /resume is about to format.
-            # Tests that need to reset the state can call
-            # ``daedalus_state._set_last_init_error(None)`` explicitly.
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
             raise
 
-    # ── Read-path split ──
 
     def _get_read_conn(self) -> Optional[sqlite3.Connection]:
         """Open a fresh read-only connection, or None when unavailable.
@@ -2849,9 +2308,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 < _READ_OPEN_RETRY_SECONDS
             ):
                 return None
-        # Take the descriptor permit BEFORE the open, so concurrent openers
-        # race for permits rather than for file descriptors. Non-blocking:
-        # losing the race means "use the writer connection", not "wait".
         if not self._read_permits.acquire(blocking=False):
             with self._read_conns_lock:
                 self._read_permit_exhausted += 1
@@ -2862,54 +2318,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self.db_path,
             )
             return None
-        # Bound before the try: the except handlers close it if the open
-        # half-succeeded, and an unbound name there would raise NameError over
-        # the top of the real failure.
         conn = None
         try:
             conn = _connect_tracked_db(
                 f"file:{self.db_path}?mode=ro",
                 tracking_path=self.db_path,
                 uri=True,
-                # Pooled connections are borrowed by whichever thread runs
-                # the next read, and sqlite3 otherwise refuses cross-thread
-                # use ("SQLite objects created in a thread can only be used
-                # in that same thread") — including on close(), which is how
-                # the old per-thread connections became unclosable and leaked
-                # their fds. Exclusive ownership is enforced by the pool
-                # checkout/return, not by sqlite3. Matches the writer opens.
                 check_same_thread=False,
                 timeout=5.0,
                 isolation_level=None,
             )
             conn.row_factory = sqlite3.Row
             apply_database_pragmas(conn, db_label="state.db")
-            # Load the CJK tokenizer extension on this connection so
-            # messages_fts_cjk queries work on the read path. The .so
-            # registers the tokenizer in the connection's in-memory
-            # registry, not the database file, so mode=ro is fine.
             if self._fts_cjk_loaded:
                 load_fts5_cjk_extension(conn)
         except sqlite3.Error:
-            # A partially-constructed connection — _connect_tracked_db
-            # succeeded, the CJK extension load did not — must be closed here.
-            # Dropping it on the floor still open leaves a live descriptor the
-            # tracking registry still counts: the same leak shape this pool
-            # exists to fix, one level further down.
             self._discard_partial_read_conn(conn)
-            # Back off from retrying the open on every query; the locked
-            # writer connection still serves reads until the stamp expires.
             with self._read_conns_lock:
                 self._read_open_failed_at = time.monotonic()
             logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
             self._read_permits.release()
             return None
         except BaseException:
-            # Anything else (a non-sqlite3 extension-load failure, MemoryError,
-            # KeyboardInterrupt landing between open and return) must not
-            # strand the permit: a stranded permit is not a transient error, it
-            # permanently shrinks the read path by one slot for the life of the
-            # process.
             self._discard_partial_read_conn(conn)
             self._read_permits.release()
             raise
@@ -3008,34 +2438,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         except queue.Full:
                             pass
                 if not returned:
-                    # close() has already drained the pool, so this connection
-                    # is surplus. Close it here — dropping it on the floor is
-                    # what leaked the fd.
-                    #
-                    # queue.Full is now unreachable in practice (permits and
-                    # maxsize are both _READ_POOL_MAX, so there can never be a
-                    # ninth connection to return), but the branch stays: it is
-                    # load-bearing if those two ever drift apart, and a leak is
-                    # the failure mode it prevents.
                     self._close_read_conn(conn)
             return
         with self._lock:
             yield self._conn
 
-    # ── Core write helper ──
 
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
         err = str(exc).lower()
         if "no such module" in err and "fts5" in err:
             return True
-        # SQLite builds that have FTS5 but lack the optional trigram tokenizer
-        # raise "no such tokenizer: trigram" instead of "no such module".
-        # Scope to trigram specifically to avoid masking unrelated tokenizer errors.
         if "no such tokenizer: trigram" in err:
             return True
-        # The cjk_unicode61 tokenizer is a loadable extension — a process
-        # that couldn't load it sees the same capability-error shape.
         if "no such tokenizer: cjk_unicode61" in err:
             return True
         return False
@@ -3076,8 +2491,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if row is None:
             return False
         sql = (row[0] if not isinstance(row, sqlite3.Row) else row["sql"]) or ""
-        # The v23 table declares tool_name/tool_calls columns. Their absence
-        # means a legacy shape that doesn't index tool metadata → optimize.
         return "tool_name" not in sql
 
     def _warn_trigram_unavailable(self, exc: sqlite3.OperationalError) -> None:
@@ -3146,10 +2559,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     ).fetchall()
                 ]
                 if live:
-                    # Self-heal: this process cannot tokenize, so every
-                    # message INSERT would die inside the cjk trigger.
-                    # Breadcrumb FIRST (crash between the two statements is
-                    # merely conservative), then drop.
                     logger.warning(
                         "messages_fts_cjk triggers present but the "
                         "cjk_unicode61 tokenizer is unavailable (%s) — "
@@ -3172,13 +2581,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         try:
             cursor.executescript(FTS_CJK_TABLE_SQL)
             if not cjk_present:
-                # Freshly created. An empty DB's index is complete by
-                # construction (triggers will cover every future row); a
-                # populated DB (e.g. a v23 install predating the cjk index)
-                # gets the dedicated marker pair so the id-gated triggers
-                # keep NEW rows indexed while old rows await the
-                # `optimize-storage` backfill. Either way any old stale
-                # breadcrumb refers to a table that no longer exists.
                 cursor.execute(
                     "DELETE FROM state_meta WHERE key = ?",
                     (FTS_CJK_STALE_KEY,),
@@ -3204,11 +2606,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (FTS_CJK_STALE_KEY,),
             ).fetchone()
             if stale:
-                # A tokenizer-less process dropped the triggers at some
-                # unknown point — the index has a gap of unknown extent.
-                # Do NOT reinstall triggers (an external-content 'delete'
-                # for an unindexed rowid corrupts the index); the next
-                # `optimize-storage` run rebuilds from scratch.
                 self._fts_cjk_available = False
                 return
             cursor.executescript(FTS_CJK_TRIGGER_SQL)
@@ -3218,8 +2615,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
             self._fts_cjk_available = not backfill_pending
         except sqlite3.OperationalError:
-            # Includes "no such tokenizer: cjk_unicode61" if the extension
-            # loaded but registration failed — degrade to trigram/LIKE.
             logger.warning(
                 "messages_fts_cjk ensure failed; CJK search stays on "
                 "trigram/LIKE", exc_info=True,
@@ -3244,17 +2639,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if status is None:
             return False
         try:
-            # Run even when the virtual table exists so any dropped or missing
-            # triggers are recreated after a previous no-FTS5 runtime disabled
-            # them to keep message writes working.
             cursor.executescript(ddl)
             return True
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):
                 raise
-            # Only disable FTS entirely when the whole FTS5 module is missing.
-            # A missing specific tokenizer (e.g. trigram) means only that
-            # particular table cannot be created — the base FTS5 table is fine.
             if self._is_trigram_unavailable_error(exc):
                 self._warn_trigram_unavailable(exc)
             else:
@@ -3293,17 +2682,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
         deadline = time.monotonic() + patience_s
-        # Set on the first compression-busy collision so the short wait is
-        # measured from then, not from the start of the write.
         compression_deadline: Optional[float] = None
 
-        # Transient engine-level error observed on contended WAL appends
-        # (dual gateway/agent writers; FTS5 trigram sync holds the write
-        # lock). The identical write succeeds standalone, so it is
-        # retryable like locked/busy. The exception CLASS varies with the
-        # SQLite build — some surface it as InterfaceError, which lives
-        # OUTSIDE DatabaseError and escaped the retry net entirely on
-        # attempt 0 — so the check is message-scoped, not class-scoped.
         def _is_no_more_rows(exc: sqlite3.Error) -> bool:
             return "no more rows available" in str(exc).lower()
 
@@ -3320,7 +2700,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         except Exception:
                             pass
                         raise
-                # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
                     self._try_wal_checkpoint()
@@ -3328,17 +2707,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     self._try_incremental_merge_fts()
                 return result
             except SessionCompressionInProgressError:
-                # A live foreign compression lock is transient: the compressor
-                # publishes in a couple of seconds. Without any wait, a steer
-                # that lands mid-compression aborts the user's turn as
-                # session_persistence_failed and sends the operator hunting
-                # disk space that was never the problem (#75083).
-                #
-                # The budget is _COMPRESSION_BUSY_WAIT_S, not the write-lock
-                # patience: the lease is a correctness boundary, so a writer
-                # still locked out after a short wait must be refused rather
-                # than left to land a stale turn once a long-running or wedged
-                # compression finally lets go.
                 if compression_deadline is None:
                     compression_deadline = min(
                         time.monotonic() + self._COMPRESSION_BUSY_WAIT_S, deadline
@@ -3353,8 +2721,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if "locked" in err_msg or "busy" in err_msg:
                     if self._sleep_before_write_retry(deadline, patience_s):
                         continue
-                    # Patience exhausted — say what actually happened so the
-                    # surfaced error doesn't read as disk/permission damage.
                     raise sqlite3.OperationalError(
                         f"database is locked (another Daedalus process held the "
                         f"state.db write lock for over {patience_s:.0f}s — "
@@ -3364,29 +2730,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     ) from exc
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
-                # Non-lock error or patience exhausted — propagate.
                 raise
             except sqlite3.DatabaseError as exc:
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
-                # Corrupt FTS shadow tables make every write raise the
-                # malformed/corrupt error class through the FTS sync triggers
-                # while the canonical messages table is intact. Recover here,
-                # at the shared persistence boundary, so every caller gets the
-                # same guarantee. First try the cheap in-place repair. If that
-                # one-shot path is unavailable or corruption recurs, detach the
-                # derived indexes and retry against the canonical tables.
                 if self._try_runtime_fts_rebuild(exc):
                     continue
                 if self._enter_fts_fail_open(exc):
                     continue
                 raise
             except sqlite3.Error as exc:
-                # Catch-all for builds that surface 'no more rows available'
-                # as InterfaceError (a sibling of DatabaseError, not a
-                # subclass) or another sqlite3.Error class outside the two
-                # handlers above. Message-scoped: anything else propagates
-                # untouched.
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
                 raise
@@ -3580,16 +2933,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Read-only connections never request a checkpoint.
         """
         self._stop_token_writer()
-        # The atexit hook holds a strong reference to this instance (bound
-        # method); without unregistering, every closed SessionDB stays
-        # reachable until interpreter exit. Bound methods compare equal by
-        # (instance, function), so this removes exactly our registration;
-        # no-op when the writer never started.
         atexit.unregister(self._drain_token_queue_at_exit)
-        # Drain the read-only connection pool.  Setting the closed flag
-        # under the lock first means a reader still in flight closes its own
-        # connection on release instead of re-populating a pool that has
-        # already been drained.
         with self._read_conns_lock:
             self._read_conns_closed = True
         while True:
@@ -3611,63 +2955,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._conn.close()
                 self._conn = None
 
-    # ── Chunked FTS rebuild engine (v23 opt-in optimize) ──
-    #
-    # `optimize_fts_storage()` (the `daedalus sessions optimize-storage`
-    # command) drops the legacy inline FTS indexes and backfills the new
-    # external-content ones. A single blocking rebuild measured ~16 minutes
-    # of held write lock on a real 25 GB DB, so the backfill runs in small
-    # chunks, each in its own short write transaction:
-    #   - concurrent readers/writers are never starved (WAL stays small,
-    #     each chunk checkpoints via the normal _execute_write cadence);
-    #   - an interrupted run (Ctrl-C, crash) resumes from
-    #     fts_rebuild_progress when the command is re-run;
-    #   - multiple processes sharing the DB don't double-run it — each chunk
-    #     claims work by compare-and-swap on fts_rebuild_progress, so even a
-    #     concurrent second runner just interleaves chunks safely.
-    #
-    # THROTTLING (the part that keeps a live gateway sharing the DB
-    # responsive): a greedy chunk loop re-acquires BEGIN IMMEDIATE nearly
-    # back-to-back and can starve another process's writer into exhausting
-    # its lock retries (an early 5000-row/50ms version owned the write lock
-    # ~85% of the time and visibly froze concurrent CLI sessions on a large
-    # install). Two layers prevent that:
-    #   1. Small chunks (500 rows) — a foreground write queues behind a
-    #      chunk for at most ~tens of ms.
-    #   2. Inter-chunk pause — the loop sleeps max(_FTS_REBUILD_MIN_PAUSE,
-    #      chunk cost x _FTS_REBUILD_DUTY_FACTOR) between chunks, capping
-    #      this process's share of DB bandwidth so concurrent writers always
-    #      find open windows. This works cross-process (unlike any
-    #      same-process activity stamp) because it bounds our own duty
-    #      cycle unconditionally.
 
     _FTS_REBUILD_CHUNK_ROWS = 500
-    _FTS_REBUILD_DUTY_FACTOR = 4.0      # sleep >= 4x chunk cost (≤20% duty)
-    _FTS_REBUILD_MIN_PAUSE = 0.2        # seconds — floor between chunks
+    _FTS_REBUILD_DUTY_FACTOR = 4.0
+    _FTS_REBUILD_MIN_PAUSE = 0.2
 
-    # Demoted v22 FTS shadow tables awaiting teardown (see the v23 migration:
-    # DROP of a multi-GB FTS vtable blocks for minutes, so the migration
-    # demotes the vtable definitions out of sqlite_master and renames the
-    # orphaned shadow tables — now plain tables — to fts_v22_trash_*; the
-    # worker empties them in bounded chunks, then drops them cheaply).
     _FTS_TRASH_PREFIX = "fts_v22_trash_"
 
-    # ── CJK-bigram index backfill (dedicated marker pair) ──
-    #
-    # Same chunk engine as the main deferred rebuild, but on the
-    # ``fts_cjk_rebuild_*`` markers so a cjk-only backfill (the common case:
-    # an already-optimized v23 DB gaining the cjk index) never gates the
-    # complete ``messages_fts`` / trigram triggers.
 
-    # ── Opt-in v23 FTS storage optimization (`daedalus sessions optimize-storage`) ──
-    #
-    # This is the ONLY path that migrates an existing legacy (v22 inline) DB
-    # to the v23 external-content schema. It is deliberately foreground and
-    # user-invoked, never automatic, because it is disk-heavy and long. It
-    # runs the throttled/resumable chunk engine above to completion
-    # synchronously — demote → new schema → chunked backfill → chunked
-    # teardown — with progress callbacks, a disk preflight in the CLI
-    # wrapper, a VACUUM at the end, and a defensive schema_version bump.
 
     def _has_fts_trash(self, conn) -> bool:
         """True when demoted v22 shadow tables are still awaiting teardown.
@@ -3678,9 +2973,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             (self._FTS_TRASH_PREFIX.replace("_", "\\_") + "%",),
         ).fetchone())
 
-    # =========================================================================
-    # Session lifecycle
-    # =========================================================================
 
     def _insert_session_row(
         self,
@@ -3809,17 +3101,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                      WHERE id = ? AND parent_session_id IS NOT NULL""",
                     (session_id,),
                 )
-                # Belt-and-suspenders for gateway routing metadata (#59527):
-                # the gateway re-records the peer on the child after rotation
-                # (d5b4879d4), but a hard crash between child creation and that
-                # write leaves the child row without origin columns, so
-                # ``find_latest_gateway_session_for_peer`` can't recover the
-                # mapping on restart. Inherit them from the parent at creation
-                # time — but ONLY for compression forks (parent already ended
-                # with end_reason='compression'). Delegate/subagent children
-                # are spawned while the parent is still live and must NOT
-                # inherit routing keys, or peer recovery could repoint gateway
-                # traffic into a subagent's session.
                 conn.execute(
                     """UPDATE sessions
                        SET user_id = COALESCE(sessions.user_id,
@@ -3851,9 +3132,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        )""",
                     (session_id,),
                 )
-        # Session-row creation is transcript-critical: if it fails, the
-        # first flush of a new session fails and the turn is aborted as
-        # session_persistence_failed. Ride out long sibling holds.
         self._execute_write(_do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
@@ -3951,11 +3229,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    {target_clause}""",
                 query_params,
             )
-            # Self-heal (#82616): the UPDATE is a silent no-op when the row
-            # is missing (create_session failed earlier, or a crash landed
-            # between routing publication and row creation). Insert it with
-            # the full identity so the session is durably routable — never
-            # leave first-creation to an identity-less lazy writer.
             if not include_compression_ancestors:
                 cur = conn.execute(
                     "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
@@ -4008,7 +3281,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
-    # ── Gateway routing index (replaces sessions.json, #9006 follow-up) ────
 
     def save_gateway_routing_entry(
         self, session_key: str, entry_json: str, *, scope: str = ""
@@ -4098,8 +3370,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         filters on ``source``; ``active_only`` restricts to sessions that
         have not ended.
         """
-        # Full rows carry token/cost totals (MCP listings, /status) — drain
-        # queued async accounting deltas so consumers see exact counters.
         self.flush_token_counts()
         query = f"""
             SELECT sessions.*,
@@ -4252,9 +3522,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if row is not None:
                 return self._session_row_dict(row)
 
-            # Conservative fallback for rows created by current code but with a
-            # temporarily-missing exact key: still require the complete peer
-            # tuple so we never cross chats/threads/users.
             if chat_id is None or chat_type is None:
                 return None
             row = self._conn.execute(
@@ -4297,19 +3564,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
         return self._session_row_dict(row) if row else None
 
-    # ── Orphaned gateway-session repair (#82616) ──────────────────────────
-    # A write-path failure (corrupt FTS, crash between routing publication
-    # and row creation) can leave the live conversation in a session row
-    # that never received its identity columns. Both queries above require
-    # those columns, so the row holding the real transcript is invisible to
-    # recovery: the chat resolves to the last keyed row instead — days older
-    # — and the conversation time-travels. Hardening the write side cannot
-    # reach a row that is *already* damaged; these two methods are the
-    # offline repair path behind ``daedalus sessions repair-routing``.
 
-    # Widest plausible gap between a keyed predecessor going quiet and its
-    # unkeyed successor being minted. The reported incident gap was ~60s;
-    # 15 minutes stays generous without spanning unrelated conversations.
     _ORPHAN_ADOPTION_MAX_GAP_S = 900.0
 
     def find_orphaned_gateway_sessions(
@@ -4443,8 +3698,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     }
                 )
 
-        # Two unkeyed successors claiming the same predecessor means at most
-        # one of them continues that chat, and nothing here says which.
         contested = {
             r["donor_id"]
             for r in records
@@ -4513,10 +3766,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     orphan_id,
                 ),
             )
-            # Retire the predecessor under a reason recovery does NOT treat
-            # as resumable — 'agent_close'/'ws_orphan_reap' would keep it in
-            # the running, and the newly keyed orphan could lose the chat
-            # again on the next restart.
             conn.execute(
                 "UPDATE sessions SET ended_at = COALESCE(ended_at, ?), "
                 "end_reason = 'superseded_by_repair' WHERE id = ?",
@@ -4526,16 +3775,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
-    # Children that carry a ``parent_session_id`` but are NOT compression
-    # continuations: branches, delegate/subagent runs, and tool sessions.
-    # A marker only disqualifies a child when it points at the parent being
-    # queried — compression continuations inherit the rotated agent's
-    # ``model_config`` verbatim (``publish_compression_child`` callers pass
-    # ``agent._session_init_model_config``), so a delegate subagent's
-    # continuation carries ``_delegate_from=<the delegate's own parent>``.
-    # Matching markers by mere presence misclassified those real
-    # continuations as delegate children (fail-open for orphan reopen,
-    # fail-closed for adoption). Bind the parent id for both markers.
     _NON_CONTINUATION_CHILD_FILTER_SQL = (
         "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
         " '$._branched_from'), '') != ?\n"
@@ -4611,9 +3850,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ):
                 return False
 
-            # Treat any direct non-branch/non-delegate/non-tool child as a
-            # continuation, regardless of its current ended state. Reopening
-            # in that case could create a second live head for one lineage.
             child = conn.execute(
                 """
                 SELECT 1
@@ -4629,11 +3865,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if child is not None:
                 return False
 
-            # refresh_compression_lock() deliberately lets an owner revive its
-            # own expired row. Reclaim that row inside this write transaction
-            # before reopening: refresh-first makes the lease active and aborts
-            # recovery; recovery-first deletes the holder identity so a later
-            # refresh cannot resurrect it.
             now = time.time()
             lock_row = conn.execute(
                 "SELECT holder, expires_at FROM compression_locks "
@@ -4658,11 +3889,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "AND end_reason = 'compression'",
                 (session_id,),
             )
-            # rowcount==1 is guaranteed by the parent SELECT at the top of
-            # this same BEGIN IMMEDIATE transaction. If this is ever edited
-            # to return False past this point, note that the lease DELETE
-            # above will still COMMIT (_execute_write commits unless _do
-            # raises) — raise instead of returning False to roll back.
             return updated.rowcount == 1
 
         return bool(self._execute_write(_do))
@@ -4735,11 +3961,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     cwd or parent["cwd"],
                     parent["git_branch"],
                     parent["git_repo_root"],
-                    # Same inheritance contract as _insert_session_row's
-                    # compression-fork backfill (#59527 / cross-profile jump
-                    # fix): the child stays on the parent's profile and keeps
-                    # the gateway routing/origin columns so peer recovery
-                    # still works after a crash at the boundary.
                     profile_name or parent["profile_name"],
                     parent["user_id"],
                     parent["session_key"],
@@ -5166,27 +4387,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         self._execute_write(_do)
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Compression locks
-    # ──────────────────────────────────────────────────────────────────────
-    # Atomic per-session locks that prevent two compression paths from
-    # racing on the same session_id and producing orphan child sessions.
-    #
-    # The race: ``conversation_compression.py`` rotates ``agent.session_id``
-    # as a side effect of a successful compression (end old session, create
-    # new). That mutation is local to the AIAgent instance — but ``state.db``
-    # is shared across all instances. Two AIAgents that share the same
-    # ``session_id`` at the moment they both decide to compress (most
-    # commonly the parent turn's agent + a background-review fork started
-    # right after the turn ended) each end the parent and create their own
-    # NEW session, parented to the same old id. The gateway SessionEntry
-    # only catches one rotation; the other child silently accumulates
-    # writes — Damien's "parent → two orphan children" repro shape.
-    #
-    # The lock is keyed by ``session_id`` and is held for the duration of
-    # the compress() call plus the rotation. ``holder`` identifies the
-    # current owner (pid:tid:nonce) for diagnostics; the lock is recovered
-    # via ``expires_at`` if the holder process crashed without releasing.
     def refresh_compression_lock(
         self,
         session_id: str,
@@ -5285,8 +4485,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (session_id, current_holder),
                     )
                     reclaimed_holder = current_holder
-            # Then: try to insert. INSERT OR IGNORE returns no rowcount
-            # difference — verify ownership via SELECT.
             conn.execute(
                 "INSERT OR IGNORE INTO compression_locks "
                 "(session_id, holder, acquired_at, expires_at) "
@@ -5317,8 +4515,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "try_acquire_compression_lock(%s) failed: %s",
                 session_id, exc,
             )
-            # Fail open: returning False makes the caller skip compression,
-            # which is the safe behaviour when the lock subsystem is broken.
             return False
 
     def release_compression_lock(self, session_id: str, holder: str) -> None:
@@ -5404,11 +4600,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (when, desc, prov, session_id, when),
             )
 
-        # Observation-only write: never let it ride the full routine
-        # write-patience budget (#76354 review S1). Under contention a
-        # heartbeat that waits ~20s would delay the response-critical path
-        # it is merely observing; give up after a sub-second budget instead
-        # (the next due window retries naturally).
         self._execute_write(_do, patience_s=self._ACTIVITY_WRITE_PATIENCE_S)
 
     def clear_session_activity_labels(self, session_id: str) -> None:
@@ -5430,8 +4621,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return
         from agent.session_activity import ActivityProvenance
 
-        # No-op fast path: skip the transaction when there is nothing to
-        # clear. Read-only, no write lock.
         try:
             row = self._conn.execute(
                 "SELECT last_activity_description, last_activity_provenance "
@@ -5486,7 +4675,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         column unchanged.  Routes through _execute_write for the standard
         BEGIN IMMEDIATE + jitter-retry + lock guarantee.
         """
-        # Barrier against queued token deltas — see update_session_model.
         self.flush_token_counts()
 
         def _do(conn):
@@ -5521,12 +4709,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         switch explicitly replaces any confirmed Browser runtime lock while
         preserving unrelated lineage markers in ``model_config``.
         """
-        # This write bypasses the token queue, so deltas enqueued before the
-        # switch must land first: a still-queued first delta carries the
-        # pre-switch route, and applying it after this UPDATE would trip the
-        # first_accounted_route overwrite in update_token_counts (row sees
-        # api_call_count == 0 + a route mismatch) and resurrect the old
-        # model/provider. Flushing here restores the pre-queue ordering.
         self.flush_token_counts()
 
         def _do(conn):
@@ -5744,7 +4926,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         stale ``Model:`` / ``Provider:`` header) is rebuilt — matching the
         behavior of ``update_session_model`` (see #48173, #48248).
         """
-        # Barrier against queued token deltas — see update_session_model.
         self.flush_token_counts()
 
         def _do(conn):
@@ -5761,23 +4942,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
-    # ── Async token accounting ──
-    # update_token_counts() runs a sessions UPDATE (plus a per-model usage
-    # upsert) inside BEGIN IMMEDIATE; against a cold multi-GB state.db one
-    # call can stall the turn thread for tens to hundreds of ms, and the
-    # tool loop pays it after EVERY API call (measured p50 3.3ms / p95 70ms
-    # per call in production). queue_token_counts() reduces the critical
-    # path to a deque append: a dedicated single-writer thread applies
-    # deltas in enqueue order, coalescing consecutive same-route deltas
-    # into one UPDATE when a backlog forms. Readers that need exact
-    # mid-turn totals (get_session and friends) call flush_token_counts()
-    # first — a plain attribute check when nothing is queued.
 
-    # Delta fields summed when coalescing. Route fields must be equal for
-    # two deltas to merge: model/billing_* feed COALESCE backfill and the
-    # per-model usage attribution key, and cost_status/cost_source are
-    # last-non-None-wins — equality makes the merged UPDATE byte-for-byte
-    # equivalent to applying the deltas sequentially.
     _TOKEN_DELTA_SUM_FIELDS = (
         "input_tokens", "output_tokens", "cache_read_tokens",
         "cache_write_tokens", "reasoning_tokens", "api_call_count",
@@ -5805,14 +4970,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if not writer_stopped:
                 self._token_queue.append((session_id, kwargs))
                 if thread is None or not thread.is_alive():
-                    # Daemon so process exit never hangs on accounting; the
-                    # atexit hook drains anything still queued at interpreter
-                    # shutdown (registered once per instance, on first use).
-                    # ``not is_alive()`` (rather than ``is None`` only)
-                    # respawns the writer if it ever died from an unexpected
-                    # escape — otherwise a dead thread object would block
-                    # respawn forever and deltas would pile up on the deque
-                    # until a reader's flush drained them synchronously.
                     thread = threading.Thread(
                         target=self._token_writer_loop,
                         name="session-db-token-writer",
@@ -5823,13 +4980,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     atexit.register(self._drain_token_queue_at_exit)
                 self._token_queue_cond.notify_all()
         if writer_stopped:
-            # Writer permanently stopped (close() ran; a stop-flagged but
-            # still-live writer keeps accepting — its loop drains before
-            # exiting). Enqueueing now would drop the delta silently: no
-            # writer will run and close() already unregistered the atexit
-            # hook. Apply inline instead so a closed-connection failure
-            # raises at the call site, exactly like the old synchronous
-            # update_token_counts path these call sites still guard for.
             self.update_token_counts(session_id, **kwargs)
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
@@ -5840,27 +4990,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         deltas — no worse than reading before the flush existed).
         Never raises: apply failures are logged by the writer.
         """
-        # Fast path — nothing queued, nothing in flight.
         if not self._token_queue and not self._token_writer_busy:
             return True
         batch = None
         with self._token_queue_cond:
             deadline = time.monotonic() + timeout
             while self._token_queue or self._token_writer_busy:
-                # A live writer is authoritative even when stop-flagged
-                # (close() in progress): its loop drains the queue before
-                # exiting, and draining here instead would race its
-                # in-flight batch — newer deltas committing before older
-                # ones breaks the last-non-None-wins / first-accounted-
-                # route / COALESCE-backfill fields. Only when the writer is
-                # dead (or never started for these deltas) does the caller
-                # take the leftovers. Re-checked each wakeup: the writer
-                # can exit mid-wait with deltas enqueued after its final
-                # empty-queue check. busy is claimed while draining (same
-                # protocol as the writer) so a concurrent flush cannot
-                # report drained — or pop a newer delta — while this batch
-                # is still unapplied; a claimed busy therefore also means
-                # "wait", never "drain alongside".
                 thread = self._token_writer_thread
                 if (
                     (thread is None or not thread.is_alive())
@@ -5889,11 +5024,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 while not self._token_queue and not self._token_writer_stop:
                     self._token_queue_cond.wait()
                 if not self._token_queue:
-                    return  # stop requested and fully drained
-                # busy is set BEFORE the queue is cleared: the lock-free
-                # fast path in flush_token_counts() reads queue-then-busy,
-                # so this order guarantees it can never observe an empty
-                # queue while the popped batch is still unapplied.
+                    return
                 self._token_writer_busy = True
                 batch = list(self._token_queue)
                 self._token_queue.clear()
@@ -5909,9 +5040,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         try:
             coalesced = self._coalesce_token_deltas(batch)
         except Exception as exc:
-            # Coalescing must never kill the writer thread (a dead writer
-            # can't be observed by callers). Fall back to applying the raw
-            # batch delta-by-delta — the merge is an optimization only.
             logger.warning(
                 "async token accounting: coalesce failed, applying raw "
                 "batch: %s", exc,
@@ -5921,8 +5049,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             try:
                 self.update_token_counts(session_id, **kwargs)
             except Exception as exc:
-                # Same contract as the old inline call sites: accounting
-                # loss is logged, never raised into a turn.
                 logger.warning(
                     "async token accounting: apply failed (session=%s): %s",
                     session_id, exc,
@@ -5951,8 +5077,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 for f in self._TOKEN_DELTA_COST_FIELDS:
                     value = kwargs.get(f)
                     if value is not None:
-                        # None-preserving sum: an all-None run must stay
-                        # None so COALESCE keeps the stored value untouched.
                         merged[f] = (merged.get(f) or 0.0) + value
             else:
                 groups.append((key, session_id, dict(kwargs)))
@@ -5967,21 +5091,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if thread is not None and thread.is_alive():
             thread.join(timeout=join_timeout)
             if thread.is_alive():
-                # Writer stuck mid-apply (pathological lock contention).
-                # Leave any queued deltas unapplied rather than racing the
-                # stuck apply and misordering/double-counting.
                 logger.warning(
                     "async token accounting: writer did not stop within %.0fs; "
                     "%d queued delta(s) not persisted",
                     join_timeout, len(self._token_queue),
                 )
                 return
-        # Writer exited (or never started) — apply leftovers synchronously.
-        # Claim busy like the writer/flush drains do, so a concurrent
-        # flush_token_counts cannot fast-path True while this batch is
-        # still being applied; conversely, wait out a flush caller-drain
-        # that already claimed busy — close() nulls the connection right
-        # after this returns, and must not yank it mid-batch.
         with self._token_queue_cond:
             deadline = time.monotonic() + join_timeout
             while self._token_writer_busy:
@@ -5994,12 +5109,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     )
                     return
                 self._token_queue_cond.wait(remaining)
-            # busy is claimed BEFORE the queue is cleared — same ordering
-            # as the writer loop and the flush caller-drain. The lock-free
-            # fast path in flush_token_counts() reads queue-then-busy
-            # without the cond, so clearing first would let a concurrent
-            # flush observe "empty and idle" and return True while this
-            # popped batch is still unapplied.
             batch = list(self._token_queue)
             if batch:
                 self._token_writer_busy = True
@@ -6016,7 +5125,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         try:
             self._stop_token_writer()
         except Exception:
-            pass  # Best effort — never fatal at interpreter shutdown.
+            pass
 
     def update_token_counts(
         self,
@@ -6047,10 +5156,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
         """
-        # Ensure the session row exists so the UPDATE doesn't silently affect
-        # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
-        # initial create_session() may have failed due to SQLite locking.
-        # INSERT OR IGNORE is cheap and idempotent.
         self._insert_session_row(session_id, "unknown", model=model)
         if absolute:
             sql = """UPDATE sessions SET
@@ -6118,19 +5223,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             api_call_count,
             session_id,
         )
-        # Per-model usage attribution.  ``update_token_counts`` is the single
-        # chokepoint every per-API-call delta flows through (CLI, gateway, cron,
-        # delegated runs — see conversation_loop / codex_runtime), and each call
-        # carries the model/provider *active at the time of that call*.  The
-        # ``sessions`` row only keeps one (model, billing_provider) pair, so a
-        # mid-session ``/model`` switch otherwise attributes every token to the
-        # initial model (issue #51607).  Recording the per-call delta into
-        # session_model_usage keyed by the live model preserves an accurate
-        # per-model breakdown regardless of how many times the user switches.
-        #
-        # Only the incremental path records here. Absolute cumulative updates
-        # cannot be split back into routes; Insights reconciles any positive
-        # residual against the aggregate session row instead.
         record_model_usage = (not absolute) and (
             input_tokens or output_tokens or cache_read_tokens
             or cache_write_tokens or reasoning_tokens or api_call_count
@@ -6146,10 +5238,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             existing_provider = row["billing_provider"] if row is not None else None
             existing_api_calls = int((row["api_call_count"] if row is not None else 0) or 0)
 
-            # Session creation records the requested primary route before any API
-            # call. If it fails and fallback succeeds, the first accounted usage
-            # event is the first authoritative route. After that, preserve the
-            # legacy row: one row cannot represent mixed-provider usage.
             first_accounted_route = (
                 existing_api_calls == 0
                 and has_accounted_usage
@@ -6231,10 +5319,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         sess_base_url = row["billing_base_url"] if row is not None else None
         sess_billing_mode = row["billing_mode"] if row is not None else None
 
-        # Aux-task rows (task != '') must NOT inherit the session's main-loop
-        # route: an aux call may use a completely different provider/model
-        # (vision on gemini while the main loop runs anthropic). Missing info
-        # stays 'unknown'/empty rather than borrowing a misleading route.
         if task:
             eff_model = model or "unknown"
             eff_provider = billing_provider or ""
@@ -6332,9 +5416,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not session_id or not task:
             return
-        # FK on session_model_usage.session_id → sessions.id: ensure the row
-        # exists (same INSERT OR IGNORE guard update_token_counts uses — the
-        # initial create_session() can fail under concurrent SQLite locking).
         self._insert_session_row(session_id, "unknown")
 
         def _do(conn):
@@ -6361,7 +5442,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
         """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
-        cutoff = time.time() - 86400  # Only sessions older than 24 hours
+        cutoff = time.time() - 86400
 
         def _do(conn):
             rows = conn.execute("""
@@ -6384,7 +5465,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return ids
 
         removed_ids = self._execute_write(_do) or []
-        # Clean up any on-disk session files (belt-and-suspenders)
         if sessions_dir and removed_ids:
             for sid in removed_ids:
                 self._remove_session_files(sessions_dir, sid)
@@ -6398,7 +5478,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         and api_call_count=0.  Non-destructive: preserves all messages and sets
         end_reason='orphaned_compression'.  Fix for #20001.
         """
-        cutoff = time.time() - 604800  # 7 days
+        cutoff = time.time() - 604800
 
         def _do(conn):
             now = time.time()
@@ -6431,9 +5511,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
-        # Cost/usage readers (/status, /usage, gateway endpoints) reach the
-        # row through here; drain queued token deltas so they see exact
-        # totals. No-op attribute check when nothing is queued.
         self.flush_token_counts()
         with self._read_ctx() as conn:
             cursor = conn.execute(
@@ -6469,13 +5546,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return matches[0]
         return None
 
-    # Maximum length for session titles
     MAX_TITLE_LENGTH = 100
 
-    # Title provenance, lowest to highest authority. An auto-titling write may
-    # only replace a title of strictly lower authority, so the instant
-    # ``derived`` title upgrades to the model's ``llm`` title exactly once and
-    # nothing the agent generates can ever clobber a name the user typed.
     TITLE_SOURCE_DERIVED = "derived"
     TITLE_SOURCE_LLM = "llm"
     TITLE_SOURCE_USER = "user"
@@ -6516,25 +5588,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not title:
             return None
 
-        # Lone surrogates cannot be bound by sqlite3 (UnicodeEncodeError at
-        # UTF-8 encode time) — scrub them like every other write path here.
         title = _sanitize_surrogates(title)
 
-        # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
-        # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
-        # normalized to spaces by the whitespace collapsing step below
         cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
 
-        # Remove problematic Unicode control characters:
-        # - Zero-width chars (U+200B-U+200F, U+FEFF)
-        # - Directional overrides (U+202A-U+202E, U+2066-U+2069)
-        # - Object replacement (U+FFFC), interlinear annotation (U+FFF9-U+FFFB)
         cleaned = re.sub(
             r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]',
             '', cleaned,
         )
 
-        # Collapse internal whitespace runs and strip
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
         if not cleaned:
@@ -6564,8 +5626,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
             return False
-        # Walk parent links up from the descendant, following only compression
-        # continuation edges, and check whether ancestor_id is reached.
         edge = _COMPRESSION_CHILD_SQL.format(a="child")
         row = conn.execute(
             f"""
@@ -6621,7 +5681,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     return 0
 
             if title:
-                # Check uniqueness (allow the same session to keep its own title)
                 cursor = conn.execute(
                     "SELECT id FROM sessions WHERE title = ? AND id != ?",
                     (title, session_id),
@@ -6629,17 +5688,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 conflict = cursor.fetchone()
                 if conflict:
                     conflict_id = conflict["id"]
-                    # A compression continuation is the live, projected-forward
-                    # head of its conversation; its compressed predecessors are
-                    # ended and hidden from the session list (list_sessions_rich
-                    # projects roots → tip). When the title that "conflicts" is
-                    # held by such a hidden ancestor, the user has no way to free
-                    # it — renaming the visible tip back to the base name would
-                    # dead-end with "already in use by <session they can't see>".
-                    # Treat this as a transfer: move the title off the ancestor
-                    # onto the continuation. Uniqueness is preserved (still only
-                    # one session carries the exact title) and the parent-link
-                    # lineage is untouched.
                     if self._is_compression_ancestor(
                         conn, ancestor_id=conflict_id, descendant_id=session_id
                     ):
@@ -6651,9 +5699,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         raise ValueError(
                             f"Title '{title}' is already in use by session {conflict_id}"
                         )
-            # Compare-and-swap on the exact values we just read (``IS`` is
-            # NULL-safe in SQLite), so a concurrent write between the SELECT
-            # and here loses instead of being silently overwritten.
             cursor = conn.execute(
                 "UPDATE sessions SET title = ?, title_source = ? "
                 "WHERE id = ? AND title IS ? AND title_source IS ?",
@@ -6945,11 +5990,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         If the exact title exists AND numbered variants exist, returns the
         latest numbered variant (the most recent continuation).
         """
-        # First try exact match
         exact = self.get_session_by_title(title)
 
-        # Also search for numbered variants: "title #2", "title #3", etc.
-        # Escape SQL LIKE wildcards (%, _) in the title to prevent false matches
         escaped = _escape_like(title)
         with self._read_ctx() as conn:
             cursor = conn.execute(
@@ -6960,7 +6002,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             numbered = cursor.fetchall()
 
         if numbered:
-            # Return the most recent numbered variant
             return numbered[0]["id"]
         elif exact:
             return exact["id"]
@@ -6972,15 +6013,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Strips any existing " #N" suffix to find the base name, then finds
         the highest existing number and increments.
         """
-        # Strip existing #N suffix to find the true base
         match = re.match(r'^(.*?) #(\d+)$', base_title)
         if match:
             base = match.group(1)
         else:
             base = base_title
 
-        # Find all existing numbered variants
-        # Escape SQL LIKE wildcards (%, _) in the base to prevent false matches
         escaped = _escape_like(base)
         with self._lock:
             cursor = self._conn.execute(
@@ -6990,10 +6028,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             existing = [row["title"] for row in cursor.fetchall()]
 
         if not existing:
-            return base  # No conflict, use the base name as-is
+            return base
 
-        # Find the highest number
-        max_num = 1  # The unnumbered original counts as #1
+        max_num = 1
         for t in existing:
             m = re.match(r'^.* #(\d+)$', t)
             if m:
@@ -7024,8 +6061,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         current = session_id
         seen = {current} if current else set()
-        # Bound the walk defensively — compression chains this deep are
-        # pathological and shouldn't happen in practice. 100 = plenty.
         for _ in range(100):
             with self._lock:
                 cursor = self._conn.execute(
@@ -7061,12 +6096,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             current = child_id
         return current
 
-    # Columns excluded from compact_rows projections: only the payload-heavy
-    # blob no list consumer renders. Everything else — including gateway
-    # routing fields and desktop sidebar fields like git_branch — stays, and
-    # the projection is derived from SCHEMA_SQL so columns added later via
-    # declarative reconciliation are included automatically instead of
-    # silently dropping out of list rows.
     _SESSION_COMPACT_EXCLUDED = frozenset(
         {"system_prompt", "system_prompt_hash"}
     )
@@ -7173,27 +6202,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         conversation scope (DM, group, channel, or thread, including the
         configured per-user isolation policy).
         """
-        # Rows carry token/cost totals — drain queued deltas first so
-        # listings (sidebar, /resume, dashboards) show exact counters.
         self.flush_token_counts()
         where_clauses = []
         params = []
 
         if not include_children:
-            # Show root sessions and branch sessions, while still hiding
-            # sub-agent runs and compression continuations (which also carry a
-            # parent_session_id but were spawned while the parent was still
-            # live — i.e., started_at < parent.ended_at).
-            #
-            # Branch sessions are identified two ways, OR'd for robustness:
-            #   1. A stable ``_branched_from`` marker in model_config, written
-            #      by /branch at creation time. This survives the parent being
-            #      reopened and re-ended with a different end_reason (e.g.
-            #      tui_shutdown overwriting 'branched'), which otherwise hides
-            #      the branch — see issue #20856.
-            #   2. The legacy heuristic (parent ended with 'branched' before the
-            #      child started), covering branch sessions created before the
-            #      marker existed.
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
@@ -7222,8 +6235,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append("s.archived = 0")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        # Snapshot the filter params before the query builders below extend
-        # them with LIMIT/OFFSET — the pinned back-fill reuses the same WHERE.
         base_where_params = list(params)
         prompt_select = (
             "" if compact_rows
@@ -7234,30 +6245,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             else "LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash"
         )
 
-        # Optional session-id filter, pushed into SQL so callers (Desktop
-        # session-id search) don't have to fetch every row and filter in
-        # Python. ``id_query`` is matched as a case-insensitive substring
-        # against each surfaced row's id AND every id in its forward
-        # compression chain — so searching a compression *root* id or a *tip*
-        # id both resolve to the same projected conversation. Only used in the
-        # order_by_last_active path (which builds the chain CTE); other callers
-        # pass id_query=None.
         id_needle = (id_query or "").strip().lower()
         search_needle = (search_query or "").strip().lower()
         if order_by_last_active:
-            # Compute effective_last_active by walking each surfaced session's
-            # compression-continuation chain forward in SQL and taking the MAX
-            # timestamp across the chain. This lets us ORDER BY + LIMIT at SQL
-            # level instead of fetching every row and sorting in Python, while
-            # still surfacing old compression roots whose live tip is fresh.
-            #
-            # The CTE seeds from rows the outer WHERE admits (roots + branch
-            # children), then recursively joins forward through robust
-            # compression-continuation edges. Do NOT require
-            # child.started_at >= parent.ended_at here: real desktop/gateway
-            # races can insert the continuation row before the parent's
-            # ended_at is written, while stale websocket siblings may satisfy
-            # the timestamp test and hijack resume/list projection.
             outer_where = where_sql
             id_params: List[Any] = []
             filter_clauses: List[str] = []
@@ -7266,11 +6256,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return f"%{_escape_like(needle)}%"
 
             if id_needle:
-                # Admit a surfaced row if its own id or any id in its forward
-                # compression chain matches the needle. LIKE with a leading
-                # wildcard can't use an index, but the chain membership and
-                # the small result set keep this bounded — far cheaper than
-                # fetching every session and scanning in Python.
                 filter_clauses.append(
                     "EXISTS (SELECT 1 FROM chain cq"
                     "        WHERE cq.root_id = s.id"
@@ -7278,9 +6263,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 id_params.append(_like_pattern(id_needle))
             if search_needle:
-                # Same chain-membership trick as id_query, but matching either
-                # the title or the id of any session in the chain. The compact
-                # (punctuation-stripped) variant lets `an94` match `AN-94`.
                 compact_needle = re.sub(r"[\W_]+", "", search_needle)
                 compact_sql = (
                     "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(COALESCE({0}, '')),"
@@ -7343,8 +6325,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            # WHERE params apply twice (CTE seed + outer select); the id filter
-            # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
             _sel = self._compact_session_cols() if compact_rows else "s.*"
@@ -7372,15 +6352,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         for row in rows:
             s = self._session_row_dict(row)
             s["preview"] = _shape_preview(s.pop("_preview_raw", ""))
-            # Drop the internal ordering column so callers see a clean dict.
             s.pop("_effective_last_active", None)
             sessions.append(s)
 
-        # Back-fill pinned conversations the page missed. A pin outlives
-        # recency, so this runs BEFORE compression projection below — a
-        # back-filled root then projects to its live tip exactly like a row
-        # that had made the page on its own. One extra query, bounded by the
-        # number of pins (a handful), never N+1 per pin.
         if include_pinned:
             seen_ids = {s["id"] for s in sessions}
             pinned_where = (
@@ -7416,18 +6390,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 seen_ids.add(s["id"])
                 sessions.append(s)
 
-        # Project compression roots forward to their tips. Each row whose
-        # end_reason is 'compression' has a continuation child; replace the
-        # surfaced fields (id, message_count, title, last_active, ended_at,
-        # end_reason, preview) with the tip's values so the list entry acts
-        # as the live conversation. Keep the root's started_at to preserve
-        # chronological ordering by original conversation start.
         if project_compression_tips and not include_children:
-            # get_compression_tip() walks each root's chain individually (it's
-            # a per-session graph walk, not batchable in one query), but the
-            # tip *row* fetch afterward was previously one _get_session_rich_row()
-            # call per compression root. Batch that half instead: resolve
-            # every tip id first, then fetch all tip rows in a single query.
             tip_ids_by_root: Dict[str, str] = {}
             for s in sessions:
                 if s.get("end_reason") != "compression":
@@ -7451,8 +6414,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if not tip_row:
                     projected.append(s)
                     continue
-                # Preserve the root's started_at for stable sort order, but
-                # surface the tip's identity and activity data.
                 merged = dict(s)
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
@@ -7465,23 +6426,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 projected.append(merged)
             sessions = projected
 
-        # Derive read state per surfaced conversation. ``last_read_at`` is
-        # lineage-stamped by set_session_read, so a projected row's root
-        # watermark and its tip's are the same value — comparing it against
-        # the tip's last_active is correct either way.
         for s in sessions:
             s["unread"] = self.session_unread(s)
 
         return sessions
 
-    # =========================================================================
-    # Message storage
-    # =========================================================================
 
-    # Sentinel prefix used to distinguish JSON-encoded structured content
-    # (multimodal messages: lists of parts like text + image_url) from plain
-    # string content. The NUL byte is not legal in normal text, so this
-    # cannot collide with real user content.
     _CONTENT_JSON_PREFIX = "\x00json:"
 
     @classmethod
@@ -7499,24 +6449,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         :meth:`_decode_content` on read.
         """
         if isinstance(content, str):
-            # Lone UTF-16 surrogates reach here inside tool results scraped
-            # from the web/social platforms (the same input that crashed the
-            # guardrail hasher). The proactive sanitizer upstream only cleans
-            # the *api_messages* copy, and the recovery sanitizer only runs
-            # after the API call itself raises — which it no longer does — so
-            # the canonical history keeps them and this write is where they
-            # land. Left raw, sqlite3 raises UnicodeEncodeError, the flush is
-            # abandoned, and the session silently stops persisting for the
-            # rest of its life. Scrub so persistence never fails.
             return _sanitize_surrogates(content)
         if content is None or isinstance(content, (bytes, int, float)):
             return content
         try:
-            # json.dumps defaults to ensure_ascii=True, which escapes any
-            # surrogate as \udXXX — already safe to bind.
             return cls._CONTENT_JSON_PREFIX + json.dumps(content)
         except (TypeError, ValueError):
-            # Last-resort fallback: stringify so persistence never fails.
             return _sanitize_surrogates(str(content))
 
     @classmethod
@@ -7684,24 +6622,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         from every outgoing payload anyway, so the scrubbed form IS the
         wire bytes).
         """
-        # Display metadata is presentation-only and never changes the model
-        # context role/content replayed to providers.
         display_metadata_json = self._encode_display_metadata(display_metadata)
-        # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = self._reasoning_json_text(reasoning_details)
         codex_items_json = self._reasoning_json_text(codex_reasoning_items)
         codex_message_items_json = self._reasoning_json_text(codex_message_items)
-        # tool_calls may arrive as a Python list (from the live agent) or
-        # as a JSON string (from import/export). Parse first to avoid
-        # double-encoding.
         if isinstance(tool_calls, str):
             try:
                 tool_calls = json.loads(tool_calls)
             except (json.JSONDecodeError, TypeError):
                 tool_calls = []
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-        # Multimodal content (list of parts) must be JSON-encoded: sqlite3
-        # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
 
         message_timestamp = time.time()
@@ -7714,7 +6644,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except (TypeError, ValueError):
                 logger.debug("Ignoring invalid explicit message timestamp: %r", timestamp)
 
-        # Pre-compute tool call count
         num_tool_calls = 0
         if tool_calls is not None:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
@@ -7755,7 +6684,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             msg_id = cursor.lastrowid
 
-            # Update counters
             if num_tool_calls > 0:
                 conn.execute(
                     """UPDATE sessions SET message_count = message_count + 1,
@@ -7769,11 +6697,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
             return msg_id
 
-        # Transcript append is THE critical write: its failure aborts the
-        # user's turn (session_persistence_failed). Use the long patience so
-        # a sibling process legitimately holding the write lock for seconds
-        # (VACUUM, TRUNCATE checkpoint at close, an older pre-bounded-merge
-        # process's FTS optimize) can't destroy a healthy turn (#74478).
         return self._execute_write(
             _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S
         )
@@ -7832,7 +6755,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, messages
             )
-            # One aggregated counter update for the whole batch.
             if tool_calls_total > 0:
                 conn.execute(
                     """UPDATE sessions SET message_count = message_count + ?,
@@ -7846,7 +6768,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
             return inserted
 
-        # Same criticality as append_message: this IS the turn's transcript.
         return self._execute_write(
             _do, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S
         )
@@ -7885,9 +6806,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return bool(self._execute_write(_do))
 
-    #: Key under which message reactions live inside ``display_metadata``.
-    #: Reactions share the existing per-message JSON column rather than a side
-    #: table so they survive rewind/compaction row rewrites with the row itself.
     REACTIONS_METADATA_KEY = "reactions"
 
     def set_message_reaction(
@@ -7931,7 +6849,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ),
                 None,
             )
-            # Tapping the live reaction again retracts it.
             toggling_off = (
                 emoji is not None and previous is not None and previous.get("emoji") == emoji
             )
@@ -8128,18 +7045,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             reasoning_details_json = self._reasoning_json_text(reasoning_details)
             codex_items_json = self._reasoning_json_text(codex_reasoning_items)
             codex_message_items_json = self._reasoning_json_text(codex_message_items)
-            # tool_calls may arrive as a Python list (from the live agent)
-            # or as a JSON string (from import_sessions / export_session,
-            # which store it as TEXT). json.dumps on an already-serialized
-            # string double-encodes it, so parse first.
             if isinstance(tool_calls, str):
                 try:
                     tool_calls = json.loads(tool_calls)
                 except (json.JSONDecodeError, TypeError):
                     tool_calls = []
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-            # Accept either `platform_message_id` (new explicit name) or
-            # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
                 msg.get("platform_message_id") or msg.get("message_id")
             )
@@ -8240,11 +7151,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ):
                 raise CompressionSessionClosedError(session_id)
             if archive_dropped:
-                # Content-preserving UPDATE: the rows keep their FTS entries
-                # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
-                # of content columns, not on `active`), so the replaced turns
-                # stay readable via get_messages(include_inactive=True) and
-                # searchable with include_inactive=True after the rewrite.
                 conn.execute(
                     "UPDATE messages SET active = 0 "
                     "WHERE session_id = ? AND active = 1",
@@ -8319,20 +7225,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         def _do(conn):
             patched_model_config = None
             if model_config_patch is not None:
-                # on_missing="raise": a prune/compaction must not commit
-                # against a vanished session row (the compressor's caller
-                # converts the raised error into a safe keep-the-original
-                # no-op), unlike the flag setters which tolerate missing rows.
                 patched_model_config = self._merge_model_config_json(
                     conn, session_id, model_config_patch, on_missing="raise"
                 )
 
-            # Soft-archive the live turns: active=0 hides them from the live
-            # context load, compacted=1 marks them as "summarized away" (vs
-            # rewind/undo's active=0+compacted=0, which means "user took it
-            # back"). search_messages includes compacted=1 rows by default so
-            # the pre-compaction transcript stays discoverable; live-context
-            # loads (active=1 only) still exclude them.
             conn.execute(
                 "UPDATE messages SET active = 0, compacted = 1 "
                 "WHERE session_id = ? AND active = 1",
@@ -8341,8 +7237,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             inserted, tool_calls_total = self._insert_message_rows(
                 conn, session_id, compacted_messages
             )
-            # message_count / tool_call_count reflect the LIVE (active) set —
-            # the archived rows are still on disk but not part of the live count.
             if model_config_patch is None:
                 conn.execute(
                     "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
@@ -8434,7 +7328,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if after_id is not None:
             params.append(after_id)
         if limit is not None or offset:
-            # SQLite's OFFSET requires LIMIT; -1 means "no limit".
             sql += " LIMIT ? OFFSET ?"
             params.extend([-1 if limit is None else limit, offset])
         with self._read_ctx() as conn:
@@ -8469,7 +7362,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         found: List[Dict[str, Any]] = []
         ids = [s for s in session_ids if s]
-        for start in range(0, len(ids), 900):  # SQLite's bound-variable ceiling.
+        for start in range(0, len(ids), 900):
             chunk = ids[start : start + 900]
             placeholders = ",".join("?" * len(chunk))
             with self._read_ctx() as conn:
@@ -8511,7 +7404,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if window < 0:
             window = 0
         with self._read_ctx() as conn:
-            # Confirm the anchor exists in this session.
             anchor_exists = conn.execute(
                 "SELECT 1 FROM messages WHERE id = ? AND session_id = ? LIMIT 1",
                 (around_message_id, session_id),
@@ -8519,8 +7411,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if not anchor_exists:
                 return {"window": [], "messages_before": 0, "messages_after": 0}
 
-            # Two queries: anchor + before (DESC, take window+1), and after
-            # (ASC, take window). Final order is id ASC.
             before_rows = conn.execute(
                 "SELECT * FROM messages "
                 "WHERE session_id = ? AND id <= ? "
@@ -8534,7 +7424,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 (session_id, around_message_id, window),
             ).fetchall()
 
-        # before_rows is DESC; reverse so it's ASC, then concatenate after_rows.
         rows = list(reversed(before_rows)) + list(after_rows)
         result = []
         for row in rows:
@@ -8553,8 +7442,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             result.append(msg)
 
-        # before_rows includes the anchor itself; subtract 1 for the count of
-        # messages strictly before the anchor in the returned slice.
         messages_before = max(0, len(before_rows) - 1)
         messages_after = len(after_rows)
         return {
@@ -8589,17 +7476,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not session_id:
             return session_id
 
-        # Follow the compression-continuation chain forward to the live tip
-        # FIRST. Auto-compression ends the current session and forks a
-        # continuation child, but a long-lived parent keeps its own flushed
-        # message rows — so the empty-head walk below never redirects it, and
-        # resuming the parent id reloads the pre-compression transcript while
-        # the turns generated *after* compression (and their responses) sit in
-        # the continuation. ``get_compression_tip`` is lineage-aware: it only
-        # follows children whose parent ended with ``end_reason='compression'``
-        # (created after the parent was ended), so delegation / branch children
-        # never hijack the resume. This is the fix for the desktop "I came back
-        # and the reply isn't there" report on large sessions.
         try:
             tip = self.get_compression_tip(session_id)
         except Exception:
@@ -8610,10 +7486,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._lock:
             current = session_id
             seen = {current}
-            best = None  # tracks the last (deepest) node with messages
+            best = None
 
             for _ in range(32):
-                # Check if the current node has messages.
                 try:
                     row = self._conn.execute(
                         "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
@@ -8624,12 +7499,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if row is not None:
                     best = current
 
-                # Walk to the most-recently-started child — but skip explicit
-                # branch (`_branched_from`), delegate/subagent (`_delegate_from`),
-                # and tool children. They also carry a ``parent_session_id`` yet
-                # are NOT compression continuations; following them would hijack
-                # the resume target to an unrelated session (e.g. a subagent
-                # run). This mirrors the child-exclusion in ``get_compression_tip``.
                 try:
                     child_row = self._conn.execute(
                         "SELECT id FROM sessions "
@@ -8688,14 +7557,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             rows = conn.execute(
                 f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
                 f"FROM messages WHERE session_id IN ({placeholders})"
-                # Order by AUTOINCREMENT id (true insertion order), NOT timestamp:
-                # append_message stamps rows with time.time(), which is not
-                # monotonic (WSL2, NTP steps, VM/laptop sleep resume). A later
-                # row can carry an earlier timestamp than its predecessor, and
-                # ORDER BY timestamp would then sort an assistant tool_calls row
-                # after its tool response, breaking tool-call/response adjacency
-                # and triggering an HTTP 400 on replay. This matches get_messages
-                # — see c03acca50 for the original fix.
                 f"{active_clause} ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
@@ -8708,9 +7569,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_row_ids=include_row_ids,
         )
 
-    # Columns every conversation projection decodes. Shared by
-    # get_messages_as_conversation and get_resume_conversations so a single
-    # SELECT can feed both the model-fed and display views.
     _CONVERSATION_ROW_COLUMNS = (
         "id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
         "finish_reason, reasoning, reasoning_content, reasoning_details, "
@@ -8740,20 +7598,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}
-            # Durable per-message identity for surfaces that need to address a
-            # specific row later (desktop reactions). OPT-IN: only the gateway
-            # asks for it — every other consumer (ACP restore, export,
-            # inspection) gets the transcript in its historical shape.
-            # Underscore-prefixed so every transport's convert_messages()
-            # strips it before the wire.
             if include_row_ids and row["id"] is not None:
                 msg["_row_id"] = row["id"]
-            # api_content is the byte-fidelity sidecar: the exact string sent
-            # to the API when it differed from the clean content. Returned
-            # VERBATIM — no sanitize_context, no strip — because the replay
-            # path substitutes it for content to keep the provider prompt
-            # cache prefix byte-stable across turns. Cleaning it here would
-            # re-introduce the divergence it exists to remove.
             if row["api_content"]:
                 msg["api_content"] = row["api_content"]
             if row["display_kind"]:
@@ -8776,18 +7622,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
                     msg["tool_calls"] = []
-            # Surface the platform-side message id (e.g. yuanbao msg_id,
-            # telegram update_id) so platform-specific flows like recall
-            # can match by external identifier instead of having to fall
-            # back to content-match heuristics.  Exposed as ``message_id``
-            # for backward compatibility with the JSONL transcript shape.
             if row["platform_message_id"]:
                 msg["message_id"] = row["platform_message_id"]
             if row["observed"]:
                 msg["observed"] = True
-            # Restore reasoning fields on assistant messages so providers
-            # that replay reasoning (OpenRouter, OpenAI, Nous) receive
-            # coherent multi-turn reasoning context.
             if row["role"] == "assistant":
                 if row["finish_reason"]:
                     msg["finish_reason"] = row["finish_reason"]
@@ -8816,28 +7654,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
                 continue
             messages.append(msg)
-        # DEFENSE-IN-DEPTH against background-review session pollution: a forked
-        # skill/memory review that (in older builds, before the _persist_disabled
-        # fix) shared the parent's session_id wrote its harness turn into this
-        # real session. The harness is a user/system message instructing the
-        # agent to "Review the conversation above and update the skill library /
-        # save to memory" under a hard tool restriction; re-loading it as live
-        # history makes the agent adopt the curator role and refuse the user's
-        # actual task. Strip any such harness message AND the curator-mode
-        # assistant reply immediately following it, so a polluted session
-        # resumes clean even if stray rows exist.
         messages = _strip_background_review_harness(messages)
-        # DEFENSE-IN-DEPTH against #78148: before that fix, a bare tool-call
-        # marker (e.g. "[memory]") could get cached as a fallback and
-        # persisted as if it were the model's real answer. Sessions written
-        # before the fix can still carry those rows — clear the stray
-        # content on load so replaying history doesn't re-teach the model
-        # to keep emitting the marker. No-op for unaffected sessions.
         messages = _strip_stale_tool_call_markers(messages)
         if repair_alternation and messages:
-            # Lazy import: daedalus_state already depends on agent.* (see
-            # sanitize_context above), but keep this optional path from
-            # widening the import surface at module load.
             from agent.agent_runtime_helpers import repair_message_sequence
 
             repaired = repair_message_sequence(None, messages)
@@ -8876,15 +7695,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             rows = conn.execute(
                 f"SELECT session_id, {self._CONVERSATION_ROW_COLUMNS} "
                 f"FROM messages WHERE session_id IN ({placeholders}) AND active = 1 "
-                # ORDER BY id (insertion order) — see get_messages_as_conversation
-                # for why timestamp ordering is unsafe.
                 "ORDER BY id",
                 tuple(session_ids),
             ).fetchall()
 
-        # Tip rows are exactly the model-fed set (get_messages_as_conversation
-        # with session_ids=[session_id]); filtering the lineage fetch preserves
-        # their relative id order.
         tip_rows = [r for r in rows if r["session_id"] == session_id]
         model_history = self._rows_to_conversation(
             tip_rows,
@@ -8930,10 +7744,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if max_messages < 0:
             raise ValueError("max_messages must be non-negative")
         if max_messages == 0:
-            # Guard disabled by config — skip counting entirely. Every live
-            # caller invokes this for its raise side effect and ignores the
-            # return value, and an unbounded lineage COUNT here would do the
-            # exact pathological work the disable exists to avoid.
             return 0
         session_ids = self._session_lineage_root_to_tip(session_id)
         placeholders = ",".join("?" for _ in session_ids)
@@ -8970,9 +7780,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if max_messages < 0:
             raise ValueError("max_messages must be non-negative")
         if max_messages == 0:
-            # Guard disabled by config — skip the COUNT; live callers use
-            # this for its raise side effect only (and skip calling it
-            # entirely when the limit is 0).
             return 0
         with self._read_ctx() as conn:
             row = conn.execute(
@@ -9077,9 +7884,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 return False
         return False
 
-    # =========================================================================
-    # Rewind (soft-delete) — see /rewind slash command + issue #21910
-    # =========================================================================
 
     def rewind_to_message(
         self, session_id: str, target_message_id: int
@@ -9110,7 +7914,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         target is a no-op on row state but still bumps the counter.
         """
 
-        # 1) Validate target up-front (read-only, outside the write txn).
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM messages WHERE id = ? AND session_id = ?",
@@ -9127,7 +7930,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 f"{target_row.get('role')!r}, id={target_message_id})"
             )
 
-        # Decode content for callers (prefill the prompt buffer).
         target_row["content"] = self._decode_content(target_row.get("content"))
 
         rewound: List[int] = []
@@ -9154,7 +7956,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         rewound = self._execute_write(_do)
 
-        # 2) Compute new head id (largest still-active row id in session).
         with self._lock:
             head_row = self._conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
@@ -9192,9 +7993,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return self._execute_write(_do)
 
-    # =========================================================================
-    # Search
-    # =========================================================================
 
     def search_sessions(
         self,
@@ -9241,9 +8039,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return [self._session_row_dict(row) for row in cursor.fetchall()]
 
-    # =========================================================================
-    # Utility
-    # =========================================================================
 
     def session_count(
         self,
@@ -9274,9 +8069,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         params = []
 
         if exclude_children:
-            # Mirror list_sessions_rich's child-exclusion clause exactly so the
-            # count lines up with the rows: roots (no parent) plus branch
-            # children (parent ended with end_reason='branched').
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
         include_sources = [source] if source else list(sources or [])
@@ -9396,9 +8188,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             return cursor.fetchone() is not None
 
-    # =========================================================================
-    # Export and cleanup
-    # =========================================================================
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
         if session.get("source") == "tool":
@@ -9462,8 +8251,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             seen.add(next_child["id"])
             current = next_child
             if current["id"] == session_id:
-                # Continue to include later compression tips only when the
-                # requested session itself was compacted.
                 continue
         return lineage if session_id in lineage else [session_id]
 
@@ -9496,7 +8283,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 p.unlink(missing_ok=True)
             except OSError:
                 pass
-        # request_dump files use session_id as a prefix component
         try:
             for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
                 try:
@@ -9564,7 +8350,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 if actual_ids != expected_ids:
                     return False
             removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
-            # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
                 "WHERE parent_session_id = ?",
@@ -9657,9 +8442,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not session_ids:
             return 0
-        # Dedup + drop any non-string entries up-front. Avoids
-        # double-counting in the WHERE-IN list and protects against
-        # callers that pass a list with stray ``None`` values.
         unique_ids = list({sid for sid in session_ids if isinstance(sid, str) and sid})
         if not unique_ids:
             return 0
@@ -9669,8 +8451,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         def _do(conn):
             placeholders = ",".join("?" * len(unique_ids))
-            # First, filter to IDs that actually exist — we want to
-            # return the real deleted count, not the input length.
             cursor = conn.execute(
                 f"SELECT id FROM sessions WHERE id IN ({placeholders})",
                 unique_ids,
@@ -9681,11 +8461,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             existing_placeholders = ",".join("?" * len(existing))
             removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
-            # Orphan remaining children whose parent is in the kill list so the
-            # FK constraint stays satisfied. Pin children whose parent
-            # is itself in the kill list rather than NULL-ing parents
-            # of survivors — the IN list on ``parent_session_id`` does
-            # exactly this.
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({existing_placeholders})",
@@ -9786,10 +8561,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
             for sid in session_ids:
-                # DELETE FROM messages is paranoia — by construction
-                # these rows have ``message_count = 0`` — but if a
-                # bookkeeping bug ever lets the counter drift below the
-                # real row count, we still leave a clean FK state.
                 conn.execute(
                     "DELETE FROM messages WHERE session_id = ?", (sid,)
                 )
@@ -10119,7 +8890,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if not session_ids:
                 return 0
 
-            # Orphan any sessions whose parent is about to be deleted
             placeholders = ",".join("?" * len(session_ids))
             conn.execute(
                 f"UPDATE sessions SET parent_session_id = NULL "
@@ -10135,7 +8905,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return len(session_ids)
 
         count = self._execute_write(_do)
-        # Clean up on-disk files outside the DB transaction
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count
@@ -10242,16 +9011,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             "backup_path": backup_path,
         }
 
-    # ── Meta key/value (for scheduler bookkeeping) ──
 
     def get_meta(self, key: str) -> Optional[str]:
         """Read a value from the state_meta key/value store."""
-        # Kept on self._lock (not _read_ctx) because callers like
-        # fts_rebuild_step read progress before entering a write
-        # transaction, and the read-only WAL connection sees only
-        # committed data — a pending write transaction's uncommitted
-        # meta writes would be invisible.  This is a cheap point lookup,
-        # not the convoy bottleneck the read-path split targets.
         with self._lock:
             row = self._conn.execute(
                 "SELECT value FROM state_meta WHERE key = ?", (key,)
@@ -10314,8 +9076,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
                 (prefix, _escape_like(prefix) + "/%"),
             )
-            # Read rowcount before set_meta reuses this cursor for its INSERT,
-            # which would otherwise overwrite it with the meta write's count.
             retagged = cursor.rowcount or 0
             self.set_meta(gate, "1", cursor=cursor)
             return retagged
@@ -10371,9 +9131,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """
             )
 
-            # v1 → v2: rebuild telegram_dm_topic_bindings if its session_id FK
-            # lacks ON DELETE CASCADE. SQLite can't ALTER a foreign key, so we
-            # rebuild the table. Only runs once per DB (version gate).
             current = conn.execute(
                 "SELECT value FROM state_meta WHERE key = ?",
                 ("telegram_dm_topic_schema_version",),
@@ -10500,7 +9257,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (str(chat_id),),
                     )
             except sqlite3.OperationalError:
-                # Tables don't exist yet — nothing to disable.
                 return
         self._execute_write(_do)
 
@@ -10635,14 +9391,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 )
                 deleted["count"] = cursor.rowcount or 0
             except sqlite3.OperationalError:
-                # Tables don't exist yet — nothing to prune.
                 deleted["count"] = 0
                 return
             if not deleted["count"]:
                 return
-            # If that was the chat's last binding, disable topic mode for
-            # the chat so recovery stops steering lobby messages at a now
-            # empty lane set. Same transaction → no read-after-prune race.
             try:
                 remaining = conn.execute(
                     """
@@ -10658,7 +9410,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         (time.time(), chat_id),
                     )
             except sqlite3.OperationalError:
-                # telegram_dm_topic_mode absent — binding prune still stands.
                 pass
 
         self._execute_write(_do)
@@ -10794,8 +9545,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     (str(user_id), int(limit)),
                 ).fetchall()
             except sqlite3.OperationalError:
-                # telegram_dm_topic_bindings doesn't exist yet — no bindings
-                # means every telegram session for this user is "unlinked".
                 rows = self._conn.execute(
                     f"""
                     SELECT s.*,
@@ -10827,12 +9576,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             sessions.append(session)
         return sessions
 
-    # ── Space reclamation ──
 
-    # FTS5 virtual tables whose b-tree segments we merge on optimize. The
-    # trigram table is created lazily / may be disabled, and the cjk-bigram
-    # table only exists (and is only queryable) when the loadable tokenizer
-    # is present — so we probe each before touching it (see optimize_fts).
     _FTS_TABLES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
     def logical_size_bytes(self) -> Optional[int]:
@@ -10884,16 +9628,12 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         Returns the number of FTS indexes that were optimized (0 if the
         merge step failed or no FTS tables exist).
         """
-        # Merge FTS5 segments before VACUUM so the freed pages are returned
-        # to the OS in the same pass. optimize_fts() manages its own lock.
         optimized = 0
         try:
             optimized = self.optimize_fts()
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
-        # VACUUM cannot be executed inside a transaction.
         with self._lock:
-            # Best-effort WAL checkpoint first, then VACUUM.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception as exc:
@@ -10933,7 +9673,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "vacuumed": False}
         try:
-            # Skip if another process/call did maintenance recently.
             last_raw = self.get_meta("last_auto_prune")
             now = time.time()
             if last_raw:
@@ -10943,7 +9682,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         result["skipped"] = True
                         return result
                 except (TypeError, ValueError):
-                    pass  # corrupt meta; treat as no prior run
+                    pass
 
             pruned = self.prune_sessions(
                 older_than_days=retention_days,
@@ -10951,13 +9690,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
             result["pruned"] = pruned
 
-            # Only VACUUM if we actually freed rows, and no more often than
-            # once every min_vacuum_interval_days -- a large prune (e.g. the
-            # first one to cross retention_days on a DB with tens of
-            # thousands of rows) can free enough pages that pruned > 0 fires
-            # on every subsequent startup even though a VACUUM already ran
-            # recently. VACUUM on this DB's size (FTS5 shadow tables) is not
-            # cheap -- it holds an exclusive lock for the full rewrite.
             last_vacuum_raw = self.get_meta("last_vacuum")
             vacuum_due = True
             if last_vacuum_raw:
@@ -10973,8 +9705,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 except Exception as exc:
                     logger.warning("state.db VACUUM failed: %s", exc)
 
-            # Record the attempt even if pruned == 0, so we don't retry
-            # every startup within the min_interval_hours window.
             self.set_meta("last_auto_prune", str(now))
 
             if pruned > 0:
@@ -10985,7 +9715,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     " + VACUUM" if result["vacuumed"] else "",
                 )
         except Exception as exc:
-            # Maintenance must never block startup. Log and return error marker.
             logger.warning("state.db auto-maintenance failed: %s", exc)
             result["error"] = str(exc)
 
@@ -11021,15 +9750,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         result["skipped"] = True
                         return result
                 except (TypeError, ValueError):
-                    pass  # corrupt meta; treat as no prior run
+                    pass
 
             archived = self.archive_stale_sessions(
                 idle_days, exclude_pinned=exclude_pinned
             )
             result["archived"] = archived
 
-            # Record even a zero-archive run so we don't re-sweep every call
-            # within the interval window.
             self.set_meta("last_auto_archive", str(now))
 
             if archived > 0:
@@ -11044,17 +9771,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         return result
 
-    # ── Handoff (cross-platform session transfer) ──────────────────────────
-    #
-    # State machine:
-    #   None       — no handoff in flight
-    #   "pending"  — CLI requested handoff, gateway hasn't picked it up yet
-    #   "running"  — gateway is processing (session switch + synthetic turn)
-    #   "completed"— gateway successfully delivered the synthetic turn
-    #   "failed"   — gateway hit an error; reason in handoff_error
-    #
-    # The CLI writes "pending" then poll-waits for terminal state. The gateway
-    # watcher transitions pending→running→{completed,failed}.
 
     def request_handoff(self, session_id: str, platform: str) -> bool:
         """Mark a session as pending handoff to the given platform.

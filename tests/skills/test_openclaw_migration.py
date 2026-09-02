@@ -466,7 +466,6 @@ def test_model_config_migrated(tmp_path: Path):
         }),
         encoding="utf-8",
     )
-    # config.yaml must exist for YAML merge to work
     (target / "config.yaml").write_text("model: openrouter/auto\n", encoding="utf-8")
 
     migrator = mod.Migrator(
@@ -547,7 +546,6 @@ def test_shared_skills_migrated(tmp_path: Path):
     target = tmp_path / ".daedalus"
     target.mkdir()
 
-    # Create a shared skill (not in workspace/skills/)
     (source / "skills" / "my-shared-skill").mkdir(parents=True)
     (source / "skills" / "my-shared-skill" / "SKILL.md").write_text(
         "---\nname: my-shared-skill\ndescription: shared\n---\n\nbody\n",
@@ -617,7 +615,6 @@ def test_provider_keys_require_migrate_secrets_flag(tmp_path: Path):
         encoding="utf-8",
     )
 
-    # Without --migrate-secrets: should skip
     migrator = mod.Migrator(
         source_root=source, target_root=target, execute=True,
         workspace_target=None, overwrite=False, migrate_secrets=False, output_dir=None,
@@ -628,7 +625,6 @@ def test_provider_keys_require_migrate_secrets_flag(tmp_path: Path):
     if env_path.exists():
         assert "sk-or-test-key" not in env_path.read_text(encoding="utf-8")
 
-    # With --migrate-secrets: should import
     migrator2 = mod.Migrator(
         source_root=source, target_root=target, execute=True,
         workspace_target=None, overwrite=False, migrate_secrets=True, output_dir=None,
@@ -665,18 +661,6 @@ def test_skill_installs_cleanly_under_skills_guard():
         source="official/migration/openclaw-migration",
     )
 
-    # The migration script has several known false-positive findings from the
-    # security scanner.  None represent actual threats — they are all legitimate
-    # uses in a migration CLI tool:
-    #
-    # agent_config_mod   — references AGENTS.md to migrate workspace instructions
-    # python_os_environ  — reads MIGRATION_JSON_OUTPUT to enable JSON output mode
-    #                      (feature flag, not an env dump)
-    # daedalus_config_mod  — print statements in the post-migration summary that
-    #                      tell the user to *review* ~/.daedalus/config.yaml;
-    #                      the script never writes to that file
-    #
-    # Accept "caution" or "safe" — just not "dangerous" from a *real* threat.
     assert result.verdict in ("safe", "caution", "dangerous"), f"Unexpected verdict: {result.verdict}"
     KNOWN_FALSE_POSITIVES = {"agent_config_mod", "python_os_environ", "daedalus_config_mod"}
     for f in result.findings:

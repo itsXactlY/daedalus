@@ -14,9 +14,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ============================================================================
-# Fixtures
-# ============================================================================
 
 @pytest.fixture
 def sample_wav(tmp_path):
@@ -53,9 +50,6 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("DAEDALUS_LOCAL_STT_LANGUAGE", raising=False)
 
 
-# ============================================================================
-# _get_provider — full permutation matrix
-# ============================================================================
 
 class TestGetProviderGroq:
     """Groq-specific provider selection tests."""
@@ -121,9 +115,6 @@ class TestGetProviderFallbackPriority:
             assert _get_provider({}) == "local"
 
 
-# ============================================================================
-# Explicit provider config respected  (GH-1774)
-# ============================================================================
 
 class TestExplicitProviderRespected:
     """When stt.provider is explicitly set, that choice is authoritative.
@@ -188,7 +179,6 @@ class TestExplicitProviderRespected:
              patch("tools.transcription_tools._has_local_command", return_value=False), \
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
-            # Empty dict = no explicit provider, uses DEFAULT_PROVIDER auto-detect
             result = _get_provider({})
             assert result == "openai"
 
@@ -203,9 +193,6 @@ class TestExplicitProviderRespected:
             assert result == "groq"
 
 
-# ============================================================================
-# _transcribe_groq
-# ============================================================================
 
 class TestTranscribeGroq:
     def test_no_key(self, monkeypatch):
@@ -296,9 +283,6 @@ class TestTranscribeGroq:
         assert "Permission denied" in result["error"]
 
 
-# ============================================================================
-# _transcribe_openai — additional tests
-# ============================================================================
 
 class TestTranscribeOpenAIExtended:
     def test_openai_package_not_installed(self, monkeypatch):
@@ -410,9 +394,6 @@ class TestTranscribeLocalCommand:
         assert result["provider"] == "local_command"
 
 
-# ============================================================================
-# _transcribe_local — additional tests
-# ============================================================================
 
 class TestTranscribeLocalExtended:
     def test_model_reuse_on_second_call(self, tmp_path):
@@ -438,7 +419,6 @@ class TestTranscribeLocalExtended:
             _transcribe_local(str(audio), "base")
             _transcribe_local(str(audio), "base")
 
-        # WhisperModel should be created only once
         assert mock_whisper_cls.call_count == 1
 
     def test_model_reloaded_on_change(self, tmp_path):
@@ -506,9 +486,6 @@ class TestTranscribeLocalExtended:
         assert result["transcript"] == "Hello world"
 
 
-# ============================================================================
-# Model auto-correction
-# ============================================================================
 
 class TestModelAutoCorrection:
     def test_groq_corrects_openai_model(self, monkeypatch, sample_wav):
@@ -625,9 +602,6 @@ class TestModelAutoCorrection:
         assert call_kwargs.kwargs["model"] == "my-custom-model"
 
 
-# ============================================================================
-# _load_stt_config
-# ============================================================================
 
 class TestLoadSttConfig:
     def test_returns_dict_when_import_fails(self):
@@ -644,15 +618,10 @@ class TestLoadSttConfig:
         assert isinstance(result, dict)
 
 
-# ============================================================================
-# _validate_audio_file — edge cases
-# ============================================================================
 
 class TestValidateAudioFileEdgeCases:
     def test_directory_is_not_a_file(self, tmp_path):
         from tools.transcription_tools import _validate_audio_file
-        # tmp_path itself is a directory with an .ogg-ish name? No.
-        # Create a directory with a valid audio extension
         d = tmp_path / "audio.ogg"
         d.mkdir()
         result = _validate_audio_file(str(d))
@@ -669,7 +638,6 @@ class TestValidateAudioFileEdgeCases:
         def stat_side_effect(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            # First calls are from exists() and is_file(), let them pass
             if call_count <= 2:
                 return real_stat
             raise OSError("disk error")
@@ -693,9 +661,6 @@ class TestValidateAudioFileEdgeCases:
         assert _validate_audio_file(str(f)) is None
 
 
-# ============================================================================
-# transcribe_audio — end-to-end dispatch
-# ============================================================================
 
 class TestTranscribeAudioDispatch:
     def test_dispatches_to_groq(self, sample_ogg):
@@ -817,9 +782,6 @@ class TestTranscribeAudioDispatch:
         assert mock_openai.call_args[0][1] == "gpt-4o-transcribe"
 
 
-# ============================================================================
-# get_stt_model_from_config
-# ============================================================================
 
 class TestGetSttModelFromConfig:
     def test_returns_model_from_config(self, tmp_path, monkeypatch):
@@ -861,9 +823,6 @@ class TestGetSttModelFromConfig:
         assert get_stt_model_from_config() is None
 
 
-# ============================================================================
-# _transcribe_mistral
-# ============================================================================
 
 
 @pytest.fixture
@@ -925,9 +884,6 @@ class TestTranscribeMistral:
         assert "Permission denied" in result["error"]
 
 
-# ============================================================================
-# _get_provider — Mistral
-# ============================================================================
 
 class TestGetProviderMistral:
     """Mistral-specific provider selection tests."""
@@ -1002,9 +958,6 @@ class TestGetProviderMistral:
             assert _get_provider({}) == "none"
 
 
-# ============================================================================
-# transcribe_audio — Mistral dispatch
-# ============================================================================
 
 class TestTranscribeAudioMistralDispatch:
     def test_dispatches_to_mistral(self, sample_ogg):

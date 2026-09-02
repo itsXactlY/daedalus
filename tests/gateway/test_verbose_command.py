@@ -77,10 +77,8 @@ class TestVerboseCommand:
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
 
-        # all -> verbose
         assert "VERBOSE" in result
 
-        # Verify config was saved
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert saved["display"]["tool_progress"] == "verbose"
 
@@ -98,7 +96,6 @@ class TestVerboseCommand:
         monkeypatch.setattr(gateway_run, "_daedalus_home", daedalus_home)
         runner = _make_runner()
 
-        # off -> new -> all -> verbose -> off
         expected = ["new", "all", "verbose", "off"]
         for mode in expected:
             result = await runner._handle_verbose_command(_make_event())
@@ -122,7 +119,6 @@ class TestVerboseCommand:
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
 
-        # default "all" -> verbose
         assert "VERBOSE" in result
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert saved["display"]["tool_progress"] == "verbose"
@@ -132,7 +128,6 @@ class TestVerboseCommand:
         """When config.yaml doesn't exist, command reports disabled."""
         daedalus_home = tmp_path / "daedalus"
         daedalus_home.mkdir()
-        # No config.yaml
 
         monkeypatch.setattr(gateway_run, "_daedalus_home", daedalus_home)
 

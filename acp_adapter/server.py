@@ -41,7 +41,6 @@ from acp.schema import (
     Usage,
 )
 
-# AuthMethodAgent was renamed from AuthMethod in agent-client-protocol 0.9.0
 try:
     from acp.schema import AuthMethodAgent
 except ImportError:
@@ -64,7 +63,6 @@ try:
 except Exception:
     DAEDALUS_VERSION = "0.0.0"
 
-# Thread pool for running AIAgent (synchronous) in parallel.
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 
 
@@ -84,7 +82,6 @@ def _extract_text(
             parts.append(block.text)
         elif hasattr(block, "text"):
             parts.append(str(block.text))
-        # Non-text blocks are ignored for now.
     return "\n".join(parts)
 
 
@@ -138,7 +135,6 @@ class DaedalusACPAgent(acp.Agent):
         self.session_manager = session_manager or SessionManager()
         self._conn: Optional[acp.Client] = None
 
-    # ---- Connection lifecycle -----------------------------------------------
 
     def on_connect(self, conn: acp.Client) -> None:
         """Store the client connection for sending session updates."""
@@ -210,7 +206,6 @@ class DaedalusACPAgent(acp.Agent):
                 exc_info=True,
             )
 
-    # ---- ACP lifecycle ------------------------------------------------------
 
     async def initialize(
         self,
@@ -257,7 +252,6 @@ class DaedalusACPAgent(acp.Agent):
             return AuthenticateResponse()
         return None
 
-    # ---- Session management -------------------------------------------------
 
     async def new_session(
         self,
@@ -343,7 +337,6 @@ class DaedalusACPAgent(acp.Agent):
         ]
         return ListSessionsResponse(sessions=sessions)
 
-    # ---- Prompt (core) ------------------------------------------------------
 
     async def prompt(
         self,
@@ -367,7 +360,6 @@ class DaedalusACPAgent(acp.Agent):
         if not user_text:
             return PromptResponse(stop_reason="end_turn")
 
-        # Intercept slash commands — handle locally without calling the LLM
         if user_text.startswith("/"):
             response_text = self._handle_slash_command(user_text, state)
             if response_text is not None:
@@ -441,7 +433,6 @@ class DaedalusACPAgent(acp.Agent):
 
         if result.get("messages"):
             state.history = result["messages"]
-            # Persist updated history so sessions survive process restarts.
             self.session_manager.save_session(session_id)
 
         final_response = result.get("final_response", "")
@@ -463,7 +454,6 @@ class DaedalusACPAgent(acp.Agent):
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
-    # ---- Slash commands (headless) -------------------------------------------
 
     @classmethod
     def _available_commands(cls) -> list[AvailableCommand]:
@@ -531,7 +521,7 @@ class DaedalusACPAgent(acp.Agent):
         }.get(cmd)
 
         if handler is None:
-            return None  # not a known command — let the LLM handle it
+            return None
 
         try:
             return handler(args, state)
@@ -557,7 +547,6 @@ class DaedalusACPAgent(acp.Agent):
         target_provider = None
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
 
-        # Auto-detect provider for the requested model
         try:
             from daedalus_cli.models import parse_model_input, detect_provider_for_model
             target_provider, new_model = parse_model_input(new_model, current_provider)
@@ -591,7 +580,6 @@ class DaedalusACPAgent(acp.Agent):
             for t in tools:
                 name = t.get("function", {}).get("name", "?")
                 desc = t.get("function", {}).get("description", "")
-                # Truncate long descriptions
                 if len(desc) > 80:
                     desc = desc[:77] + "..."
                 lines.append(f"  {name}: {desc}")
@@ -603,7 +591,6 @@ class DaedalusACPAgent(acp.Agent):
         n_messages = len(state.history)
         if n_messages == 0:
             return "Conversation is empty (no messages yet)."
-        # Count by role
         roles: dict[str, int] = {}
         for msg in state.history:
             role = msg.get("role", "unknown")
@@ -640,8 +627,6 @@ class DaedalusACPAgent(acp.Agent):
             original_session_db = getattr(agent, "_session_db", None)
 
             try:
-                # ACP sessions must keep a stable session id, so avoid the
-                # SQLite session-splitting side effect inside _compress_context.
                 agent._session_db = None
                 compressed, _ = agent._compress_context(
                     state.history,
@@ -667,13 +652,6 @@ class DaedalusACPAgent(acp.Agent):
     def _cmd_version(self, args: str, state: SessionState) -> str:
         return f"Daedalus Agent v{DAEDALUS_VERSION}"
 
-    # ---- Model switching (ACP protocol method) -------------------------------
-    # NOTE: agent-client-protocol 0.12.0 (the installed version) has NO
-    # session/set_model protocol method — the router never dispatches it, so
-    # no handler exists here. Model switching for a session is done through
-    # the agent internals (switch_model) or via session/set_mode + config
-    # options. Do not re-add a set_session_model handler unless a protocol
-    # bump actually defines SetSessionModelRequest/Response.
 
     async def set_session_mode(
         self, mode_id: str, session_id: str, **kwargs: Any

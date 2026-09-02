@@ -40,16 +40,6 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable, Dict, List, Tuple
 
-#: Auto-migration support floor. Configs whose on-disk ``_config_version`` is
-#: below this are NOT auto-migrated any more (policy decision, July 2026):
-#: v12 predates roughly two years of releases, and carrying the sub-v12
-#: migration steps (plus the env bridges they consumed, e.g.
-#: DAEDALUS_TOOL_PROGRESS*) forever is not worth it. Below-floor configs are
-#: left byte-for-byte untouched — the process continues with the config as-is
-#: (defaults deep-merged at read time, matching the non-fatal posture used
-#: for unparseable configs) and a clear message tells the user how to
-#: proceed. The removed steps were the <12 targets: v4 (tool-progress .env →
-#: config.yaml), v5 (timezone seed), v9 (clear ANTHROPIC_TOKEN).
 SUPPORT_FLOOR_VERSION = 12
 
 
@@ -74,7 +64,6 @@ def _cfg():
 
 
 def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 11 → 12: migrate custom_providers list → providers dict ──
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -93,16 +82,13 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
             old_name = entry.get("name", "")
             old_url = entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "") or ""
             if not old_url:
-                continue  # skip entries with no URL
+                continue
 
-            # Generate a kebab-case key from the display name
             key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
-            # Remove consecutive hyphens and trailing hyphens
             while "--" in key:
                 key = key.replace("--", "-")
             key = key.strip("-")
             if not key:
-                # Fallback: derive from URL hostname
                 try:
                     from urllib.parse import urlparse
                     parsed = urlparse(old_url)
@@ -110,7 +96,6 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
                 except Exception:
                     key = f"endpoint-{migrated_count}"
 
-            # Don't overwrite existing entries
             base_key = key
             suffix = migrated_count
             while key in providers_dict:
@@ -133,7 +118,6 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
 
         if migrated_count > 0:
             config["providers"] = providers_dict
-            # Remove the old list — runtime reads via get_compatible_custom_providers()
             config.pop("custom_providers", None)
             _persist_migration(config)
             if not quiet:
@@ -144,10 +128,6 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
-    # These env vars were written by the old setup wizard but nothing reads
-    # them anymore (config.yaml is the sole source of truth since March 2026).
-    # Stale entries cause user confusion — see issue report.
     _c = _cfg()
     get_env_value = _c.get_env_value
     save_env_value = _c.save_env_value
@@ -164,18 +144,10 @@ def _migrate_to_13(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
-    # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
-    # that was provider-agnostic.  When the provider was "local" this caused
-    # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
-    # crashing with "Invalid model size".  Move the value into the correct
-    # provider-specific section and remove the flat key.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
 
-    # Read raw config (no defaults merged) to check what the user actually
-    # wrote, then apply changes to the merged config for saving.
     raw = read_raw_config()
     raw_stt = raw.get("stt", {})
     if isinstance(raw_stt, dict) and "model" in raw_stt:
@@ -183,12 +155,8 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
         provider = raw_stt.get("provider", "local")
         config = read_raw_config()
         stt = config.get("stt", {})
-        # Remove the legacy flat key
         stt.pop("model", None)
-        # Place it in the appropriate provider section only if the
-        # user didn't already set a model there
         if provider in {"local", "local_command"}:
-            # Don't migrate an OpenAI model name into the local section
             _local_models = {
                 "tiny.en", "tiny", "base.en", "base", "small.en", "small",
                 "medium.en", "medium", "large-v1", "large-v2", "large-v3",
@@ -197,17 +165,11 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
                 "large-v3-turbo", "turbo",
             }
             if legacy_model in _local_models:
-                # Check raw config — only set if user didn't already
-                # have a nested local.model
                 raw_local = raw_stt.get("local", {})
                 if not isinstance(raw_local, dict) or "model" not in raw_local:
                     local_cfg = stt.setdefault("local", {})
                     local_cfg["model"] = legacy_model
-            # else: drop it — it was an OpenAI model name, local section
-            # already defaults to "base" via DEFAULT_CONFIG
         else:
-            # Cloud provider — put it in that provider's section only
-            # if user didn't already set a nested model
             raw_provider = raw_stt.get(provider, {})
             if not isinstance(raw_provider, dict) or "model" not in raw_provider:
                 provider_cfg = stt.setdefault(provider, {})
@@ -219,7 +181,6 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_15(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 14 → 15: add explicit gateway interim-message gate ──
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -238,7 +199,6 @@ def _migrate_to_15(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 15 → 16: migrate tool_progress_overrides into display.platforms ──
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -267,7 +227,6 @@ def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 16 → 17: remove legacy compression.summary_* keys ──
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -279,7 +238,6 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
         s_provider = comp.pop("summary_provider", None)
         s_base_url = comp.pop("summary_base_url", None)
         migrated_keys = []
-        # Migrate non-empty, non-default values to auxiliary.compression
         if s_model and str(s_model).strip():
             aux = config.setdefault("auxiliary", {})
             aux_comp = aux.setdefault("compression", {})
@@ -309,16 +267,6 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
-    # The loader now requires plugins to appear in ``plugins.enabled`` before
-    # loading. Existing installs had all discovered plugins loading by default
-    # (minus anything in ``plugins.disabled``). To avoid silently breaking
-    # those setups on upgrade, populate ``plugins.enabled`` with the set of
-    # currently-installed user plugins that aren't already disabled.
-    #
-    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
-    # they ship off for everyone, including existing users, so any user who
-    # wants one has to opt in explicitly.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -329,14 +277,12 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
     plugins_cfg = config.get("plugins")
     if not isinstance(plugins_cfg, dict):
         plugins_cfg = {}
-    # Only migrate if the enabled allow-list hasn't been set yet.
     if "enabled" not in plugins_cfg:
         disabled = plugins_cfg.get("disabled", []) or []
         if not isinstance(disabled, list):
             disabled = []
         disabled_set = set(disabled)
 
-        # Scan ``$DAEDALUS_HOME/plugins/`` for currently installed user plugins.
         grandfathered: List[str] = []
         try:
             user_plugins_dir = get_daedalus_home() / "plugins"
@@ -381,25 +327,6 @@ def _migrate_to_21(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 22 → 23: seed curator defaults + create logs/curator/ ──
-    # The curator (background skill maintenance) was added in PR #16049, but
-    # existing configs from before that PR (or before the April 2026
-    # unification under `auxiliary.curator`) never wrote the curator section
-    # to disk. The runtime deep-merge in `load_config()` fills defaults at
-    # read time, so the curator *functions*; but users can't see/edit the
-    # settings in their `config.yaml`, and `daedalus curator status` has no
-    # stable logs dir to point at until the first run mkdir's it.
-    #
-    # This migration:
-    #   1. Writes the `curator` top-level section to config.yaml (enabled,
-    #      interval_hours, min_idle_hours, stale_after_days, archive_after_days)
-    #      — only keys the user hasn't already overridden.
-    #   2. Writes the `auxiliary.curator` aux-task slot (provider, model,
-    #      base_url, api_key, timeout, extra_body) — canonical slot for
-    #      routing the curator fork to a cheaper aux model.
-    #   3. Creates `~/.daedalus/logs/curator/` if missing (belt-and-suspenders
-    #      on top of ensure_daedalus_home() — old profiles that predate this
-    #      migration still benefit).
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -415,7 +342,6 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
     config = read_raw_config()
     touched = False
 
-    # (1) Top-level curator section — only add missing keys
     _curator_defaults = DEFAULT_CONFIG.get("curator", {})
     raw_curator = config.get("curator")
     if not isinstance(raw_curator, dict):
@@ -429,7 +355,6 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
         config["curator"] = raw_curator
         touched = True
 
-    # (2) auxiliary.curator task slot
     _aux_curator_defaults = (
         DEFAULT_CONFIG.get("auxiliary", {}).get("curator", {})
     )
@@ -472,11 +397,6 @@ def _migrate_to_23(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_25(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 24 → 25: lower model_catalog TTL 24h → 1h ──
-    # The model picker now refreshes its curated list hourly so freshly
-    # published model-catalog.json deploys reach users without a day-long
-    # stale window. Only rewrite the OLD default (24) — never clobber a
-    # value the user deliberately customized.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -493,14 +413,6 @@ def _migrate_to_25(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
-    # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
-    # write_approval (default false = gate off, writes flow freely; true =
-    # require approval). Only an explicit "approve" carried gating intent, so
-    # it maps to true; everything else (on/off/unset) → false. The old
-    # "off = block all writes" mode is dropped — memory_enabled: false disables
-    # memory entirely. Only rewrite a key the user actually persisted; never
-    # invent one.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -525,26 +437,9 @@ def _migrate_to_29(results: Dict[str, Any], quiet: bool) -> None:
             print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
 
-# ── Version 29 → 30: curator.consolidate defaults to false ──
-# Consolidation (the LLM umbrella-building fork) is opt-in, OFF by default;
-# the deterministic inactivity prune still runs whenever the curator is
-# enabled. No write is needed: the schema default (curator.consolidate=false)
-# is supplied by load_config()'s deep-merge at read time, and persisting a
-# default-valued key would only bloat a lean config (it gets stripped on
-# save anyway). Existing installs that WANT the old always-consolidate
-# behavior set it to true explicitly via `daedalus config set`.
-# (No registry entry: this version bump has no migration step.)
 
 
 def _migrate_to_31(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 30 → 31: switch verify_on_stop OFF (one-time) ──
-    # verify_on_stop defaulted to the "auto" sentinel (surface-aware: on for
-    # interactive coding surfaces). In practice the verification narrative was
-    # more noise than signal — it even fired on doc/markdown/skill edits with
-    # nothing to verify. The new default is OFF. This migration switches
-    # existing installs off ONCE, but only when the user never expressed an
-    # explicit preference: we rewrite the value only if it's missing or still
-    # the "auto" sentinel. An explicit true/false the user set is preserved.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -557,7 +452,6 @@ def _migrate_to_31(results: Dict[str, Any], quiet: bool) -> None:
     is_auto_sentinel = (
         isinstance(cur, str) and cur.strip().lower() == "auto"
     )
-    # Only flip the non-committal states; leave explicit bool/on/off alone.
     if cur is None or is_auto_sentinel:
         raw_agent["verify_on_stop"] = False
         config["agent"] = raw_agent
@@ -572,18 +466,6 @@ def _migrate_to_31(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_32(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 31 → 32: flip the BAKED-IN literal true to OFF (one-time) ──
-    # The v30→v31 flip above only caught missing/"auto" values. But the very
-    # first ship of verify-on-stop (config v30, commit 2f1a47b90) defaulted
-    # DEFAULT_CONFIG["agent"]["verify_on_stop"] to a literal True, and
-    # migrate_config persists defaults with strip_defaults=False — so every
-    # install that updated through v30 got `verify_on_stop: true` written into
-    # config.yaml as a literal. v31's guard deliberately preserves an explicit
-    # bool, so it skipped that whole population and left them ON. That literal
-    # true was never a user choice: the feature had no off-switch worth setting
-    # it against until v31 introduced one, so a true persisted before v32 is
-    # always the old machine default. Flip it off once here. A true the user
-    # sets AFTER v32 (config already at version 32) is never touched.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -605,12 +487,6 @@ def _migrate_to_32(results: Dict[str, Any], quiet: bool) -> None:
 
 
 def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
-    # ── Version 32 → 33: unify delegation concurrency caps ──
-    # delegation.max_async_children is deprecated: max_concurrent_children now
-    # caps both a single batch's parallelism and concurrent background
-    # delegation units. Fold a raised max_async_children into
-    # max_concurrent_children (take the max so nobody loses headroom), then
-    # drop the stale key.
     _c = _cfg()
     read_raw_config = _c.read_raw_config
     _persist_migration = _c._persist_migration
@@ -644,14 +520,7 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
-#: Registry of (target_version, migration_fn), strictly ascending. The driver
-#: applies every entry whose target version is greater than the on-disk
-#: version captured before the ladder started. Order matters: later steps may
-#: observe earlier steps' writes via read_raw_config() (filesystem state).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
-    # v12 is the support floor: configs already AT v12 (or newer) still get
-    # every remaining step below. Only configs BELOW 12 are refused by the
-    # floor gate in run_migrations().
     (12, _migrate_to_12),
     (13, _migrate_to_13),
     (14, _migrate_to_14),

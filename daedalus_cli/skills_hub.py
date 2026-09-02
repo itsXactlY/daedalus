@@ -19,16 +19,11 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-# Lazy imports to avoid circular dependencies and slow startup.
-# tools.skills_hub and tools.skills_guard are imported inside functions.
 from daedalus_constants import display_daedalus_home
 
 _console = Console()
 
 
-# ---------------------------------------------------------------------------
-# Shared do_* functions
-# ---------------------------------------------------------------------------
 
 def _resolve_short_name(name: str, sources, console: Console) -> str:
     """
@@ -44,7 +39,6 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
 
     results = unified_search(name, sources, source_filter="all", limit=20)
 
-    # Filter to exact name matches (case-insensitive)
     exact = [r for r in results if r.name.lower() == name.lower()]
 
     if len(exact) == 1:
@@ -65,7 +59,6 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
         c.print("[bold]Use the full identifier to install a specific one.[/]\n")
         return ""
 
-    # No exact match — check if there are partial matches to suggest
     if results:
         c.print(f"[yellow]No exact match for '{name}'. Did you mean one of these?[/]")
         for r in results[:5]:
@@ -190,7 +183,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         GitHubAuth, create_source_router,
     )
 
-    # Clamp page_size to safe range
     page_size = max(1, min(page_size, 100))
 
     c = console or _console
@@ -198,8 +190,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
-    # Collect results from all (or filtered) sources
-    # Use empty query to get everything; per-source limits prevent overload
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
     _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
                          "claude-marketplace": 50, "lobehub": 50}
@@ -210,7 +200,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     for src in sources:
         sid = src.source_id()
         if source != "all" and sid != source and sid != "official":
-            # Always include official source for the "first" placement
             continue
         try:
             limit = _PER_SOURCE_LIMIT.get(sid, 50)
@@ -224,7 +213,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
         return
 
-    # Deduplicate by name, preferring higher trust
     seen: dict = {}
     for r in all_results:
         rank = _TRUST_RANK.get(r.trust_level, 0)
@@ -232,14 +220,12 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
             seen[r.name] = r
     deduped = list(seen.values())
 
-    # Sort: official first, then by trust level (desc), then alphabetically
     deduped.sort(key=lambda r: (
         -_TRUST_RANK.get(r.trust_level, 0),
         r.source != "official",
         r.name.lower(),
     ))
 
-    # Paginate
     total = len(deduped)
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
@@ -247,10 +233,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     end = min(start + page_size, total)
     page_items = deduped[start:end]
 
-    # Count official vs other
     official_count = sum(1 for r in deduped if r.source == "official")
 
-    # Build header
     source_label = f"— {source}" if source != "all" else "— all sources"
     c.print(f"\n[bold]Skills Hub — Browse {source_label}[/]"
             f"  [dim]({total} skills, page {page}/{total_pages})[/]")
@@ -258,7 +242,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         c.print(f"[bright_cyan]★ {official_count} official optional skill(s) from Nous Research[/]")
     c.print()
 
-    # Build table
     table = Table(show_header=True, header_style="bold")
     table.add_column("#", style="dim", width=4, justify="right")
     table.add_column("Name", style="bold cyan", max_width=25)
@@ -285,7 +268,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
     c.print(table)
 
-    # Navigation hints
     nav_parts = []
     if page > 1:
         nav_parts.append(f"[cyan]--page {page - 1}[/] ← prev")
@@ -295,7 +277,6 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     if nav_parts:
         c.print(f"  {' | '.join(nav_parts)}")
 
-    # Source summary
     if source == "all" and source_counts:
         parts = [f"{sid}: {ct}" for sid, ct in sorted(source_counts.items())]
         c.print(f"  [dim]Sources: {', '.join(parts)}[/]")
@@ -317,11 +298,9 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c = console or _console
     ensure_hub_dirs()
 
-    # Resolve which source adapter handles this identifier
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
-    # If identifier looks like a short name (no slashes), resolve it via search
     if "/" not in identifier:
         identifier = _resolve_short_name(identifier, sources, c)
         if not identifier:
@@ -335,13 +314,11 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.\n")
         return
 
-    # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
     if bundle.source == "official" and not category:
-        id_parts = bundle.identifier.split("/")  # ["official", "category", "skill"]
+        id_parts = bundle.identifier.split("/")
         if len(id_parts) >= 3:
             category = id_parts[1]
 
-    # Check if already installed
     lock = HubLockFile()
     existing = lock.get_installed(bundle.name)
     if existing:
@@ -353,7 +330,6 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
 
-    # Quarantine the bundle
     try:
         q_path = quarantine_bundle(bundle)
     except ValueError as exc:
@@ -364,17 +340,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         return
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
-    # Scan
     c.print("[bold]Running security scan...[/]")
     scan_source = getattr(bundle, "identifier", "") or getattr(meta, "identifier", "") or identifier
     result = scan_skill(q_path, source=scan_source)
     c.print(format_scan_report(result))
 
-    # Check install policy
     allowed, reason = should_allow_install(result, force=force)
     if not allowed:
         c.print(f"\n[bold red]Installation blocked:[/] {reason}")
-        # Clean up quarantine
         shutil.rmtree(q_path, ignore_errors=True)
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
@@ -387,8 +360,6 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if metadata_lines:
             c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
 
-    # Confirm with user — show appropriate warning based on source
-    # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
     if not force and not skip_confirm:
         c.print()
         if bundle.source == "official":
@@ -420,7 +391,6 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             shutil.rmtree(q_path, ignore_errors=True)
             return
 
-    # Install
     try:
         install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
     except ValueError as exc:
@@ -435,7 +405,6 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
     if invalidate_cache:
-        # Invalidate the skills prompt cache so the new skill appears immediately
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
@@ -486,7 +455,6 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         content = bundle.files["SKILL.md"]
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
-        # Show first 50 lines as preview
         lines = content.split("\n")
         preview = "\n".join(lines[:50])
         if len(lines) > 50:
@@ -638,7 +606,6 @@ def do_uninstall(name: str, console: Optional[Console] = None,
 
     c = console or _console
 
-    # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
     if not skip_confirm:
         c.print(f"\n[bold]Uninstall '{name}'?[/]")
         try:
@@ -717,14 +684,12 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     c = console or _console
     path = Path(skill_path)
 
-    # Resolve relative to skills dir if not absolute
     if not path.is_absolute():
         path = SKILLS_DIR / path
     if not path.exists() or not (path / "SKILL.md").exists():
         c.print(f"[bold red]Error:[/] No SKILL.md found at {path}\n")
         return
 
-    # Validate the skill
     import yaml
     skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
     fm = {}
@@ -743,7 +708,6 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print("[bold red]Error:[/] SKILL.md must have a 'description' in frontmatter.\n")
         return
 
-    # Self-scan before publishing
     c.print(f"[bold]Scanning '{name}' before publish...[/]")
     result = scan_skill(path, source="self")
     c.print(format_scan_report(result))
@@ -784,7 +748,6 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
 
     headers = auth.get_headers()
 
-    # 1. Fork the repo
     try:
         resp = httpx.post(
             f"https://api.github.com/repos/{target_repo}/forks",
@@ -800,7 +763,6 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except httpx.HTTPError as e:
         return False, f"Network error forking repo: {e}"
 
-    # 2. Get default branch
     try:
         resp = httpx.get(
             f"https://api.github.com/repos/{target_repo}",
@@ -810,7 +772,6 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except Exception:
         default_branch = "main"
 
-    # 3. Get the base tree SHA
     try:
         resp = httpx.get(
             f"https://api.github.com/repos/{fork_repo}/git/refs/heads/{default_branch}",
@@ -820,7 +781,6 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except Exception as e:
         return False, f"Failed to get base branch: {e}"
 
-    # 4. Create a new branch
     branch_name = f"add-skill-{skill_name}"
     try:
         httpx.post(
@@ -831,7 +791,6 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
     except Exception as e:
         return False, f"Failed to create branch: {e}"
 
-    # 5. Upload skill files
     for f in skill_path.rglob("*"):
         if not f.is_file():
             continue
@@ -852,7 +811,6 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
         except Exception as e:
             return False, f"Failed to upload {rel}: {e}"
 
-    # 6. Create PR
     try:
         resp = httpx.post(
             f"https://api.github.com/repos/{target_repo}/pulls",
@@ -931,7 +889,6 @@ def do_snapshot_import(input_path: str, force: bool = False,
         c.print(f"[bold red]Error:[/] Invalid JSON in {inp}\n")
         return
 
-    # Restore taps first
     taps = snapshot.get("taps", [])
     if taps:
         mgr = TapsManager()
@@ -941,7 +898,6 @@ def do_snapshot_import(input_path: str, force: bool = False,
                 mgr.add(repo, tap.get("path", "skills/"))
         c.print(f"[dim]Restored {len(taps)} tap(s)[/]")
 
-    # Install skills
     skills = snapshot.get("skills", [])
     if not skills:
         c.print("[dim]No skills in snapshot to install.[/]\n")
@@ -961,9 +917,6 @@ def do_snapshot_import(input_path: str, force: bool = False,
     c.print("[bold green]Snapshot import complete.[/]\n")
 
 
-# ---------------------------------------------------------------------------
-# CLI argparse entry point
-# ---------------------------------------------------------------------------
 
 def skills_command(args) -> None:
     """Router for `daedalus skills <subcommand>` — called from daedalus_cli/main.py."""
@@ -1014,9 +967,6 @@ def skills_command(args) -> None:
         _console.print("Run 'daedalus skills <command> --help' for details.\n")
 
 
-# ---------------------------------------------------------------------------
-# Slash command entry point (/skills in chat)
-# ---------------------------------------------------------------------------
 
 def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     """
@@ -1041,7 +991,6 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
     c = console or _console
     parts = cmd.strip().split()
 
-    # Strip the leading "/skills" if present
     if parts and parts[0].lower() == "/skills":
         parts = parts[1:]
 
@@ -1106,12 +1055,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
             return
         identifier = args[0]
         category = ""
-        # Slash commands run inside prompt_toolkit where input() hangs.
-        # Always skip confirmation — the user typing the command is implicit consent.
         skip_confirm = True
         force = "--force" in args
-        # --now invalidates prompt cache immediately (costs more money).
-        # Default: defer to next session to preserve cache.
         invalidate_cache = "--now" in args
         for i, a in enumerate(args):
             if a == "--category" and i + 1 < len(args):
@@ -1150,7 +1095,6 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         if not args:
             c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
             return
-        # Slash commands run inside prompt_toolkit where input() hangs.
         skip_confirm = True
         invalidate_cache = "--now" in args
         do_uninstall(args[0], console=c, skip_confirm=skip_confirm,

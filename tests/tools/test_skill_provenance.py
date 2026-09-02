@@ -24,7 +24,6 @@ def test_empty_origin_falls_back_to_foreground():
     )
     token = set_current_write_origin("")
     try:
-        # Empty is coerced to "foreground" at the set() boundary.
         assert get_current_write_origin() == "foreground"
     finally:
         reset_current_write_origin(token)
@@ -38,7 +37,6 @@ def test_context_isolation_between_copies():
         BACKGROUND_REVIEW,
     )
 
-    # Start at the module default.
     original = get_current_write_origin()
 
     def _run_in_copy():
@@ -48,5 +46,4 @@ def test_context_isolation_between_copies():
     ctx = contextvars.copy_context()
     inside = ctx.run(_run_in_copy)
     assert inside == BACKGROUND_REVIEW
-    # Parent context unaffected.
     assert get_current_write_origin() == original

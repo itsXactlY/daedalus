@@ -16,7 +16,6 @@ import ast
 from pathlib import Path
 from typing import List, Tuple
 
-# (file, line, pattern_id, description)
 Finding = Tuple[str, int, str, str]
 
 _IGNORED_DIRS = {"__pycache__", ".venv", "venv", "node_modules"}
@@ -33,16 +32,13 @@ def _scan_source(content: str, rel_path: str) -> List[Finding]:
     class V(ast.NodeVisitor):
         def visit_Call(self, node):
             f = node.func
-            # importlib.import_module(...)
             if isinstance(f, ast.Attribute) and f.attr == "import_module":
                 findings.append((rel_path, node.lineno, "dynamic_import",
                                  "importlib.import_module() — loads arbitrary modules at runtime"))
-            # __import__(<computed>)
             elif isinstance(f, ast.Name) and f.id == "__import__":
                 if node.args and not isinstance(node.args[0], ast.Constant):
                     findings.append((rel_path, node.lineno, "dynamic_import_computed",
                                      "__import__ with non-literal module name"))
-            # getattr(obj, <computed>)
             elif isinstance(f, ast.Name) and f.id == "getattr":
                 if len(node.args) >= 2 and not isinstance(node.args[1], ast.Constant):
                     findings.append((rel_path, node.lineno, "dynamic_getattr",
@@ -50,7 +46,6 @@ def _scan_source(content: str, rel_path: str) -> List[Finding]:
             self.generic_visit(node)
 
         def visit_Subscript(self, node):
-            # obj.__dict__[<computed>]
             if (isinstance(node.value, ast.Attribute)
                     and node.value.attr == "__dict__"
                     and not isinstance(node.slice, ast.Constant)):
@@ -75,7 +70,6 @@ def _scan_source(content: str, rel_path: str) -> List[Finding]:
     try:
         V().visit(tree)
     except (RecursionError, ValueError, RuntimeError):
-        # Hostile/pathological input: return what we collected so far.
         pass
 
     return findings

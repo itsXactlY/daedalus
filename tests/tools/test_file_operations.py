@@ -22,9 +22,6 @@ from tools.file_operations import (
 )
 
 
-# =========================================================================
-# Write deny list
-# =========================================================================
 
 class TestIsWriteDenied:
     def test_ssh_authorized_keys_denied(self):
@@ -59,16 +56,13 @@ class TestIsWriteDenied:
 
 
 
-# =========================================================================
-# Result dataclasses
-# =========================================================================
 
 class TestReadResult:
     def test_to_dict_omits_defaults(self):
         r = ReadResult()
         d = r.to_dict()
-        assert "error" not in d    # None omitted
-        assert "similar_files" not in d  # empty list omitted
+        assert "error" not in d
+        assert "similar_files" not in d
 
     def test_to_dict_preserves_empty_content(self):
         """Empty file should still have content key in the dict."""
@@ -173,9 +167,6 @@ class TestLintResult:
         assert "SyntaxError" in d["output"]
 
 
-# =========================================================================
-# ShellFileOperations helpers
-# =========================================================================
 
 @pytest.fixture()
 def mock_env():
@@ -198,8 +189,7 @@ class TestShellFileOpsHelpers:
     def test_escape_shell_arg_with_quotes(self, file_ops):
         result = file_ops._escape_shell_arg("it's")
         assert "'" in result
-        # Should be safely escaped
-        assert result.count("'") >= 4  # wrapping + escaping
+        assert result.count("'") >= 4
 
     def test_is_likely_binary_by_extension(self, file_ops):
         assert file_ops._is_likely_binary("photo.png") is True
@@ -208,11 +198,9 @@ class TestShellFileOpsHelpers:
         assert file_ops._is_likely_binary("readme.md") is False
 
     def test_is_likely_binary_by_content(self, file_ops):
-        # High ratio of non-printable chars -> binary
         binary_content = "\x00\x01\x02\x03" * 250
         assert file_ops._is_likely_binary("unknown", binary_content) is True
 
-        # Normal text -> not binary
         assert file_ops._is_likely_binary("unknown", "Hello world\nLine 2\n") is False
 
     def test_is_image(self, file_ops):
@@ -254,7 +242,7 @@ class TestShellFileOpsHelpers:
         assert ops.cwd == "/custom/path"
 
     def test_cwd_fallback_to_slash(self):
-        env = MagicMock(spec=[])  # no cwd attribute
+        env = MagicMock(spec=[])
         ops = ShellFileOperations(env)
         assert ops.cwd == "/"
 
@@ -297,13 +285,12 @@ class TestSearchPathValidation:
                 return {"output": "exists", "returncode": 0}
             if "command -v" in command:
                 return {"output": "yes", "returncode": 0}
-            # rg returns exit 1 (no matches) with empty output
             return {"output": "", "returncode": 1}
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)
         result = ops.search("pattern", path="/existing/path")
         assert result.error is None
-        assert result.total_count == 0  # No matches but no error
+        assert result.total_count == 0
 
     def test_search_rg_error_exit_code(self, mock_env):
         """search() should report error when rg returns exit code 2."""
@@ -314,7 +301,6 @@ class TestSearchPathValidation:
                 return {"output": "exists", "returncode": 0}
             if "command -v" in command:
                 return {"output": "yes", "returncode": 0}
-            # rg returns exit 2 (error) with empty output
             return {"output": "", "returncode": 2}
         mock_env.execute.side_effect = side_effect
         ops = ShellFileOperations(mock_env)

@@ -134,15 +134,12 @@ class TestLookupModelsDevContext:
     def test_provider_aware_context(self, mock_fetch):
         """Same model, different context per provider."""
         mock_fetch.return_value = SAMPLE_REGISTRY
-        # Anthropic direct: 1M
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
-        # GitHub Copilot: only 128K for same model
         assert lookup_models_dev_context("copilot", "claude-opus-4.6") == 128000
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):
         mock_fetch.return_value = SAMPLE_REGISTRY
-        # audio-only is not a mapped provider, but test the filtering directly
         data = SAMPLE_REGISTRY["audio-only"]["models"]["tts-model"]
         assert _extract_context(data) is None
 
@@ -161,7 +158,6 @@ class TestFetchModelsDev:
         mock_resp.raise_for_status = MagicMock()
         mock_get.return_value = mock_resp
 
-        # Clear caches
         import agent.models_dev as md
         md._models_dev_cache = {}
         md._models_dev_cache_time = 0
@@ -178,7 +174,7 @@ class TestFetchModelsDev:
 
         import agent.models_dev as md
         md._models_dev_cache = SAMPLE_REGISTRY
-        md._models_dev_cache_time = 0  # expired
+        md._models_dev_cache_time = 0
 
         with patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
             result = fetch_models_dev(force_refresh=True)
@@ -190,7 +186,7 @@ class TestFetchModelsDev:
         import agent.models_dev as md
         import time
         md._models_dev_cache = SAMPLE_REGISTRY
-        md._models_dev_cache_time = time.time()  # fresh
+        md._models_dev_cache_time = time.time()
 
         result = fetch_models_dev()
         mock_get.assert_not_called()

@@ -20,7 +20,6 @@ from urllib.parse import urlsplit
 from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
-# ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
 _RESET = "\033[0m"
 
@@ -52,9 +51,6 @@ def _display_url(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-# Diff colors — resolved lazily from the skin engine so they adapt
-# to light/dark themes.  Falls back to sensible defaults on import
-# failure.  We cache after first resolution for performance.
 _diff_colors_cached: dict[str, str] | None = None
 
 
@@ -64,7 +60,6 @@ def _diff_ansi() -> dict[str, str]:
     if _diff_colors_cached is not None:
         return _diff_colors_cached
 
-    # Defaults that work on dark terminals
     dim = "\033[38;2;150;150;150m"
     file_c = "\033[38;2;180;160;255m"
     hunk = "\033[38;2;120;120;140m"
@@ -86,12 +81,10 @@ def _diff_ansi() -> dict[str, str]:
         dim = _hex_fg("banner_dim", (150, 150, 150))
         file_c = _hex_fg("session_label", (180, 160, 255))
         hunk = _hex_fg("session_border", (120, 120, 140))
-        # minus/plus use background colors — derive from ui_error/ui_ok
         err_h = skin.get_color("ui_error", "#ef5350")
         ok_h = skin.get_color("ui_ok", "#4caf50")
         if err_h and len(err_h) == 7:
             er, eg, eb = int(err_h[1:3], 16), int(err_h[3:5], 16), int(err_h[5:7], 16)
-            # Use a dark tinted version as background
             minus = f"\033[38;2;255;255;255;48;2;{max(er//2,20)};{max(eg//4,10)};{max(eb//4,10)}m"
         if ok_h and len(ok_h) == 7:
             or_, og, ob = int(ok_h[1:3], 16), int(ok_h[3:5], 16), int(ok_h[5:7], 16)
@@ -106,7 +99,6 @@ def _diff_ansi() -> dict[str, str]:
     return _diff_colors_cached
 
 
-# Module-level helpers — each call resolves from the active skin lazily.
 def _diff_dim():   return _diff_ansi()["dim"]
 def _diff_file():  return _diff_ansi()["file"]
 def _diff_hunk():  return _diff_ansi()["hunk"]
@@ -122,11 +114,7 @@ class LocalEditSnapshot:
     paths: list[Path] = field(default_factory=list)
     before: dict[str, str | None] = field(default_factory=dict)
 
-# =========================================================================
-# Configurable tool preview length (0 = no limit)
-# Set once at startup by CLI or gateway from display.tool_preview_length config.
-# =========================================================================
-_tool_preview_max_len: int = 0  # 0 = unlimited
+_tool_preview_max_len: int = 0
 
 
 def set_tool_preview_max_len(n: int) -> None:
@@ -140,9 +128,6 @@ def get_tool_preview_max_len() -> int:
     return _tool_preview_max_len
 
 
-# =========================================================================
-# Skin-aware helpers (lazy import to avoid circular deps)
-# =========================================================================
 
 def _get_skin():
     """Get the active skin config, or None if not available."""
@@ -189,13 +174,11 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
     2. Tool registry's per-tool ``emoji`` field
     3. *default* fallback
     """
-    # 1. Skin override
     skin = _get_skin()
     if skin and skin.tool_emojis:
         override = skin.tool_emojis.get(tool_name)
         if override:
             return override
-    # 2. Registry default
     try:
         from tools.registry import registry
         emoji = registry.get_emoji(tool_name, default="")
@@ -203,13 +186,9 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
             return emoji
     except Exception:
         pass
-    # 3. Hardcoded fallback
     return default
 
 
-# =========================================================================
-# Tool preview (one-line summary of a tool call's primary argument)
-# =========================================================================
 
 def _oneline(text: str) -> str:
     """Collapse whitespace (including newlines) to single spaces."""
@@ -415,12 +394,8 @@ def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
     needle = str(typed_text)
     if needle == "":
         return value
-    # NOTE: local agent/redact.redact_sensitive_text has no ``force`` kwarg
-    # (0.20's does); redaction here respects the local security.redact_secrets
-    # setting instead of being forced.
     redacted = redact_sensitive_text(needle)
     if redacted == needle:
-        # Nothing secret-looking in the typed text; leave payload untouched.
         return value
     if isinstance(value, str):
         return value.replace(needle, redacted)
@@ -476,6 +451,17 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    if tool_name == "tool_call":
+        inner = args.get("name")
+        if isinstance(inner, str) and inner:
+            inner_args = args.get("arguments")
+            if isinstance(inner_args, str):
+                try:
+                    inner_args = json.loads(inner_args)
+                except (ValueError, TypeError):
+                    inner_args = None
+            detail = build_tool_preview(inner, inner_args, max_len=max_len) if isinstance(inner_args, dict) else None
+            return f"{inner} {detail}" if detail else inner
     args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
@@ -490,7 +476,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         "clarify": "question", "skill_manage": "name",
     }
 
-    # delegate_task: show goal (single) or individual task goals (batch)
     if tool_name == "delegate_task":
         tasks = args.get("tasks")
         if tasks and isinstance(tasks, list):
@@ -543,9 +528,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         path = args.get("path") or args.get("file") or args.get("filepath")
         if path is None:
             return None
-        # Show the resolved path (local display convention, keeps callers able
-        # to spot which file is being read) plus the 0.20 line-range label when
-        # an offset is present, e.g. "src/foo.py L20-40".
         display_path = str(path).replace("\\", "/")
         line_label = _read_file_line_label(args)
         preview = f"{display_path} {line_label}".strip()
@@ -586,7 +568,6 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             preview = name
         return _truncate_preview(preview, max_len) if preview else None
 
-    # Local-only: reinforcement-learning tools shipped in this tree.
     if tool_name.startswith("rl_"):
         rl_previews = {
             "rl_list_environments": "listing envs",
@@ -653,18 +634,7 @@ def prepare_tool_preview(
     return ToolPreview(text=text, truncated=truncated, url=url)
 
 
-# =========================================================================
-# Friendly tool labels (human-phrased verbs for built-in tools)
-#
-# Turns "web_search <query>" into "Searching the web for <query>" — the
-# ChatGPT-style "Searching…/Reading…" surface.  Curated and built-in only:
-# we know each core tool's semantics, so the verb is fixed, not computed.
-# Custom/plugin/MCP tools have no entry and fall back to the raw preview.
-# =========================================================================
 
-# Each entry maps a built-in tool name to its present-participle verb phrase.
-# A trailing space-then-preview is appended by build_tool_label() when the
-# tool's argument preview is available (e.g. "Reading docs/api.md").
 _TOOL_VERBS: dict[str, str] = {
     "web_search": "Searching the web",
     "web_extract": "Reading",
@@ -692,14 +662,11 @@ _TOOL_VERBS: dict[str, str] = {
     "todo": "Updating tasks",
 }
 
-# Verbs that read better without the raw argument preview appended.
 _TOOL_VERBS_NO_PREVIEW: frozenset[str] = frozenset({
     "skills_list",
     "session_search",
 })
 
-# Verbs that take a "for" connector before the preview (search-style phrasing):
-# "Searching the web for <query>" reads better than "Searching the web <query>".
 _TOOL_VERBS_FOR_CONNECTOR: frozenset[str] = frozenset({
     "web_search",
     "search_files",
@@ -769,15 +736,12 @@ def build_status_phrase(tool_name: str, args: dict | None, max_len: int = 49) ->
     if verb:
         head = f"is {verb[0].lower()}{verb[1:]}"
     else:
-        # Custom / plugin / MCP tools: generic but still informative.
         head = f"is using {tool_name}"
 
     phrase = head
     if args and verb and tool_name not in _TOOL_VERBS_NO_PREVIEW:
         preview = build_tool_preview(tool_name, args, max_len=None)
         if preview:
-            # Previews can contain newlines (terminal commands); keep the
-            # status to the first line.
             preview = preview.splitlines()[0].strip()
             phrase = f"{head}{tool_verb_connector(tool_name)}{preview}"
 
@@ -815,9 +779,6 @@ def build_tool_label(tool_name: str, args: dict, max_len: int | None = None) -> 
     return f"{verb} {preview}"
 
 
-# =========================================================================
-# Inline diff previews for write actions
-# =========================================================================
 
 def _resolved_path(path: str) -> Path:
     """Resolve a possibly-relative filesystem path against the current cwd."""
@@ -1105,9 +1066,6 @@ def render_edit_diff_with_delta(
     return _emit_inline_diff("\n".join(rendered_lines), print_fn)
 
 
-# =========================================================================
-# KawaiiSpinner
-# =========================================================================
 
 class KawaiiSpinner:
     """Animated spinner with kawaii faces for CLI feedback during tool execution."""
@@ -1188,12 +1146,7 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
-        # Optional callable to route all output through (e.g. a no-op for silent
-        # background agents).  When set, bypasses self._out entirely so that
-        # agents with _print_fn overridden remain fully silent.
         self._print_fn = print_fn
-        # Capture stdout NOW, before any redirect_stdout(devnull) from
-        # child agents can replace sys.stdout with a black hole.
         self._out = sys.stdout
 
     def _write(self, text: str, end: str = '\n', flush: bool = False):
@@ -1240,26 +1193,17 @@ class KawaiiSpinner:
             return False
 
     def _animate(self):
-        # When stdout is not a real terminal (e.g. Docker, systemd, pipe),
-        # skip the animation entirely — it creates massive log bloat.
-        # Just log the start once and let stop() log the completion.
         if not self._is_tty:
             self._write(f"  [tool] {self.message}", flush=True)
             while self.running:
                 time.sleep(0.5)
             return
 
-        # When running inside prompt_toolkit's patch_stdout context the CLI
-        # renders spinner state via a dedicated TUI widget (_spinner_text).
-        # Driving a \r-based animation here too causes visual overdraw: the
-        # StdoutProxy injects newlines around each flush, so every frame lands
-        # on a new line and overwrites the status bar.
         if self._is_patch_stdout_proxy():
             while self.running:
                 time.sleep(0.1)
             return
 
-        # Cache skin wings at start (avoid per-frame imports)
         skin = _get_skin()
         wings = skin.get_spinner_wings() if skin else []
 
@@ -1303,9 +1247,6 @@ class KawaiiSpinner:
         if not self.running:
             self._write(f"  {text}", flush=True)
             return
-        # Clear spinner line with spaces (not \033[K) to avoid garbled escape
-        # codes when prompt_toolkit's patch_stdout is active — same approach
-        # as stop(). Then print text; spinner redraws on next tick.
         blanks = ' ' * max(self.last_line_len + 5, 40)
         self._write(f"\r{blanks}\r  {text}", flush=True)
 
@@ -1316,8 +1257,6 @@ class KawaiiSpinner:
 
         is_tty = self._is_tty
         if is_tty:
-            # Clear the spinner line with spaces instead of \033[K to avoid
-            # garbled escape codes when prompt_toolkit's patch_stdout is active.
             blanks = ' ' * max(self.last_line_len + 5, 40)
             self._write(f"\r{blanks}\r", end='', flush=True)
         if final_message:
@@ -1351,10 +1290,6 @@ def get_thinking_verbs() -> list:
     return KawaiiSpinner.get_thinking_verbs()
 
 
-# =========================================================================
-# Kawaii face arrays (used by AIAgent._execute_tool_calls for spinner text)
-# Carried forward from the 0.8 display layer — local-only additions.
-# =========================================================================
 
 KAWAII_SEARCH = [
     "♪(´ε` )", "(｡◕‿◕｡)", "ヾ(＾∇＾)", "(◕ᴗ◕✿)", "( ˘▽˘)っ",
@@ -1392,9 +1327,6 @@ KAWAII_GENERIC = [
 ]
 
 
-# =========================================================================
-# Cute tool message (completion line that replaces the spinner)
-# =========================================================================
 
 _ERROR_SUFFIX_MAX_LEN = 48
 
@@ -1406,7 +1338,6 @@ def _trim_error(msg: str) -> str:
     suffix stays readable on narrow terminals.
     """
     msg = msg.strip()
-    # Common case: "File not found: /very/long/absolute/path/foo.py"
     if "File not found:" in msg:
         _, _, tail = msg.partition("File not found:")
         tail = tail.strip()
@@ -1432,7 +1363,6 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
 
     data = safe_json_loads(result)
 
-    # Terminal: non-zero exit code is the canonical failure signal.
     if tool_name == "terminal":
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
@@ -1443,21 +1373,16 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
                 return True, f" [exit {exit_code}]"
         return False, ""
 
-    # Memory: distinguish "store full" from real errors.
     if tool_name == "memory":
         if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
 
-    # Structured error in JSON result (any tool that surfaces {"error": ...}).
     if isinstance(data, dict):
         err = data.get("error") or data.get("message")
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
 
-    # Generic heuristic for non-terminal tools
-    # Multimodal tool results (dicts with _multimodal=True) are not strings —
-    # treat them as successes since failures would be JSON-encoded strings.
     if not isinstance(result, str):
         return False, ""
     lower = result[:500].lower()
@@ -1485,14 +1410,14 @@ def _get_cute_tool_message(
     def _trunc(s, n=40):
         s = str(s)
         if _tool_preview_max_len == 0:
-            return s  # no limit
+            return s
         limit = _tool_preview_max_len
         return (s[:limit-3] + "...") if len(s) > limit else s
 
     def _path(p, n=35):
         p = str(p)
         if _tool_preview_max_len == 0:
-            return p  # no limit
+            return p
         limit = _tool_preview_max_len
         return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
@@ -1517,7 +1442,6 @@ def _get_cute_tool_message(
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
     if tool_name == "web_crawl":
-        # Local-only tool branch carried forward from the 0.8 display layer.
         url = args.get("url", "")
         domain = url.replace("https://", "").replace("http://", "").split("/")[0]
         return _wrap(f"┊ 🕸️  crawl     {_trunc(domain, 35)}  {dur}")
@@ -1566,7 +1490,6 @@ def _get_cute_tool_message(
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
-        # Parse result for completion progress
         total = 0
         done = 0
         if result:
@@ -1621,7 +1544,6 @@ def _get_cute_tool_message(
     if tool_name == "vision_analyze":
         return _wrap(f"┊ 👁️  vision    {_trunc(args.get('question', ''), 30)}  {dur}")
     if tool_name == "mixture_of_agents":
-        # Local-only tool branch carried forward from the 0.8 display layer.
         return _wrap(f"┊ 🧠 reason    {_trunc(args.get('user_prompt', ''), 30)}  {dur}")
     if tool_name == "send_message":
         return _wrap(f"┊ 📨 send      {args.get('target', '?')}: \"{_trunc(args.get('message', ''), 25)}\"  {dur}")
@@ -1635,7 +1557,6 @@ def _get_cute_tool_message(
             return _wrap(f"┊ ⏰ cron      listing  {dur}")
         return _wrap(f"┊ ⏰ cron      {action} {args.get('job_id', '')}  {dur}")
     if tool_name.startswith("rl_"):
-        # Local-only tool branch carried forward from the 0.8 display layer.
         rl = {
             "rl_list_environments": "list envs", "rl_select_environment": f"select {args.get('name', '')}",
             "rl_get_current_config": "get config", "rl_edit_config": f"set {args.get('field', '?')}",
@@ -1674,13 +1595,6 @@ def get_cute_tool_message(
         return f"┊ ⚡ {safe_name:9} completed  {safe_duration}"
 
 
-# =========================================================================
-# Honcho session line (one-liner with clickable OSC 8 hyperlink)
-# =========================================================================
-# NOTE: this section is carried forward from the 0.8 local display layer.
-# Origin 0.20.0 declares this section header but ships the implementations
-# elsewhere; local consumers (run_agent.py, gateway) import them from
-# agent.display, so they live here.
 
 _DIM = "\033[2m"
 _SKY_BLUE = "\033[38;5;117m"
@@ -1702,19 +1616,12 @@ def _osc8_link(url: str, text: str) -> str:
     return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
 
 
-# =========================================================================
-# Context pressure display (CLI user-facing warnings)
-# =========================================================================
-# Carried forward from the 0.8 local display layer — origin 0.20.0 does not
-# ship these; run_agent.py and the gateway import them from agent.display.
 
-# ANSI color codes for context pressure tiers
 _CYAN = "\033[36m"
 _YELLOW = "\033[33m"
 _BOLD = "\033[1m"
 _DIM_ANSI = "\033[2m"
 
-# Bar characters
 _BAR_FILLED = "▰"
 _BAR_EMPTY = "▱"
 _BAR_WIDTH = 20

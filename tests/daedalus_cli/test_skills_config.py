@@ -3,9 +3,6 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
-# ---------------------------------------------------------------------------
-# get_disabled_skills
-# ---------------------------------------------------------------------------
 
 class TestGetDisabledSkills:
     def test_empty_config(self):
@@ -28,7 +25,6 @@ class TestGetDisabledSkills:
     def test_platform_falls_back_to_global(self):
         from daedalus_cli.skills_config import get_disabled_skills
         config = {"skills": {"disabled": ["skill-a"]}}
-        # no platform_disabled for cli -> falls back to global
         assert get_disabled_skills(config, platform="cli") == {"skill-a"}
 
     def test_missing_skills_key(self):
@@ -40,9 +36,6 @@ class TestGetDisabledSkills:
         assert get_disabled_skills({"skills": {"disabled": []}}) == set()
 
 
-# ---------------------------------------------------------------------------
-# save_disabled_skills
-# ---------------------------------------------------------------------------
 
 class TestSaveDisabledSkills:
     @patch("daedalus_cli.skills_config.save_config")
@@ -76,9 +69,6 @@ class TestSaveDisabledSkills:
         assert "disabled" in config["skills"]
 
 
-# ---------------------------------------------------------------------------
-# _is_skill_disabled
-# ---------------------------------------------------------------------------
 
 class TestIsSkillDisabled:
     @patch("daedalus_cli.config.load_config")
@@ -109,14 +99,12 @@ class TestIsSkillDisabled:
             "platform_disabled": {"telegram": []}
         }}
         from tools.skills_tool import _is_skill_disabled
-        # telegram has explicit empty list -> skill-a is NOT disabled for telegram
         assert _is_skill_disabled("skill-a", platform="telegram") is False
 
     @patch("daedalus_cli.config.load_config")
     def test_platform_falls_back_to_global(self, mock_load):
         mock_load.return_value = {"skills": {"disabled": ["skill-a"]}}
         from tools.skills_tool import _is_skill_disabled
-        # no platform_disabled for cli -> global
         assert _is_skill_disabled("skill-a", platform="cli") is True
 
     @patch("daedalus_cli.config.load_config")
@@ -141,9 +129,6 @@ class TestIsSkillDisabled:
         assert _is_skill_disabled("discord-skill") is True
 
 
-# ---------------------------------------------------------------------------
-# get_disabled_skill_names — explicit platform param & env var fallback
-# ---------------------------------------------------------------------------
 
 class TestGetDisabledSkillNames:
     """Tests for agent.skill_utils.get_disabled_skill_names."""
@@ -165,8 +150,6 @@ class TestGetDisabledSkillNames:
 
         from agent.skill_utils import get_disabled_skill_names
         result = get_disabled_skill_names(platform="telegram")
-        # Documented contract: global ∪ platform — a globally-disabled skill
-        # stays disabled on every platform.
         assert result == {"tg-only-skill", "global-skill"}
 
     def test_session_platform_env_var(self, tmp_path, monkeypatch):
@@ -246,9 +229,6 @@ class TestGetDisabledSkillNames:
         assert result == {"global-skill"}
 
 
-# ---------------------------------------------------------------------------
-# _find_all_skills — disabled filtering
-# ---------------------------------------------------------------------------
 
 class TestFindAllSkillsFiltering:
     @patch("tools.skills_tool._get_disabled_skill_names", return_value={"my-skill"})
@@ -295,9 +275,6 @@ class TestFindAllSkillsFiltering:
         assert any(s["name"] == "my-skill" for s in skills)
 
 
-# ---------------------------------------------------------------------------
-# _get_categories
-# ---------------------------------------------------------------------------
 
 class TestGetCategories:
     def test_extracts_unique_categories(self):

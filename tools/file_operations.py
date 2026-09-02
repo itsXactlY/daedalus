@@ -36,9 +36,6 @@ from daedalus_constants import get_daedalus_home
 from tools.binary_extensions import BINARY_EXTENSIONS
 
 
-# ---------------------------------------------------------------------------
-# Write-path deny list — blocks writes to sensitive system/credential files
-# ---------------------------------------------------------------------------
 
 _HOME = str(Path.home())
 
@@ -100,14 +97,12 @@ def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
-    # 1) Static deny list
     if resolved in WRITE_DENIED_PATHS:
         return True
     for prefix in WRITE_DENIED_PREFIXES:
         if resolved.startswith(prefix):
             return True
 
-    # 2) Optional safe-root sandbox
     safe_root = _get_safe_write_root()
     if safe_root:
         if not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
@@ -116,9 +111,6 @@ def _is_write_denied(path: str) -> bool:
     return False
 
 
-# =============================================================================
-# Result Data Classes
-# =============================================================================
 
 @dataclass
 class ReadResult:
@@ -132,7 +124,7 @@ class ReadResult:
     is_image: bool = False
     base64_content: Optional[str] = None
     mime_type: Optional[str] = None
-    dimensions: Optional[str] = None  # For images: "WIDTHxHEIGHT"
+    dimensions: Optional[str] = None
     error: Optional[str] = None
     similar_files: List[str] = field(default_factory=list)
     
@@ -186,7 +178,7 @@ class SearchMatch:
     path: str
     line_number: int
     content: str
-    mtime: float = 0.0  # Modification time for sorting
+    mtime: float = 0.0
 
 
 @dataclass
@@ -241,9 +233,6 @@ class ExecuteResult:
     exit_code: int = 0
 
 
-# =============================================================================
-# Abstract Interface
-# =============================================================================
 
 class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
@@ -277,14 +266,9 @@ class FileOperations(ABC):
         ...
 
 
-# =============================================================================
-# Shell-based Implementation
-# =============================================================================
 
-# Image extensions (subset of binary that we can return as base64)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
 
-# Linters by file extension
 LINTERS = {
     '.py': 'python -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
@@ -293,10 +277,9 @@ LINTERS = {
     '.rs': 'rustfmt --check {file} 2>&1',
 }
 
-# Max limits for read operations
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
-MAX_FILE_SIZE = 50 * 1024  # 50KB
+MAX_FILE_SIZE = 50 * 1024
 
 
 class ShellFileOperations(FileOperations):
@@ -317,14 +300,9 @@ class ShellFileOperations(FileOperations):
             cwd: Working directory (defaults to env's cwd or current directory)
         """
         self.env = terminal_env
-        # Determine cwd from various possible sources.
-        # IMPORTANT: do NOT fall back to os.getcwd() -- that's the HOST's local
-        # path which doesn't exist inside container/cloud backends (modal, docker).
-        # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
         
-        # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
@@ -364,7 +342,6 @@ class ShellFileOperations(FileOperations):
         if ext in BINARY_EXTENSIONS:
             return True
         
-        # Content analysis: >30% non-printable chars = binary
         if content_sample:
             if not content_sample:
                 return False
@@ -384,7 +361,6 @@ class ShellFileOperations(FileOperations):
         lines = content.split('\n')
         numbered = []
         for i, line in enumerate(lines, start=start_line):
-            # Truncate long lines
             if len(line) > MAX_LINE_LENGTH:
                 line = line[:MAX_LINE_LENGTH] + "... [truncated]"
             numbered.append(f"{i:6d}|{line}")
@@ -400,36 +376,28 @@ class ShellFileOperations(FileOperations):
         if not path:
             return path
         
-        # Handle ~ and ~user
         if path.startswith('~'):
-            # Get home directory via the terminal environment
             result = self._exec("echo $HOME")
             if result.exit_code == 0 and result.stdout.strip():
                 home = result.stdout.strip()
                 if path == '~':
                     return home
                 elif path.startswith('~/'):
-                    return home + path[1:]  # Replace ~ with home
-                # ~username format - extract and validate username before
-                # letting shell expand it (prevent shell injection via
-                # paths like "~; rm -rf /").
-                rest = path[1:]  # strip leading ~
+                    return home + path[1:]
+                rest = path[1:]
                 slash_idx = rest.find('/')
                 username = rest[:slash_idx] if slash_idx >= 0 else rest
                 if username and re.fullmatch(r'[a-zA-Z0-9._-]+', username):
-                    # Only expand ~username (not the full path) to avoid shell
-                    # injection via path suffixes like "~user/$(malicious)".
                     expand_result = self._exec(f"echo ~{username}")
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         user_home = expand_result.stdout.strip()
-                        suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
+                        suffix = path[1 + len(username):]
                         return user_home + suffix
         
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
         """Escape a string for safe use in shell commands."""
-        # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
     
     def _unified_diff(self, old_content: str, new_content: str, filename: str) -> str:
@@ -443,9 +411,6 @@ class ShellFileOperations(FileOperations):
         )
         return ''.join(diff)
     
-    # =========================================================================
-    # READ Implementation
-    # =========================================================================
     
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """
@@ -459,18 +424,14 @@ class ShellFileOperations(FileOperations):
         Returns:
             ReadResult with content, metadata, or error info
         """
-        # Expand ~ and other shell paths
         path = self._expand_path(path)
         
-        # Clamp limit
         limit = min(limit, MAX_LINES)
         
-        # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
             return self._suggest_similar_files(path)
         
         try:
@@ -478,12 +439,9 @@ class ShellFileOperations(FileOperations):
         except ValueError:
             file_size = 0
         
-        # Check if file is too large
         if file_size > MAX_FILE_SIZE:
-            # Still try to read, but warn
             pass
         
-        # Images are never inlined — redirect to the vision tool
         if self._is_image(path):
             return ReadResult(
                 is_image=True,
@@ -495,7 +453,6 @@ class ShellFileOperations(FileOperations):
                 ),
             )
         
-        # Read a sample to check for binary content
         sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
         sample_result = self._exec(sample_cmd)
         
@@ -506,7 +463,6 @@ class ShellFileOperations(FileOperations):
                 error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
             )
         
-        # Read with pagination using sed
         end_line = offset + limit - 1
         read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
         read_result = self._exec(read_cmd)
@@ -514,7 +470,6 @@ class ShellFileOperations(FileOperations):
         if read_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {read_result.stdout}")
         
-        # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
         try:
@@ -522,7 +477,6 @@ class ShellFileOperations(FileOperations):
         except ValueError:
             total_lines = 0
         
-        # Check if truncated
         truncated = total_lines > end_line
         hint = None
         if truncated:
@@ -538,32 +492,25 @@ class ShellFileOperations(FileOperations):
     
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
-        # Get directory and filename
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
         
-        # List files in directory
         ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -20"
         ls_result = self._exec(ls_cmd)
         
         similar = []
         if ls_result.exit_code == 0 and ls_result.stdout.strip():
             files = ls_result.stdout.strip().split('\n')
-            # Simple similarity: files that share some characters with the target
             for f in files:
-                # Check if filenames share significant overlap
                 common = set(filename.lower()) & set(f.lower())
-                if len(common) >= len(filename) * 0.5:  # 50% character overlap
+                if len(common) >= len(filename) * 0.5:
                     similar.append(os.path.join(dir_path, f))
         
         return ReadResult(
             error=f"File not found: {path}",
-            similar_files=similar[:5]  # Limit to 5 suggestions
+            similar_files=similar[:5]
         )
     
-    # =========================================================================
-    # WRITE Implementation
-    # =========================================================================
     
     def write_file(self, path: str, content: str) -> WriteResult:
         """
@@ -580,14 +527,11 @@ class ShellFileOperations(FileOperations):
         Returns:
             WriteResult with bytes written or error
         """
-        # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # Block writes to sensitive paths
         if _is_write_denied(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
-        # Create parent directories
         parent = os.path.dirname(path)
         dirs_created = False
         
@@ -597,15 +541,12 @@ class ShellFileOperations(FileOperations):
             if mkdir_result.exit_code == 0:
                 dirs_created = True
         
-        # Write via stdin pipe — content bypasses shell arg parsing entirely,
-        # so there's no ARG_MAX limit regardless of file size.
         write_cmd = f"cat > {self._escape_shell_arg(path)}"
         write_result = self._exec(write_cmd, stdin_data=content)
         
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
         
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         
@@ -619,9 +560,6 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created
         )
     
-    # =========================================================================
-    # PATCH Implementation (Replace Mode)
-    # =========================================================================
     
     def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
@@ -637,14 +575,11 @@ class ShellFileOperations(FileOperations):
         Returns:
             PatchResult with diff and lint results
         """
-        # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # Block writes to sensitive paths
         if _is_write_denied(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
-        # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
         read_result = self._exec(read_cmd)
         
@@ -653,7 +588,6 @@ class ShellFileOperations(FileOperations):
         
         content = read_result.stdout
         
-        # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
         new_content, match_count, error = fuzzy_find_and_replace(
@@ -666,15 +600,12 @@ class ShellFileOperations(FileOperations):
         if match_count == 0:
             return PatchResult(error=f"Could not find match for old_string in {path}")
         
-        # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
         
-        # Generate diff
         diff = self._unified_diff(content, new_content, path)
         
-        # Auto-lint
         lint_result = self._check_lint(path)
         
         return PatchResult(
@@ -703,14 +634,12 @@ class ShellFileOperations(FileOperations):
         Returns:
             PatchResult with changes made
         """
-        # Import patch parser
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
         
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
         
-        # Apply operations
         result = apply_v4a_operations(operations, self)
         return result
     
@@ -729,15 +658,12 @@ class ShellFileOperations(FileOperations):
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
         
-        # Check if linter command is available
         linter_cmd = LINTERS[ext]
-        # Extract the base command (first word)
         base_cmd = linter_cmd.split()[0]
         
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
         
-        # Run linter
         cmd = linter_cmd.format(file=self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
         
@@ -746,9 +672,6 @@ class ShellFileOperations(FileOperations):
             output=result.stdout.strip() if result.stdout.strip() else ""
         )
     
-    # =========================================================================
-    # SEARCH Implementation
-    # =========================================================================
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
@@ -769,10 +692,8 @@ class ShellFileOperations(FileOperations):
         Returns:
             SearchResult with matches or file list
         """
-        # Expand ~ and other shell paths
         path = self._expand_path(path)
         
-        # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
             return SearchResult(
@@ -788,19 +709,14 @@ class ShellFileOperations(FileOperations):
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
-        # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
             search_pattern = pattern
         else:
             search_pattern = pattern.split('/')[-1]
 
-        # Prefer ripgrep: respects .gitignore, excludes hidden dirs by
-        # default, and has parallel directory traversal (~200x faster than
-        # find on wide trees).  Mirrors _search_content which already uses rg.
         if self._has_command('rg'):
             return self._search_files_rg(search_pattern, path, limit, offset)
 
-        # Fallback: find (slower, no .gitignore awareness)
         if not self._has_command('find'):
             return SearchResult(
                 error="File search requires 'rg' (ripgrep) or 'find'. "
@@ -808,7 +724,6 @@ class ShellFileOperations(FileOperations):
                       "https://github.com/BurntSushi/ripgrep#installation"
             )
 
-        # Exclude hidden directories (matching ripgrep's default behavior).
         hidden_exclude = "-not -path '*/.*'"
 
         cmd = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
@@ -817,7 +732,6 @@ class ShellFileOperations(FileOperations):
         result = self._exec(cmd, timeout=60)
 
         if not result.stdout.strip():
-            # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = f"find {self._escape_shell_arg(path)} {hidden_exclude} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | head -n {limit + offset} | tail -n +{offset + 1}"
             result = self._exec(cmd_simple, timeout=60)
@@ -844,8 +758,6 @@ class ShellFileOperations(FileOperations):
         default, and uses parallel directory traversal for ~200x speedup
         over find on wide trees.
         """
-        # rg --files -g uses glob patterns; wrap bare names so they match
-        # at any depth (equivalent to find -name).
         if '/' not in pattern and not pattern.startswith('*'):
             glob_pattern = f"*{pattern}"
         else:
@@ -871,7 +783,6 @@ class ShellFileOperations(FileOperations):
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search for content inside files (grep-like)."""
-        # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
                                         output_mode, context)
@@ -879,7 +790,6 @@ class ShellFileOperations(FileOperations):
             return self._search_with_grep(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
         else:
-            # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
@@ -911,49 +821,35 @@ class ShellFileOperations(FileOperations):
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
         
-        # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         
-        # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
             cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
         
-        # Output mode handling
         if output_mode == "files_only":
-            cmd_parts.append("-l")  # Files only
+            cmd_parts.append("-l")
         elif output_mode == "count":
-            cmd_parts.append("-c")  # Count per file
+            cmd_parts.append("-c")
         
-        # Fixed-string fallback for patterns that are not valid regexes.
         if self._literal_fallback_needed(pattern):
             cmd_parts.append("-F")
 
-        # Add pattern and path. "--" terminates option parsing so a pattern
-        # beginning with "-" is searched for instead of being eaten as a flag.
         cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # Fetch extra rows so we can report the true total before slicing.
-        # For context mode, rg emits separator lines ("--") between groups,
-        # so we grab generously and filter in Python.
         fetch_limit = limit + offset + 200 if context > 0 else limit + offset
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
-        # rg exit codes: 0=matches found, 1=no matches, 2=error
         if result.exit_code == 2 and not result.stdout.strip():
-            # ExecuteResult carries only stdout/exit_code -- it has no stderr
-            # attribute, so the old getattr dance could never produce a real
-            # message. Say something actionable instead of "Search error".
             error_msg = (result.stdout.strip()
                          or f"backend rejected the pattern: {pattern!r}")
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
         
-        # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in result.stdout.strip().split('\n') if f]
             total = len(all_files)
@@ -973,12 +869,6 @@ class ShellFileOperations(FileOperations):
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:
-            # Parse content matches and context lines.
-            # rg match lines:   "file:lineno:content"  (colon separator)
-            # rg context lines: "file-lineno-content"   (dash separator)
-            # rg group seps:    "--"
-            # Note: on Windows, paths contain drive letters (e.g. C:\path),
-            # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
@@ -986,7 +876,6 @@ class ShellFileOperations(FileOperations):
                 if not line or line == "--":
                     continue
                 
-                # Try match line first (colon-separated: file:line:content)
                 m = _match_re.match(line)
                 if m:
                     matches.append(SearchMatch(
@@ -996,8 +885,6 @@ class ShellFileOperations(FileOperations):
                     ))
                     continue
                 
-                # Try context line (dash-separated: file-line-content)
-                # Only attempt if context was requested to avoid false positives
                 if context > 0:
                     m = _ctx_re.match(line)
                     if m:
@@ -1018,48 +905,35 @@ class ShellFileOperations(FileOperations):
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
-        cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
+        cmd_parts = ["grep", "-rnH"]
         
-        # Exclude hidden directories (matching ripgrep's default behavior).
-        # This prevents searching inside .hub/index-cache/, .git/, etc.
         cmd_parts.append("--exclude-dir='.*'")
         
-        # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
         
-        # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
             cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
         
-        # Output mode handling
         if output_mode == "files_only":
             cmd_parts.append("-l")
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Same fixed-string fallback as the rg path (see
-        # _literal_fallback_needed) so both backends agree on the answer.
         if self._literal_fallback_needed(pattern):
             cmd_parts.append("-F")
 
-        # Add pattern and path ("--" ends option parsing; see rg path).
         cmd_parts.append("--")
         cmd_parts.append(self._escape_shell_arg(pattern))
         cmd_parts.append(self._escape_shell_arg(path))
         
-        # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
         cmd_parts.extend(["|", "head", "-n", str(fetch_limit)])
         
         cmd = " ".join(cmd_parts)
         result = self._exec(cmd, timeout=60)
         
-        # grep exit codes: 0=matches found, 1=no matches, 2=error
         if result.exit_code == 2 and not result.stdout.strip():
-            # ExecuteResult carries only stdout/exit_code -- it has no stderr
-            # attribute, so the old getattr dance could never produce a real
-            # message. Say something actionable instead of "Search error".
             error_msg = (result.stdout.strip()
                          or f"backend rejected the pattern: {pattern!r}")
             return SearchResult(error=f"Search failed: {error_msg}", total_count=0)
@@ -1083,11 +957,6 @@ class ShellFileOperations(FileOperations):
             return SearchResult(counts=counts, total_count=sum(counts.values()))
         
         else:
-            # grep match lines:   "file:lineno:content" (colon)
-            # grep context lines: "file-lineno-content"  (dash)
-            # grep group seps:    "--"
-            # Note: on Windows, paths contain drive letters (e.g. C:\path),
-            # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
             _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []

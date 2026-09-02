@@ -35,18 +35,8 @@ import threading
 from collections import OrderedDict
 from typing import Optional
 
-# A couple dozen distinct active scaffolds (webhook routes x skills x cron
-# jobs) is generous for one gateway process; beyond that, oldest entries
-# fall back to whole-message caching rather than growing unboundedly.
 _MAX_ENTRIES = 32
 
-# Entries hold whole expanded skill bodies, so an entry count alone does not
-# bound memory — a handful of large skills can retain tens of MB in a
-# long-lived gateway process. Evict by total retained characters too (a
-# conservative proxy for bytes: actual memory is 1–4x depending on the
-# string's widest code point), always keeping the newest entry so a single
-# oversized scaffold still gets a boundary instead of silently disabling
-# the split.
 _MAX_CHARS = 4 * 1024 * 1024
 
 _lock = threading.Lock()
@@ -83,7 +73,6 @@ def find_stable_prefix(content: str) -> Optional[str]:
                 if best is None or len(prefix) > len(best):
                     best = prefix
         if best is not None:
-            # After the scan so the OrderedDict is never mutated mid-iteration.
             _prefixes.move_to_end(best)
         return best
 

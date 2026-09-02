@@ -19,15 +19,12 @@ def fake_skills(tmp_path):
     skill_dir = skills_dir / "test-skill"
     skill_dir.mkdir(parents=True)
 
-    # Create SKILL.md
     (skill_dir / "SKILL.md").write_text("# Test Skill\nA test skill.")
 
-    # Create a legitimate file inside the skill
     refs = skill_dir / "references"
     refs.mkdir()
     (refs / "api.md").write_text("API docs here")
 
-    # Create a sensitive file outside skills dir (simulating .env)
     (tmp_path / ".env").write_text("SECRET_API_KEY=sk-do-not-leak")
 
     with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
@@ -71,7 +68,6 @@ class TestPathTraversalBlocked:
             pytest.skip("Symlinks not supported")
 
         result = json.loads(skill_view("test-skill", file_path="evil-link"))
-        # The resolve() check should catch the symlink escaping
         assert result["success"] is False
         assert "escapes" in result["error"].lower() or "boundary" in result["error"].lower()
 

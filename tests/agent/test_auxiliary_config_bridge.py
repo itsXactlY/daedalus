@@ -22,7 +22,6 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     This mirrors the code in cli.py load_cli_config() and gateway/run.py.
     Both use the same pattern; we test it once here.
     """
-    # Clear env vars
     for key in (
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
@@ -31,9 +30,7 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
 
-    # Compression config is read directly from config.yaml — no env var bridging.
 
-    # Auxiliary bridge
     auxiliary_cfg = config_dict.get("auxiliary", {})
     if auxiliary_cfg and isinstance(auxiliary_cfg, dict):
         aux_task_env = {
@@ -68,7 +65,6 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
                 os.environ[env_map["api_key"]] = api_key
 
 
-# ── Config bridging tests ────────────────────────────────────────────────────
 
 
 class TestAuxiliaryConfigBridge:
@@ -83,7 +79,6 @@ class TestAuxiliaryConfigBridge:
         }
         _run_auxiliary_bridge(config, monkeypatch)
         assert os.environ.get("AUXILIARY_VISION_PROVIDER") == "openrouter"
-        # auto should not be set
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
 
     def test_vision_model_bridged(self, monkeypatch):
@@ -94,7 +89,6 @@ class TestAuxiliaryConfigBridge:
         }
         _run_auxiliary_bridge(config, monkeypatch)
         assert os.environ.get("AUXILIARY_VISION_MODEL") == "openai/gpt-4o"
-        # auto provider should not be set
         assert os.environ.get("AUXILIARY_VISION_PROVIDER") is None
 
     def test_web_extract_bridged(self, monkeypatch):
@@ -142,7 +136,7 @@ class TestAuxiliaryConfigBridge:
         """Malformed task config (e.g. string instead of dict) is safely ignored."""
         config = {
             "auxiliary": {
-                "vision": "openrouter",  # should be a dict
+                "vision": "openrouter",
             }
         }
         _run_auxiliary_bridge(config, monkeypatch)
@@ -191,7 +185,6 @@ class TestAuxiliaryConfigBridge:
         assert os.environ.get("AUXILIARY_WEB_EXTRACT_PROVIDER") is None
 
 
-# ── Gateway bridge parity test ───────────────────────────────────────────────
 
 
 class TestGatewayBridgeCodeParity:
@@ -201,7 +194,6 @@ class TestGatewayBridgeCodeParity:
         """The gateway config bridge must include auxiliary.* bridging."""
         gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
         content = gateway_path.read_text()
-        # Check for key patterns that indicate the bridge is present
         assert "AUXILIARY_VISION_PROVIDER" in content
         assert "AUXILIARY_VISION_MODEL" in content
         assert "AUXILIARY_VISION_BASE_URL" in content
@@ -219,7 +211,6 @@ class TestGatewayBridgeCodeParity:
         assert "CONTEXT_COMPRESSION_MODEL" not in content
 
 
-# ── Vision model override tests ──────────────────────────────────────────────
 
 
 class TestVisionModelOverride:
@@ -232,7 +223,6 @@ class TestVisionModelOverride:
             mock_tool.return_value = '{"success": true}'
             _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
-            # 3rd positional arg = model
             assert call_args[0][2] == "openai/gpt-4o"
 
     def test_default_model_when_no_override(self, monkeypatch):
@@ -242,12 +232,9 @@ class TestVisionModelOverride:
             mock_tool.return_value = '{"success": true}'
             _handle_vision_analyze({"image_url": "http://test.jpg", "question": "test"})
             call_args = mock_tool.call_args
-            # With no AUXILIARY_VISION_MODEL env var, model should be None
-            # (the centralized call_llm router picks the provider default)
             assert call_args[0][2] is None
 
 
-# ── DEFAULT_CONFIG shape tests ───────────────────────────────────────────────
 
 
 class TestDefaultConfigShape:
@@ -286,7 +273,6 @@ class TestDefaultConfigShape:
         assert compression["summary_base_url"] is None
 
 
-# ── CLI defaults parity ─────────────────────────────────────────────────────
 
 
 class TestCLIDefaultsHaveAuxiliaryKeys:
@@ -296,10 +282,6 @@ class TestCLIDefaultsHaveAuxiliaryKeys:
     def test_cli_defaults_can_merge_auxiliary(self):
         """The load_cli_config deep merge logic handles keys not in defaults.
         Verify auxiliary would be picked up from config.yaml."""
-        # This is a structural assertion: cli.py's second-pass loop
-        # carries over keys from file_config that aren't in defaults.
-        # So auxiliary config from config.yaml gets merged even though
-        # cli.py's defaults dict doesn't define it.
         import cli as _cli_mod
         source = Path(_cli_mod.__file__).read_text()
         assert "auxiliary_config = defaults.get(\"auxiliary\"" in source

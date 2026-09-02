@@ -15,8 +15,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from daedalus_cli.config import get_env_value, get_daedalus_home, save_env_value, is_managed, managed_error
-# display_daedalus_home is imported lazily at call sites to avoid ImportError
-# when daedalus_constants is cached from a pre-update version during `daedalus update`.
 from daedalus_cli.setup import (
     print_header, print_info, print_success, print_warning, print_error,
     prompt, prompt_choice, prompt_yes_no,
@@ -24,9 +22,6 @@ from daedalus_cli.setup import (
 from daedalus_cli.colors import Colors, color
 
 
-# =============================================================================
-# Process Management (for manual gateway runs)
-# =============================================================================
 
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
@@ -38,7 +33,6 @@ def _get_service_pids() -> set:
     """
     pids: set = set()
 
-    # --- systemd (Linux): user and system scopes ---
     if is_linux():
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
@@ -66,7 +60,6 @@ def _get_service_pids() -> set:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
-    # --- launchd (macOS) ---
     if is_macos():
         try:
             label = get_launchd_label()
@@ -75,7 +68,6 @@ def _get_service_pids() -> set:
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
                 for line in result.stdout.strip().splitlines():
                     parts = line.split()
                     if len(parts) >= 3 and parts[2] == label:
@@ -109,12 +101,10 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
 
     try:
         if is_windows():
-            # Windows: use wmic to search command lines
             result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True, text=True, timeout=10
             )
-            # Parse WMIC LIST output: blocks of "CommandLine=...\nProcessId=...\n"
             current_cmd = ""
             for line in result.stdout.split('\n'):
                 line = line.strip()
@@ -138,7 +128,6 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
                 timeout=10,
             )
             for line in result.stdout.split('\n'):
-                # Skip grep and current process
                 if 'grep' in line or str(os.getpid()) in line:
                     continue
                 for pattern in patterns:
@@ -177,7 +166,6 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
                 os.kill(pid, signal.SIGTERM)
             killed += 1
         except ProcessLookupError:
-            # Process already gone
             pass
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
@@ -204,12 +192,11 @@ def stop_profile_gateway() -> bool:
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        pass  # Already gone
+        pass
     except PermissionError:
         print(f"⚠ Permission denied to kill PID {pid}")
         return False
 
-    # Wait briefly for it to exit
     import time as _time
     for _ in range(20):
         try:
@@ -232,9 +219,6 @@ def is_windows() -> bool:
     return sys.platform == 'win32'
 
 
-# =============================================================================
-# Service Configuration
-# =============================================================================
 
 _SERVICE_BASE = "daedalus-gateway"
 SERVICE_DESCRIPTION = "Daedalus Agent Gateway - Messaging Platform Integration"
@@ -252,14 +236,9 @@ def _profile_suffix() -> str:
     from pathlib import Path as _Path
     from daedalus_constants import _get_platform_default_daedalus_home
     home = get_daedalus_home().resolve()
-    # Use the canonical default rather than re-deriving it: daedalus_constants
-    # is the single source of truth for the home path, and duplicating
-    # "~/.daedalus" here silently broke profile detection when the default
-    # home moved.
     default = _get_platform_default_daedalus_home().resolve()
     if home == default:
         return ""
-    # Detect ~/.daedalus/profiles/<name> pattern → use the profile name
     profiles_root = (default / "profiles").resolve()
     try:
         rel = home.relative_to(profiles_root)
@@ -268,7 +247,6 @@ def _profile_suffix() -> str:
             return parts[0]
     except ValueError:
         pass
-    # Fallback: short hash for arbitrary DAEDALUS_HOME paths
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 
 
@@ -287,10 +265,6 @@ def _profile_arg(daedalus_home: str | None = None) -> str:
     from pathlib import Path as _Path
     from daedalus_constants import _get_platform_default_daedalus_home
     home = Path(daedalus_home or str(get_daedalus_home())).resolve()
-    # Use the canonical default rather than re-deriving it: daedalus_constants
-    # is the single source of truth for the home path, and duplicating
-    # "~/.daedalus" here silently broke profile detection when the default
-    # home moved.
     default = _get_platform_default_daedalus_home().resolve()
     if home == default:
         return ""
@@ -318,7 +292,7 @@ def get_service_name() -> str:
     return f"{_SERVICE_BASE}-{suffix}"
 
 
-SERVICE_NAME = _SERVICE_BASE  # backward-compat for external importers; prefer get_service_name()
+SERVICE_NAME = _SERVICE_BASE
 
 
 def get_systemd_unit_path(system: bool = False) -> Path:
@@ -565,13 +539,11 @@ def _detect_venv_dir() -> Path | None:
     then falls back to probing common directory names under PROJECT_ROOT.
     Returns ``None`` when no virtualenv can be found.
     """
-    # If we're running inside a virtualenv, sys.prefix points to it.
     if sys.prefix != sys.base_prefix:
         venv = Path(sys.prefix)
         if venv.is_dir():
             return venv
 
-    # Fallback: check common virtualenv directory names under the project root.
     for candidate in (".venv", "venv"):
         venv = PROJECT_ROOT / candidate
         if venv.is_dir():
@@ -593,27 +565,22 @@ def get_python_path() -> str:
 
 def get_daedalus_cli_path() -> str:
     """Get the path to the daedalus CLI."""
-    # Check if installed via pip
     import shutil
     daedalus_bin = shutil.which("daedalus")
     if daedalus_bin:
         return daedalus_bin
     
-    # Fallback to direct module execution
     return f"{get_python_path()} -m daedalus_cli.main"
 
 
-# =============================================================================
-# Systemd (Linux)
-# =============================================================================
 
 def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     """Return user-local bin dirs that exist and aren't already in *path_entries*."""
     candidates = [
-        str(home / ".local" / "bin"),       # uv, uvx, pip-installed CLIs
-        str(home / ".cargo" / "bin"),        # Rust/cargo tools
-        str(home / "go" / "bin"),            # Go tools
-        str(home / ".npm-global" / "bin"),   # npm global packages
+        str(home / ".local" / "bin"),
+        str(home / ".cargo" / "bin"),
+        str(home / "go" / "bin"),
+        str(home / ".npm-global" / "bin"),
     ]
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
@@ -628,25 +595,18 @@ def _daedalus_home_for_target_user(target_home_dir: str) -> str:
       /opt/custom-daedalus               → /opt/custom-daedalus  (kept as-is)
     """
     from daedalus_constants import _get_platform_default_daedalus_home
-    # Derive BOTH the calling user's default and the target user's leaf
-    # directory name from the canonical helper. Hardcoding "~/.daedalus" here
-    # meant a distribution that renames its home silently stopped remapping
-    # and wrote the calling user's path into the target user's unit file.
     _default_home = _get_platform_default_daedalus_home()
     current_daedalus = get_daedalus_home().resolve()
     current_default = _default_home.resolve()
     target_default = Path(target_home_dir) / _default_home.name
 
-    # Default ~/.daedalus → remap to target user's default
     if current_daedalus == current_default:
         return str(target_default)
 
-    # Profile or subdir of ~/.daedalus → preserve the relative structure
     try:
         relative = current_daedalus.relative_to(current_default)
         return str(target_default / relative)
     except ValueError:
-        # Completely custom path (not under ~/.daedalus) — keep as-is
         return str(current_daedalus)
 
 
@@ -989,9 +949,6 @@ def systemd_status(deep: bool = False, system: bool = False):
         subprocess.run(_journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"], timeout=10)
 
 
-# =============================================================================
-# Launchd (macOS)
-# =============================================================================
 
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
@@ -1012,17 +969,10 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(daedalus_home)
-    # Build a sane PATH for the launchd plist.  launchd provides only a
-    # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
-    # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
-    # the systemd unit), then capture the user's full shell PATH so every
-    # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
     venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
-    # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
-    # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = [venv_bin, node_bin]
     resolved_node = shutil.which("node")
     if resolved_node:
@@ -1033,7 +983,6 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
         f"<string>{python_path}</string>",
         "<string>-m</string>",
@@ -1126,7 +1075,6 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
     subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
     print("↻ Updated gateway launchd service definition to match the current Daedalus install")
@@ -1175,7 +1123,6 @@ def launchd_start():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
 
-    # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1222,20 +1169,18 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
     while time.monotonic() < deadline:
         pid = get_running_pid()
         if pid is None:
-            return  # Process exited cleanly.
+            return
 
         if not force_sent and time.monotonic() >= force_deadline:
-            # Grace period expired — force-kill the specific PID.
             try:
                 os.kill(pid, signal.SIGKILL)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError):
-                return  # Already gone or we can't touch it.
+                return
             force_sent = True
 
         time.sleep(0.3)
 
-    # Timed out even after SIGKILL.
     remaining_pid = get_running_pid()
     if remaining_pid is not None:
         print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
@@ -1244,16 +1189,12 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
-    # Use kickstart -k so launchd performs an atomic kill+restart.
-    # A two-step stop/start from inside the gateway's own process tree
-    # would kill the shell before the start command is reached.
     try:
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode not in (3, 113):
             raise
-        # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
@@ -1299,9 +1240,6 @@ def launchd_status(deep: bool = False):
             subprocess.run(["tail", "-20", str(log_file)], timeout=10)
 
 
-# =============================================================================
-# Gateway Runner
-# =============================================================================
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
@@ -1325,20 +1263,13 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print("└─────────────────────────────────────────────────────────┘")
     print()
     
-    # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=on-failure will retry on transient errors
     verbosity = None if quiet else verbose
     success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     if not success:
         sys.exit(1)
 
 
-# =============================================================================
-# Gateway Setup (Interactive Messaging Platform Configuration)
-# =============================================================================
 
-# Per-platform config: each entry defines the env vars, setup instructions,
-# and prompts needed to configure a messaging platform.
 _PLATFORMS = [
     {
         "key": "discord",
@@ -1455,7 +1386,6 @@ def _setup_standard_platform(platform: dict):
     print()
     print(color(f"  ─── {emoji} {label} Setup ───", Colors.CYAN))
 
-    # Show step-by-step setup instructions if this platform has them
     instructions = platform.get("setup_instructions")
     if instructions:
         print()
@@ -1469,7 +1399,7 @@ def _setup_standard_platform(platform: dict):
         if not prompt_yes_no(f"  Reconfigure {label}?", False):
             return
 
-    allowed_val_set = None  # Track if user set an allowlist (for home channel offer)
+    allowed_val_set = None
 
     for var in platform["vars"]:
         print()
@@ -1478,7 +1408,6 @@ def _setup_standard_platform(platform: dict):
         if existing and var["name"] != token_var:
             print_info(f"  Current: {existing}")
 
-        # Allowlist fields get special handling for the deny-by-default security model
         if var.get("is_allowlist"):
             print_info("  The gateway DENIES all users by default for security.")
             print_info("  Enter user IDs to create an allowlist, or leave empty")
@@ -1486,7 +1415,6 @@ def _setup_standard_platform(platform: dict):
             value = prompt(f"  {var['prompt']}", password=False)
             if value:
                 cleaned = value.replace(" ", "")
-                # For Discord, strip common prefixes (user:123, <@123>, <@!123>)
                 if "DISCORD" in var["name"]:
                     parts = []
                     for uid in cleaned.split(","):
@@ -1502,7 +1430,6 @@ def _setup_standard_platform(platform: dict):
                 print_success("  Saved — only these users can interact with the bot.")
                 allowed_val_set = cleaned
             else:
-                # No allowlist — ask about open access vs DM pairing
                 print()
                 access_choices = [
                     "Enable open access (anyone can message the bot)",
@@ -1530,8 +1457,6 @@ def _setup_standard_platform(platform: dict):
         else:
             print_info("  Skipped (can configure later)")
 
-    # If an allowlist was set and home channel wasn't, offer to reuse
-    # the first user ID (common for Telegram DMs).
     home_var = f"{label.upper()}_HOME_CHANNEL"
     home_val = get_env_value(home_var)
     if allowed_val_set and not home_val and label == "Telegram":
@@ -1598,7 +1523,6 @@ def _is_service_running() -> bool:
             return result.returncode == 0
         except subprocess.TimeoutExpired:
             return False
-    # Check for manual processes
     return len(find_gateway_pids()) > 0
 
 
@@ -1617,7 +1541,6 @@ def _setup_signal():
         if not prompt_yes_no("  Reconfigure Signal?", False):
             return
 
-    # Check if signal-cli is available
     print()
     if shutil.which("signal-cli"):
         print_success("signal-cli found on PATH.")
@@ -1634,7 +1557,6 @@ def _setup_signal():
         print_info("    signal-cli --account +YOURNUMBER daemon --http 127.0.0.1:8080")
         print()
 
-    # HTTP URL
     print()
     print_info("  Enter the URL where signal-cli HTTP daemon is running.")
     default_url = existing_url or "http://127.0.0.1:8080"
@@ -1644,7 +1566,6 @@ def _setup_signal():
         print("\n  Setup cancelled.")
         return
 
-    # Test connectivity
     print_info("  Testing connection...")
     try:
         import httpx
@@ -1662,7 +1583,6 @@ def _setup_signal():
 
     save_env_value("SIGNAL_HTTP_URL", url)
 
-    # Account phone number
     print()
     print_info("  Enter your Signal account phone number in E.164 format.")
     print_info("  Example: +15551234567")
@@ -1681,7 +1601,6 @@ def _setup_signal():
 
     save_env_value("SIGNAL_ACCOUNT", account)
 
-    # Allowed users
     print()
     print_info("  The gateway DENIES all users by default for security.")
     print_info("  Enter phone numbers or UUIDs of allowed users (comma-separated).")
@@ -1695,7 +1614,6 @@ def _setup_signal():
 
     save_env_value("SIGNAL_ALLOWED_USERS", allowed)
 
-    # Group messaging
     print()
     if prompt_yes_no("  Enable group messaging? (disabled by default for security)", False):
         print()
@@ -1730,7 +1648,6 @@ def gateway_setup():
     print(color("│  Press Ctrl+C at any time to exit.                     │", Colors.MAGENTA))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.MAGENTA))
 
-    # ── Gateway service status ──
     print()
     service_installed = _is_service_installed()
     service_running = _is_service_running()
@@ -1755,7 +1672,6 @@ def gateway_setup():
         print_info("Gateway service is not installed yet.")
         print_info("You'll be offered to install it after configuring platforms.")
 
-    # ── Platform configuration loop ──
     while True:
         print()
         print_header("Messaging Platforms")
@@ -1780,7 +1696,6 @@ def gateway_setup():
         else:
             _setup_standard_platform(platform)
 
-    # ── Post-setup: offer to install/restart gateway ──
     any_configured = any(
         bool(get_env_value(p["token_var"]))
         for p in _PLATFORMS
@@ -1854,15 +1769,11 @@ def gateway_setup():
     print()
 
 
-# =============================================================================
-# Main Command Handler
-# =============================================================================
 
 def gateway_command(args):
     """Handle gateway subcommands."""
     subcmd = getattr(args, 'gateway_command', None)
     
-    # Default to run if no subcommand
     if subcmd is None or subcmd == "run":
         verbose = getattr(args, 'verbose', 0)
         quiet = getattr(args, 'quiet', False)
@@ -1874,7 +1785,6 @@ def gateway_command(args):
         gateway_setup()
         return
 
-    # Service management commands
     if subcmd == "install":
         if is_managed():
             managed_error("install gateway service (managed by NixOS)")
@@ -1919,7 +1829,6 @@ def gateway_command(args):
         system = getattr(args, 'system', False)
 
         if stop_all:
-            # --all: kill every gateway process on the machine
             service_available = False
             if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
                 try:
@@ -1940,7 +1849,6 @@ def gateway_command(args):
             else:
                 print("✗ No gateway processes found")
         else:
-            # Default: stop only the current profile's gateway
             service_available = False
             if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
                 try:
@@ -1956,7 +1864,6 @@ def gateway_command(args):
                     pass
 
             if not service_available:
-                # No systemd/launchd — use profile-scoped PID file
                 if stop_profile_gateway():
                     print("✓ Stopped gateway for this profile")
                 else:
@@ -1965,7 +1872,6 @@ def gateway_command(args):
                 print(f"✓ Stopped {get_service_name()} service")
     
     elif subcmd == "restart":
-        # Try service first, fall back to killing and restarting
         service_available = False
         system = getattr(args, 'system', False)
         service_configured = False
@@ -1986,17 +1892,8 @@ def gateway_command(args):
                 pass
         
         if not service_available:
-            # systemd/launchd restart failed — check if linger is the issue
             if is_linux():
                 linger_ok, _detail = get_systemd_linger_status()
-                # Only when linger is definitively OFF. `None` means the status
-                # could not be determined — most often because there is no
-                # loginctl at all, i.e. the host does not run systemd. Treating
-                # that as "linger disabled" sent OpenRC hosts down a systemd
-                # dead end: inside the Podroid Alpine pod this printed
-                # "sudo loginctl enable-linger root", which fails with
-                # "loginctl: command not found", and returned before reaching
-                # the manual restart path below — which works fine there.
                 if linger_ok is False:
                     import getpass
                     _username = getpass.getuser()
@@ -2017,13 +1914,11 @@ def gateway_command(args):
                 print("  Fix the service, then retry: daedalus gateway start")
                 sys.exit(1)
 
-            # Manual restart: stop only this profile's gateway
             if stop_profile_gateway():
                 print("✓ Stopped gateway for this profile")
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 
-            # Start fresh
             print("Starting gateway...")
             run_gateway(verbose=0)
     
@@ -2031,13 +1926,11 @@ def gateway_command(args):
         deep = getattr(args, 'deep', False)
         system = getattr(args, 'system', False)
         
-        # Check for service first
         if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
             systemd_status(deep, system=system)
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
         else:
-            # Check for manually running processes
             pids = find_gateway_pids()
             if pids:
                 print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")

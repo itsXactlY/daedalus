@@ -75,7 +75,6 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from pydantic import Field
 
-# Ensure daedalus root is on path
 _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
@@ -91,9 +90,6 @@ from environments.tool_context import ToolContext
 logger = logging.getLogger(__name__)
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Built-in coding tasks (fallback when no HF dataset is configured)
-# ═══════════════════════════════════════════════════════════════════════
 
 BUILTIN_CODING_TASKS = [
     {
@@ -214,9 +210,6 @@ BUILTIN_CODING_TASKS = [
 ]
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Hint extraction prompts (adapted from OpenClaw-RL)
-# ═══════════════════════════════════════════════════════════════════════
 
 _HINT_JUDGE_SYSTEM = (
     "You are a process reward model used for hindsight hint extraction.\n"
@@ -291,7 +284,6 @@ def _append_hint_to_messages(messages: list[dict], hint: str) -> list[dict]:
     if not cloned:
         return [{"role": "user", "content": f"[user's hint / instruction]\n{hint}"}]
 
-    # Find last user message
     target_idx = None
     for i in range(len(cloned) - 1, -1, -1):
         if cloned[i].get("role") == "user":
@@ -310,15 +302,11 @@ def _append_hint_to_messages(messages: list[dict], hint: str) -> list[dict]:
     return cloned
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Configuration
-# ═══════════════════════════════════════════════════════════════════════
 
 
 class AgenticOPDConfig(DaedalusAgentEnvConfig):
     """Configuration for the agentic OPD environment."""
 
-    # --- OPD settings ---
     opd_enabled: bool = Field(
         default=True,
         description="Enable on-policy distillation pipeline. When disabled, "
@@ -338,7 +326,6 @@ class AgenticOPDConfig(DaedalusAgentEnvConfig):
         "Tool results can be very long — truncating prevents judge context overflow.",
     )
 
-    # --- Reward settings ---
     correctness_weight: float = Field(
         default=0.7,
         description="Weight for test pass/fail in reward.",
@@ -352,7 +339,6 @@ class AgenticOPDConfig(DaedalusAgentEnvConfig):
         description="Weight for appropriate tool usage signal.",
     )
 
-    # --- Dataset ---
     dataset_name: Optional[str] = Field(
         default=None,
         description="HuggingFace dataset with coding tasks. "
@@ -360,7 +346,6 @@ class AgenticOPDConfig(DaedalusAgentEnvConfig):
         "Falls back to built-in tasks if not set or unavailable.",
     )
 
-    # --- Eval ---
     eval_size: int = Field(
         default=10,
         description="Number of held-out items for evaluation.",
@@ -371,9 +356,6 @@ class AgenticOPDConfig(DaedalusAgentEnvConfig):
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Environment
-# ═══════════════════════════════════════════════════════════════════════
 
 
 class AgenticOPDEnv(DaedalusAgentBaseEnv):
@@ -391,16 +373,13 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
     name = "agentic-opd"
     env_config_cls = AgenticOPDConfig
 
-    # Default toolsets: terminal for running code, file for writing it
     default_toolsets = ["terminal", "file"]
 
     @classmethod
     def config_init(cls) -> Tuple[AgenticOPDConfig, List[APIServerConfig]]:
         """Default configuration."""
         env_config = AgenticOPDConfig(
-            # Toolsets
             enabled_toolsets=["terminal", "file"],
-            # Agent loop
             max_agent_turns=15,
             agent_temperature=1.0,
             system_prompt=(
@@ -412,11 +391,9 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                 "5. Once all tests pass, report success\n\n"
                 "Be efficient — write clean code and fix errors methodically."
             ),
-            # OPD
             opd_enabled=True,
             distill_topk=50,
             prm_votes=3,
-            # Training
             group_size=4,
             total_steps=500,
             steps_per_eval=50,
@@ -440,7 +417,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         self._eval_items: list[dict] = []
         self._index: int = 0
 
-        # Metric buffers
         self._reward_buffer: list[float] = []
         self._correctness_buffer: list[float] = []
         self._efficiency_buffer: list[float] = []
@@ -448,9 +424,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         self._hints_extracted_buffer: list[int] = []
         self._opd_turns_scored_buffer: list[int] = []
 
-    # ═══════════════════════════════════════════════════════════════════
-    # 1. setup — load dataset
-    # ═══════════════════════════════════════════════════════════════════
 
     async def setup(self) -> None:
         """Load coding tasks from HuggingFace or use built-in set."""
@@ -496,7 +469,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                     e,
                 )
 
-        # Fallback to built-in tasks
         items = copy.deepcopy(BUILTIN_CODING_TASKS)
         random.shuffle(items)
         split = max(1, len(items) * 85 // 100)
@@ -508,9 +480,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
             len(self._eval_items),
         )
 
-    # ═══════════════════════════════════════════════════════════════════
-    # 2. get_next_item
-    # ═══════════════════════════════════════════════════════════════════
 
     async def get_next_item(self) -> dict:
         """Return the next coding task, cycling through the dataset."""
@@ -520,9 +489,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         self._index += 1
         return item
 
-    # ═══════════════════════════════════════════════════════════════════
-    # 3. format_prompt
-    # ═══════════════════════════════════════════════════════════════════
 
     def format_prompt(self, item: dict) -> str:
         """Format the coding task as a user prompt."""
@@ -544,9 +510,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         )
         return prompt
 
-    # ═══════════════════════════════════════════════════════════════════
-    # 4. compute_reward
-    # ═══════════════════════════════════════════════════════════════════
 
     async def compute_reward(
         self,
@@ -562,8 +525,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         """
         cfg = self.config
 
-        # ---- Signal 1: Test correctness ----
-        # Check if test_solution.py exists and passes in the agent's sandbox
         correctness = 0.0
         try:
             test_result = ctx.terminal("python test_solution.py 2>&1", timeout=30)
@@ -572,16 +533,15 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
             if exit_code == 0 and "passed" in output.lower():
                 correctness = 1.0
             elif exit_code == 0:
-                correctness = 0.8  # Ran without error but no explicit "passed"
+                correctness = 0.8
             elif "assert" in output.lower() and "error" in output.lower():
-                correctness = 0.2  # Partial — code runs but assertions fail
+                correctness = 0.2
             else:
-                correctness = 0.1  # Code errors out entirely
+                correctness = 0.1
         except Exception as e:
             logger.debug("Test execution failed in reward: %s", e)
             correctness = 0.0
 
-        # ---- Signal 2: Efficiency ----
         max_turns = cfg.max_agent_turns
         turns_used = result.turns_used
         if turns_used <= 3:
@@ -593,7 +553,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         else:
             efficiency = 0.2
 
-        # ---- Signal 3: Tool usage ----
         tools_used = set()
         for msg in result.messages:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
@@ -603,7 +562,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                     if name:
                         tools_used.add(name)
 
-        # Good: used both terminal and file tools
         if "terminal" in tools_used and ("write_file" in tools_used or "patch" in tools_used):
             tool_usage = 1.0
         elif "terminal" in tools_used:
@@ -613,7 +571,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         else:
             tool_usage = 0.0
 
-        # ---- Combine ----
         reward = (
             cfg.correctness_weight * correctness
             + cfg.efficiency_weight * efficiency
@@ -621,7 +578,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         )
         reward = min(1.0, max(0.0, reward))
 
-        # Track metrics
         self._reward_buffer.append(reward)
         self._correctness_buffer.append(correctness)
         self._efficiency_buffer.append(efficiency)
@@ -636,9 +592,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         )
         return reward
 
-    # ═══════════════════════════════════════════════════════════════════
-    # 5. collect_trajectories — OPD pipeline
-    # ═══════════════════════════════════════════════════════════════════
 
     async def collect_trajectories(
         self, item: Item
@@ -654,10 +607,8 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         3. Score student tokens under enhanced (hint-augmented) distribution
         4. Add distill_token_ids / distill_logprobs to the ScoredDataGroup
         """
-        # Step 1: Run standard rollouts
         scored_group, backlog = await super().collect_trajectories(item)
 
-        # Step 2: OPD pipeline (only if enabled and we have VLLM server)
         if (
             self.config.opd_enabled
             and scored_group is not None
@@ -705,10 +656,8 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                 all_distill_token_ids.append(None)
                 all_distill_logprobs.append(None)
 
-        # Only set distill fields if at least one sequence succeeded
         any_succeeded = any(d is not None for d in all_distill_token_ids)
         if any_succeeded:
-            # Replace None entries with zero-padded arrays matching token length
             for i in range(len(all_distill_token_ids)):
                 if all_distill_token_ids[i] is None and i < len(tokens_list):
                     seq_len = len(tokens_list[i])
@@ -741,11 +690,9 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         k = self.config.distill_topk
         seq_len = len(student_tokens)
 
-        # Initialize with zeros (no distill info = neutral)
         distill_token_ids: List[List[int]] = [[0] * k for _ in range(seq_len)]
         distill_logprobs: List[List[float]] = [[0.0] * k for _ in range(seq_len)]
 
-        # Find (assistant, next_state) turn pairs
         turn_pairs = self._extract_turn_pairs(messages)
         if not turn_pairs:
             return distill_token_ids, distill_logprobs
@@ -765,12 +712,10 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
 
                 hints_extracted += 1
 
-                # Build enhanced prompt with hint
                 enhanced_messages = _append_hint_to_messages(
                     pair["context_messages"], hint
                 )
 
-                # Tokenize the enhanced prompt
                 if not self.tokenizer:
                     logger.warning("OPD: No tokenizer available, skipping scoring")
                     continue
@@ -781,7 +726,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                     add_generation_prompt=True,
                 )
 
-                # Tokenize the assistant response to score
                 response_text = pair["assistant_text"]
                 enhanced_full_text = enhanced_prompt + response_text
                 enhanced_ids = self.tokenizer(
@@ -796,13 +740,11 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                 if response_len == 0:
                     continue
 
-                # Score via get_logprobs — teacher scoring the student's tokens
-                # under the enhanced (hint-augmented) distribution
                 try:
                     logprob_result = await self.server.get_logprobs(
                         input_ids=enhanced_ids,
                         top_k=k,
-                        split="eval",  # Use eval semaphore to not block training
+                        split="eval",
                     )
                 except Exception as e:
                     logger.debug("get_logprobs failed: %s", e)
@@ -814,18 +756,14 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                 if not teacher_topk_ids:
                     continue
 
-                # Extract only the response positions (last response_len entries)
                 if len(teacher_topk_ids) >= response_len:
                     resp_topk_ids = teacher_topk_ids[-response_len:]
                     resp_topk_lps = teacher_topk_lps[-response_len:]
                 else:
-                    # Pad from the left if the response was shorter than expected
                     pad_len = response_len - len(teacher_topk_ids)
                     resp_topk_ids = [[0] * k] * pad_len + teacher_topk_ids
                     resp_topk_lps = [[0.0] * k] * pad_len + teacher_topk_lps
 
-                # Map these back to the student's full sequence positions
-                # Find where this assistant turn's tokens appear in the full sequence
                 turn_start = self._find_token_span(
                     student_tokens, response_ids
                 )
@@ -833,7 +771,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                     for j in range(min(response_len, seq_len - turn_start)):
                         pos = turn_start + j
                         if pos < seq_len and j < len(resp_topk_ids):
-                            # Pad/truncate to exactly k entries
                             ids = resp_topk_ids[j][:k]
                             lps = resp_topk_lps[j][:k]
                             while len(ids) < k:
@@ -847,7 +784,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                 logger.debug("OPD turn processing failed: %s", e)
                 continue
 
-        # Track OPD metrics
         self._hints_extracted_buffer.append(hints_extracted)
         self._opd_turns_scored_buffer.append(turns_scored)
 
@@ -881,13 +817,10 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         while i < len(messages):
             msg = messages[i]
             if msg.get("role") == "assistant" and msg.get("content"):
-                # Found an assistant message with content
                 assistant_text = msg["content"]
-                context = messages[:i]  # Everything before this turn
+                context = messages[:i]
 
-                # Look ahead for next state
                 j = i + 1
-                # Skip tool_calls-only assistant messages and collect tool results
                 next_states = []
                 while j < len(messages):
                     next_msg = messages[j]
@@ -901,13 +834,11 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                         break
 
                 if next_states:
-                    # Combine all next-state content
                     next_text_parts = []
                     next_role = next_states[0].get("role", "tool")
                     for ns in next_states:
                         content = ns.get("content", "")
                         if content:
-                            # Truncate very long tool outputs
                             max_chars = self.config.hint_max_next_state_chars
                             if len(content) > max_chars:
                                 content = content[:max_chars] + "\n...[truncated]"
@@ -943,7 +874,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
             next_state_role=next_state_role,
         )
 
-        # Majority voting across multiple judge queries
         votes = []
         tasks = []
         for _ in range(self.config.prm_votes):
@@ -995,15 +925,11 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         if sub_len > full_len:
             return None
 
-        # Search backwards (assistant responses are usually near the end)
         for i in range(full_len - sub_len, -1, -1):
             if full_tokens[i : i + sub_len] == sub_tokens:
                 return i
         return None
 
-    # ═══════════════════════════════════════════════════════════════════
-    # 6. evaluate
-    # ═══════════════════════════════════════════════════════════════════
 
     async def evaluate(self, *args, **kwargs) -> None:
         """
@@ -1052,7 +978,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                 )
                 result = await agent.run(messages)
 
-                # Compute reward (track buffer lengths to rollback eval pollution)
                 buf_len = len(self._correctness_buffer)
                 ctx = ToolContext(task_id)
                 try:
@@ -1060,7 +985,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                 finally:
                     ctx.cleanup()
 
-                # Extract correctness and rollback training buffers
                 correctness = (
                     self._correctness_buffer[buf_len]
                     if len(self._correctness_buffer) > buf_len
@@ -1075,7 +999,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                     if len(buf) > buf_len:
                         buf.pop()
 
-                # Also rollback OPD buffers if they were touched
                 for buf in (
                     self._hints_extracted_buffer,
                     self._opd_turns_scored_buffer,
@@ -1083,7 +1006,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
                     if len(buf) > buf_len:
                         buf.pop()
 
-                # Extract final response
                 final_response = ""
                 for msg in reversed(result.messages):
                     if (
@@ -1152,9 +1074,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
             end_time=end_time,
         )
 
-    # ═══════════════════════════════════════════════════════════════════
-    # 7. wandb_log — custom OPD metrics
-    # ═══════════════════════════════════════════════════════════════════
 
     async def wandb_log(self, wandb_metrics: Optional[Dict] = None) -> None:
         """Log reward breakdown and OPD-specific metrics to wandb."""
@@ -1183,7 +1102,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
             self._efficiency_buffer.clear()
             self._tool_usage_buffer.clear()
 
-        # OPD-specific metrics
         if self._hints_extracted_buffer:
             n = len(self._hints_extracted_buffer)
             wandb_metrics["opd/mean_hints_per_rollout"] = (
@@ -1206,9 +1124,6 @@ class AgenticOPDEnv(DaedalusAgentBaseEnv):
         await super().wandb_log(wandb_metrics)
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Entry point
-# ═══════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     AgenticOPDEnv.cli()

@@ -32,7 +32,6 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
-        # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
         "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
@@ -122,7 +121,6 @@ class TestReadCodexAccessToken:
         import base64
         import time as _time
 
-        # Build a JWT with exp in the past
         header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
         payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
         payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
@@ -195,7 +193,6 @@ class TestAnthropicOAuthFlag:
             client, model = _try_anthropic()
             assert client is not None
             assert isinstance(client, AnthropicAuxiliaryClient)
-            # The adapter inside should have is_oauth=True
             adapter = client.chat.completions
             assert adapter._is_oauth is True
 
@@ -246,7 +243,6 @@ class TestExpiredCodexFallback:
         import base64
         import time as _time
 
-        # Expired Codex JWT
         header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
         payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
         payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
@@ -264,13 +260,11 @@ class TestExpiredCodexFallback:
         }))
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-        # Set up Anthropic as fallback
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-test-fallback")
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()
             from agent.auxiliary_client import _resolve_auto, AnthropicAuxiliaryClient
             client, model = _resolve_auto()
-            # Should NOT be Codex, should be Anthropic (or another available provider)
             assert not isinstance(client, type(None)), "Should find a provider after expired Codex"
 
 
@@ -302,7 +296,6 @@ class TestExpiredCodexFallback:
             from agent.auxiliary_client import _resolve_auto
             client, model = _resolve_auto()
             assert client is not None
-            # OpenRouter is 1st in chain, should win
             mock_openai.assert_called()
 
     def test_expired_codex_custom_endpoint_wins(self, tmp_path, monkeypatch):
@@ -327,7 +320,6 @@ class TestExpiredCodexFallback:
         }))
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-        # Simulate Ollama or custom endpoint
         with patch("agent.auxiliary_client._resolve_custom_runtime",
                    return_value=("http://localhost:11434/v1", "sk-dummy")):
             with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -339,7 +331,6 @@ class TestExpiredCodexFallback:
 
     def test_daedalus_oauth_file_sets_oauth_flag(self, monkeypatch):
         """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
-        # Mock resolve_anthropic_token to return an OAuth-style token
         with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="daedalus-oauth-jwt-token"), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
@@ -354,7 +345,7 @@ class TestExpiredCodexFallback:
         """JWT with valid JSON but no exp claim should pass through."""
         import base64
         header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
-        payload_data = json.dumps({"sub": "user123"}).encode()  # no exp
+        payload_data = json.dumps({"sub": "user123"}).encode()
         payload = base64.urlsafe_b64encode(payload_data).rstrip(b"=").decode()
         no_exp_jwt = f"{header}.{payload}.fakesig"
 
@@ -416,7 +407,6 @@ class TestExplicitProviderRouting:
             mock_build.return_value = MagicMock()
             client, model = resolve_provider_client("anthropic")
             assert client is not None
-            # Verify OAuth flag propagated
             adapter = client.chat.completions
             assert adapter._is_oauth is True
 
@@ -524,7 +514,6 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
         monkeypatch.setattr("daedalus_cli.config.load_config", lambda: config)
         monkeypatch.setattr("daedalus_cli.runtime_provider.load_config", lambda: config)
-        # Override the autouse monkeypatch for codex
         monkeypatch.setattr(
             "agent.auxiliary_client._read_codex_access_token",
             lambda: "codex-test-token-abc123",
@@ -587,7 +576,6 @@ class TestGetTextAuxiliaryClient:
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
-        # Returns a CodexAuxiliaryClient wrapper, not a raw OpenAI client
         from agent.auxiliary_client import CodexAuxiliaryClient
         assert isinstance(client, CodexAuxiliaryClient)
 
@@ -750,7 +738,6 @@ class TestAuxiliaryPoolAwareness:
         ):
             provider, client, model = resolve_vision_provider_client()
 
-        # OpenRouter should win over anthropic active provider
         assert provider == "openrouter"
 
     def test_vision_auto_uses_named_custom_as_active_provider(self, monkeypatch):
@@ -853,7 +840,6 @@ class TestAuxiliaryPoolAwareness:
         monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        # Clear client cache to avoid stale entries from previous tests
         from agent.auxiliary_client import _client_cache
         _client_cache.clear()
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
@@ -998,7 +984,6 @@ class TestResolveForcedProvider:
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = _resolve_forced_provider("main")
-        # Should use custom endpoint, not OpenRouter
         assert model == "my-local-model"
 
     def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
@@ -1039,19 +1024,17 @@ class TestTaskSpecificOverrides:
         monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "nous")
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_text_auxiliary_client()  # no task → auto
-        assert model == "google/gemini-3-flash-preview"  # OpenRouter, not Nous
+            client, model = get_text_auxiliary_client()
+        assert model == "google/gemini-3-flash-preview"
 
     def test_compression_task_reads_context_prefix(self, monkeypatch):
         """Compression task should check CONTEXT_COMPRESSION_PROVIDER env var."""
         monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")  # would win in auto
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
              patch("agent.auxiliary_client.OpenAI"):
             mock_nous.return_value = {"access_token": "***"}
             client, model = get_text_auxiliary_client("compression")
-        # Config-first: model comes from config.yaml summary_model default,
-        # but provider is forced to Nous via env var
         assert client is not None
 
     def test_web_extract_task_override(self, monkeypatch):
@@ -1084,7 +1067,7 @@ class TestTaskSpecificOverrides:
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client.OpenAI"):
             client, model = get_text_auxiliary_client("compression")
-        assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
+        assert model == "google/gemini-3-flash-preview"
 
     def test_compression_summary_base_url_from_config(self, monkeypatch, tmp_path):
         """compression.summary_base_url should produce a custom-endpoint client."""
@@ -1098,7 +1081,6 @@ class TestTaskSpecificOverrides:
 """
         )
         monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
-        # Custom endpoints need an API key to build the client
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client("compression")
@@ -1126,7 +1108,6 @@ class TestAuxiliaryMaxTokensParam:
         assert result == {"max_tokens": 1024}
 
 
-# ── Payment / credit exhaustion fallback ─────────────────────────────────
 
 
 class TestIsPaymentError:
@@ -1263,7 +1244,6 @@ class TestCallLlmPaymentFallback:
 
         assert result is fallback_response
         mock_fb.assert_called_once_with("openrouter", "compression")
-        # Fallback call should use the fallback model
         fb_kwargs = fallback_client.chat.completions.create.call_args.kwargs
         assert fb_kwargs["model"] == "gpt-5.2-codex"
 

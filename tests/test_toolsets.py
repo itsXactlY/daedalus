@@ -37,12 +37,10 @@ class TestResolveToolset:
         assert "web_extract" in tools
 
     def test_cycle_detection(self):
-        # Create a cycle: A includes B, B includes A
         TOOLSETS["_cycle_a"] = {"description": "test", "tools": ["t1"], "includes": ["_cycle_b"]}
         TOOLSETS["_cycle_b"] = {"description": "test", "tools": ["t2"], "includes": ["_cycle_a"]}
         try:
             tools = resolve_toolset("_cycle_a")
-            # Should not infinite loop — cycle is detected
             assert "t1" in tools
             assert "t2" in tools
         finally:
@@ -54,7 +52,7 @@ class TestResolveToolset:
 
     def test_all_alias(self):
         tools = resolve_toolset("all")
-        assert len(tools) > 10  # Should resolve all tools from all toolsets
+        assert len(tools) > 10
 
     def test_star_alias(self):
         tools = resolve_toolset("*")
@@ -67,7 +65,6 @@ class TestResolveMultipleToolsets:
         assert "web_search" in tools
         assert "web_extract" in tools
         assert "terminal" in tools
-        # No duplicates
         assert len(tools) == len(set(tools))
 
     def test_empty_list(self):
@@ -138,6 +135,5 @@ class TestToolsetConsistency:
         """All daedalus-* platform toolsets should have the same tools."""
         platforms = ["daedalus-cli", "daedalus-telegram", "daedalus-discord", "daedalus-whatsapp", "daedalus-slack", "daedalus-signal", "daedalus-homeassistant"]
         tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
-        # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]

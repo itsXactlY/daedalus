@@ -10,15 +10,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ============================================================================
-# Fixtures
-# ============================================================================
 
 @pytest.fixture
 def sample_wav(tmp_path):
     """Create a minimal valid WAV file (1 second of silence at 16kHz)."""
     wav_path = tmp_path / "test.wav"
-    n_frames = 16000  # 1 second at 16kHz
+    n_frames = 16000
     silence = struct.pack(f"<{n_frames}h", *([0] * n_frames))
 
     with wave.open(str(wav_path), "wb") as wf:
@@ -56,9 +53,6 @@ def mock_sd(monkeypatch):
     return mock
 
 
-# ============================================================================
-# detect_audio_environment — WSL / SSH / Docker detection
-# ============================================================================
 
 class TestDetectAudioEnvironment:
     def test_clean_environment_is_available(self, monkeypatch):
@@ -184,9 +178,6 @@ class TestDetectAudioEnvironment:
         assert any("PortAudio" in w for w in result["warnings"])
 
 
-# ============================================================================
-# check_voice_requirements
-# ============================================================================
 
 class TestCheckVoiceRequirements:
     def test_all_requirements_met(self, monkeypatch):
@@ -231,9 +222,6 @@ class TestCheckVoiceRequirements:
         assert "STT provider: MISSING" in result["details"]
 
 
-# ============================================================================
-# AudioRecorder
-# ============================================================================
 
 class TestAudioRecorderStart:
     def test_start_raises_without_audio(self, monkeypatch):
@@ -268,7 +256,7 @@ class TestAudioRecorderStart:
 
         recorder = AudioRecorder()
         recorder.start()
-        recorder.start()  # second call should be noop
+        recorder.start()
 
         assert mock_sd.InputStream.call_count == 1
 
@@ -291,10 +279,9 @@ class TestAudioRecorderStop:
         recorder = AudioRecorder()
         recorder.start()
 
-        # Simulate captured audio frames (1 second of loud audio above RMS threshold)
         frame = np.full((SAMPLE_RATE, 1), 1000, dtype="int16")
         recorder._frames = [frame]
-        recorder._peak_rms = 1000  # Peak RMS above threshold
+        recorder._peak_rms = 1000
 
         wav_path = recorder.stop()
 
@@ -303,7 +290,6 @@ class TestAudioRecorderStop:
         assert wav_path.endswith(".wav")
         assert recorder.is_recording is False
 
-        # Verify it is a valid WAV
         with wave.open(wav_path, "rb") as wf:
             assert wf.getnchannels() == 1
             assert wf.getsampwidth() == 2
@@ -320,7 +306,6 @@ class TestAudioRecorderStop:
         recorder = AudioRecorder()
         recorder.start()
 
-        # Very short recording (100 samples = ~6ms at 16kHz)
         frame = np.zeros((100, 1), dtype="int16")
         recorder._frames = [frame]
 
@@ -338,10 +323,9 @@ class TestAudioRecorderStop:
         recorder = AudioRecorder()
         recorder.start()
 
-        # 1 second of near-silence (RMS well below threshold)
         frame = np.full((SAMPLE_RATE, 1), 10, dtype="int16")
         recorder._frames = [frame]
-        recorder._peak_rms = 10  # Peak RMS also below threshold
+        recorder._peak_rms = 10
 
         wav_path = recorder.stop()
         assert wav_path is None
@@ -356,13 +340,12 @@ class TestAudioRecorderCancel:
 
         recorder = AudioRecorder()
         recorder.start()
-        recorder._frames = [MagicMock()]  # simulate captured data
+        recorder._frames = [MagicMock()]
 
         recorder.cancel()
 
         assert recorder.is_recording is False
         assert recorder._frames == []
-        # Stream is kept alive (persistent) — cancel() does NOT close it.
         mock_stream.stop.assert_not_called()
         mock_stream.close.assert_not_called()
 
@@ -370,7 +353,7 @@ class TestAudioRecorderCancel:
         from tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
-        recorder.cancel()  # should not raise
+        recorder.cancel()
         assert recorder.is_recording is False
 
 
@@ -390,7 +373,6 @@ class TestAudioRecorderProperties:
         recorder = AudioRecorder()
         recorder.start()
 
-        # Force start time to 1 second ago
         recorder._start_time = time.monotonic() - 1.0
         elapsed = recorder.elapsed_seconds
         assert 0.9 < elapsed < 2.0
@@ -398,9 +380,6 @@ class TestAudioRecorderProperties:
         recorder.cancel()
 
 
-# ============================================================================
-# transcribe_recording
-# ============================================================================
 
 class TestTranscribeRecording:
     def test_delegates_to_transcribe_audio(self):
@@ -453,7 +432,7 @@ class TestWhisperHallucinationFilter:
         assert is_whisper_hallucination("thank you") is True
         assert is_whisper_hallucination("Thanks for watching.") is True
         assert is_whisper_hallucination("Bye.") is True
-        assert is_whisper_hallucination("  Thank you.  ") is True  # with whitespace
+        assert is_whisper_hallucination("  Thank you.  ") is True
         assert is_whisper_hallucination("you") is True
 
     def test_real_speech_not_filtered(self):
@@ -464,16 +443,12 @@ class TestWhisperHallucinationFilter:
         assert is_whisper_hallucination("Can you explain this code?") is False
 
 
-# ============================================================================
-# play_audio_file
-# ============================================================================
 
 class TestPlayAudioFile:
     def test_play_wav_via_sounddevice(self, monkeypatch, sample_wav):
         np = pytest.importorskip("numpy")
 
         mock_sd_obj = MagicMock()
-        # Simulate stream completing immediately (get_stream().active = False)
         mock_stream = MagicMock()
         mock_stream.active = False
         mock_sd_obj.get_stream.return_value = mock_stream
@@ -509,16 +484,11 @@ class TestPlayAudioFile:
         assert result is False
 
 
-# ============================================================================
-# cleanup_temp_recordings
-# ============================================================================
 
 class TestCleanupTempRecordings:
     def test_old_files_deleted(self, temp_voice_dir):
-        # Create an "old" file
         old_file = temp_voice_dir / "recording_20240101_000000.wav"
         old_file.write_bytes(b"\x00" * 100)
-        # Set mtime to 2 hours ago
         old_mtime = time.time() - 7200
         os.utime(str(old_file), (old_mtime, old_mtime))
 
@@ -529,7 +499,6 @@ class TestCleanupTempRecordings:
         assert not old_file.exists()
 
     def test_recent_files_preserved(self, temp_voice_dir):
-        # Create a "recent" file
         recent_file = temp_voice_dir / "recording_20260303_120000.wav"
         recent_file.write_bytes(b"\x00" * 100)
 
@@ -547,7 +516,6 @@ class TestCleanupTempRecordings:
         assert cleanup_temp_recordings() == 0
 
     def test_non_recording_files_ignored(self, temp_voice_dir):
-        # Create a file that doesn't match the pattern
         other_file = temp_voice_dir / "other_file.txt"
         other_file.write_bytes(b"\x00" * 100)
         old_mtime = time.time() - 7200
@@ -560,9 +528,6 @@ class TestCleanupTempRecordings:
         assert other_file.exists()
 
 
-# ============================================================================
-# play_beep
-# ============================================================================
 
 class TestPlayBeep:
     def test_beep_calls_sounddevice_play(self, mock_sd):
@@ -570,7 +535,6 @@ class TestPlayBeep:
 
         from tools.voice_mode import play_beep
 
-        # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
         mock_stream = MagicMock()
         mock_stream.active = False
         mock_sd.get_stream.return_value = mock_stream
@@ -579,7 +543,6 @@ class TestPlayBeep:
 
         mock_sd.play.assert_called_once()
         mock_sd.stop.assert_called()
-        # Verify audio data is int16 numpy array
         audio_arg = mock_sd.play.call_args[0][0]
         assert audio_arg.dtype == np.int16
         assert len(audio_arg) > 0
@@ -593,7 +556,6 @@ class TestPlayBeep:
 
         audio_arg = mock_sd.play.call_args[0][0]
         single_beep_samples = int(16000 * 0.1)
-        # Double beep should be longer than a single beep
         assert len(audio_arg) > single_beep_samples
 
     def test_beep_noop_without_audio(self, monkeypatch):
@@ -603,7 +565,6 @@ class TestPlayBeep:
 
         from tools.voice_mode import play_beep
 
-        # Should not raise
         play_beep()
 
     def test_beep_handles_playback_error(self, mock_sd):
@@ -611,13 +572,9 @@ class TestPlayBeep:
 
         from tools.voice_mode import play_beep
 
-        # Should not raise
         play_beep()
 
 
-# ============================================================================
-# Silence detection
-# ============================================================================
 
 class TestSilenceDetection:
     def test_silence_callback_fires_after_speech_then_silence(self, mock_sd):
@@ -630,7 +587,6 @@ class TestSilenceDetection:
         from tools.voice_mode import AudioRecorder, SAMPLE_RATE
 
         recorder = AudioRecorder()
-        # Use very short durations for testing
         recorder._silence_duration = 0.05
         recorder._min_speech_duration = 0.05
 
@@ -641,27 +597,22 @@ class TestSilenceDetection:
 
         recorder.start(on_silence_stop=on_silence)
 
-        # Get the callback function from InputStream constructor
         callback = mock_sd.InputStream.call_args.kwargs.get("callback")
         if callback is None:
             callback = mock_sd.InputStream.call_args[1]["callback"]
 
-        # Simulate sustained speech (multiple loud chunks to exceed min_speech_duration)
         loud_frame = np.full((1600, 1), 5000, dtype="int16")
         callback(loud_frame, 1600, None, None)
         time.sleep(0.06)
         callback(loud_frame, 1600, None, None)
         assert recorder._has_spoken is True
 
-        # Simulate silence
         silent_frame = np.zeros((1600, 1), dtype="int16")
         callback(silent_frame, 1600, None, None)
 
-        # Wait a bit past the silence duration, then send another silent frame
         time.sleep(0.06)
         callback(silent_frame, 1600, None, None)
 
-        # The callback should have been fired
         assert fired.wait(timeout=1.0) is True
 
         recorder.cancel()
@@ -685,7 +636,6 @@ class TestSilenceDetection:
         if callback is None:
             callback = mock_sd.InputStream.call_args[1]["callback"]
 
-        # Only silence -- no speech detected, so callback should NOT fire
         silent_frame = np.zeros((1600, 1), dtype="int16")
         for _ in range(5):
             callback(silent_frame, 1600, None, None)
@@ -720,17 +670,13 @@ class TestSilenceDetection:
         loud_frame = np.full((1600, 1), 5000, dtype="int16")
         quiet_frame = np.full((1600, 1), 50, dtype="int16")
 
-        # Speech chunk 1
         callback(loud_frame, 1600, None, None)
         time.sleep(0.05)
-        # Brief micro-pause (dip < max_dip_tolerance)
         callback(quiet_frame, 1600, None, None)
         time.sleep(0.05)
-        # Speech resumes -- speech_start should NOT have been reset
         callback(loud_frame, 1600, None, None)
         assert recorder._speech_start > 0, "Speech start should be preserved across brief dips"
         time.sleep(0.06)
-        # Another speech chunk to exceed min_speech_duration
         callback(loud_frame, 1600, None, None)
         assert recorder._has_spoken is True, "Speech should be confirmed after tolerating micro-pause"
 
@@ -745,26 +691,21 @@ class TestSilenceDetection:
         from tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
-        recorder.start()  # no on_silence_stop
+        recorder.start()
 
         callback = mock_sd.InputStream.call_args.kwargs.get("callback")
         if callback is None:
             callback = mock_sd.InputStream.call_args[1]["callback"]
 
-        # Even with speech then silence, nothing should happen
         loud_frame = np.full((1600, 1), 5000, dtype="int16")
         silent_frame = np.zeros((1600, 1), dtype="int16")
         callback(loud_frame, 1600, None, None)
         callback(silent_frame, 1600, None, None)
 
-        # No crash, no callback
         assert recorder._on_silence_stop is None
         recorder.cancel()
 
 
-# ============================================================================
-# Playback interrupt
-# ============================================================================
 
 class TestPlaybackInterrupt:
     """Verify that TTS playback can be interrupted."""
@@ -774,7 +715,7 @@ class TestPlaybackInterrupt:
         import tools.voice_mode as vm
 
         mock_proc = MagicMock()
-        mock_proc.poll.return_value = None  # process is running
+        mock_proc.poll.return_value = None
 
         with _playback_lock:
             vm._active_playback = mock_proc
@@ -815,9 +756,6 @@ class TestPlaybackInterrupt:
             assert vm._active_playback is None
 
 
-# ============================================================================
-# Continuous mode flow
-# ============================================================================
 
 class TestContinuousModeFlow:
     """Verify continuous mode: auto-restart after transcription or silence."""
@@ -832,7 +770,6 @@ class TestContinuousModeFlow:
 
         recorder = AudioRecorder()
 
-        # First recording: only silence -> stop returns None
         recorder.start()
         callback = mock_sd.InputStream.call_args.kwargs.get("callback")
         if callback is None:
@@ -845,7 +782,6 @@ class TestContinuousModeFlow:
         wav_path = recorder.stop()
         assert wav_path is None
 
-        # Simulate continuous mode restart
         recorder.start()
         assert recorder.is_recording is True
 
@@ -888,9 +824,6 @@ class TestContinuousModeFlow:
         assert os.path.isfile(results[-1])
 
 
-# ============================================================================
-# Audio level indicator
-# ============================================================================
 
 class TestAudioLevelIndicator:
     """Verify current_rms property updates in real-time for UI feedback."""
@@ -950,9 +883,6 @@ class TestAudioLevelIndicator:
         recorder.cancel()
 
 
-# ============================================================================
-# Configurable silence parameters
-# ============================================================================
 
 class TestConfigurableSilenceParams:
     """Verify that silence detection params can be configured."""
@@ -977,7 +907,6 @@ class TestConfigurableSilenceParams:
         if callback is None:
             callback = mock_sd.InputStream.call_args[1]["callback"]
 
-        # Audio at RMS 1000 -- below custom threshold (5000)
         moderate = np.full((1600, 1), 1000, dtype="int16")
         for _ in range(5):
             callback(moderate, 1600, None, None)
@@ -986,7 +915,6 @@ class TestConfigurableSilenceParams:
         assert recorder._has_spoken is False
         assert fired.wait(timeout=0.2) is False
 
-        # Now send really loud audio (above 5000 threshold)
         very_loud = np.full((1600, 1), 8000, dtype="int16")
         callback(very_loud, 1600, None, None)
         time.sleep(0.06)
@@ -996,9 +924,6 @@ class TestConfigurableSilenceParams:
         recorder.cancel()
 
 
-# ============================================================================
-# Bugfix regression tests
-# ============================================================================
 
 
 class TestSubprocessTimeoutKill:
@@ -1045,7 +970,6 @@ class TestSilenceCallbackLock:
         from tools.voice_mode import AudioRecorder
 
         source = inspect.getsource(AudioRecorder._ensure_stream)
-        # Verify lock is used before reading _on_silence_stop in fire block
         assert "with self._lock:" in source
         assert "cb = self._on_silence_stop" in source
         lock_pos = source.index("with self._lock:")

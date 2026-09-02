@@ -15,23 +15,14 @@ from urllib.parse import urlparse
 from daedalus_constants import get_daedalus_home
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-# rich and prompt_toolkit are imported lazily (inside the functions that use
-# them) rather than at module level.  Importing this module is on the TUI
-# gateway's critical startup path purely to reach the lightweight update-check
-# helpers (``prefetch_update_check``); pulling rich.console + prompt_toolkit
-# eagerly added ~50ms of wasted imports before ``gateway.ready`` could fire.
-# Keep the type-only reference available to checkers without the runtime cost.
 if TYPE_CHECKING:
     from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
 
-# =========================================================================
-# ANSI building blocks for conversation display
-# =========================================================================
 
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold
+_GOLD = "\033[1;38;2;255;215;0m"
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -44,16 +35,9 @@ def cprint(text: str):
     try:
         _pt_print(_PT_ANSI(text))
     except Exception:
-        # prompt_toolkit needs a real console. On Windows, a redirected or
-        # absent stdout (pythonw.exe, CI, `daedalus ... > file`) raises
-        # NoConsoleScreenBufferError from its Win32Output — display helpers
-        # must never crash the caller over that, so degrade to plain print.
         print(text)
 
 
-# =========================================================================
-# Skin-aware color helpers
-# =========================================================================
 
 def _skin_color(key: str, fallback: str) -> str:
     """Get a color from the active skin, or return fallback."""
@@ -71,9 +55,6 @@ def _skin_branding(key: str, fallback: str) -> str:
         return get_active_skin().get_branding(key, fallback)
     except Exception:
         return fallback
-# =========================================================================
-# ASCII Art & Branding
-# =========================================================================
 
 from daedalus_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
@@ -121,9 +102,6 @@ def build_compact_banner() -> str:
     return _impl()
 
 
-# =========================================================================
-# Skills scanning
-# =========================================================================
 
 def get_available_skills() -> Dict[str, List[str]]:
     """Return skills grouped by category, filtered by platform and disabled state.
@@ -134,7 +112,7 @@ def get_available_skills() -> Dict[str, List[str]]:
     """
     try:
         from tools.skills_tool import _find_all_skills
-        all_skills = _find_all_skills()  # already filtered
+        all_skills = _find_all_skills()
     except Exception:
         return {}
 
@@ -145,15 +123,9 @@ def get_available_skills() -> Dict[str, List[str]]:
     return skills_by_category
 
 
-# =========================================================================
-# Update check
-# =========================================================================
 
-# Cache update check results for 6 hours to avoid repeated git fetches
 _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 
-# Sentinel returned when we know an update exists but can't count commits
-# (e.g. nix-built daedalus — no local git history to count against).
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/daedalus.git"
@@ -196,9 +168,6 @@ def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str
             ["git", *args],
             capture_output=True,
             text=True,
-            # git output is UTF-8; on Windows text=True defaults to the ANSI
-            # code page and bytes like 0x90 (3rd byte of 🐛 in a commit
-            # subject) crash the stdlib reader thread (#52649).
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
@@ -243,26 +212,10 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             return 1
         return checked
 
-    # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
-    # clone the history stops at a single commit, so a plain `git fetch` would
-    # unshallow the repo (dragging in the whole history) and
-    # `rev-list --count HEAD..origin/main` would report a huge bogus "behind"
-    # number (e.g. "12492 commits behind"). Detect shallow up front: fetch with
-    # --depth 1 to preserve the boundary and compare tip SHAs instead of
-    # counting. Full clones (developers, Docker dev images) keep the exact
-    # count path unchanged. Mirrors the desktop fix in apps/desktop/electron/main.cjs.
     shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
     is_shallow = shallow == "true"
 
     try:
-        # Scope the fetch to the one branch the behind-count compares against.
-        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
-        # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
-        # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
-        # for the same reason. Modern git updates the ``origin/main`` tracking
-        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
-        # unaffected; the shallow path compares against FETCH_HEAD, which a
-        # scoped fetch also updates.
         fetch_args = ["git", "fetch", "origin", "main"]
         if is_shallow:
             fetch_args += ["--depth", "1"]
@@ -273,12 +226,9 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             cwd=str(repo_dir),
         )
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        pass
 
     if is_shallow:
-        # No history to count across the shallow boundary. `origin/main` may not
-        # be a tracking ref in a `clone --depth 1`, so prefer FETCH_HEAD (just
-        # updated by the fetch above) and fall back to origin/main.
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
         target_rev = (
             _git_stdout(["rev-parse", "FETCH_HEAD"], cwd=repo_dir)
@@ -317,13 +267,6 @@ def check_for_updates() -> Optional[int]:
     cache_file = daedalus_home / ".update_check"
     embedded_rev = os.environ.get("DAEDALUS_REVISION") or None
 
-    # Docker images have no working tree to count commits against — the
-    # published image excludes `.git` (see .dockerignore) and sets no
-    # DAEDALUS_REVISION (that's nix-only). Returning None makes both the Rich
-    # banner (build_welcome_banner) and the Ink badge (branding.tsx, guarded
-    # on `typeof === 'number' && > 0`) show nothing. The dashboard's REST
-    # `/api/daedalus/update/check` endpoint short-circuits docker the same way
-    # (web_server.py); mirror that here so the banner/TUI surfaces agree.
     try:
         from daedalus_cli.config import detect_install_method, get_project_root
         if detect_install_method(get_project_root()) == "docker":
@@ -331,8 +274,6 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         pass
 
-    # Read cache — invalidate if the embedded rev OR installed version has
-    # changed since the last check.
     now = time.time()
     try:
         if cache_file.exists():
@@ -349,16 +290,10 @@ def check_for_updates() -> Optional[int]:
     if embedded_rev:
         behind = _check_via_rev(embedded_rev)
     else:
-        # Prefer the running code's location over the profile-scoped path.
-        # $DAEDALUS_HOME/daedalus/ may be a stale copy from --clone-all;
-        # Path(__file__) always resolves to the actual installed checkout.
         repo_dir = Path(__file__).parent.parent.resolve()
         if not (repo_dir / ".git").exists():
             repo_dir = daedalus_home / "daedalus"
         if not (repo_dir / ".git").exists():
-            # No git checkout and no embedded revision — can't determine
-            # update status. This is the Docker path (already short-circuited
-            # above) or an unsupported install without a source tree.
             behind = None
         else:
             behind = _check_via_local_git(repo_dir)
@@ -423,7 +358,6 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
-        # No git checkout — try the baked build SHA (Docker image path).
         try:
             from daedalus_cli.build_info import get_build_sha
             baked = get_build_sha(short=8)
@@ -436,8 +370,6 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     upstream = _git_short_hash(repo_dir, "origin/main")
     local = _git_short_hash(repo_dir, "HEAD")
     if not upstream or not local:
-        # Live-git lookup failed (e.g. shallow clone without origin/main).
-        # Fall back to the baked build SHA if available.
         try:
             from daedalus_cli.build_info import get_build_sha
             baked = get_build_sha(short=8)
@@ -467,7 +399,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
 
 
 _RELEASE_URL_BASE = "https://github.com/NousResearch/daedalus/releases/tag"
-_latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
+_latest_release_cache: Optional[tuple] = None
 
 
 def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
@@ -483,7 +415,7 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
-        _latest_release_cache = ()  # falsy sentinel — skip future lookups
+        _latest_release_cache = ()
         return None
 
     try:
@@ -532,9 +464,6 @@ def format_banner_version_label() -> str:
     return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
 
 
-# =========================================================================
-# Non-blocking update check
-# =========================================================================
 
 _update_result: Optional[int] = None
 _update_check_done = threading.Event()
@@ -556,9 +485,6 @@ def get_update_result(timeout: float = 0.5) -> Optional[int]:
     return _update_result
 
 
-# =========================================================================
-# Welcome banner
-# =========================================================================
 
 def _format_context_length(tokens: int) -> str:
     """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
@@ -618,7 +544,6 @@ def _normalize_hero_lines(hero: str) -> str:
             out.append(ln)
             continue
 
-        # Find the position right after the last closing tag to insert padding
         last_close_pos = -1
         j = 0
         while j < len(ln):
@@ -671,12 +596,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     enabled_toolsets = enabled_toolsets or []
 
     _, unavailable_toolsets = check_tool_availability(quiet=True)
-    # The availability check walks the GLOBAL toolset registry, so it includes
-    # toolsets that aren't part of this agent's platform set at all (e.g.
-    # `discord`, `feishu_doc` on a CLI session). Those must never surface in the
-    # banner's "Available Tools" — they aren't exposed to the agent. Restrict to
-    # toolsets actually enabled for this agent; a toolset that's enabled but
-    # currently has unmet deps legitimately shows as disabled/lazy below.
     _enabled_ts = {str(t) for t in enabled_toolsets}
     if _enabled_ts:
         unavailable_toolsets = [
@@ -684,9 +603,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             if str(item.get("id", item.get("name", ""))) in _enabled_ts
         ]
     disabled_tools = set()
-    # Tools whose toolset has a check_fn are lazy-initialized (e.g. honcho,
-    # homeassistant) — they show as unavailable at banner time because the
-    # check hasn't run yet, but they aren't misconfigured.
     lazy_tools = set()
     for item in unavailable_toolsets:
         toolset_name = item.get("name", "")
@@ -701,13 +617,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     layout_table.add_column("left", justify="center")
     layout_table.add_column("right", justify="left")
 
-    # Resolve skin colors once for the entire banner
     accent = _skin_color("banner_accent", "#FFBF00")
     dim = _skin_color("banner_dim", "#B8860B")
     text = _skin_color("banner_text", "#FFF8DC")
     session_color = _skin_color("session_border", "#8B8682")
 
-    # Use skin's custom caduceus art if provided
     try:
         from daedalus_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
@@ -715,12 +629,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     except Exception:
         _bskin = None
         _hero = DAEDALUS_CADUCEUS
-    # Equal-width the hero lines so the centered column can't shift them apart.
     _hero = _normalize_hero_lines(_hero)
     left_lines = ["", _hero, ""]
     if (provider or "").strip().lower() == "moa":
-        # MoA virtual provider: ``model`` is a preset name. Show the preset and
-        # its aggregator so the banner is meaningful instead of a bare slug.
         preset_name = model
         agg_label = ""
         try:
@@ -742,9 +653,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
     else:
         if not (model or "").strip() or (model or "").strip().lower() == "unknown":
-            # Unconfigured install: say so in red instead of a blank/"unknown"
-            # slug — this is the single clearest place to tell the user what
-            # is wrong and how to fix it.
             left_lines.append(
                 f"[bold red]no model configured[/] "
                 f"[dim {dim}]— run /model or daedalus setup[/]"
@@ -824,7 +732,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
 
-    # MCP Servers section (only if configured)
     try:
         from tools.mcp_tool import get_mcp_status
         mcp_status = get_mcp_status()
@@ -864,10 +771,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     right_lines.append("")
     right_lines.append(f"[bold {accent}]Available Skills[/]")
-    # The skills catalog is only reachable when the `skills` toolset is enabled
-    # (it exposes skill_view / skill_manage). When it's disabled — e.g. a Blank
-    # Slate install — the agent literally cannot load any skill, so advertising
-    # the on-disk catalog here is misleading. Reflect the real state instead.
     _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
     if _skills_enabled:
         skills_by_category = get_available_skills()
@@ -876,8 +779,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         skills_by_category = {}
         total_skills = 0
 
-    # Dynamically size skills display based on terminal width.
-    # Rich grid with 2 columns; right column gets roughly 60% of terminal.
     _term_cols = shutil.get_terminal_size().columns
     _right_col_width = max(int(_term_cols * 0.6) - 10, 30)
 
@@ -886,16 +787,13 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
             skill_names = sorted(skills_by_category[category])
-            # Account for "category: " prefix
             _prefix_len = len(category) + 2
             _avail = max(_right_col_width - _prefix_len, 20)
-            # Accumulate skills until we run out of space
             parts, length = [], 0
             for i, name in enumerate(skill_names):
                 _sep = ", " if parts else ""
                 _needed = len(_sep) + len(name)
-                # Estimate indicator size IF we were to add this skill then stop
-                _after = len(skill_names) - (i + 1)  # remaining after adding this
+                _after = len(skill_names) - (i + 1)
                 _ind_len = len(f", +{_after} more") if _after > 0 else 0
                 if parts and length + _needed + _ind_len > _avail:
                     remaining = len(skill_names) - len(parts)
@@ -914,9 +812,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
-    # Indicate when the codex_app_server runtime is active so users
-    # understand why tool counts may not match what's actually reachable
-    # (codex builds its own tool list inside the spawned subprocess).
     try:
         from daedalus_cli.codex_runtime_switch import get_current_runtime
         from daedalus_cli.config import load_config as _load_cfg
@@ -927,18 +822,16 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             )
     except Exception:
         pass
-    # Show active profile name when not 'default'
     try:
         from daedalus_cli.profiles import get_active_profile_name
         _profile_name = get_active_profile_name()
         if _profile_name and _profile_name != "default":
             right_lines.append(f"[bold {accent}]Profile:[/] [{text}]{_profile_name}[/]")
     except Exception:
-        pass  # Never break the banner over a profiles.py bug
+        pass
 
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
-    # Update check — use prefetched result if available
     try:
         behind = get_update_result(timeout=0.5)
         if behind is not None and behind != 0:
@@ -950,16 +843,13 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
                 )
             else:
-                # UPDATE_AVAILABLE_NO_COUNT: nix-built daedalus; we know an update
-                # exists but not by how much, and we don't know how the user
-                # installed it (nix run, profile, system flake, home-manager).
                 managed_cmd = get_managed_update_command()
                 line = "[bold yellow]⚠ update available[/]"
                 if managed_cmd:
                     line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
                 right_lines.append(line)
     except Exception:
-        pass  # Never break the banner over an update check
+        pass
 
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)
@@ -984,9 +874,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
         _logo_raw = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else DAEDALUS_LOGO
-        # Normalize hero lines so all have equal full string length; prevents
-        # Rich grid auto-sizing from shifting the ASCII art (top rows drift
-        # sideways when lines have different markup lengths).
         console.print(_normalize_hero_lines(_logo_raw))
         console.print()
     console.print(outer_panel)

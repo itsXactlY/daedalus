@@ -32,8 +32,6 @@ def curses_checklist(
     if cancel_returns is None:
         cancel_returns = set(selected)
 
-    # Safety: curses and input() both hang or spin when stdin is not a
-    # terminal (e.g. subprocess pipe).  Return defaults immediately.
     if not sys.stdin.isatty():
         return cancel_returns
 
@@ -49,7 +47,7 @@ def curses_checklist(
                 curses.use_default_colors()
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, 8, -1)  # dim gray
+                curses.init_pair(3, 8, -1)
             cursor = 0
             scroll_offset = 0
 
@@ -57,10 +55,8 @@ def curses_checklist(
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
 
-                # Reserve bottom row for status bar when status_fn provided
                 footer_rows = 1 if status_fn else 0
 
-                # Header
                 try:
                     hattr = curses.A_BOLD
                     if curses.has_colors():
@@ -74,7 +70,6 @@ def curses_checklist(
                 except curses.error:
                     pass
 
-                # Scrollable item list
                 visible_rows = max_y - 3 - footer_rows
                 if cursor < scroll_offset:
                     scroll_offset = cursor
@@ -100,12 +95,10 @@ def curses_checklist(
                     except curses.error:
                         pass
 
-                # Status bar (bottom row, right-aligned)
                 if status_fn:
                     try:
                         status_text = status_fn(chosen)
                         if status_text:
-                            # Right-align on the bottom row
                             sx = max(0, max_x - len(status_text) - 1)
                             sattr = curses.A_DIM
                             if curses.has_colors():

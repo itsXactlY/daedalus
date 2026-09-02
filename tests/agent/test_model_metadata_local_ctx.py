@@ -14,9 +14,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import pytest
 
 
-# ---------------------------------------------------------------------------
-# _query_local_context_length — unit tests with mocked httpx
-# ---------------------------------------------------------------------------
 
 class TestQueryLocalContextLengthOllama:
     """_query_local_context_length with server_type == 'ollama'."""
@@ -162,8 +159,8 @@ class TestQueryLocalContextLengthModelsList:
         def side_effect(url, **kwargs):
             call_count[0] += 1
             if call_count[0] == 1:
-                return detail_resp  # /v1/models/omnicoder-9b
-            return list_resp  # /v1/models
+                return detail_resp
+            return list_resp
 
         client_mock = MagicMock()
         client_mock.__enter__ = lambda s: client_mock
@@ -283,7 +280,6 @@ class TestQueryLocalContextLengthLmStudio:
 
         with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
              patch("httpx.Client", return_value=client_mock):
-            # Model passed in is just the slug after stripping "local:" prefix
             result = _query_local_context_length(
                 "nvidia-nemotron-super-49b-v1", "http://192.168.1.22:1234/v1"
             )
@@ -298,11 +294,8 @@ class TestQueryLocalContextLengthLmStudio:
         """
         from agent.model_metadata import _query_local_context_length
 
-        # native /api/v1/models: no match
         native_resp = self._make_resp(404, {})
-        # /v1/models/{model}: no match
         detail_resp = self._make_resp(404, {})
-        # /v1/models list: model found with publisher prefix, includes context_length
         list_resp = self._make_resp(200, {
             "data": [
                 {"id": "nvidia/nvidia-nemotron-super-49b-v1", "context_length": 131072},
@@ -406,9 +399,6 @@ class TestQueryLocalContextLengthNetworkError:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# get_model_context_length — integration-style tests with mocked helpers
-# ---------------------------------------------------------------------------
 
 class TestGetModelContextLengthLocalFallback:
     """get_model_context_length uses local server query before falling back to 2M."""

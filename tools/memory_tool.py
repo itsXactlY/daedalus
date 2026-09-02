@@ -36,46 +36,31 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Where memory files live — resolved dynamically so profile overrides
-# (DAEDALUS_HOME env var changes) are always respected.  The old module-level
-# constant was cached at import time and could go stale if a profile switch
-# happened after the first import.
 def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_daedalus_home() / "memories"
 
-# Backward-compatible alias — gateway/run.py imports this at runtime inside
-# a function body, so it gets the correct snapshot for that process.  New code
-# should prefer get_memory_dir().
 MEMORY_DIR = get_memory_dir()
 
 ENTRY_DELIMITER = "\n§\n"
 
 
-# ---------------------------------------------------------------------------
-# Memory content scanning — lightweight check for injection/exfiltration
-# in content that gets injected into the system prompt.
-# ---------------------------------------------------------------------------
 
 _MEMORY_THREAT_PATTERNS = [
-    # Prompt injection
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
     (r'you\s+are\s+now\s+', "role_hijack"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    # Exfiltration via curl/wget with secrets
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'wget\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_wget"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)', "read_secrets"),
-    # Persistence via shell rc
     (r'authorized_keys', "ssh_backdoor"),
     (r'\$HOME/\.ssh|\~/\.ssh', "ssh_access"),
     (r'\$HOME/\.daedalus/\.env|\~/\.daedalus/\.env', "daedalus_env"),
 ]
 
-# Subset of invisible chars for injection detection
 _INVISIBLE_CHARS = {
     '\u200b', '\u200c', '\u200d', '\u2060', '\ufeff',
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
@@ -84,12 +69,10 @@ _INVISIBLE_CHARS = {
 
 def _scan_memory_content(content: str) -> Optional[str]:
     """Scan memory content for injection/exfil patterns. Returns error string if blocked."""
-    # Check invisible unicode
     for char in _INVISIBLE_CHARS:
         if char in content:
             return f"Blocked: content contains invisible unicode character U+{ord(char):04X} (possible injection)."
 
-    # Check threat patterns
     for pattern, pid in _MEMORY_THREAT_PATTERNS:
         if re.search(pattern, content, re.IGNORECASE):
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
@@ -113,7 +96,6 @@ class MemoryStore:
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
-        # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
     def load_from_disk(self):
@@ -124,11 +106,9 @@ class MemoryStore:
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
-        # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
 
-        # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
             "memory": self._render_block("memory", self.memory_entries),
             "user": self._render_block("user", self.user_entries),
@@ -165,7 +145,7 @@ class MemoryStore:
         Called under file lock to get the latest state before mutating.
         """
         fresh = self._read_file(self._path_for(target))
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+        fresh = list(dict.fromkeys(fresh))
         self._set_entries(target, fresh)
 
     def save_to_disk(self, target: str):
@@ -201,23 +181,19 @@ class MemoryStore:
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
 
-        # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
         if scan_error:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
             self._reload_target(target)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
             if content in entries:
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
-            # Calculate what the new total would be
             new_entries = entries + [content]
             new_total = len(ENTRY_DELIMITER.join(new_entries))
 
@@ -249,7 +225,6 @@ class MemoryStore:
         if not new_content:
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
-        # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
         if scan_error:
             return {"success": False, "error": scan_error}
@@ -264,7 +239,6 @@ class MemoryStore:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
-                # If all matches are identical (exact duplicates), operate on the first one
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
@@ -273,12 +247,10 @@ class MemoryStore:
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
                         "matches": previews,
                     }
-                # All identical -- safe to replace just the first
 
             idx = matches[0][0]
             limit = self._char_limit(target)
 
-            # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
             test_entries[idx] = new_content
             new_total = len(ENTRY_DELIMITER.join(test_entries))
@@ -314,7 +286,6 @@ class MemoryStore:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
-                # If all matches are identical (exact duplicates), remove the first one
                 unique_texts = set(e for _, e in matches)
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
@@ -323,7 +294,6 @@ class MemoryStore:
                         "error": f"Multiple entries matched '{old_text}'. Be more specific.",
                         "matches": previews,
                     }
-                # All identical -- safe to remove just the first
 
             idx = matches[0][0]
             entries.pop(idx)
@@ -345,7 +315,6 @@ class MemoryStore:
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
-    # -- Internal helpers --
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
@@ -399,8 +368,6 @@ class MemoryStore:
         if not raw.strip():
             return []
 
-        # Use ENTRY_DELIMITER for consistency with _write_file. Splitting by "§"
-        # alone would incorrectly split entries that contain "§" in their content.
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
@@ -415,7 +382,6 @@ class MemoryStore:
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".mem_"
             )
@@ -424,9 +390,8 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                os.replace(tmp_path, str(path))
             except BaseException:
-                # Clean up temp file on any failure
                 try:
                     os.unlink(tmp_path)
                 except OSError:
@@ -482,9 +447,6 @@ def check_memory_requirements() -> bool:
     return True
 
 
-# =============================================================================
-# OpenAI Function-Calling Schema
-# =============================================================================
 
 MEMORY_SCHEMA = {
     "name": "memory",
@@ -530,7 +492,6 @@ MEMORY_SCHEMA = {
 }
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(

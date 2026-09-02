@@ -14,8 +14,6 @@ from tools import hook_output_spill as hos
 class GetSpillConfigTests(unittest.TestCase):
     def test_defaults_when_no_config(self):
         with patch.object(hos, "load_config", create=True, return_value={}):
-            # load_config is resolved at call time via local import;
-            # patch the module's source instead.
             pass
         with patch("daedalus_cli.config.load_config", return_value={}):
             cfg = hos.get_spill_config()
@@ -66,16 +64,12 @@ class SpillIfOversizedTests(unittest.TestCase):
         test_home = tempfile.mkdtemp(prefix="daedalus-home-")
         try:
             with patch.dict(os.environ, {"DAEDALUS_HOME": test_home}):
-                # Also patch get_daedalus_home to the env var to mirror production.
                 cfg = self._cfg(directory=None, max_chars=5)
                 hos.spill_if_oversized("x" * 200, session_id="sess", config=cfg)
-            # Spill directory exists somewhere under test_home OR default
-            # ~/.daedalus/hook_outputs depending on get_daedalus_home behaviour.
             candidates = [
                 Path(test_home) / "hook_outputs" / "sess",
                 Path(os.path.expanduser("~/.daedalus/hook_outputs/sess")),
             ]
-            # At least one of the candidate dirs now exists and has a file.
             existing = [c for c in candidates if c.is_dir() and list(c.iterdir())]
             self.assertTrue(existing, f"No spill dir found in {candidates}")
         finally:

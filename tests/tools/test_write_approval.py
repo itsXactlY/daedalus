@@ -32,13 +32,9 @@ def _set_approval(subsystem, enabled):
     cfg.save_config(c)
 
 
-# ---------------------------------------------------------------------------
-# Config resolution
-# ---------------------------------------------------------------------------
 
 def test_default_gate_is_off(daedalus_home):
     from tools import write_approval as wa
-    # Default: gate off → writes flow freely.
     assert wa.write_approval_enabled("memory") is False
     assert wa.write_approval_enabled("skills") is False
 
@@ -50,25 +46,18 @@ def test_invalid_subsystem_is_off(daedalus_home):
 
 def test_normalize_enabled_coerces_values():
     from tools import write_approval as wa
-    # Real bools pass through.
     assert wa._normalize_enabled(True) is True
     assert wa._normalize_enabled(False) is False
-    # Truthy strings → True (incl. legacy 'approve').
     assert wa._normalize_enabled("on") is True
     assert wa._normalize_enabled("approve") is True
     assert wa._normalize_enabled("true") is True
-    # Everything else → False (gate off is the safe default).
     assert wa._normalize_enabled("off") is False
     assert wa._normalize_enabled("garbage") is False
     assert wa._normalize_enabled(None) is False
 
 
-# ---------------------------------------------------------------------------
-# Memory gate
-# ---------------------------------------------------------------------------
 
 def test_memory_gate_off_allows_write(daedalus_home):
-    # Default (gate off) → write straight through, no staging.
     from tools.memory_tool import memory_tool, MemoryStore
     from tools import write_approval as wa
     store = MemoryStore(); store.load_from_disk()
@@ -94,7 +83,6 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(daedalus_home, c
     assert r.get("pending_id"), r
     assert wa.pending_count("memory") == 1
 
-    # Bare CLI handler with no live agent → store resolves to None pre-fix.
     handler = CLICommandsMixin.__new__(CLICommandsMixin)
     handler.agent = None
     handler._handle_memory_command("/memory approve all")
@@ -103,7 +91,6 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(daedalus_home, c
     assert "memory store unavailable" not in out, out
     assert "Approved 1" in out, out
     assert wa.pending_count("memory") == 0
-    # The approved write landed in a freshly loaded on-disk store (MEMORY.md).
     reloaded = MemoryStore(); reloaded.load_from_disk()
     assert any("remember the launch date" in e for e in reloaded.memory_entries)
 
@@ -116,7 +103,6 @@ def test_load_on_disk_store_honors_configured_char_limits(daedalus_home, monkeyp
     """
     from tools.memory_tool import load_on_disk_store
 
-    # Config override path: helper picks up the configured limits.
     monkeypatch.setattr(
         "daedalus_cli.config.load_config",
         lambda: {"memory": {"memory_char_limit": 999, "user_char_limit": 444}},
@@ -125,7 +111,6 @@ def test_load_on_disk_store_honors_configured_char_limits(daedalus_home, monkeyp
     assert store.memory_char_limit == 999
     assert store.user_char_limit == 444
 
-    # Failure path: config raises → defaults, never blows up.
     def _boom():
         raise RuntimeError("no config")
 
@@ -135,9 +120,6 @@ def test_load_on_disk_store_honors_configured_char_limits(daedalus_home, monkeyp
     assert fallback.user_char_limit == 1375
 
 
-# ---------------------------------------------------------------------------
-# Skill gate
-# ---------------------------------------------------------------------------
 
 _SKILL = (
     "---\nname: test-skill\ndescription: A test skill\nversion: 1.0.0\n---\n"
@@ -145,14 +127,8 @@ _SKILL = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Pending store CRUD
-# ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Shared command handler
-# ---------------------------------------------------------------------------
 
 
 def test_handle_approve_all(daedalus_home):
@@ -194,11 +170,6 @@ def test_handle_approval_off(daedalus_home):
     assert "off" in out
 
 
-# ---------------------------------------------------------------------------
-# Inline (interactive CLI) approval path — regression for the bug where the
-# per-thread approval callback was never passed to prompt_dangerous_approval,
-# so every gated foreground memory write was silently denied.
-# ---------------------------------------------------------------------------
 
 @pytest.fixture
 def approval_callback_cleanup():
@@ -222,10 +193,9 @@ def test_memory_inline_approve_writes(daedalus_home, approval_callback_cleanup):
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "approved fact", store=store))
     assert r["success"] is True
-    assert r.get("staged") is None  # real write, not staged
+    assert r.get("staged") is None
     assert store.memory_entries == ["approved fact"]
     assert wa.pending_count("memory") == 0
-    # The registered callback must actually be invoked (not the input() path).
     assert len(calls) == 1
     assert "approved fact" in calls[0][0]
 
@@ -242,12 +212,10 @@ def test_memory_inline_deny_blocks(daedalus_home, approval_callback_cleanup):
     assert r["success"] is False
     assert "denied" in r["error"].lower()
     assert store.memory_entries == []
-    assert wa.pending_count("memory") == 0  # denied, not staged
+    assert wa.pending_count("memory") == 0
 
 
 def test_memory_invalid_params_rejected_before_staging(daedalus_home):
-    # Param validation must run BEFORE the gate so a broken write is rejected
-    # immediately instead of staged and failing at approve time.
     from tools.memory_tool import memory_tool, MemoryStore
     from tools import write_approval as wa
     _set_approval("memory", True)

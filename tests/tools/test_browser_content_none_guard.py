@@ -14,7 +14,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
-# ── helpers ────────────────────────────────────────────────────────────────
 
 def _make_response(content):
     """Build a minimal OpenAI-compatible ChatCompletion response stub."""
@@ -23,7 +22,6 @@ def _make_response(content):
     return types.SimpleNamespace(choices=[choice])
 
 
-# ── _extract_relevant_content (line 996) ──────────────────────────────────
 
 class TestExtractRelevantContentNoneGuard:
     """tools/browser_tool.py — _extract_relevant_content()"""
@@ -59,7 +57,6 @@ class TestExtractRelevantContentNoneGuard:
         assert len(result) > 0
 
 
-# ── browser_vision (line 1626) ────────────────────────────────────────────
 
 class TestBrowserVisionNoneGuard:
     """tools/browser_tool.py — browser_vision() analysis extraction"""
@@ -81,7 +78,6 @@ class TestBrowserVisionNoneGuard:
         assert fallback == "The page shows a login form."
 
 
-# ── source line verification ──────────────────────────────────────────────
 
 class TestBrowserSourceLinesAreGuarded:
     """Verify the actual source file has the fix applied."""
@@ -95,7 +91,6 @@ class TestBrowserSourceLinesAreGuarded:
 
     def test_extract_relevant_content_guarded(self):
         src = self._read_file()
-        # The old unguarded pattern should NOT exist
         assert "return response.choices[0].message.content\n" not in src, (
             "browser_tool.py _extract_relevant_content still has unguarded "
             ".content return — apply None guard"

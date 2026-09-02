@@ -44,9 +44,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
 
 TOOL_VERSION = "1.0.0"
 FORMAT_NAME = "daedalus-skillpack"
@@ -56,9 +53,7 @@ HOME = Path.home()
 DEFAULT_SKILLS_DIR = HOME / ".daedalus" / "skills"
 DEFAULT_OUT_DIR = HOME / ".daedalus" / "skillpacks"
 
-# Files never packed / installed.
 SKIP_NAMES = {"__pycache__", ".DS_Store", ".git", "node_modules"}
-# Extension that the archive must end in.
 PACK_SUFFIX = ".skillpack.zip"
 
 _FRONTMATTER_VERSION = re.compile(
@@ -66,9 +61,6 @@ _FRONTMATTER_VERSION = re.compile(
 )
 
 
-# ---------------------------------------------------------------------------
-# Skill discovery
-# ---------------------------------------------------------------------------
 
 def discover_skills(skills_dir: Path) -> Dict[str, Dict]:
     """Map skill name -> {path, category, version, description}.
@@ -84,11 +76,11 @@ def discover_skills(skills_dir: Path) -> Dict[str, Dict]:
     if not skills_dir.exists():
         return out
     for sk in sorted(skills_dir.rglob("SKILL.md")):
-        parts = sk.relative_to(skills_dir).parts  # (…, <skill>, SKILL.md)
+        parts = sk.relative_to(skills_dir).parts
         if len(parts) < 2:
             continue
         name = parts[-2]
-        category = "/".join(parts[:-2])  # "" for flat skills
+        category = "/".join(parts[:-2])
         if name in SKIP_NAMES:
             continue
         version, description = read_frontmatter(sk)
@@ -135,7 +127,6 @@ def resolve_skill(name: str, skills: Dict[str, Dict],
                 f"not '{category}'"
             )
         return rec
-    # Partial match as a fallback hint.
     hints = [n for n in skills if name in n]
     if len(hints) == 1:
         return skills[hints[0]]
@@ -146,9 +137,6 @@ def resolve_skill(name: str, skills: Dict[str, Dict],
     raise LookupError(f"skill '{name}' not found in {skills}")
 
 
-# ---------------------------------------------------------------------------
-# Packing
-# ---------------------------------------------------------------------------
 
 def arc_prefix(category: str, name: str) -> str:
     """Archive path prefix for a skill: category/name, or just name when flat."""
@@ -165,7 +153,7 @@ def _is_nested_skill_file(skill_dir: Path, file_path: Path) -> bool:
     nested skills are packed as their own entries — never as part of the
     flat skill's file set.
     """
-    rel = file_path.relative_to(skill_dir).parts[:-1]  # dirs only
+    rel = file_path.relative_to(skill_dir).parts[:-1]
     for depth in range(1, len(rel) + 1):
         candidate = skill_dir.joinpath(*rel[:depth])
         if (candidate / "SKILL.md").exists():
@@ -250,9 +238,6 @@ def pack_skills(name: str, records: List[Dict], version: str, description: str,
     return archive
 
 
-# ---------------------------------------------------------------------------
-# Inspection / verification
-# ---------------------------------------------------------------------------
 
 def load_manifest(archive: Path) -> Tuple[Dict, Dict[str, bytes]]:
     """Return (manifest, raw_file_map) from a skillpack zip."""
@@ -286,7 +271,6 @@ def verify_archive(archive: Path) -> Tuple[bool, List[str]]:
                 f"({manifest.get('total_skills')} skills, "
                 f"{len(raw)} files)")
 
-    # Every manifest entry must exist with matching checksum.
     for sk in manifest.get("skills", []):
         sk_name = sk.get("name", "?")
         prefix = arc_prefix(sk.get("category", ""), sk_name)
@@ -303,7 +287,6 @@ def verify_archive(archive: Path) -> Tuple[bool, List[str]]:
             if actual != expect:
                 errors.append(f"{sk_name}: checksum mismatch for {rel}")
 
-    # No checksum, no entry: flag it.
     declared = {
         f"{arc_prefix(sk.get('category', ''), sk.get('name', '?'))}/{f}"
         for sk in manifest.get("skills", [])
@@ -313,7 +296,6 @@ def verify_archive(archive: Path) -> Tuple[bool, List[str]]:
         if n not in declared:
             errors.append(f"undeclared file in archive: {n}")
 
-    # Every SKILL.md must have frontmatter.
     for sk in manifest.get("skills", []):
         arc = f"{arc_prefix(sk.get('category', ''), sk.get('name', '?'))}/SKILL.md"
         if arc in raw:
@@ -324,9 +306,6 @@ def verify_archive(archive: Path) -> Tuple[bool, List[str]]:
     return (not errors), info + errors
 
 
-# ---------------------------------------------------------------------------
-# Unpacking / installing
-# ---------------------------------------------------------------------------
 
 def unpack_archive(archive: Path, target: Path, force: bool) -> Tuple[int, List[str]]:
     """Install a verified skillpack into target skills dir. Returns (count, msgs)."""
@@ -365,9 +344,6 @@ def unpack_archive(archive: Path, target: Path, force: bool) -> Tuple[int, List[
     return installed, [f"installed {installed} files into {target}"]
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def cmd_list(args: argparse.Namespace) -> int:
     skills = discover_skills(Path(args.dir))
@@ -500,6 +476,5 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    # Die quietly on broken pipes (e.g. `skillpack list | head`).
     signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     sys.exit(main())

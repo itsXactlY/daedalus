@@ -40,23 +40,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator
 
-# Sentinel to distinguish "never set in this context" from "explicitly set to empty".
-# When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
-# When it holds "" (after clear_session_vars resets it), we return "" — no fallback.
 _UNSET: Any = object()
 
-# Process-level flag: has any code in this process bound a session via
-# set_session_vars()? Concurrent multi-session hosts (the messaging gateway, the
-# ACP adapter, the API server, the TUI, cron) all do; a pure single-process
-# CLI/one-shot that never engages the session-context system does not.
-#
-# The subprocess-env bridge (tools/environments/local.py) reads this to choose
-# its leak policy: when engaged, the ContextVars are authoritative and an _UNSET
-# var means "no session bound in THIS task" — so a process-global os.environ
-# mirror (written last-writer-wins by whatever concurrent session ran most
-# recently) must NOT be inherited into a child process. When never engaged, the
-# os.environ fallback is preserved (no concurrency to leak across). Monotonic
-# latch — once any host binds a session, the process stays engaged for life.
 _session_context_engaged: bool = False
 
 
@@ -67,9 +52,6 @@ def session_context_engaged() -> bool:
     """
     return _session_context_engaged
 
-# ---------------------------------------------------------------------------
-# Per-task session variables
-# ---------------------------------------------------------------------------
 
 _SESSION_PLATFORM: ContextVar = ContextVar("DAEDALUS_SESSION_PLATFORM", default=_UNSET)
 _SESSION_SOURCE: ContextVar = ContextVar("DAEDALUS_SESSION_SOURCE", default=_UNSET)
@@ -79,57 +61,18 @@ _SESSION_CHAT_NAME: ContextVar = ContextVar("DAEDALUS_SESSION_CHAT_NAME", defaul
 _SESSION_THREAD_ID: ContextVar = ContextVar("DAEDALUS_SESSION_THREAD_ID", default=_UNSET)
 _SESSION_USER_ID: ContextVar = ContextVar("DAEDALUS_SESSION_USER_ID", default=_UNSET)
 _SESSION_USER_NAME: ContextVar = ContextVar("DAEDALUS_SESSION_USER_NAME", default=_UNSET)
-# Platform-neutral scope discriminator (Discord guild / Slack workspace /
-# Matrix server) of the originating chat. Captured at session-bind time so
-# async producers (delegate_task background=True, terminal watchers) can
-# persist a completion's full routing origin — on a relay-fronted deployment
-# the connector's fail-closed egress guard needs scope_id (or a user binding)
-# to resolve the tenant for a scoped reply after a restart.
 _SESSION_SCOPE_ID: ContextVar = ContextVar("DAEDALUS_SESSION_SCOPE_ID", default=_UNSET)
 _SESSION_KEY: ContextVar = ContextVar("DAEDALUS_SESSION_KEY", default=_UNSET)
 _SESSION_ID: ContextVar = ContextVar("DAEDALUS_SESSION_ID", default=_UNSET)
-# In-process UI session/window id for multi-session desktop/TUI hosts. This is
-# intentionally separate from DAEDALUS_SESSION_ID: the latter is the durable
-# conversation/session-db id, while the UI id is the live frontend tab/window
-# that commissioned a detached completion. Background completions use it as a
-# precise return address so a stale/rotated durable session key cannot be
-# consumed by whichever desktop poller wakes first.
 _SESSION_UI_SESSION_ID: ContextVar = ContextVar("DAEDALUS_UI_SESSION_ID", default=_UNSET)
-# ID of the message that triggered the current turn. Used as a reply anchor
-# so background-process notifications stay inside the originating Telegram
-# private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("DAEDALUS_SESSION_MESSAGE_ID", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("DAEDALUS_SESSION_PROFILE", default=_UNSET)
 
-# Per-session cron marker. Unlike the process-global legacy env var, this is
-# scoped to one cron job / inbound session. _UNSET preserves the legacy env
-# fallback for CLI/tests; "1" marks cron; "" explicitly marks non-cron and
-# masks any leaked process env value.
 _CRON_SESSION: ContextVar = ContextVar("DAEDALUS_CRON_SESSION", default=_UNSET)
 
-# Whether the current session's delivery channel can route an ASYNC completion
-# back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
-#
-# True  — long-lived CLI sessions (in-process completion_queue drain) and the
-#         real gateway platforms (Telegram/Discord/Slack/...), which hold a
-#         persistent outbound channel and run the watcher/drain loops.
-# False — finite runtimes that can end before a detached completion returns:
-#         stateless API-server requests and dispatcher-spawned Kanban workers.
-#
-# Tools that promise async delivery (terminal notify_on_complete /
-# watch_patterns, delegate_task background=True) read this via
-# ``async_delivery_supported()`` and refuse to hand out a promise the channel
-# can't keep — turning a silent no-op into an explicit contract.
-#
-# Default _UNSET => treated as supported, so CLI (which never sets a platform)
-# and any contextvar-unaware path keep working. Stateless adapters opt OUT by
-# setting ``supports_async_delivery = False`` on the adapter class; the gateway
-# propagates that into this contextvar at session-bind time.
 _SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("DAEDALUS_SESSION_ASYNC_DELIVERY", default=_UNSET)
 
-# Cron auto-delivery vars — set per-job in run_job() so concurrent jobs
-# don't clobber each other's delivery targets.
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("DAEDALUS_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("DAEDALUS_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("DAEDALUS_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
@@ -179,10 +122,6 @@ def set_current_session_id(session_id: str) -> None:
 
     _SESSION_ID.set(session_id)
 
-    # Skip the process-global os.environ write for delegated children. The
-    # child's own tools and subprocesses still resolve their id through the
-    # ContextVar (task-local), while the parent's process-wide env keeps the
-    # parent's session identity. See DaedalusPRDelegationSessionContext task.
     try:
         from agent.delegation_context import is_delegated_child_context
 
@@ -249,9 +188,6 @@ def set_session_vars(
     ``os.environ["DAEDALUS_CRON_SESSION"]`` fallback, ``"1"`` marks a cron job,
     and ``""`` explicitly marks a non-cron session while masking leaked env.
     """
-    # Mark the session-context machinery engaged for this process. The
-    # subprocess-env bridge uses this to switch from "os.environ fallback" to
-    # "ContextVar-authoritative, strip on _UNSET" — see session_context_engaged.
     global _session_context_engaged
     _session_context_engaged = True
     tokens = [
@@ -310,10 +246,6 @@ def clear_session_vars(tokens: list) -> None:
         _CRON_SESSION,
     ):
         var.set("")
-    # Reset async-delivery capability to the "never set" sentinel rather than a
-    # falsy value: a cleared context should fall back to the default-supported
-    # behavior (CLI / unaware paths), not be mistaken for an opted-out
-    # stateless adapter.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
@@ -359,9 +291,6 @@ def reset_session_vars() -> None:
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
-    # Reset the async-delivery capability to "never bound here" (_UNSET) for the
-    # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
-    # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
@@ -393,21 +322,9 @@ def get_session_env(name: str, default: str = "") -> str:
         value = var.get()
         if value is not _UNSET:
             return value
-    # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
 
 
-# Surfaces that are not a human chat channel. The gateway binds a platform
-# value (``telegram``) to DAEDALUS_SESSION_PLATFORM, while the CLI, TUI, and
-# desktop bind DAEDALUS_SESSION_SOURCE (``cli``, ``tui``, ``desktop``) and leave
-# the platform empty — so both have to be consulted. ``local``, ``api_server``,
-# ``webhook``, and ``msgraph_webhook`` are real Platform values that reach
-# DAEDALUS_SESSION_PLATFORM but have no attachment channel behind them.
-# Default-deny: an unrecognized identity counts as messaging so a newly added
-# chat platform is never treated as a private surface before this set is
-# updated. Mirrors LOCAL_SESSION_SOURCE_IDS in
-# apps/desktop/src/lib/session-source.ts; keep roughly in sync when adding a
-# local or programmatic surface.
 NON_MESSAGING_SESSION_SURFACES = frozenset(
     {
         "",
@@ -493,10 +410,6 @@ def async_delivery_supported() -> bool:
     """
     import os
 
-    # A Kanban worker is a one-shot subprocess. Its parent session and process
-    # disappear after the quiet turn returns, so a completion queued later has
-    # no durable consumer even though an ordinary CLI session can drain that
-    # queue. Force tools onto their existing synchronous/polling fallbacks.
     if os.environ.get("DAEDALUS_KANBAN_TASK"):
         return False
 

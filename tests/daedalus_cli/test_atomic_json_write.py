@@ -41,11 +41,9 @@ class TestAtomicJsonWrite:
         original = {"preserved": True}
         target.write_text(json.dumps(original))
 
-        # Try to write non-serializable data — should fail
         with pytest.raises(TypeError):
             atomic_json_write(target, {"bad": object()})
 
-        # Original file should be untouched
         result = json.loads(target.read_text())
         assert result == original
 
@@ -53,7 +51,6 @@ class TestAtomicJsonWrite:
         target = tmp_path / "data.json"
         atomic_json_write(target, [1, 2, 3])
 
-        # No .tmp files should be left behind
         tmp_files = [f for f in tmp_path.iterdir() if ".tmp" in f.name]
         assert len(tmp_files) == 0
         assert target.exists()
@@ -64,7 +61,6 @@ class TestAtomicJsonWrite:
         with pytest.raises(TypeError):
             atomic_json_write(target, {"bad": object()})
 
-        # No temp files should be left behind
         tmp_files = [f for f in tmp_path.iterdir() if ".tmp" in f.name]
         assert len(tmp_files) == 0
 
@@ -111,7 +107,7 @@ class TestAtomicJsonWrite:
         atomic_json_write(target, {"a": 1}, indent=4)
 
         text = target.read_text()
-        assert '    "a"' in text  # 4-space indent
+        assert '    "a"' in text
 
     def test_accepts_json_dump_default_hook(self, tmp_path):
         class CustomValue:
@@ -153,7 +149,6 @@ class TestAtomicJsonWrite:
             t.join()
 
         assert not errors
-        # File should contain valid JSON from one of the writers
         result = json.loads(target.read_text())
         assert "writer" in result
         assert len(result["data"]) == 100

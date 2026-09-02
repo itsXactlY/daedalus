@@ -35,7 +35,6 @@ class TestApplyCacheMarker:
         msg = {"role": "assistant", "content": ""}
         _apply_cache_marker(msg, MARKER)
         assert msg["cache_control"] == MARKER
-        # Must NOT wrap into [{"type": "text", "text": "", "cache_control": ...}]
         assert msg["content"] == ""
 
     def test_string_content_wrapped_in_list(self):
@@ -61,7 +60,6 @@ class TestApplyCacheMarker:
 
     def test_empty_list_content_no_crash(self):
         msg = {"role": "user", "content": []}
-        # Should not crash on empty list
         _apply_cache_marker(msg, MARKER)
 
 
@@ -75,7 +73,6 @@ class TestApplyAnthropicCacheControl:
         result = apply_anthropic_cache_control(msgs)
         assert result is not msgs
         assert result[0] is not msgs[0]
-        # Original should be unmodified
         assert "cache_control" not in msgs[0].get("content", "")
 
     def test_system_message_gets_marker(self):
@@ -84,7 +81,6 @@ class TestApplyAnthropicCacheControl:
             {"role": "user", "content": "Hi"},
         ]
         result = apply_anthropic_cache_control(msgs)
-        # System message should have cache_control
         sys_content = result[0]["content"]
         assert isinstance(sys_content, list)
         assert sys_content[0]["cache_control"]["type"] == "ephemeral"
@@ -98,11 +94,9 @@ class TestApplyAnthropicCacheControl:
             {"role": "assistant", "content": "msg4"},
         ]
         result = apply_anthropic_cache_control(msgs)
-        # System (index 0) + last 3 non-system (indices 2, 3, 4) = 4 breakpoints
-        # Index 1 (msg1) should NOT have marker
         content_1 = result[1]["content"]
         if isinstance(content_1, str):
-            assert True  # No marker applied (still a string)
+            assert True
         else:
             assert "cache_control" not in content_1[0]
 
@@ -112,7 +106,6 @@ class TestApplyAnthropicCacheControl:
             {"role": "assistant", "content": "Hi"},
         ]
         result = apply_anthropic_cache_control(msgs)
-        # Both should get markers (4 slots available, only 2 messages)
         assert len(result) == 2
 
     def test_1h_ttl(self):
@@ -130,7 +123,6 @@ class TestApplyAnthropicCacheControl:
             for i in range(10)
         ]
         result = apply_anthropic_cache_control(msgs)
-        # Count how many messages have cache_control
         count = 0
         for msg in result:
             content = msg.get("content")

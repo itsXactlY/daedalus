@@ -98,7 +98,6 @@ class BuiltinMemoryProvider(MemoryProvider):
     def shutdown(self) -> None:
         """No cleanup needed — files are saved on every write."""
 
-    # -- Property access for backward compatibility --------------------------
 
     @property
     def store(self):

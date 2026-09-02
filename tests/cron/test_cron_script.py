@@ -17,7 +17,6 @@ from unittest.mock import patch
 
 import pytest
 
-# Ensure project root is importable
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
@@ -31,7 +30,6 @@ def cron_env(tmp_path, monkeypatch):
     (daedalus_home / "scripts").mkdir()
     monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
 
-    # Clear cached module-level paths
     import cron.jobs as jobs_mod
     monkeypatch.setattr(jobs_mod, "DAEDALUS_DIR", daedalus_home)
     monkeypatch.setattr(jobs_mod, "CRON_DIR", daedalus_home / "cron")
@@ -148,7 +146,6 @@ class TestRunJobScript:
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
 
-        # Use a very short timeout
         monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 1)
 
         script = cron_env / "scripts" / "slow.py"
@@ -312,7 +309,6 @@ class TestScriptPathContainment:
         """Absolute paths outside ~/.daedalus/scripts/ must be rejected."""
         from cron.scheduler import _run_job_script
 
-        # Create a script outside the scripts dir
         outside_script = cron_env / "outside.py"
         outside_script.write_text('print("should not run")\n')
 
@@ -395,11 +391,9 @@ class TestScriptPathContainment:
         """Symlinks pointing outside scripts/ must be rejected."""
         from cron.scheduler import _run_job_script
 
-        # Create a script outside the scripts dir
         outside = tmp_path / "outside_evil.py"
         outside.write_text('print("escaped")\n')
 
-        # Create a symlink inside scripts/ pointing outside
         link = cron_env / "scripts" / "sneaky.py"
         link.symlink_to(outside)
 
@@ -521,7 +515,6 @@ class TestRunJobEnvVarCleanup:
 
     def test_env_vars_cleaned_on_early_error(self, cron_env, monkeypatch):
         """Origin env vars must be cleaned up even if run_job fails early."""
-        # Ensure env vars are clean before test
         for key in (
             "DAEDALUS_SESSION_PLATFORM",
             "DAEDALUS_SESSION_CHAT_ID",
@@ -529,8 +522,6 @@ class TestRunJobEnvVarCleanup:
         ):
             monkeypatch.delenv(key, raising=False)
 
-        # Build a job with origin info that will fail during execution
-        # (no valid model, no API key — will raise inside try block)
         job = {
             "id": "test-envleak",
             "name": "env-leak-test",
@@ -545,13 +536,11 @@ class TestRunJobEnvVarCleanup:
 
         from cron.scheduler import run_job
 
-        # Expect it to fail (no model/API key), but env vars must be cleaned
         try:
             run_job(job)
         except Exception:
             pass
 
-        # Verify env vars were cleaned up by the finally block
         assert os.environ.get("DAEDALUS_SESSION_PLATFORM") is None
         assert os.environ.get("DAEDALUS_SESSION_CHAT_ID") is None
         assert os.environ.get("DAEDALUS_SESSION_CHAT_NAME") is None

@@ -15,8 +15,6 @@ import json
 from typing import List, Optional, Callable
 
 
-# Maximum number of predefined choices the agent can offer.
-# A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
 
 
@@ -44,7 +42,6 @@ def clarify_tool(
 
     question = question.strip()
 
-    # Validate and trim choices
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
@@ -52,7 +49,7 @@ def clarify_tool(
         if len(choices) > MAX_CHOICES:
             choices = choices[:MAX_CHOICES]
         if not choices:
-            choices = None  # empty list → open-ended
+            choices = None
 
     if callback is None:
         return json.dumps(
@@ -80,9 +77,6 @@ def check_clarify_requirements() -> bool:
     return True
 
 
-# =============================================================================
-# OpenAI Function-Calling Schema
-# =============================================================================
 
 CLARIFY_SCHEMA = {
     "name": "clarify",
@@ -119,7 +113,6 @@ CLARIFY_SCHEMA = {
 }
 
 
-# --- Registry ---
 from tools.registry import registry, tool_error
 
 registry.register(
