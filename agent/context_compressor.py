@@ -460,7 +460,7 @@ class ContextCompressor:
         if not path:
             return None
         self.offloaded.append({"path": str(path), "tool": tool_name,
-                               "chars": len(content)})
+                               "chars": len(content), "subject": subject})
         about = f" for {subject}" if subject else ""
         return (f"{_OFFLOAD_PREFIX}{tool_name}{about} — result ({len(content)} chars) "
                 f"spilled to {path}. Retrieve it verbatim with read_file(\"{path}\").]")

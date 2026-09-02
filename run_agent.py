@@ -426,6 +426,20 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _message_payload_chars(messages) -> int:
+    """Characters actually shipped to the API: contents plus call arguments."""
+    total = 0
+    for msg in messages or ():
+        if not isinstance(msg, dict):
+            continue
+        total += len(str(msg.get("content") or ""))
+        for call in (msg.get("tool_calls") or ()):
+            if isinstance(call, dict):
+                fn = call.get("function") or {}
+                total += len(str(fn.get("arguments") or ""))
+    return total
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -473,6 +487,47 @@ class AIAgent:
             except Exception:
                 continue
         return removed
+
+    def _report_context_spill(self, compressor, first_new: int, pruned: int,
+                              chars_before: int, chars_after: int) -> None:
+        """Show what left the window, where it went, and what it saved."""
+        try:
+            fresh = compressor.offloaded[first_new:]
+            saved = max(0, chars_before - chars_after)
+            print(f"\n  \033[2m┌─ context spill ─ {pruned} item(s) left the live window "
+                  f"(~{saved//4:,} tokens freed)\033[0m")
+            for item in fresh[:12]:
+                what = item.get("subject") or ""
+                label = f"{item['tool']} {what}".strip()
+                if len(label) > 46:
+                    label = label[:43] + "..."
+                print(f"  \033[2m│  {label:<46} {item['chars']:>8,} chars\033[0m")
+                print(f"  \033[2m│      → {item['path']}\033[0m")
+            if len(fresh) > 12:
+                print(f"  \033[2m│  … {len(fresh)-12} more\033[0m")
+            if pruned > len(fresh):
+                print(f"  \033[2m│  {pruned-len(fresh)} dropped without a spill target "
+                      f"(content lost)\033[0m")
+            print(f"  \033[2m│  payload {chars_before//4:,} → {chars_after//4:,} tokens · "
+                  f"live window {compressor.live_window_messages} messages\033[0m")
+            print(f"  \033[2m└─ read any of them back with read_file(path)\033[0m\n")
+        except Exception as exc:
+            logger.debug("spill report failed: %s", exc)
+
+    def _report_context_injections(self, blocks: list) -> None:
+        """Show what the harness attached to this turn's user message."""
+        try:
+            if not blocks:
+                return
+            print(f"\n  \033[2m┌─ turn injections ─ {len(blocks)} block(s)\033[0m")
+            for label, text in blocks:
+                flat = " ".join(str(text).split())
+                head = flat if len(flat) <= 220 else flat[:217] + "..."
+                print(f"  \033[2m│  [{label}] ~{len(str(text))//4:,} tok\033[0m")
+                print(f"  \033[2m│    {head}\033[0m")
+            print(f"  \033[2m└─\033[0m\n")
+        except Exception as exc:
+            logger.debug("injection report failed: %s", exc)
 
     @classmethod
     def _archive_context_chunk(cls, session: str, seq: int, tool_name: str,
@@ -3064,14 +3119,14 @@ class AIAgent:
         """
         if current_turn_user_idx < len(messages):
             return current_turn_user_idx
-        if not isinstance(user_message, str) or not user_message:
-            return current_turn_user_idx
+        _match_text = user_message if isinstance(user_message, str) and user_message else None
         for _mi in range(len(messages) - 1, -1, -1):
             _m = messages[_mi]
             if (
-                isinstance(_m, dict)
+                _match_text is not None
+                and isinstance(_m, dict)
                 and _m.get("role") == "user"
-                and _m.get("content") == user_message
+                and _m.get("content") == _match_text
             ):
                 logger.debug(
                     "Remapped current-turn idx %d -> %d after compression "
@@ -3079,7 +3134,21 @@ class AIAgent:
                     current_turn_user_idx, _mi, len(messages),
                 )
                 return _mi
-        return current_turn_user_idx
+        for _mi in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[_mi], dict) and messages[_mi].get("role") == "user":
+                logger.warning(
+                    "Current-turn idx %d out of range after compression and the "
+                    "message text no longer matches; falling back to the last user "
+                    "message at %d (messages now %d)",
+                    current_turn_user_idx, _mi, len(messages),
+                )
+                return _mi
+        logger.warning(
+            "Current-turn idx %d out of range after compression and no user "
+            "message remains; clamping to %d",
+            current_turn_user_idx, len(messages) - 1,
+        )
+        return max(0, len(messages) - 1)
 
     @staticmethod
     def _window_messages_for_api(
@@ -7449,10 +7518,14 @@ class AIAgent:
                     window_turns=_window_turns,
                 )
                 _view_cur = current_turn_user_idx
-                for _vi, _m in enumerate(_messages_view):
-                    if _m is messages[current_turn_user_idx]:
-                        _view_cur = _vi
-                        break
+                if 0 <= current_turn_user_idx < len(messages):
+                    _anchor = messages[current_turn_user_idx]
+                    for _vi, _m in enumerate(_messages_view):
+                        if _m is _anchor:
+                            _view_cur = _vi
+                            break
+                else:
+                    _view_cur = max(0, len(_messages_view) - 1)
                 _iter_messages, _iter_cur = _messages_view, _view_cur
             else:
                 _iter_messages, _iter_cur = messages, current_turn_user_idx
@@ -7463,10 +7536,12 @@ class AIAgent:
 
                 if idx == _iter_cur and msg.get("role") == "user":
                     _injections = []
+                    _injection_labels = []
                     if _ext_prefetch_cache:
                         _fenced = build_memory_context_block(_ext_prefetch_cache)
                         if _fenced:
                             _injections.append(_fenced)
+                            _injection_labels.append(("mazemaker recall", _fenced))
                     if getattr(self, "_soak_window_turns", -1) >= 0 and self._memory_manager:
                         try:
                             _ptr = self._memory_manager.history_pointer_all(
@@ -7474,6 +7549,7 @@ class AIAgent:
                             )
                             if _ptr:
                                 _injections.append(f"[mazemaker] {_ptr}")
+                                _injection_labels.append(("mazemaker history pointer", _ptr))
                         except Exception as _hp_exc:
                             logger.warning(
                                 "history_pointer_all failed (non-fatal): %s", _hp_exc
@@ -7485,10 +7561,15 @@ class AIAgent:
                         _spill = ""
                     if _spill:
                         _injections.append(f"[context spill] {_spill}")
+                        _injection_labels.append(("context spill", _spill))
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
+                        _injection_labels.append(("plugin context", _plugin_user_context))
                     if getattr(self, "_skill_route_block", ""):
                         _injections.append(self._skill_route_block)
+                        _injection_labels.append(("auto-routed skills", self._skill_route_block))
+                    if _injection_labels and self.verbose_logging:
+                        self._report_context_injections(_injection_labels)
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):
@@ -8948,6 +9029,8 @@ class AIAgent:
                             self._emit_context_pressure(_compaction_progress, _compressor)
 
                     if self.compression_enabled:
+                        _spill_before = len(_compressor.offloaded)
+                        _bytes_before = _message_payload_chars(messages)
                         messages, _stale = _compressor.prune_stale_tool_results(
                             messages, _real_tokens,
                         )
@@ -8955,6 +9038,11 @@ class AIAgent:
                             logger.info(
                                 "Pruned %d stale tool result(s) below the compression "
                                 "threshold (%d tokens)", _stale, _real_tokens,
+                            )
+                        if _stale and self.verbose_logging:
+                            self._report_context_spill(
+                                _compressor, _spill_before, _stale,
+                                _bytes_before, _message_payload_chars(messages),
                             )
 
                     if self.compression_enabled and _compressor.should_compress(_real_tokens):

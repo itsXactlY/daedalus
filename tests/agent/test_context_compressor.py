@@ -852,3 +852,93 @@ class TestSpillCallArguments:
         for msg in out:
             for call in (msg.get("tool_calls") or []):
                 assert "_spilled_to" not in call["function"]["arguments"]
+
+
+class TestVerboseSpillReporting:
+    def _c(self):
+        from agent.context_compressor import ContextCompressor
+        from run_agent import AIAgent
+
+        c = ContextCompressor(model="test-model", quiet_mode=True,
+                              threshold_percent=0.95, protect_last_n=3,
+                              config_context_length=73728, max_tokens=40000,
+                              archiver=AIAgent._archive_context_chunk)
+        c.session_label = "pytest-verbose"
+        return c
+
+    def _msgs(self, n):
+        import json as _json
+
+        out = []
+        for i in range(n):
+            out.append({"role": "assistant", "tool_calls": [
+                {"id": f"t{i}", "function": {"name": "read_file",
+                                             "arguments": _json.dumps({"file_path": f"/src/m{i}.py"})}}]})
+            out.append({"role": "tool", "tool_call_id": f"t{i}", "content": "X" * 9000})
+        return out
+
+    def test_the_ledger_records_what_each_spill_was_about(self):
+        c = self._c()
+        c.prune_stale_tool_results(self._msgs(30), 30_000)
+        assert c.offloaded
+        assert c.offloaded[0]["subject"] == "/src/m0.py"
+        assert c.offloaded[0]["tool"] == "read_file"
+        assert c.offloaded[0]["chars"] == 9000
+
+    def test_the_report_names_files_and_paths(self, capsys):
+        from run_agent import AIAgent, _message_payload_chars
+
+        c = self._c()
+        msgs = self._msgs(30)
+        before = _message_payload_chars(msgs)
+        out, pruned = c.prune_stale_tool_results(msgs, 30_000)
+
+        class _Agent:
+            verbose_logging = True
+            _report_context_spill = AIAgent._report_context_spill
+
+        _Agent._report_context_spill(_Agent(), c, 0, pruned, before,
+                                     _message_payload_chars(out))
+        printed = capsys.readouterr().out
+        assert "context spill" in printed
+        assert "/src/m0.py" in printed
+        assert "/dev/shm" in printed or "read_file(path)" in printed
+
+    def test_the_injection_report_labels_every_block(self, capsys):
+        from run_agent import AIAgent
+
+        class _Agent:
+            verbose_logging = True
+            _report_context_injections = AIAgent._report_context_injections
+
+        _Agent._report_context_injections(_Agent(), [
+            ("mazemaker recall", "<memory-context>hit</memory-context>"),
+            ("context spill", "3 bulky tool result(s) were spilled"),
+        ])
+        printed = capsys.readouterr().out
+        assert "turn injections" in printed
+        assert "mazemaker recall" in printed
+        assert "context spill" in printed
+
+    def test_payload_chars_counts_arguments_too(self):
+        from run_agent import _message_payload_chars
+
+        msgs = [{"role": "assistant",
+                 "tool_calls": [{"id": "a", "function": {"name": "w", "arguments": "12345"}}]},
+                {"role": "tool", "tool_call_id": "a", "content": "abc"}]
+        assert _message_payload_chars(msgs) == 8
+
+    def test_reports_never_raise_on_odd_input(self, capsys):
+        from run_agent import AIAgent
+
+        class _Agent:
+            verbose_logging = True
+            _report_context_spill = AIAgent._report_context_spill
+            _report_context_injections = AIAgent._report_context_injections
+
+        class _Broken:
+            offloaded = None
+            live_window_messages = 12
+
+        _Agent._report_context_spill(_Agent(), _Broken(), 0, 1, 100, 50)
+        _Agent._report_context_injections(_Agent(), [])

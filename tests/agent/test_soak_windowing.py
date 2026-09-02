@@ -106,9 +106,17 @@ class TestRemapCurrentTurnIndex:
         ]
         assert self._remap(msgs, 999, "status") == 2
 
-    def test_no_match_falls_back_to_original(self):
+    def test_no_match_stays_inside_the_list(self):
+        """A stale index must never escape the list.
+
+        Returning the original out-of-range index made the caller's
+        messages[idx] raise IndexError right after compression, which killed
+        the turn (observed 2026-09-02, 100 -> 10 messages).
+        """
         msgs = [{"role": "user", "content": "other"}]
-        assert self._remap(msgs, 500, "not present") == 500
+        idx = self._remap(msgs, 500, "not present")
+        assert 0 <= idx < len(msgs)
+        assert msgs[idx]["role"] == "user"
 
     def test_window_view_not_empty_after_remap(self):
         msgs = [

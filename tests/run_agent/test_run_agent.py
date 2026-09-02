@@ -3668,3 +3668,40 @@ class TestPonyKeepsCapabilityGuidance:
         assert cfg.strip_guidance is False
         cfg = PonyConfig.from_config({"pony": {"enabled": True, "strip_guidance": True}})
         assert cfg.strip_guidance is True
+
+
+class TestRemapCurrentTurnIndexNeverGoesOutOfRange:
+    def _remap(self, messages, idx, text):
+        from run_agent import AIAgent
+
+        return AIAgent._remap_current_turn_index(messages, idx, text)
+
+    def _msgs(self, n):
+        return [{"role": "user" if i % 2 == 0 else "assistant", "content": f"m{i}"}
+                for i in range(n)]
+
+    def test_an_in_range_index_is_returned_unchanged(self):
+        assert self._remap(self._msgs(10), 4, "m4") == 4
+
+    def test_a_matching_message_is_found_after_compression(self):
+        messages = self._msgs(10)
+        assert self._remap(messages, 95, "m8") == 8
+
+    def test_a_stale_index_never_escapes_the_list(self):
+        messages = self._msgs(10)
+        idx = self._remap(messages, 95, "text that no longer exists")
+        assert 0 <= idx < len(messages)
+        assert messages[idx]["role"] == "user"
+
+    def test_a_stale_index_with_no_user_message_is_clamped(self):
+        messages = [{"role": "assistant", "content": "only"}]
+        idx = self._remap(messages, 95, "gone")
+        assert idx == 0
+
+    def test_an_empty_list_does_not_produce_a_negative_index(self):
+        assert self._remap([], 95, "gone") == 0
+
+    def test_a_non_string_user_message_still_stays_in_range(self):
+        messages = self._msgs(6)
+        idx = self._remap(messages, 400, None)
+        assert 0 <= idx < len(messages)
