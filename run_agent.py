@@ -1303,6 +1303,33 @@ class AIAgent:
             parts["identity + rest"] = rest
         return parts
 
+    @staticmethod
+    def _normalise_system_messages(api_messages: list) -> list:
+        """Leave exactly one system message, at index 0.
+
+        A strict chat template refuses anything else. llama.cpp's Qwen template
+        raises "System message must be at the beginning" and returns HTTP 500,
+        which the retry loop then repeats three times before the turn dies --
+        so a single stray system message anywhere in the conversation ends the
+        session rather than degrading it.
+
+        Stray ones become user messages rather than being merged into the head:
+        merging would move their content away from the point in the
+        conversation where it belongs, and dropping them would lose it.
+        """
+        if not api_messages:
+            return api_messages
+        out = []
+        for i, msg in enumerate(api_messages):
+            if i > 0 and isinstance(msg, dict) and msg.get("role") == "system":
+                moved = dict(msg)
+                moved["role"] = "user"
+                moved.setdefault("display_kind", "hidden")
+                out.append(moved)
+            else:
+                out.append(msg)
+        return out
+
     def _estimate_completion_tokens(self, response) -> int:
         try:
             choices = getattr(response, "choices", None) or []
@@ -5916,6 +5943,7 @@ class AIAgent:
 
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
+            api_messages = self._normalise_system_messages(api_messages)
 
             memory_tool_def = None
             for t in (self.tools or []):
@@ -6034,7 +6062,11 @@ class AIAgent:
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
         if _mazemaker_archive_note:
-            compressed.append({"role": "system", "content": _mazemaker_archive_note})
+            compressed.append({
+                "role": "user",
+                "content": _mazemaker_archive_note,
+                "display_kind": "hidden",
+            })
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
@@ -6864,6 +6896,7 @@ class AIAgent:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
+            api_messages = self._normalise_system_messages(api_messages)
 
             summary_extra_body = {}
             _is_nous = "nousresearch" in self._base_url_lower
@@ -7424,6 +7457,8 @@ class AIAgent:
                 sys_offset = 1 if effective_system else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
+
+            api_messages = self._normalise_system_messages(api_messages)
 
             if self._use_prompt_caching:
                 api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl, native_anthropic=(self.api_mode == 'anthropic_messages'))

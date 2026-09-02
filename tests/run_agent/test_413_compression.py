@@ -453,3 +453,58 @@ class TestToolResultPreflightCompression:
 
         mock_compress.assert_called_once()
         assert result["completed"] is True
+
+
+class TestSystemMessagePlacement:
+    def test_a_stray_system_message_becomes_a_user_message(self):
+        from run_agent import AIAgent
+
+        msgs = [
+            {"role": "system", "content": "HEAD"},
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
+            {"role": "system", "content": "archive note"},
+        ]
+        out = AIAgent._normalise_system_messages(msgs)
+        assert [m["role"] for m in out] == ["system", "user", "assistant", "user"]
+        assert out[-1]["content"] == "archive note"
+        assert out[-1]["display_kind"] == "hidden"
+
+    def test_the_leading_system_message_is_never_touched(self):
+        from run_agent import AIAgent
+
+        msgs = [{"role": "system", "content": "HEAD"}, {"role": "user", "content": "q"}]
+        out = AIAgent._normalise_system_messages(msgs)
+        assert out[0] is msgs[0]
+        assert [m["role"] for m in out] == ["system", "user"]
+
+    def test_several_strays_all_move(self):
+        from run_agent import AIAgent
+
+        msgs = [{"role": "system", "content": "HEAD"}]
+        msgs += [{"role": "system", "content": f"n{i}"} for i in range(3)]
+        out = AIAgent._normalise_system_messages(msgs)
+        assert [i for i, m in enumerate(out) if m["role"] == "system"] == [0]
+        assert [m["content"] for m in out[1:]] == ["n0", "n1", "n2"]
+
+    def test_a_conversation_without_any_system_message_is_unchanged(self):
+        from run_agent import AIAgent
+
+        msgs = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+        assert AIAgent._normalise_system_messages(msgs) == msgs
+
+    def test_empty_and_malformed_input_never_raise(self):
+        from run_agent import AIAgent
+
+        assert AIAgent._normalise_system_messages([]) == []
+        weird = [{"role": "system", "content": "HEAD"}, "not-a-dict", None]
+        out = AIAgent._normalise_system_messages(weird)
+        assert out[1] == "not-a-dict" and out[2] is None
+
+    def test_the_compaction_archive_note_no_longer_ships_as_system(self):
+        import inspect
+        import run_agent
+
+        src = inspect.getsource(run_agent.AIAgent._compress_context)
+        assert '"role": "system", "content": _mazemaker_archive_note' not in src
+        assert "_mazemaker_archive_note" in src
