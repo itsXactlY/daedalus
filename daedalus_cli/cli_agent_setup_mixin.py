@@ -303,6 +303,44 @@ class CLIAgentSetupMixin:
         route["request_overrides"] = overrides
         return route
 
+    def _restore_from_memory_graph(self, session_id: str) -> list:
+        from cli import logger
+
+        try:
+            provider = None
+            manager = getattr(self, "_memory_manager", None)
+            for candidate in (getattr(manager, "_providers", None) or ()):
+                if hasattr(candidate, "restore_conversation"):
+                    provider = candidate
+                    break
+            if provider is None:
+                from plugins.memory.mazemaker import MazemakerMemoryProvider
+
+                provider = MazemakerMemoryProvider()
+                provider.initialize(session_id=session_id)
+        except Exception as exc:
+            logger.debug("graph restore unavailable: %s", exc)
+            return []
+
+        try:
+            lineage = self._session_db._session_lineage_root_to_tip(session_id)
+        except Exception:
+            lineage = [session_id]
+        ancestors = [s for s in lineage if s and s != session_id]
+
+        try:
+            restored = provider.restore_conversation(session_id, ancestors=ancestors)
+        except Exception as exc:
+            logger.warning("graph restore failed for %s: %s", session_id, exc)
+            return []
+
+        if restored:
+            logger.info(
+                "restored %d message(s) from the memory graph across %d session id(s)",
+                len(restored), len(ancestors) + 1,
+            )
+        return restored
+
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
         """
         Initialize the agent on first use.
@@ -364,9 +402,11 @@ class CLIAgentSetupMixin:
                 resolved_meta = self._session_db.get_session(self.session_id)
                 if resolved_meta:
                     session_meta = resolved_meta
-            restored = self._session_db.get_messages_as_conversation(
-                self.session_id, repair_alternation=True
-            )
+            restored = self._restore_from_memory_graph(self.session_id)
+            if not restored:
+                restored = self._session_db.get_messages_as_conversation(
+                    self.session_id, repair_alternation=True
+                )
             if restored:
                 restored = [m for m in restored if m.get("role") != "session_meta"]
                 self.conversation_history = restored

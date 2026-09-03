@@ -234,12 +234,27 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,
+        # Absolute ceiling on the compaction trigger, in tokens. A declared
+        # context window the hardware cannot hold in KV cache makes the
+        # percentage alone useless: the machine swaps long before 95% of a
+        # 256K window is reached. 0 disables the ceiling.
+        "max_tokens": 0,
         "target_ratio": 0.20,
         "protect_last_n": 20,
         "summary_model": "",
         "summary_provider": "auto",
         "summary_base_url": None,
     },
+    "tool_search": {
+        "enabled": True,
+        "always_load": [
+            "mazemaker_recall",
+            "mazemaker_think",
+            "mazemaker_get",
+            "mazemaker_remember",
+        ],
+    },
+
     "smart_model_routing": {
         "enabled": False,
         "max_simple_chars": 160,
@@ -269,13 +284,6 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,
-        },
-        "session_search": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
         },
         "skills_hub": {
             "provider": "auto",
@@ -391,6 +399,9 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,
         "user_char_limit": 1375,
         "provider": "",
+        "flush_max_chars": 16000,
+        "flush_max_tokens": 512,
+        "flush_timeout": 90,
     },
 
     "delegation": {

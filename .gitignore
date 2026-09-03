@@ -192,3 +192,5 @@ state*.db
 state*.db-shm
 state*.db-wal
 screenshots/
+data/checkpoint_test_current/
+data/checkpoint_test_resume/

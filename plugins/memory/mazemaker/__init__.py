@@ -544,6 +544,35 @@ def _remember(label: str, content: str) -> Optional[int]:
         return None
 
 
+def _turn_sort_key(label: str) -> int:
+    """Order soaked turns by the hex timestamp their label ends with."""
+    tail = label.rsplit(":", 1)[-1] if label else ""
+    try:
+        return int(tail, 16)
+    except ValueError:
+        return 0
+
+
+_BROWSE_MAX_LIMIT = 200
+_RESTORE_MAX_TURNS = 20
+
+
+def _split_soaked_turn(content: str) -> tuple:
+    """Split a soaked turn back into (user, assistant)."""
+    if not content:
+        return "", ""
+    body = content
+    marker = "=== USER ==="
+    if marker in body:
+        body = body.split(marker, 1)[1]
+    user, assistant = body, ""
+    if "=== ASSISTANT ===" in body:
+        user, assistant = body.split("=== ASSISTANT ===", 1)
+    user = user.strip()
+    assistant = assistant.replace("\n…[truncated]", "").strip()
+    return user, assistant
+
+
 class MazemakerMemoryProvider(MemoryProvider):
     """Soak + on-demand recall against the local mazemaker pod."""
 
@@ -903,6 +932,80 @@ class MazemakerMemoryProvider(MemoryProvider):
             logger.warning("on_pre_compress archive failed: %s", e)
             return ""
 
+
+    def _previous_session_turns(self, exclude: set) -> dict:
+        try:
+            rows = self._browse_rows("auto:turn:", _BROWSE_MAX_LIMIT)
+        except Exception as exc:
+            logger.warning("previous-session lookup failed (%s)", exc)
+            return {}
+        groups = {}
+        for row in rows or []:
+            label = str(row.get("label") or "")
+            if not label.startswith("auto:turn:"):
+                continue
+            sid = label[len("auto:turn:"):].rsplit(":", 1)[0]
+            if sid in exclude or not _DAEDALUS_SESSION_RE.match(sid):
+                continue
+            groups.setdefault(sid, {})[label] = str(row.get("content") or "")
+        if not groups:
+            return {}
+        newest = max(
+            groups,
+            key=lambda sid: max(_turn_sort_key(l) for l in groups[sid]),
+        )
+        logger.info("restoring from the previous session in the graph: %s", newest)
+        return groups[newest]
+
+    def restore_conversation(self, session_id: str = "", ancestors=(),
+                             limit: int = 0, allow_previous: bool = True) -> list:
+        ids = [session_id or self._session_id or ""]
+        ids.extend(str(a) for a in (ancestors or ()) if a)
+        ids = [i for i in dict.fromkeys(ids) if i]
+        if not ids:
+            return []
+
+        collected = {}
+        for sid in ids:
+            for attempt in (limit if limit > 0 else _BROWSE_MAX_LIMIT, _BROWSE_MAX_LIMIT, 50):
+                if attempt <= 0:
+                    continue
+                try:
+                    rows = self._browse_rows(f"auto:turn:{sid}", attempt)
+                except Exception as exc:
+                    logger.warning(
+                        "restore_conversation: browse(limit=%d) failed for %s (%s)",
+                        attempt, sid, exc,
+                    )
+                    continue
+                for row in rows or []:
+                    label = str(row.get("label") or "")
+                    if label.startswith("auto:turn:"):
+                        collected[label] = str(row.get("content") or "")
+                break
+
+        if not collected and allow_previous:
+            collected = self._previous_session_turns(set(ids))
+
+        turns = []
+        for label, content in collected.items():
+            user, assistant = _split_soaked_turn(content)
+            if not user and not assistant:
+                continue
+            turns.append((_turn_sort_key(label), user, assistant))
+
+        turns.sort(key=lambda t: t[0])
+        if len(turns) > _RESTORE_MAX_TURNS:
+            logger.info("restore trimmed to the newest %d of %d turns",
+                        _RESTORE_MAX_TURNS, len(turns))
+            turns = turns[-_RESTORE_MAX_TURNS:]
+        messages = []
+        for _key, user, assistant in turns:
+            if user:
+                messages.append({"role": "user", "content": user})
+            if assistant:
+                messages.append({"role": "assistant", "content": assistant})
+        return messages
 
     def continuity_context(self, session_id: str = "") -> str:
         """Return the cross-session resume block (previous tail + open goals)."""

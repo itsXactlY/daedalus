@@ -217,6 +217,19 @@ _LEGACY_TOOLSET_MAP = {
 
 
 
+def _is_pending_mcp_toolset(name: str) -> bool:
+    try:
+        from daedalus_cli.config import load_config
+
+        cfg = load_config() or {}
+    except Exception:
+        return False
+    servers = cfg.get("mcp_servers")
+    if not isinstance(servers, dict):
+        servers = (cfg.get("mcp") or {}).get("servers") if isinstance(cfg.get("mcp"), dict) else None
+    return isinstance(servers, dict) and name in servers
+
+
 def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
@@ -251,7 +264,7 @@ def get_tool_definitions(
                 if not quiet_mode:
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             else:
-                if not quiet_mode:
+                if not quiet_mode and not _is_pending_mcp_toolset(toolset_name):
                     print(f"⚠️  Unknown toolset: {toolset_name}")
 
     elif disabled_toolsets:
@@ -271,7 +284,7 @@ def get_tool_definitions(
                 if not quiet_mode:
                     print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             else:
-                if not quiet_mode:
+                if not quiet_mode and not _is_pending_mcp_toolset(toolset_name):
                     print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
         from toolsets import get_all_toolsets

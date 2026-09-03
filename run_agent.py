@@ -460,13 +460,23 @@ class AIAgent:
 
     @staticmethod
     def _spill_root() -> str:
+        """Where spilled tool output lives.
+
+        DAEDALUS_SPILL_ROOT lets tests point somewhere disposable; without it
+        a test that purges by age would delete a live session's spill and turn
+        every handle in its context into a dangling path.
+        """
         import tempfile
 
+        override = os.environ.get("DAEDALUS_SPILL_ROOT")
+        if override:
+            return override
         base = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
         return os.path.join(base, f"daedalus-ctx-{os.getuid()}")
 
     @classmethod
-    def purge_stale_spills(cls, max_age_seconds: int = 86400) -> int:
+    def purge_stale_spills(cls, max_age_seconds: int = 86400,
+                           keep_sessions=()) -> int:
         """Drop spill directories from sessions that are long gone.
 
         tmpfs is RAM: an abandoned session must not hold pages forever.
@@ -478,7 +488,10 @@ class AIAgent:
             return 0
         removed = 0
         cutoff = time.time() - max_age_seconds
+        protected = {str(s) for s in (keep_sessions or ()) if s}
         for entry in os.listdir(root):
+            if entry in protected:
+                continue
             path = os.path.join(root, entry)
             try:
                 if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
@@ -1030,7 +1043,8 @@ class AIAgent:
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
         self._memory_flush_max_chars = 16000
-        self._memory_flush_max_tokens = 1024
+        self._memory_flush_max_tokens = 512
+        self._memory_flush_timeout = 90.0
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
@@ -1041,7 +1055,8 @@ class AIAgent:
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 self._memory_flush_max_chars = int(mem_config.get("flush_max_chars", 16000) or 0)
-                self._memory_flush_max_tokens = int(mem_config.get("flush_max_tokens", 1024) or 1024)
+                self._memory_flush_max_tokens = int(mem_config.get("flush_max_tokens", 512) or 512)
+                self._memory_flush_timeout = float(mem_config.get("flush_timeout", 90.0) or 90.0)
                 _soak_cfg = mem_config.get("soak", {}) if isinstance(mem_config.get("soak"), dict) else {}
                 _soak_configured = bool(_soak_cfg)
                 self._soak_window_turns = int(_soak_cfg.get("window_turns", 0) or 0) if _soak_configured else -1
@@ -1207,7 +1222,8 @@ class AIAgent:
         )
         self.context_compressor.session_label = getattr(self, "session_id", "") or "session"
         try:
-            self.purge_stale_spills()
+            self.purge_stale_spills(
+                keep_sessions=(getattr(self, "session_id", "") or "",))
         except Exception as _spill_exc:
             logger.debug("spill purge skipped: %s", _spill_exc)
         self.compression_enabled = compression_enabled
@@ -6147,7 +6163,7 @@ class AIAgent:
                     tools=[memory_tool_def],
                     temperature=0.3,
                     max_tokens=self._memory_flush_max_tokens,
-                    timeout=30.0,
+                    timeout=self._memory_flush_timeout,
                     max_retries=0,
                 )
             except RuntimeError:
@@ -6176,9 +6192,9 @@ class AIAgent:
                     "messages": api_messages,
                     "tools": [memory_tool_def],
                     "temperature": 0.3,
-                    **self._max_tokens_param(5120),
+                    **self._max_tokens_param(self._memory_flush_max_tokens),
                 }
-                response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(**api_kwargs, timeout=30.0)
+                response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(**api_kwargs, timeout=self._memory_flush_timeout)
 
             tool_calls = []
             if self.api_mode == "codex_responses" and not _aux_available:

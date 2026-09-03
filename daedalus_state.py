@@ -7657,17 +7657,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         messages = _strip_background_review_harness(messages)
         messages = _strip_stale_tool_call_markers(messages)
         if repair_alternation and messages:
-            from agent.agent_runtime_helpers import repair_message_sequence
-
-            repaired = repair_message_sequence(None, messages)
-            if repaired:
-                logger.info(
-                    "Repaired %d message-alternation violation(s) while "
-                    "restoring session %s — durable transcript kept them, "
-                    "see repair_message_sequence",
-                    repaired,
+            try:
+                from agent.agent_runtime_helpers import repair_message_sequence
+            except ImportError:
+                logger.warning(
+                    "alternation repair unavailable (agent.agent_runtime_helpers "
+                    "is missing) — restoring session %s verbatim instead",
                     session_id,
                 )
+            else:
+                repaired = repair_message_sequence(None, messages)
+                if repaired:
+                    logger.info(
+                        "Repaired %d message-alternation violation(s) while "
+                        "restoring session %s — durable transcript kept them, "
+                        "see repair_message_sequence",
+                        repaired,
+                        session_id,
+                    )
         return messages
 
     def get_resume_conversations(
