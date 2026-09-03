@@ -391,6 +391,7 @@ class _PodHealth:
                 "GET /health cannot see this: it reports the front process only.",
                 failures, detail, name,
             )
+            _attempt_pod_recovery()
         else:
             logger.warning(
                 "mazemaker call %s failed (%d in a row): %s",
@@ -433,6 +434,80 @@ _POD_HEALTH = _PodHealth()
 
 
 _OFFLINE_BACKOFF_S = (120.0, 300.0, 600.0, 900.0)
+
+
+_RECOVERY_UNIT = os.environ.get("MM_RECOVERY_UNIT", "mazemaker-wonderland.service")
+_RECOVERY_MIN_INTERVAL_S = float(os.environ.get("MM_RECOVERY_MIN_INTERVAL_S", "600"))
+_RECOVERY_MAX_ATTEMPTS = int(os.environ.get("MM_RECOVERY_MAX_ATTEMPTS", "3"))
+_recovery_lock = threading.Lock()
+_recovery_state = {"last": 0.0, "attempts": 0}
+
+
+def _attempt_pod_recovery() -> bool:
+    """Restart the pod's front process once a wedge is confirmed.
+
+    A wedged pod is invisible to every supervisor it has. The container stays
+    Up, the unit stays active, the socket stays open, and the front keeps
+    accepting connections it never finishes -- observed 2026-09-03, four hours
+    of silence with everything reporting healthy. Nothing recovers from that on
+    its own, so the layer that can actually tell (this one, because it is the
+    thing making the calls) asks systemd for a restart.
+
+    Deliberately conservative: at most _RECOVERY_MAX_ATTEMPTS restarts, never
+    closer together than _RECOVERY_MIN_INTERVAL_S, and only when the harness
+    can see a user systemd. Set MM_RECOVERY_UNIT="" to switch it off.
+    """
+    if not _RECOVERY_UNIT:
+        return False
+    now = time.monotonic()
+    with _recovery_lock:
+        since = now - _recovery_state["last"]
+        if _recovery_state["last"] and since < _RECOVERY_MIN_INTERVAL_S:
+            logger.info(
+                "pod recovery skipped — last attempt %.0fs ago, waiting %.0fs between tries",
+                since, _RECOVERY_MIN_INTERVAL_S,
+            )
+            return False
+        if _recovery_state["attempts"] >= _RECOVERY_MAX_ATTEMPTS:
+            logger.error(
+                "pod recovery giving up after %d attempts on %s — restarting it "
+                "is not fixing whatever is wrong. Look at the pod by hand.",
+                _recovery_state["attempts"], _RECOVERY_UNIT,
+            )
+            return False
+        _recovery_state["last"] = now
+        _recovery_state["attempts"] += 1
+        attempt = _recovery_state["attempts"]
+
+    import shutil
+    import subprocess
+
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        logger.warning("pod recovery unavailable — no systemctl on PATH")
+        return False
+
+    logger.error(
+        "attempting pod recovery (%d/%d): systemctl --user restart %s",
+        attempt, _RECOVERY_MAX_ATTEMPTS, _RECOVERY_UNIT,
+    )
+    try:
+        proc = subprocess.run(
+            [systemctl, "--user", "restart", _RECOVERY_UNIT],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as exc:
+        logger.error("pod recovery failed to run: %s", exc)
+        return False
+    if proc.returncode != 0:
+        logger.error(
+            "pod recovery restart returned %d: %s",
+            proc.returncode, (proc.stderr or "").strip()[:200],
+        )
+        return False
+    logger.error("pod recovery: %s restarted — next call decides whether it took",
+                 _RECOVERY_UNIT)
+    return True
 
 
 class _Breaker:

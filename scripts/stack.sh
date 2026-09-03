@@ -217,6 +217,12 @@ cmd_start() {
   fi
   start_one main "${m[@]}"
 
+  # The main model must be READY before the helper starts. Both loading at once
+  # means two processes fighting for RAM while the big one is pinning 9 GB of
+  # KV cache: the machine swaps, and anything else on it (a memory pod running
+  # consolidation, for one) stalls behind the page-outs.
+  wait_ready main "$MAIN_HOST" "$MAIN_PORT" 300 || return 1
+
   if [ "${AUX_ENABLED:-1}" = "1" ]; then
     aux="$(model_path "$AUX_REPO" "$AUX_FILE")"
     if [ -n "$aux" ]; then
@@ -232,7 +238,6 @@ cmd_start() {
     fi
   fi
 
-  wait_ready main "$MAIN_HOST" "$MAIN_PORT" 300
   [ "${AUX_ENABLED:-1}" = "1" ] && [ -n "${aux:-}" ] && wait_ready aux "$AUX_HOST" "$AUX_PORT" 180
   return 0
 }
