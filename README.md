@@ -122,7 +122,7 @@ things that matter pays for three. It survives the session ending — restart
 tomorrow and the work is still there, retrievable rather than summarised into
 vagueness.
 
-The live instance backing this fork holds **218,700 memories and 704,242
+The live instance backing this fork holds **222,409 memories and 1,500,622
 connections**, and answers recall in milliseconds. It is benchmarked in public:
 
 | | |
@@ -152,13 +152,114 @@ quieter agent, not a broken one. Endpoint defaults to `http://127.0.0.1:8765`
 
 ---
 
+## The stack it was built against
+
+Not a compatibility matrix. This is the machine the numbers on this page came
+off, because "63% fewer tokens" means nothing without saying on what.
+
+**One 16 GB card. A 27B model. A 131,072-token window.** Those three do not fit
+together, and the arithmetic says so plainly: 65 layers, 4 KV heads, 256-wide
+keys and values — **73.1 KiB of KV cache per token** at `q4_0`. A full window is
+9.1 GiB of KV on a card already holding 9.7 GiB of weights.
+
+It works because the KV cache does not live on the card. [Adaptive KV
+streaming](https://github.com/RaymondHuang210129/llama.cpp-adaptive-kv-streaming)
+keeps the authoritative tensors in pinned host memory and a bounded pool of
+resident pages in VRAM; the rest streams in as attention walks the context.
+Exact attention over the whole window, no unified-memory thrashing. Two servers
+run side by side — the 27B on the card, a 1.7B on CPU for background work — in
+front of a Mazemaker Pro pod.
+
+| | |
+|---|---|
+| model | `Qwen3.8-27B` **IQ3_XXS** — 3B active, ~3.4 bits/weight |
+| speculation | MTP draft head + n-gram, 0.55–0.76 acceptance, 2.2–4.0 mean draft length |
+| KV | `q4_0`/`q4_0`, streamed from pinned host RAM |
+| throughput | 22–33 tok/s generation, 300–500 tok/s prefill |
+| memory | Mazemaker pod: pgvector, `bge-m3`, dream consolidation |
+
+**The quant tier is the point, not an apology.** IQ3_XXS is the tier the internet
+calls a toy. Give it a harness that does not spend its window on inventory and it
+writes shader pages.
+
+None of the above is a recipe. It is the shape of one working machine, written
+down so the measurements on this page can be checked rather than believed.
+
+## What it was tested on
+
+One machine. Everything at once. These numbers are a snapshot with the whole
+stack live, not a best case assembled from separate runs.
+
+| | |
+|---|---|
+| GPU | **RTX 4060 Ti, 16 GB** — consumer card, driver 610.43 |
+| CPU | 16 threads |
+| RAM | 31 GB |
+
+```
+main llama-server  :8080   13,822 MiB   Qwen3.8-27B, 131,072 ctx
+aux  llama-server  :8081      200 MiB   Qwen3-1.7B, CPU-resident
+mazemaker mcp                 300 MiB   recall matrix, 222k memories
+                          ─────────────
+free                          924 MiB
+```
+
+**Two inference servers, a memory pod, and 924 MiB left over.** The aux model
+runs at `-ngl 0` and still holds 200 MiB — a bare CUDA context, the price of
+being on the same machine at all. It earns it back by never queueing behind the
+main model: memory flushes and curation run *beside* the turn instead of after
+it.
+
+The main model is `Qwen3.8-27B` at **IQ3_XXS** — roughly 3.4 bits per weight, 3B
+active. Not an FP16 anything on a card that costs more than the machine it sits
+in. The whole point is what a heavily quantised model does once it stops paying
+rent on inventory it never asked for.
+
+**The settings on this page are tuned for exactly that box**, and they say so
+plainly rather than pretending to be universal:
+
+| | why this number |
+|---|---|
+| `--kv-stream-stage-mib 2048` | what fits beside 9.7 GB of weights on 16 GB |
+| `--ctx-size 131072` | 9.1 GB of KV in pinned host RAM, which 31 GB can hold |
+| `compression.max_tokens 116000` | window minus the reasoning budget minus reserve |
+| `--reasoning-budget 12000` | measured: completions land at 150–2,400 tokens |
+| aux at `-ngl 0`, `--reasoning off` | with thinking on, a 1.7B spends its entire output budget reasoning and returns empty content — 24s for nothing |
+
+Move to a different card and every one of them changes. The arithmetic that
+produces them is in this README; the numbers themselves are not a
+configuration to copy.
+
+## Where the tokens went instead
+
+Three places, each measured on a real session rather than a benchmark.
+
+**The catalogue stopped being a tax.** Listing 350 skills cost **24,470 tokens** —
+78% of an entire session's context, paid the first time the agent looked. It is
+329 tokens now: a bare call returns the category index, a query ranks by BM25 and
+name affinity and returns matches, and `limit=0` still yields everything. Nothing
+became unreachable.
+
+**Tools arrive when asked for.** 18 in the window, 91 registered. The rest are one
+`tool_search` away — except recall, which is never deferred. A model that has to
+search for its own memory before it can use it will not reach for it at all.
+
+**Bulk leaves the window without leaving the session.** A tool result that ages
+out is spilled to tmpfs and replaced by a line naming what it was and where it
+went — `read_file(path)` brings it back verbatim. Only oversized values move, so a
+`write_file` call keeps its path while the file body goes. On the session this was
+built against: **70,397 → 8,967 tokens, 87% smaller, nothing lost.**
+
+Long-term memory is not involved in any of that. Tool churn does not belong in a
+semantic graph.
+
 ## What else it does
 
 - **Runs anywhere there is an OpenAI-compatible endpoint.** llama.cpp, Ollama,
   vLLM, Unsloth Studio, OpenRouter, Anthropic, or your own. Model choice is a
   config line, not a rewrite.
 - **Builds its own skills.** Solves a problem, writes the solution down so the
-  next agent starts from the answer. 100 curated skills across 20 packs — every
+  next agent starts from the answer. 100 curated skills across 24 packs — every
   name is prompt weight, so the catalogue is curated rather than accumulated.
 - **Delegates.** Subagents with isolated context for work that would fill the
   parent's window.
@@ -203,28 +304,18 @@ tokens are runtime state, gitignored, with only `.example` templates in the tree
 
 ---
 
-## Install
+## Getting it
 
-```bash
-./install.sh                       # persistent tool install -> `daedalus`
-./install.sh --run                 # one-shot, installs nothing
-./install.sh --dev                 # editable .venv
-./install.sh --extras "messaging,cron,mcp"
+`./install.sh` bootstraps [uv](https://astral.sh/uv), installs the `daedalus`
+command and drops a home at `~/.daedalus/`. `daedalus setup` walks the first run.
 
-daedalus setup                     # interactive first run
-daedalus                           # go
-```
+The inference side — fetching the llama.cpp fork, building it, pulling the
+weights, and running both servers — is `scripts/stack.sh`, which reads its
+ports, contexts and budgets from a config it writes on first use. Its defaults
+are the numbers measured above, which is to say: the numbers for one particular
+16 GB card. `scripts/stack.sh doctor` says what is missing on yours.
 
-Bootstraps [uv](https://astral.sh/uv) if missing.
-
-| Path | Purpose |
-|------|---------|
-| `~/.daedalus/` | Home: config, state, sessions, skills |
-| `.env.example` | API key template — copy to `.env`, never commit |
-| `cli-config.yaml.example` | Annotated reference config |
-
-Skills live in `skills/` in this tree, and the default home *is* this directory,
-so they work immediately. Relocate with `DAEDALUS_HOME` and copy `skills/` across.
+That is the whole of the mechanics, and it is not what this page is about.
 
 ## Experimental
 
