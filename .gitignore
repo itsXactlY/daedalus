@@ -202,3 +202,6 @@ bin/tirith
 
 # Runtime state, not shipped content: these are the operator's own jobs.
 cron/jobs.json
+
+# Generated at runtime by tools/skills_sync.py into $DAEDALUS_HOME/skills/
+skills/.bundled_manifest
