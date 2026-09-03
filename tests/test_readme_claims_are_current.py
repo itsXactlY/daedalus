@@ -47,4 +47,7 @@ class TestTheReadmeStaysHonest:
         """The README argues a position; the install is one paragraph of it."""
         text = _readme().lower()
         install_section = text.split("## getting it")[-1].split("##")[0]
-        assert len(install_section) < 700, "the install section grew into a tutorial"
+        # Room for the section plus one pointer at the all-in-one alternative;
+        # not room for a step-by-step. Steps belong in `stack.sh doctor`.
+        assert len(install_section) < 1200, "the install section grew into a tutorial"
+        assert "```" not in install_section, "no command blocks to copy-paste from"

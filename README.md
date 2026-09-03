@@ -249,6 +249,15 @@ The inference side — fetching and building llama.cpp, pulling the weights,
 running both servers — is `scripts/stack.sh`. It writes its own config on first
 use and `scripts/stack.sh doctor` tells you what is missing on your machine.
 
+**One-button version:**
+[golden-agent-cpp](https://github.com/itsXactlY/golden-agent-cpp). A single
+C++26 binary that fetches the model and the server, supervises them, and falls
+back GPU → CPU by itself. No Python, no venv. It drives stock llama.cpp, so no
+adaptive KV streaming — just a working local model with nothing to assemble.
+
+Daedalus wrote it, incidentally: the Python original ported to C++26 overnight
+by the 27B model on the harness this page describes.
+
 That is the mechanics. It is not what this page is about.
 
 ## Where it came from

@@ -54,6 +54,14 @@ MAIN_REASONING_BUDGET=12000
 # Optional vision projector. Leave empty to run without vision.
 MMPROJ=""
 
+# --- all-in-one alternative --------------------------------------------------
+# golden-agent-cpp downloads the model AND the server binary, supervises the
+# process and falls back GPU -> CPU on its own. No Python, no venv, one binary.
+# It drives stock llama.cpp, so it cannot run the adaptive-KV fork this script
+# is built around -- use it when you want the simple path, not the 131k one.
+GOLDEN_AGENT_REPO="https://github.com/itsXactlY/golden-agent-cpp"
+GOLDEN_AGENT_DIR="$HOME/projects/golden-agent-cpp"
+
 # --- auxiliary model ---------------------------------------------------------
 # Small, CPU-only, on its own port so background work never queues behind the
 # main model. -ngl 0 is deliberate: it costs no VRAM and runs truly in parallel.
@@ -73,6 +81,9 @@ load_conf() {
   . "$CONF"
   LLAMA_DIR="${LLAMA_DIR/#\~/$HOME}"
   MMPROJ="${MMPROJ/#\~/$HOME}"
+  GOLDEN_AGENT_DIR="${GOLDEN_AGENT_DIR:-$HOME/projects/golden-agent-cpp}"
+  GOLDEN_AGENT_DIR="${GOLDEN_AGENT_DIR/#\~/$HOME}"
+  GOLDEN_AGENT_REPO="${GOLDEN_AGENT_REPO:-https://github.com/itsXactlY/golden-agent-cpp}"
   SERVER="$LLAMA_DIR/build/bin/llama-server"
   mkdir -p "$RUN_DIR" "$LOG_DIR"
 }
@@ -123,6 +134,18 @@ cmd_doctor() {
     [ -n "$a" ] && ok "aux:  $(basename "$a") ($(du -hL "$a" | cut -f1))" || bad "aux model missing — run: $0 setup"
   fi
   [ -n "$MMPROJ" ] && { [ -f "$MMPROJ" ] && ok "mmproj: $MMPROJ" || warn "MMPROJ set but not found: $MMPROJ"; }
+
+  head_ "All-in-one alternative"
+  if [ -x "$GOLDEN_AGENT_DIR/build/golden-agent" ] || [ -x "$GOLDEN_AGENT_DIR/build/ga" ]; then
+    ok "golden-agent-cpp built at $GOLDEN_AGENT_DIR"
+  elif [ -d "$GOLDEN_AGENT_DIR" ]; then
+    warn "golden-agent-cpp present but not built — cd $GOLDEN_AGENT_DIR && make"
+  else
+    say "  ${DIM}·${N} golden-agent-cpp not installed — $GOLDEN_AGENT_REPO"
+    say "  ${DIM}    one binary, no Python: fetches the model and the server,${N}"
+    say "  ${DIM}    supervises it, falls back GPU -> CPU. Drives stock${N}"
+    say "  ${DIM}    llama.cpp, so no adaptive KV streaming.${N}"
+  fi
 
   head_ "Memory backend"
   local url="${MM_WONDERLAND_URL:-http://127.0.0.1:8765}"
