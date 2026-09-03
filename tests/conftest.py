@@ -186,3 +186,48 @@ def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
         for item in items:
             if item.get_closest_marker(mark_name) is not None:
                 item.add_marker(skip_os)
+
+
+def _pod_unit_active(unit: str) -> bool:
+    import shutil
+    import subprocess
+
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return False
+    try:
+        proc = subprocess.run([systemctl, "--user", "is-active", "--quiet", unit],
+                              capture_output=True, timeout=15)
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _restore_memory_pod_state():
+    """Leave the machine as the suite found it.
+
+    A test driving the wedge detector past its threshold restarted the memory
+    pod's front, which pulled the whole pod up on a machine where it had been
+    deliberately stopped (2026-09-03). The recovery path refuses to spawn under
+    pytest now, but that only covers the case we know about: if anything else
+    in the suite starts the pod, put it back.
+    """
+    unit = "mazemaker-pod.service"
+    was_active = _pod_unit_active(unit)
+    yield
+    if was_active or not _pod_unit_active(unit):
+        return
+    import shutil
+    import subprocess
+
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return
+    try:
+        subprocess.run([systemctl, "--user", "stop", unit],
+                       capture_output=True, timeout=60)
+        print(f"\n[conftest] {unit} was started during the run — stopped it again",
+              file=sys.stderr)
+    except Exception:
+        pass

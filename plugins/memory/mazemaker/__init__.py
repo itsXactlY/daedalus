@@ -459,6 +459,14 @@ def _attempt_pod_recovery() -> bool:
     """
     if not _RECOVERY_UNIT:
         return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        # A unit test exercising the wedge detector must not restart a system
+        # service. This one did: the suite drove record_fail past the threshold
+        # and the recovery brought a deliberately stopped pod back up
+        # (2026-09-03). Detection is what the tests are for; the side effect is
+        # not theirs to have.
+        logger.debug("pod recovery suppressed under pytest")
+        return False
     now = time.monotonic()
     with _recovery_lock:
         since = now - _recovery_state["last"]
