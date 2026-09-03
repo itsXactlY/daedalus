@@ -28,6 +28,20 @@ class TestTheReadmeStaysHonest:
         assert int(claimed.group(1)) == skills
         assert int(claimed.group(2)) == packs
 
+    def test_every_documented_subcommand_exists(self):
+        """A README naming a command the script does not have is worse than
+        one naming none: the reader trusts it and gets an error."""
+        import re
+
+        section = _readme().split("## Getting it")[-1].split("\n## ")[0]
+        script = (REPO / "scripts" / "stack.sh")
+        if not script.exists():
+            pytest.skip("stack.sh is not in this tree")
+        implemented = set(re.findall(r"^\s{2}([a-z]+)\)\s", script.read_text(), re.M))
+        documented = set(re.findall(r"`([a-z]+)`", section)) - {"install", "sh", "daedalus"}
+        invented = documented - implemented
+        assert not invented, f"README names subcommands stack.sh does not have: {sorted(invented)}"
+
     def test_relative_links_resolve(self):
         broken = [
             target for target in re.findall(r"\]\((?!https?:)([^)]+)\)", _readme())
@@ -44,10 +58,20 @@ class TestTheReadmeStaysHonest:
         assert "amnesiac" in text.lower()
 
     def test_it_is_not_an_installation_manual(self):
-        """The README argues a position; the install is one paragraph of it."""
-        text = _readme().lower()
-        install_section = text.split("## getting it")[-1].split("##")[0]
-        # Room for the section plus one pointer at the all-in-one alternative;
-        # not room for a step-by-step. Steps belong in `stack.sh doctor`.
-        assert len(install_section) < 1200, "the install section grew into a tutorial"
-        assert "```" not in install_section, "no command blocks to copy-paste from"
+        """The README argues a position. It may name the interface, not teach it.
+
+        Length is a bad proxy — naming eight subcommands is documentation, not a
+        tutorial. What makes a section a manual is transcribed command lines
+        someone can lift wholesale, so that is what this checks.
+        """
+        import re
+
+        text = _readme()
+        section = text.split("## Getting it")[-1].split("\n## ")[0]
+        assert "```" not in section, "no fenced command blocks in the install section"
+        prompts = re.findall(r"^\s*[$>#]\s+\S", section, re.M)
+        assert not prompts, f"shell-prompt lines belong in the tool, not here: {prompts}"
+        # Flags carry the copy-paste risk: a reader lifting `--kv-stream-stage-mib
+        # 2048` gets a number tuned for one specific 16 GB card.
+        flags = re.findall(r"(?<![\w-])--[a-z][a-z-]{3,}", section)
+        assert not flags, f"tuned flags do not belong in a README: {sorted(set(flags))}"
