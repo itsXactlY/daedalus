@@ -55,10 +55,10 @@ MAIN_REASONING_BUDGET=12000
 MMPROJ=""
 
 # --- all-in-one alternative --------------------------------------------------
-# golden-agent-cpp downloads the model AND the server binary, supervises the
-# process and falls back GPU -> CPU on its own. No Python, no venv, one binary.
-# It drives stock llama.cpp, so it cannot run the adaptive-KV fork this script
-# is built around -- use it when you want the simple path, not the 131k one.
+# golden-agent-cpp clones and builds the same adaptive-KV server this script
+# uses, fetches the model, supervises the process and falls back GPU -> CPU on
+# its own. No Python, no venv, one binary -- the same context, none of the
+# assembly. Point it at an existing checkout with GA_LLAMA_SRC.
 GOLDEN_AGENT_REPO="https://github.com/itsXactlY/golden-agent-cpp"
 GOLDEN_AGENT_DIR="$HOME/projects/golden-agent-cpp"
 
@@ -142,9 +142,9 @@ cmd_doctor() {
     warn "golden-agent-cpp present but not built — cd $GOLDEN_AGENT_DIR && make"
   else
     say "  ${DIM}·${N} golden-agent-cpp not installed — $GOLDEN_AGENT_REPO"
-    say "  ${DIM}    one binary, no Python: fetches the model and the server,${N}"
-    say "  ${DIM}    supervises it, falls back GPU -> CPU. Drives stock${N}"
-    say "  ${DIM}    llama.cpp, so no adaptive KV streaming.${N}"
+    say "  ${DIM}    one binary, no Python: builds this same adaptive-KV${N}"
+    say "  ${DIM}    server, fetches the model, supervises it, falls back${N}"
+    say "  ${DIM}    GPU -> CPU. GA_LLAMA_SRC reuses your checkout.${N}"
   fi
 
   head_ "Memory backend"

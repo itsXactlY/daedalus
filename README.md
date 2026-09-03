@@ -251,9 +251,10 @@ use and `scripts/stack.sh doctor` tells you what is missing on your machine.
 
 **One-button version:**
 [golden-agent-cpp](https://github.com/itsXactlY/golden-agent-cpp). A single
-C++26 binary that fetches the model and the server, supervises them, and falls
-back GPU → CPU by itself. No Python, no venv. It drives stock llama.cpp, so no
-adaptive KV streaming — just a working local model with nothing to assemble.
+C++26 binary that clones and builds the adaptive-KV server, fetches the model,
+supervises the process and falls back GPU → CPU by itself. No Python, no venv,
+nothing to assemble — and the same six-figure context, because it runs the same
+fork rather than stock llama.cpp.
 
 Daedalus wrote it, incidentally: the Python original ported to C++26 overnight
 by the 27B model on the harness this page describes.
