@@ -62,7 +62,7 @@ When the operator asks for "100+ iterations," "loop over N," or similar:
   - what you're now more sure about
   - what you're now less sure about
 - Save the full iteration set to a file (e.g.,
-  `/home/alca/<project>-iterations.md`) and reference the path.
+  `~/<project>-iterations.md`) and reference the path.
 
 ### Critical: do not stop to ask permission
 
@@ -101,7 +101,7 @@ substantial prose.
 
 For plans > 1500 words or with multiple passes:
 
-- Save to `/home/alca/<project>-<artifact>.md` (or appropriate home path)
+- Save to `~/<project>-<artifact>.md` (or appropriate home path)
 - Naming: `<project>-stack.md` for the main plan, `<project>-iterations.md`
   for iteration sets, `<project>-iterations-2.md` for second batches
 - Present the substance in the response too — the file is for reference, not

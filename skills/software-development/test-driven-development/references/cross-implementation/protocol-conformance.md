@@ -209,4 +209,4 @@ A conformance suite is done when:
 
 ## Reference patterns
 
-A reference implementation of this pattern: see `stem-conformance` Rust crate at `/home/alca/stem-conformance/` for the Stem Protocol v0.1 RFC suite — full worked example, 38 passing tests covering schema/crypto/provenance/layer-constraints/adversarial categories.
+A reference implementation of this pattern: see `stem-conformance` Rust crate at `~/stem-conformance/` for the Stem Protocol v0.1 RFC suite — full worked example, 38 passing tests covering schema/crypto/provenance/layer-constraints/adversarial categories.

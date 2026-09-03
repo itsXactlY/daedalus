@@ -1,6 +1,6 @@
 from __future__ import annotations
 import sys
-sys.path.insert(0, "/home/alca/.daedalus")
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 from agent.tool_broker import (CallableExecutor, HeuristicMapper, ToolAdvisor,
                                ToolBroker, ToolRequest, ToolResult)
 
@@ -43,7 +43,7 @@ for _txt, _lbl in (
     ("<html><head><style>body{color:red}</style></head></html>", "raw HTML"),
     ("<!DOCTYPE html>\n<html lang=en>\n<body>hi</body>\n</html>", "multiline HTML"),
     ("curl https://api.github.com/repos/x/y", "bare url prose"),
-    ("check /home/alca/projects for the readme", "prose with a path"),
+    ("check /home/user/projects for the readme", "prose with a path"),
     ("rm -rf / please", "dangerous prose"),
     ("the file /etc/passwd is interesting", "path mention"),
 ):

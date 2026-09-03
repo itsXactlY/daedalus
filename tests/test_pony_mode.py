@@ -1,6 +1,6 @@
 from __future__ import annotations
 import sys
-sys.path.insert(0, "/home/alca/.daedalus")
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 from agent.pony_mode import (DEFAULT_PONY_PROMPT, ENV_HEADER, EnvironmentFacts,
                              HeuristicNeeds, Need, PonyConfig,
                              PonyMode, TOOL_NOTE, build_pony_mode)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import sys
-sys.path.insert(0, "/home/alca/.daedalus")
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 from agent.maze_router import (Assembler, Budget, DISTILLED_BOOST, HeuristicPlanner, Hit,
                                LlmPlanner, TRANSCRIPT_PENALTY, _kind_weight,

@@ -2,7 +2,7 @@
 # Full bench verification chain — waits for a FAST pod window, then runs
 # all three continuity arms + the router A/B instrument, logging summaries.
 set -u
-cd /home/alca/.daedalus
+cd "$(dirname "$(readlink -f "$0")")/.."
 
 echo "[chain] waiting for fast pod window (<7s recall)…"
 i=0

@@ -6,7 +6,7 @@ category: devops
 
 # Daedalus ZIP Backup
 
-Backs up `/home/alca/.daedalus/` to `/mnt/nas/unsortiert/daedalus_backup/zips/` as a max-compression ZIP archive.
+Backs up `$DAEDALUS_HOME/` to `/mnt/nas/unsortiert/daedalus_backup/zips/` as a max-compression ZIP archive.
 
 ## Key Pitfalls
 
@@ -18,7 +18,7 @@ Backs up `/home/alca/.daedalus/` to `/mnt/nas/unsortiert/daedalus_backup/zips/` 
 ### ZIP -9 on 2.6GB+ over NFS is too slow for foreground
 Always run in **background mode** — the compression + NFS write for a 2.6GB source takes 10+ minutes. Use:
 ```bash
-bash /home/alca/.daedalus/scripts/daedalus-zip-backup.sh
+bash $DAEDALUS_HOME/scripts/daedalus-zip-backup.sh
 ```
 as a background terminal process (not foreground).
 
@@ -26,7 +26,7 @@ as a background terminal process (not foreground).
 Recent archives: 29MB → 894MB → 1.7GB. Monitor for session DBs or audio cache bloat. Script excludes `venv/` (root + nested `*/venv/` and `*/.venv/`), `node_modules/`, `logs/`, `audio_cache/`, `honcho/honcho.log`, and WAL/SHM files. Key: script `cd`s into `.daedalus/` directly so glob patterns match without path prefix.
 
 ## Script Location
-`/home/alca/.daedalus/scripts/daedalus-zip-backup.sh`
+`$DAEDALUS_HOME/scripts/daedalus-zip-backup.sh`
 
 > NOTE (2026-08-21 audit): this script file does NOT currently exist on disk or in any repo. Recreate it from *Script Behavior* below before relying on NAS zip backups; the hourly GitHub backup (`~/.daedalus/scripts/daedalus-backup-sync.sh`) is the active backup path.
 

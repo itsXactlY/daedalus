@@ -31,7 +31,7 @@ import sys
 import time
 from collections import deque
 
-sys.path.insert(0, "/home/alca/.daedalus")
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
 import plugins.memory.mazemaker as mz
 from plugins.memory.mazemaker.distiller import distill_stats

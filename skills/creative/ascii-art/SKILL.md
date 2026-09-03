@@ -319,7 +319,7 @@ instant, always available, and works in any chat surface that renders monospace.
 ### The 3-step pattern
 
 1. **Deliver the ASCII scene as a complete `.md` file**, not just inline in the chat.
-   Save to a memorable path like `/home/alca/<name>-<topic>.md` so it persists across
+   Save to a memorable path like `~/<name>-<topic>.md` so it persists across
    sessions and can be re-attached later.
 
 2. **Save the original image-generation prompt + a ComfyUI workflow JSON alongside it**
@@ -357,10 +357,10 @@ instant, always available, and works in any chat surface that renders monospace.
 
 ### Pitfalls when using this fallback
 
-- **The `pyfiglet` CLI is at `/home/alca/.local/bin/pyfiglet`** on this operator's
+- **The `pyfiglet` CLI is at `~/.local/bin/pyfiglet`** on this operator's
   machine — it is NOT on the system PATH from a fresh shell. The Python module
   (`import pyfiglet`) is also not installed in the active venv. Call the CLI binary
-  directly: `/home/alca/.local/bin/pyfiglet "TEXT" -f cyberlarge -w 80`. Do not waste
+  directly: `~/.local/bin/pyfiglet "TEXT" -f cyberlarge -w 80`. Do not waste
   time installing pyfiglet just to import it.
 
 - **Don't fabricate success.** If `image_generate` failed, SAY it failed, then deliver
@@ -370,7 +370,7 @@ instant, always available, and works in any chat surface that renders monospace.
   user opt-in. The operator's standing rule (see `creative:image-gen-openrouter` skill)
   is hard. ASCII + saved workflow is the right move; OpenRouter is not.
 
-- **Don't cold-install ComfyUI** for a one-off creative request. If `/home/alca/comfy/ComfyUI`
+- **Don't cold-install ComfyUI** for a one-off creative request. If `~/comfy/ComfyUI`
   exists but has no server, no venv, and no models, that is itself a problem to fix
   deliberately — not a thing to brute-force on a meme. A 30-min install is the exact
   reinstall-loop the operator has killed before.

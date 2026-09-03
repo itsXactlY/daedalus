@@ -138,7 +138,7 @@ class TestScoring:
         assert estimate_level("ultra reasoning please") == "max"
 
     def test_code_markers_add_points(self):
-        assert score_task("Schau in /home/alca/projects/main.py") >= 1
+        assert score_task("Schau in /home/user/projects/main.py") >= 1
 
     def test_casual_greeting_never_escalates(self):
         """A plain greeting must never score above 'low' — the composite
@@ -150,7 +150,7 @@ class TestScoring:
         """A creation verb + an explicit filesystem path is never idle
         chat, even with zero formal engineering vocabulary."""
         assert estimate_level(
-            "write a website from scratch into /home/alca/site/new/"
+            "write a website from scratch into /home/user/site/new/"
         ) in {"high", "xhigh", "max", "ultra"}
 
     def test_build_verb_with_deliverable_noun_escalates(self):
@@ -192,7 +192,7 @@ class TestScoring:
         33KB-governing-skill task to run at minimum reasoning effort."""
         text = (
             "i want u to write an website from scratch into "
-            "/home/alca/website-showcase/new/ with each and everything of "
+            "/home/user/website-showcase/new/ with each and everything of "
             "your cutting edge skills from this daedalus harness involved to "
             "get the idea of an beast of a ctting edge todays standards "
             "website"

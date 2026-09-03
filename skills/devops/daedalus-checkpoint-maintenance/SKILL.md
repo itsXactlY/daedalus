@@ -15,7 +15,7 @@ once per turn, capped by `checkpoints.max_snapshots` (default 50).
 
 The old `~/.daedalus/snapshots/` content-addressed design (see runtime-snapshot-engine
 skill) is NOT deployed. Storage lives ONLY in `~/.daedalus/checkpoints/` — never anywhere
-else. Verify with: `find /home/alca /tmp -maxdepth 4 -name DAEDALUS_WORKDIR` → empty
+else. Verify with: `find ~/ /tmp -maxdepth 4 -name DAEDALUS_WORKDIR` → empty
 outside `~/.daedalus/checkpoints`.
 
 ## Autoprune — how it works

@@ -194,3 +194,11 @@ state*.db-wal
 screenshots/
 data/checkpoint_test_current/
 data/checkpoint_test_resume/
+
+# Auto-installed from GitHub releases with SHA-256 + cosign verification
+# (tools/tirith_security.py). Shipping the binary bypasses that check and
+# adds 22 MB to every clone.
+bin/tirith
+
+# Runtime state, not shipped content: these are the operator's own jobs.
+cron/jobs.json
