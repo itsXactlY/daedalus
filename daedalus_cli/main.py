@@ -18,6 +18,13 @@ Usage:
     daedalus cron list           # List cron jobs
     daedalus cron status         # Check if cron scheduler is running
     daedalus doctor              # Check configuration and dependencies
+    daedalus doctor status       # Local inference servers: ports, pids, VRAM
+    daedalus doctor setup        # Build llama.cpp and fetch the local models
+    daedalus doctor start        # Start the local inference servers
+    daedalus doctor stop         # Stop them
+    daedalus doctor pause        # Freeze them, weights stay loaded
+    daedalus doctor resume       # Unfreeze them
+    daedalus doctor logs main    # Tail a server log
     daedalus version             Show version
     daedalus update              Update to latest version
     daedalus uninstall           Uninstall Daedalus Agent
@@ -4611,8 +4618,10 @@ For more help on a command:
 
     doctor_parser = subparsers.add_parser(
         "doctor",
-        help="Check configuration and dependencies",
-        description="Diagnose issues with Daedalus Agent setup"
+        help="Check configuration and dependencies, and run the local inference stack",
+        description="Diagnose issues with Daedalus Agent setup. With a subcommand, "
+                    "drive the local llama.cpp stack: start, stop, pause, resume, "
+                    "restart, status, setup, logs, conf."
     )
     doctor_parser.add_argument(
         "--fix",
@@ -4625,6 +4634,11 @@ For more help on a command:
         default=None,
         help="Acknowledge a security advisory (dismiss its startup banner)"
     )
+    # The servers this agent talks to are part of its setup, so their lifecycle
+    # lives on the command that already reports their health rather than in a
+    # separate script the operator has to go find.
+    from daedalus_cli.stack import register_cli as _register_stack_cli
+    _register_stack_cli(doctor_parser)
     doctor_parser.set_defaults(func=cmd_doctor)
 
     checkpoints_parser = subparsers.add_parser(

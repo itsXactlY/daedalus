@@ -29,18 +29,35 @@ class TestTheReadmeStaysHonest:
         assert int(claimed.group(2)) == packs
 
     def test_every_documented_subcommand_exists(self):
-        """A README naming a command the script does not have is worse than
-        one naming none: the reader trusts it and gets an error."""
+        """A README naming a command the CLI does not have is worse than one
+        naming none: the reader trusts it and gets an error.
+
+        The stack lifecycle moved from scripts/stack.sh into `daedalus doctor`,
+        so the parser — not the shim that forwards to it — is what the README
+        is checked against.
+        """
+        import argparse
         import re
 
         section = _readme().split("## Getting it")[-1].split("\n## ")[0]
-        script = (REPO / "scripts" / "stack.sh")
-        if not script.exists():
-            pytest.skip("stack.sh is not in this tree")
-        implemented = set(re.findall(r"^\s{2}([a-z]+)\)\s", script.read_text(), re.M))
-        documented = set(re.findall(r"`([a-z]+)`", section)) - {"install", "sh", "daedalus"}
+        try:
+            from daedalus_cli.stack import register_cli
+        except Exception:
+            pytest.skip("daedalus_cli.stack is not importable in this tree")
+
+        parser = argparse.ArgumentParser()
+        register_cli(parser)
+        implemented = set()
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                implemented |= set(action.choices)
+
+        documented = set(re.findall(r"`daedalus doctor ([a-z]+)`", section))
+        documented |= set(re.findall(r"`([a-z]+)`", section)) - {
+            "install", "sh", "daedalus", "doctor",
+        }
         invented = documented - implemented
-        assert not invented, f"README names subcommands stack.sh does not have: {sorted(invented)}"
+        assert not invented, f"README names subcommands daedalus doctor does not have: {sorted(invented)}"
 
     def test_relative_links_resolve(self):
         broken = [

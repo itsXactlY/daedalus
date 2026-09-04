@@ -1,0 +1,1010 @@
+"""The local inference stack, owned by ``daedalus doctor``.
+
+This is the lifecycle of the machine's own llama.cpp servers — the main
+model, the CPU-only helper, and the optional vision endpoint — expressed as
+subcommands of the command that already reports on them::
+
+    daedalus doctor              # everything, including what is running
+    daedalus doctor status       # just the servers: ports, pids, VRAM
+    daedalus doctor setup        # clone + build llama.cpp, fetch the models
+    daedalus doctor start        # bring the servers up, in the right order
+    daedalus doctor stop
+    daedalus doctor restart
+    daedalus doctor pause        # freeze them, weights stay loaded
+    daedalus doctor resume
+    daedalus doctor logs [main|aux|vis]
+
+Everything is driven by ``$DAEDALUS_HOME/stack.conf``, written on first use.
+Edit that rather than this module: nothing about one particular machine is
+baked in here, the defaults are simply the numbers that were measured on the
+card this was developed against.
+
+The configuration file is shell syntax because it predates this module and is
+still readable by hand; it is parsed here rather than sourced, so running
+``daedalus doctor`` can never execute whatever a conf file happens to contain.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import signal
+import socket
+import struct
+import subprocess
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from daedalus_cli.colors import Colors, color
+
+# Names are the pid-file / log-file stems as well as the user-facing labels.
+SERVERS = ("main", "aux", "vis")
+
+
+# --------------------------------------------------------------- output -----
+# Deliberately the same glyphs run_doctor() uses, so a stack section reads as
+# part of the same report rather than a bolted-on second one.
+
+def ok(text: str, detail: str = "") -> None:
+    print(f"  {color('✓', Colors.GREEN)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+
+
+def warn(text: str, detail: str = "") -> None:
+    print(f"  {color('⚠', Colors.YELLOW)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+
+
+def bad(text: str, detail: str = "") -> None:
+    print(f"  {color('✗', Colors.RED)} {text}" + (f" {color(detail, Colors.DIM)}" if detail else ""))
+
+
+def dim(text: str) -> None:
+    print(f"  {color('·', Colors.DIM)} {color(text, Colors.DIM)}")
+
+
+def note(text: str) -> None:
+    print(f"    {color(text, Colors.DIM)}")
+
+
+def section(text: str) -> None:
+    print()
+    print(color(f"◆ {text}", Colors.CYAN, Colors.BOLD))
+
+
+# ---------------------------------------------------------------- paths -----
+
+def daedalus_home() -> Path:
+    return Path(os.environ.get("DAEDALUS_HOME") or (Path.home() / ".daedalus"))
+
+
+def conf_path() -> Path:
+    return daedalus_home() / "stack.conf"
+
+
+def run_dir() -> Path:
+    return daedalus_home() / "run"
+
+
+def log_dir() -> Path:
+    return daedalus_home() / "logs"
+
+
+# ----------------------------------------------------------------- conf -----
+
+DEFAULT_CONF = '''\
+# Daedalus local stack. Paths are absolute; ~ is expanded on load.
+
+# --- where the llama.cpp fork lives and gets built ---------------------------
+# Adaptive KV streaming keeps the KV cache in pinned host memory, which is what
+# lets a 27B model hold a six-figure context on a 16 GB card.
+LLAMA_DIR="$HOME/projects/llama.cpp-adaptive-kv-streaming"
+LLAMA_REPO="https://github.com/RaymondHuang210129/llama.cpp-adaptive-kv-streaming"
+LLAMA_BRANCH="feature/adaptive-kv-stream"
+
+# --- main model --------------------------------------------------------------
+MAIN_REPO="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
+MAIN_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
+MAIN_PORT=8080
+MAIN_HOST="127.0.0.1"
+MAIN_CTX=131072
+# Resident KV pool in VRAM, MiB. Raise it while watching peak VRAM; the rest of
+# the cache streams from host memory. Leave EMPTY to drop block KV streaming
+# entirely, which is what frees you to run more than one slot.
+MAIN_KV_POOL=2048
+MAIN_NGL=99
+MAIN_THREADS=8
+MAIN_REASONING_BUDGET=12000
+
+# Server slots. MUST be 1 whenever MAIN_KV_POOL is set.
+#
+# This fork's block KV streaming — the thing that lets a 27B hold a 131072
+# context on a 16 GB card — is single-sequence only. Ask for more and the
+# server does not degrade, it refuses to start:
+#
+#   E llama_init_from_model: failed to initialize the context:
+#     block KV streaming requires exactly one sequence (-np 1)
+#
+# So the one-slot queueing that makes an auxiliary call wait out its client
+# timeout is NOT tunable here: concurrency and the big context are mutually
+# exclusive in this build. The fix for that is a separate endpoint (see
+# the VIS_* block below), not a second slot. start enforces this pairing.
+MAIN_SLOTS=1
+# Only meaningful when MAIN_SLOTS > 1, which requires MAIN_KV_POOL empty.
+MAIN_KV_UNIFIED=0
+
+# --- vision -------------------------------------------------------------------
+# The projector is a SEPARATE artifact from the model GGUF. The text weights
+# carry no vision tensors at all, which is exactly what llama-server means by
+#   "image input is not supported - hint: ... you may need to provide the mmproj"
+# — the model is fine, the tower simply was not loaded.
+#
+# Resolved out of the HF cache like every other weight: leave MMPROJ empty and
+# MAIN_MMPROJ_FILE is looked up inside MAIN_REPO, so `daedalus doctor setup`
+# fetches it and `start` finds it with no absolute path to keep in sync. Set
+# MMPROJ to an absolute path ONLY to override with a file outside the cache.
+#
+# The tower must match the model: this one reports projection_dim 5120. The
+# Qwen3.6-35B-A3B projector (dim 2048) also on this box will not pair with it.
+# `daedalus doctor` checks that rather than letting the server fail at runtime.
+MAIN_MMPROJ_FILE="mmproj-Qwen3.8-27B-BF16.gguf"
+MMPROJ=""
+
+# --- all-in-one alternative --------------------------------------------------
+# golden-agent-cpp clones and builds the same adaptive-KV server this module
+# uses, fetches the model, supervises the process and falls back GPU -> CPU on
+# its own. No Python, no venv, one binary -- the same context, none of the
+# assembly. Point it at an existing checkout with GA_LLAMA_SRC.
+GOLDEN_AGENT_REPO="https://github.com/itsXactlY/golden-agent-cpp"
+GOLDEN_AGENT_DIR="$HOME/projects/golden-agent-cpp"
+
+# --- auxiliary model ---------------------------------------------------------
+# Small, CPU-only, on its own port so background work never queues behind the
+# main model. -ngl 0 is deliberate: it costs no VRAM and runs truly in parallel.
+AUX_REPO="enacimie/Qwen3-1.7B-Q4_K_M-GGUF"
+AUX_FILE="qwen3-1.7b-q4_k_m.gguf"
+AUX_PORT=8081
+AUX_HOST="127.0.0.1"
+AUX_CTX=12096
+AUX_THREADS=6
+AUX_ENABLED=1
+
+# --- vision endpoint ----------------------------------------------------------
+# OFF by default. The main model can see (MAIN_MMPROJ_FILE), so leaving this
+# off is correct and costs nothing extra.
+#
+# Turn it on when a vision call must not QUEUE. The main server runs -np 1 by
+# hard requirement of block KV streaming, so every request to it is serialised:
+# an image sent while a long turn is generating is not answered until that turn
+# ends, and a client with a fixed timeout gives up having never been served.
+# That is the "waited two minutes for nothing" case, and no flag on the main
+# server fixes it — the second slot the fix would need is exactly what the
+# fork forbids.
+#
+# Two ways out, pick one:
+#   1. VIS_ENABLED=1 here, on its own port, -ngl 0 so it costs NO VRAM next to
+#      the 27B (same trick the aux model already uses). Point the harness's
+#      auxiliary.vision.base_url at http://127.0.0.1:$VIS_PORT/v1. Needs a
+#      small VL model + its projector; set VIS_REPO/VIS_FILE/VIS_MMPROJ_FILE
+#      and run `daedalus doctor setup`.
+#   2. Keep vision on the main model and accept the queue, but give the client
+#      a timeout longer than your longest turn, so it waits and is answered
+#      instead of timing out for nothing.
+VIS_ENABLED=0
+VIS_REPO=""
+VIS_FILE=""
+VIS_MMPROJ_FILE=""
+VIS_PORT=8082
+VIS_HOST="127.0.0.1"
+VIS_CTX=16384
+VIS_THREADS=4
+'''
+
+_ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def _parse_conf(text: str) -> dict:
+    """Read shell-style ``KEY=value`` assignments without running a shell.
+
+    Only the subset the conf file actually uses is honoured: optionally quoted
+    scalars, ``$HOME`` and ``~``. Anything else is left as written, which is
+    the safe direction — a value this does not understand reaches llama-server
+    verbatim instead of being silently rewritten.
+    """
+    values: dict = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _ASSIGN.match(line)
+        if not match:
+            continue
+        key, rhs = match.group(1), match.group(2).strip()
+        if rhs[:1] in ('"', "'"):
+            quote = rhs[0]
+            end = rhs.find(quote, 1)
+            rhs = rhs[1:end] if end > 0 else rhs[1:]
+        else:
+            rhs = rhs.split("#", 1)[0].strip()
+        values[key] = os.path.expanduser(os.path.expandvars(rhs))
+    return values
+
+
+class StackConf:
+    """Typed view over stack.conf, with the same fallbacks the stack needs.
+
+    The fallbacks are not cosmetic: a conf file written before a key existed
+    must still start a server, and the safe value for the two KV-streaming
+    keys is the single-sequence one, because the alternative does not run.
+    """
+
+    def __init__(self, values: dict):
+        self._v = values
+
+    def str(self, key: str, default: str = "") -> str:
+        value = self._v.get(key)
+        return default if value in (None, "") else value
+
+    def int(self, key: str, default: int) -> int:
+        try:
+            return int(self.str(key, str(default)))
+        except ValueError:
+            return default
+
+    def flag(self, key: str, default: bool) -> bool:
+        return self.str(key, "1" if default else "0") == "1"
+
+    def path(self, key: str, default: str = "") -> str:
+        value = self.str(key, default)
+        return os.path.expanduser(os.path.expandvars(value)) if value else ""
+
+    # -- derived ------------------------------------------------------------
+    @property
+    def llama_dir(self) -> Path:
+        return Path(self.path(
+            "LLAMA_DIR",
+            str(Path.home() / "projects/llama.cpp-adaptive-kv-streaming"),
+        ))
+
+    @property
+    def server(self) -> Path:
+        return self.llama_dir / "build/bin/llama-server"
+
+    @property
+    def golden_agent_dir(self) -> Path:
+        return Path(self.path("GOLDEN_AGENT_DIR", str(Path.home() / "projects/golden-agent-cpp")))
+
+    @property
+    def mmproj(self) -> str:
+        """An explicit MMPROJ always wins; otherwise take the projector that
+        ships in the model's own HF repo.
+
+        Resolving it here (not at start time) is what makes doctor, setup and
+        start agree on which file "the projector" is.
+        """
+        explicit = self.path("MMPROJ")
+        if explicit:
+            return explicit
+        named = self.str("MAIN_MMPROJ_FILE")
+        return model_path(self.str("MAIN_REPO"), named) if named else ""
+
+    def host_port(self, name: str) -> tuple:
+        prefix = name.upper()
+        default_port = {"main": 8080, "aux": 8081, "vis": 8082}[name]
+        return self.str(f"{prefix}_HOST", "127.0.0.1"), self.int(f"{prefix}_PORT", default_port)
+
+    def enabled(self, name: str) -> bool:
+        if name == "aux":
+            return self.flag("AUX_ENABLED", True)
+        if name == "vis":
+            return self.flag("VIS_ENABLED", False)
+        return True
+
+
+def write_default_conf() -> Path:
+    target = conf_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(DEFAULT_CONF, encoding="utf-8")
+    return target
+
+
+def load_conf(create: bool = True) -> StackConf:
+    """Load stack.conf, writing the annotated default when it is missing.
+
+    ``create=False`` is for the read-only paths: a plain ``daedalus doctor``
+    should be able to report on the stack without leaving a conf file behind
+    on a machine that never runs one.
+    """
+    target = conf_path()
+    if not target.exists():
+        if not create:
+            return StackConf(_parse_conf(DEFAULT_CONF))
+        write_default_conf()
+    if create:
+        run_dir().mkdir(parents=True, exist_ok=True)
+        log_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        text = DEFAULT_CONF
+    return StackConf(_parse_conf(text))
+
+
+def stack_in_use(conf: StackConf = None) -> bool:
+    """Has this machine ever actually set the local stack up?
+
+    A user running entirely on remote providers should not have a page of
+    CUDA-toolchain findings in their doctor report, so the detailed section
+    is only rendered once there is something to report on.
+    """
+    conf = conf or load_conf(create=False)
+    if conf_path().exists() or conf.llama_dir.is_dir():
+        return True
+    return any(alive(pid_of(name)) for name in SERVERS)
+
+
+# --------------------------------------------------------------- models -----
+
+def model_path(repo: str, filename: str) -> str:
+    """Resolve a GGUF inside the HuggingFace cache, or return ''.
+
+    Snapshot entries are symlinks into ``blobs/``, so any search that insists
+    on real files misses every one of them — hence the followed walk.
+    """
+    if not repo or not filename:
+        return ""
+    root = Path.home() / ".cache/huggingface/hub" / f"models--{repo.replace('/', '--')}"
+    if not root.is_dir():
+        return ""
+    try:
+        for dirpath, _dirnames, filenames in os.walk(root, followlinks=True):
+            if filename in filenames:
+                return str(Path(dirpath) / filename)
+    except OSError:
+        return ""
+    return ""
+
+
+def gguf_str(path: str, want: str):
+    """Read one metadata key out of a GGUF header.
+
+    Used to confirm a projector actually belongs to the model before handing
+    both to llama-server, which otherwise accepts the mismatch and fails on
+    the first image instead. Returns None on any parse trouble: a diagnostic
+    must never be the reason the stack refuses to start.
+    """
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(4) != b"GGUF":
+                return None
+            handle.read(4)                                        # version
+            handle.read(8)                                        # tensor count
+            n_kv = struct.unpack("<Q", handle.read(8))[0]
+
+            def read_str():
+                length = struct.unpack("<Q", handle.read(8))[0]
+                return handle.read(length).decode("utf-8", "replace")
+
+            def read_val(kind):
+                if kind in (0, 1):
+                    return struct.unpack("<B" if kind == 0 else "<b", handle.read(1))[0]
+                if kind in (2, 3):
+                    return struct.unpack("<H" if kind == 2 else "<h", handle.read(2))[0]
+                if kind in (4, 5):
+                    return struct.unpack("<I" if kind == 4 else "<i", handle.read(4))[0]
+                if kind == 6:
+                    return struct.unpack("<f", handle.read(4))[0]
+                if kind == 7:
+                    return struct.unpack("<?", handle.read(1))[0]
+                if kind == 8:
+                    return read_str()
+                if kind == 9:
+                    elem = struct.unpack("<I", handle.read(4))[0]
+                    count = struct.unpack("<Q", handle.read(8))[0]
+                    return [read_val(elem) for _ in range(count)]
+                if kind in (10, 11):
+                    return struct.unpack("<Q" if kind == 10 else "<q", handle.read(8))[0]
+                if kind == 12:
+                    return struct.unpack("<d", handle.read(8))[0]
+                raise ValueError(kind)
+
+            for _ in range(n_kv):
+                key = read_str()
+                value = read_val(struct.unpack("<I", handle.read(4))[0])
+                if key == want:
+                    return value
+    except (OSError, struct.error, ValueError, IndexError):
+        return None
+    return None
+
+
+def _human_size(path: str) -> str:
+    try:
+        size = float(os.stat(path).st_size)
+    except OSError:
+        return "?"
+    for unit in ("B", "K", "M", "G", "T"):
+        if size < 1024 or unit == "T":
+            return f"{size:.0f}{unit}" if unit in ("B", "K") else f"{size:.1f}{unit}"
+        size /= 1024
+    return "?"
+
+
+# ------------------------------------------------------------ processes -----
+
+def pid_file(name: str) -> Path:
+    return run_dir() / f"{name}.pid"
+
+
+def log_file(name: str) -> Path:
+    return log_dir() / f"{name}.log"
+
+
+def pid_of(name: str):
+    try:
+        return int(pid_file(name).read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+# Servers this process launched, so they can be reaped instead of left as
+# zombies for as long as the CLI runs.
+_STARTED: dict = {}
+
+
+def _reap(name: str) -> None:
+    proc = _STARTED.get(name)
+    if proc is None:
+        return
+    try:
+        proc.poll()
+    except OSError:
+        pass
+
+
+def alive(pid) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, ValueError):
+        return False
+    except PermissionError:
+        return True
+    # A dead child of this process lingers as a zombie until it is reaped, and
+    # signal 0 still succeeds on one — so ask /proc what it actually is, or
+    # stop_one() would wait out its whole grace period on a corpse.
+    return not _proc_state(pid).startswith("Z")
+
+
+def _proc_state(pid: int) -> str:
+    """Linux process state letter, or '' when it cannot be read."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            raw = handle.read().decode("utf-8", "replace")
+        # comm can contain spaces and parens; everything after the last ')'
+        # is the fixed-width part, whose first field is the state.
+        return raw[raw.rfind(")") + 1:].split()[0]
+    except (OSError, IndexError):
+        return ""
+
+
+def state_of(name: str) -> str:
+    """running | paused | stopped."""
+    pid = pid_of(name)
+    if not alive(pid):
+        return "stopped"
+    return "paused" if _proc_state(pid).startswith("T") else "running"
+
+
+def port_up(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=timeout) as response:
+            return 200 <= response.status < 400
+    except urllib.error.HTTPError:
+        # Answering at all is what this asks; a 4xx still means a server.
+        return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
+def socket_up(host: str, port: int, timeout: float = 3.0) -> bool:
+    """Is anything listening at all — for services that speak no health route."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def start_one(name: str, argv: list) -> bool:
+    state = state_of(name)
+    if state != "stopped":
+        warn(f"{name} already {state}")
+        return True
+    log = log_file(name)
+    try:
+        handle = open(log, "ab")
+    except OSError as exc:
+        bad(f"cannot write {log}", f"({exc})")
+        return False
+    try:
+        # start_new_session detaches it from this CLI's session, so the server
+        # outlives the terminal that started it — and unlike `setsid` from a
+        # shell, the pid recorded here is the server's own, not a wrapper's.
+        proc = subprocess.Popen(
+            argv,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        bad(f"{name} failed to launch", f"({exc})")
+        return False
+    finally:
+        handle.close()
+    _STARTED[name] = proc
+    pid_file(name).write_text(str(proc.pid), encoding="utf-8")
+    dim(f"{name} starting…")
+    return True
+
+
+def wait_ready(name: str, host: str, port: int, seconds: int = 180) -> bool:
+    waited = 0
+    while waited < seconds:
+        if port_up(host, port):
+            ok(f"{name} up on {host}:{port}")
+            return True
+        if not alive(pid_of(name)):
+            bad(f"{name} died", f"— daedalus doctor logs {name}")
+            return False
+        time.sleep(2)
+        waited += 2
+    bad(f"{name} did not answer within {seconds}s", f"— daedalus doctor logs {name}")
+    return False
+
+
+def stop_one(name: str) -> None:
+    pid = pid_of(name)
+    if not alive(pid):
+        pid_file(name).unlink(missing_ok=True)
+        return
+    # CONT first: a paused server never sees the TERM that follows, and would
+    # be left frozen and unkillable-looking by anything short of -9.
+    for sig in (signal.SIGCONT, signal.SIGTERM):
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            pass
+    for _ in range(20):
+        _reap(name)
+        if not alive(pid):
+            break
+        time.sleep(0.5)
+    if alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    _reap(name)
+    _STARTED.pop(name, None)
+    pid_file(name).unlink(missing_ok=True)
+    ok(f"{name} stopped")
+
+
+# ------------------------------------------------------------- commands -----
+
+def cmd_status(args=None, conf: StackConf = None) -> int:
+    conf = conf or load_conf()
+    for name in SERVERS:
+        if not conf.enabled(name):
+            continue
+        host, port = conf.host_port(name)
+        state, pid = state_of(name), pid_of(name)
+        if state == "running":
+            if port_up(host, port):
+                ok(f"{name}  {host}:{port}  pid {pid}")
+            else:
+                warn(f"{name}  pid {pid}", "— process up, port not answering yet")
+        elif state == "paused":
+            warn(f"{name}  pid {pid}", "— paused")
+        elif port_up(host, port):
+            # A server this CLI did not start still occupies the port. Saying
+            # "stopped" while something answers there is worse than nothing.
+            warn(f"{name}  {host}:{port} answering", "— not started by daedalus (no pid file)")
+        else:
+            dim(f"{name}  stopped")
+    if shutil.which("nvidia-smi"):
+        try:
+            vram = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used,memory.total", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+            if vram:
+                note(f"VRAM: {vram}")
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return 0
+
+
+def stack_report(conf: StackConf = None) -> None:
+    """The 'what is present, what is missing' half of the stack diagnostic.
+
+    Split out from cmd_doctor so ``daedalus doctor`` can fold it into the
+    single report the operator already reads, rather than making the local
+    inference stack a separate thing to remember to check.
+    """
+    conf = conf or load_conf()
+
+    section("Inference toolchain")
+    for tool in ("git", "cmake", "curl"):
+        ok(tool) if shutil.which(tool) else bad(tool, "— required")
+    if shutil.which("hf"):
+        ok("hf (huggingface CLI)")
+    else:
+        warn("hf missing", "— pip install huggingface_hub[cli]")
+    if shutil.which("nvcc"):
+        ok("nvcc")
+    else:
+        warn("nvcc missing", "— the CUDA build needs the toolkit, not just the driver")
+    ok("nvidia-smi") if shutil.which("nvidia-smi") else warn("no nvidia-smi", "— CPU only")
+
+    section("Inference sources")
+    if (conf.llama_dir / ".git").is_dir():
+        ok(f"llama.cpp at {conf.llama_dir}")
+    else:
+        bad("llama.cpp missing", "— run: daedalus doctor setup")
+    if os.access(conf.server, os.X_OK):
+        ok("llama-server built")
+    else:
+        bad("llama-server not built", "— run: daedalus doctor setup")
+
+    section("Local models")
+    main = model_path(conf.str("MAIN_REPO"), conf.str("MAIN_FILE"))
+    if main:
+        ok(f"main: {os.path.basename(main)}", f"({_human_size(main)})")
+    else:
+        bad("main model missing", "— run: daedalus doctor setup")
+    if conf.enabled("aux"):
+        aux = model_path(conf.str("AUX_REPO"), conf.str("AUX_FILE"))
+        if aux:
+            ok(f"aux:  {os.path.basename(aux)}", f"({_human_size(aux)})")
+        else:
+            bad("aux model missing", "— run: daedalus doctor setup")
+
+    projector = conf.mmproj
+    if not projector:
+        warn("no vision projector", "— image input will 500 ('provide the mmproj')")
+        note("run: daedalus doctor setup")
+    elif not os.path.isfile(projector):
+        warn("MMPROJ set but not found", f"({projector})")
+    else:
+        # Pair check. A projector from another model loads and then produces
+        # garbage or a dim mismatch at the first image, which is a miserable
+        # thing to debug from a 500. projection_dim must match the text
+        # model's embedding width.
+        pdim = gguf_str(projector, "clip.vision.projection_dim")
+        pname = gguf_str(projector, "general.name")
+        if pdim:
+            ok(f"mmproj: {os.path.basename(projector)}", f"— {pname or '?'}, projection_dim={pdim}")
+        else:
+            ok(f"mmproj: {os.path.basename(projector)}")
+
+    section("Memory backend")
+    url = os.environ.get("MM_WONDERLAND_URL", "http://127.0.0.1:8765")
+    stripped = re.sub(r"^https?://", "", url)
+    mm_host = re.split(r"[:/]", stripped)[0] or "127.0.0.1"
+    port_match = re.search(r"^[^:/]+:(\d+)", stripped)
+    mm_port = int(port_match.group(1)) if port_match else 8765
+    # The pod speaks MCP, not a plain health route, so probe the socket rather
+    # than guessing a path — a GET on / hangs waiting for a session.
+    if socket_up(mm_host, mm_port):
+        ok(f"mazemaker listening on {mm_host}:{mm_port}")
+    else:
+        bad(f"mazemaker NOT reachable at {url}")
+        note("Without it this harness is an amnesiac: it stops carrying its own")
+        note("history by design. See https://mazemaker.online")
+
+    section("Inference servers")
+    cmd_status(conf=conf)
+
+
+def cmd_doctor(args=None, conf: StackConf = None) -> int:
+    """``daedalus doctor stack`` — the stack half on its own."""
+    stack_report(conf or load_conf())
+    print()
+    return 0
+
+
+def cmd_setup(args=None) -> int:
+    conf = load_conf()
+
+    section("llama.cpp (adaptive KV streaming)")
+    if not (conf.llama_dir / ".git").is_dir():
+        conf.llama_dir.parent.mkdir(parents=True, exist_ok=True)
+        clone = subprocess.run([
+            "git", "clone", "--branch", conf.str("LLAMA_BRANCH", "feature/adaptive-kv-stream"),
+            conf.str("LLAMA_REPO"), str(conf.llama_dir),
+        ])
+        if clone.returncode != 0:
+            bad("clone failed")
+            return 1
+    else:
+        ok("already cloned")
+
+    if not os.access(conf.server, os.X_OK):
+        print("  building (this takes a while)…")
+        configure = subprocess.run([
+            "cmake", "-S", str(conf.llama_dir), "-B", str(conf.llama_dir / "build"),
+            "-DGGML_CUDA=ON", "-DGGML_CUDA_FA_ALL_QUANTS=ON", "-DCMAKE_BUILD_TYPE=Release",
+        ])
+        build = subprocess.run([
+            "cmake", "--build", str(conf.llama_dir / "build"),
+            "--config", "Release", "--target", "llama-server", "-j",
+        ]) if configure.returncode == 0 else configure
+        if build.returncode != 0:
+            bad("build failed")
+            return 1
+    ok("llama-server ready")
+
+    section("Models")
+    if not shutil.which("hf"):
+        bad("hf CLI missing", "— pip install huggingface_hub[cli]")
+        return 1
+
+    def fetch(repo: str, filename: str, label: str) -> bool:
+        if model_path(repo, filename):
+            ok(f"{label} present")
+            return True
+        print(f"  fetching {label} ({filename})…")
+        return subprocess.run(["hf", "download", repo, filename]).returncode == 0
+
+    if not fetch(conf.str("MAIN_REPO"), conf.str("MAIN_FILE"), "main"):
+        return 1
+    # The projector is a separate download from the same repo. Without this
+    # step the stack comes up looking healthy and only fails on the first image.
+    projector_file = conf.str("MAIN_MMPROJ_FILE")
+    if projector_file and not fetch(conf.str("MAIN_REPO"), projector_file, "mmproj"):
+        warn("mmproj download failed", "— vision stays off")
+    if conf.enabled("aux") and not fetch(conf.str("AUX_REPO"), conf.str("AUX_FILE"), "aux"):
+        return 1
+    if conf.enabled("vis"):
+        vis_repo = conf.str("VIS_REPO")
+        if vis_repo:
+            fetch(vis_repo, conf.str("VIS_FILE"), "vision model")
+            fetch(vis_repo, conf.str("VIS_MMPROJ_FILE"), "vision mmproj")
+        else:
+            warn("VIS_ENABLED=1 but VIS_REPO is empty", f"— set it in {conf_path()}")
+
+    print()
+    ok("setup complete", "— daedalus doctor start")
+    return 0
+
+
+def _main_argv(conf: StackConf, model: str) -> list:
+    kv_pool = conf.str("MAIN_KV_POOL")
+    slots = conf.int("MAIN_SLOTS", 1)
+    # Block KV streaming is single-sequence only. Asking for both is not a slow
+    # start, it is a dead server ("block KV streaming requires exactly one
+    # sequence (-np 1)"), so correct it here rather than letting the operator
+    # read it out of a log.
+    if kv_pool and slots != 1:
+        warn("MAIN_KV_POOL is set, so block KV streaming needs -np 1", "— forcing MAIN_SLOTS=1")
+        note("drop MAIN_KV_POOL to run multiple slots, at the cost of the large context")
+        slots = 1
+
+    argv = [
+        str(conf.server), "--model", model,
+        "--host", conf.str("MAIN_HOST", "127.0.0.1"), "--port", str(conf.int("MAIN_PORT", 8080)),
+        "--ctx-size", str(conf.int("MAIN_CTX", 131072)),
+    ]
+    # An empty pool means "no block KV streaming"; passing the flag with an
+    # empty value would hand llama-server an argument it cannot parse.
+    if kv_pool:
+        argv += ["--kv-stream-stage-mib", kv_pool]
+    argv += [
+        "-ctk", "q4_0", "-ctv", "q4_0", "-fa", "on",
+        "-ngl", str(conf.int("MAIN_NGL", 99)), "-t", str(conf.int("MAIN_THREADS", 8)),
+        "-np", str(slots),
+        "-b", "512", "-ub", "512",
+        "--temp", "1.0", "--top-k", "20", "--min-p", "0.00", "--top-p", "0.95",
+        "--presence-penalty", "0.0", "--repeat-penalty", "1.0",
+        "--reasoning", "on", "--reasoning-preserve", "--reasoning-format", "deepseek",
+        "--reasoning-budget", str(conf.int("MAIN_REASONING_BUDGET", 12000)),
+        "--spec-type", "draft-mtp,ngram-mod", "--spec-draft-n-max", "2",
+        "--spec-ngram-mod-n-match", "24", "--spec-ngram-mod-n-min", "24",
+        "--spec-ngram-mod-n-max", "32",
+        "--jinja", "--cont-batching",
+    ]
+    # Keep MAIN_CTX as one shared buffer instead of MAIN_CTX/slots each.
+    if conf.flag("MAIN_KV_UNIFIED", False):
+        argv.append("-kvu")
+
+    projector = conf.mmproj
+    if projector and os.path.isfile(projector):
+        # --no-mmproj-offload keeps the ~890 MB tower in host RAM. On a 16 GB
+        # card already holding a 27B at -ngl 99 that is the difference between
+        # vision working and the weights not fitting.
+        argv += ["-mm", projector, "--no-mmproj-offload",
+                 "--image-min-tokens", "1024", "--image-max-tokens", "2048"]
+        dim(f"vision: {os.path.basename(projector)}")
+    else:
+        warn("no projector", "— vision_analyze will 500 with 'image input is not supported'")
+        note("fetch it with: daedalus doctor setup")
+    return argv
+
+
+def cmd_start(args=None) -> int:
+    conf = load_conf()
+    main = model_path(conf.str("MAIN_REPO"), conf.str("MAIN_FILE"))
+    if not os.access(conf.server, os.X_OK):
+        bad("llama-server not built", "— run: daedalus doctor setup")
+        return 1
+    if not main:
+        bad("main model missing", "— run: daedalus doctor setup")
+        return 1
+
+    section("Starting")
+    if not start_one("main", _main_argv(conf, main)):
+        return 1
+
+    # The main model must be READY before the helper starts. Both loading at
+    # once means two processes fighting for RAM while the big one is pinning
+    # its KV cache: the machine swaps, and anything else on it (a memory pod
+    # running consolidation, for one) stalls behind the page-outs.
+    main_host, main_port = conf.host_port("main")
+    if not wait_ready("main", main_host, main_port, 300):
+        return 1
+
+    if conf.enabled("aux"):
+        aux = model_path(conf.str("AUX_REPO"), conf.str("AUX_FILE"))
+        if aux:
+            aux_host, aux_port = conf.host_port("aux")
+            # --reasoning off is load-bearing: with thinking on, a 1.7B spends
+            # its whole output budget reasoning and returns empty content.
+            start_one("aux", [
+                str(conf.server), "--model", aux,
+                "--host", aux_host, "--port", str(aux_port),
+                "--ctx-size", str(conf.int("AUX_CTX", 12096)),
+                "-ngl", "0", "-t", str(conf.int("AUX_THREADS", 6)), "-np", "2",
+                "-b", "512", "-ub", "512", "--cont-batching", "--jinja",
+                "--temp", "0.3", "--top-p", "0.9", "--reasoning", "off",
+            ])
+            wait_ready("aux", aux_host, aux_port, 180)
+        else:
+            warn("aux model missing", "— skipping")
+
+    if conf.enabled("vis"):
+        vis = model_path(conf.str("VIS_REPO"), conf.str("VIS_FILE"))
+        vis_mm = model_path(conf.str("VIS_REPO"), conf.str("VIS_MMPROJ_FILE"))
+        if not vis or not vis_mm:
+            warn("VIS_ENABLED=1 but model/projector missing", "— run: daedalus doctor setup")
+        else:
+            vis_host, vis_port = conf.host_port("vis")
+            # -ngl 0 on purpose: it costs no VRAM beside the main model, and
+            # being a separate process it answers WHILE the main turn is
+            # generating, which is the entire reason this endpoint exists.
+            start_one("vis", [
+                str(conf.server), "--model", vis, "-mm", vis_mm,
+                "--host", vis_host, "--port", str(vis_port),
+                "--ctx-size", str(conf.int("VIS_CTX", 16384)),
+                "-ngl", "0", "-t", str(conf.int("VIS_THREADS", 4)), "-np", "2",
+                "-b", "512", "-ub", "512", "--cont-batching", "--jinja",
+                "--reasoning", "off",
+            ])
+            wait_ready("vis", vis_host, vis_port, 300)
+            note(f"point auxiliary.vision.base_url at http://{vis_host}:{vis_port}/v1")
+    return 0
+
+
+def cmd_stop(args=None) -> int:
+    section("Stopping")
+    # Reverse of start: the dependents go first, the main model last.
+    for name in ("vis", "aux", "main"):
+        stop_one(name)
+    return 0
+
+
+def cmd_restart(args=None) -> int:
+    cmd_stop(args)
+    return cmd_start(args)
+
+
+def _signal_all(sig, verb: str) -> int:
+    section(verb.capitalize())
+    touched = False
+    for name in SERVERS:
+        pid = pid_of(name)
+        if alive(pid):
+            try:
+                os.kill(pid, sig)
+                ok(f"{name} {verb}")
+                touched = True
+            except OSError as exc:
+                bad(f"{name} could not be {verb}", f"({exc})")
+    if not touched:
+        warn("nothing running")
+    return 0
+
+
+def cmd_pause(args=None) -> int:
+    result = _signal_all(signal.SIGSTOP, "paused")
+    note("weights stay loaded; resume with: daedalus doctor resume")
+    return result
+
+
+def cmd_resume(args=None) -> int:
+    return _signal_all(signal.SIGCONT, "resumed")
+
+
+def cmd_logs(args=None) -> int:
+    name = getattr(args, "server", None) or "main"
+    lines = getattr(args, "lines", 200)
+    follow = not getattr(args, "no_follow", False)
+    target = log_file(name)
+    if not target.exists():
+        bad(f"no log for {name}", f"({target})")
+        return 1
+    argv = ["tail", "-n", str(lines)] + (["-f"] if follow else []) + [str(target)]
+    try:
+        return subprocess.run(argv).returncode
+    except KeyboardInterrupt:
+        return 0
+    except OSError as exc:
+        bad("cannot tail the log", f"({exc})")
+        return 1
+
+
+def cmd_conf(args=None) -> int:
+    """Show where the knobs live, and create the file if it is missing."""
+    target = conf_path()
+    existed = target.exists()
+    conf = load_conf()
+    section("Stack configuration")
+    ok(str(target)) if existed else ok(str(target), "(created with defaults)")
+    note(f"llama.cpp   {conf.llama_dir}")
+    for name in SERVERS:
+        if not conf.enabled(name):
+            continue
+        host, port = conf.host_port(name)
+        repo = conf.str(f"{name.upper()}_REPO") or "—"
+        note(f"{name:<11} {repo} → {host}:{port}")
+    note(f"logs        {log_dir()}")
+    print()
+    return 0
+
+
+# -------------------------------------------------------------- wiring -------
+
+def register_cli(parser: argparse.ArgumentParser) -> None:
+    """Wire the stack lifecycle onto the ``daedalus doctor`` parser.
+
+    The bare ``daedalus doctor`` keeps whatever the caller set as its default
+    handler — the full report — so adding these is purely additive.
+    """
+    subs = parser.add_subparsers(dest="doctor_command", metavar="COMMAND")
+
+    def add(name, help_text):
+        return subs.add_parser(name, help=help_text)
+
+    add("status", "Show the inference servers: ports, pids, VRAM").set_defaults(func=cmd_status)
+    add("stack", "Only the local inference stack section of the report").set_defaults(func=cmd_doctor)
+    add("setup", "Clone and build llama.cpp, then fetch the models").set_defaults(func=cmd_setup)
+    add("start", "Start the inference servers (helper waits for the main model)").set_defaults(func=cmd_start)
+    add("stop", "Stop the inference servers").set_defaults(func=cmd_stop)
+    add("restart", "Stop, then start").set_defaults(func=cmd_restart)
+    add("pause", "Freeze the servers, keeping the weights loaded").set_defaults(func=cmd_pause)
+    add("resume", "Unfreeze paused servers").set_defaults(func=cmd_resume)
+    add("conf", "Show the stack.conf path and the values in force").set_defaults(func=cmd_conf)
+
+    p_logs = add("logs", "Tail a server log")
+    p_logs.add_argument("server", nargs="?", default="main", choices=list(SERVERS),
+                        help="Which server's log (default: main)")
+    p_logs.add_argument("-n", "--lines", type=int, default=200,
+                        help="Lines of history to show first (default 200)")
+    p_logs.add_argument("--no-follow", action="store_true",
+                        help="Print the tail and exit instead of following")
+    p_logs.set_defaults(func=cmd_logs)

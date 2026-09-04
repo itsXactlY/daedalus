@@ -245,22 +245,25 @@ Move to a different card and every one of them changes.
 `./install.sh` installs the `daedalus` command and creates `~/.daedalus/`.
 `daedalus setup` walks the first run.
 
-The inference side is `scripts/stack.sh`, which owns the whole lifecycle:
+The inference side belongs to `daedalus doctor`, which owns the whole lifecycle
+of the servers it already reports on:
 
 | | |
 |---|---|
-| `doctor` | what is present and what is missing — toolchain, sources, models, memory backend, servers |
-| `setup` | clones and builds the adaptive-KV llama.cpp, pulls both models |
-| `start` | brings both servers up, the helper only once the main model answers |
-| `pause` / `resume` | freezes them with the weights still loaded |
-| `stop` · `status` · `logs` | the rest of it |
+| `daedalus doctor` | what is present and what is missing — toolchain, sources, models, memory backend, servers |
+| `daedalus doctor setup` | clones and builds the adaptive-KV llama.cpp, pulls both models |
+| `daedalus doctor start` | brings both servers up, the helper only once the main model answers |
+| `daedalus doctor pause` / `resume` | freezes them with the weights still loaded |
+| `daedalus doctor stop` · `status` · `logs` | the rest of it |
 
 It writes `$DAEDALUS_HOME/stack.conf` on first use — repository, model slugs,
 ports, context size, KV pool, thinking budget — and reads everything from
 there afterwards. Nothing about one particular machine is baked into the
-script; the defaults are simply the numbers measured further up this page.
-Start with `doctor`: it names what your machine is missing before anything
-tries to run.
+code; the defaults are simply the numbers measured further up this page.
+Start with a bare `daedalus doctor`: it names what your machine is missing
+before anything tries to run.
+
+`scripts/stack.sh` was where this lived; it still works, and now forwards.
 
 A memory backend is not part of it. Mazemaker runs as its own pod and comes up
 with the machine.

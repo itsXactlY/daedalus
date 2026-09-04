@@ -1028,6 +1028,28 @@ def run_doctor(args):
     except Exception as e:
         check_warn("SSL certificate check failed", f"({e})")
 
+    # The local llama.cpp servers are part of this setup, so they are reported
+    # here rather than by a separate script. Findings are deliberately NOT
+    # added to `issues`: a machine that runs entirely on remote providers is
+    # correctly configured with no local stack at all.
+    try:
+        from daedalus_cli import stack as _stack
+        _stack_conf = _stack.load_conf(create=False)
+        if _stack.stack_in_use(_stack_conf):
+            _stack.stack_report(_stack_conf)
+            print()
+            print(color(
+                "  Lifecycle: daedalus doctor start | stop | pause | resume | "
+                "restart | logs",
+                Colors.DIM,
+            ))
+        else:
+            print()
+            print(color("◆ Local inference stack", Colors.CYAN, Colors.BOLD))
+            check_info("not set up — 'daedalus doctor setup' builds llama.cpp and fetches the models")
+    except Exception as e:
+        check_warn("Local inference stack check failed", f"({e})")
+
     print()
     remaining_issues = issues + manual_issues
     if should_fix and fixed_count > 0:
