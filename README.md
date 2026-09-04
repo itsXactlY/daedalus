@@ -181,7 +181,7 @@ ceiling.
 - **Runs on anything OpenAI-shaped.** llama.cpp, Ollama, vLLM, OpenRouter,
   Anthropic, your own endpoint. Switching is a config line.
 - **Writes its own skills.** Solves something once, writes it down, starts from
-  the answer next time. 100 curated skills across 24 packs in this repo — every
+  the answer next time. 100 curated skills across 23 packs in this repo — every
   name would be prompt weight if the catalogue were recited, so it is curated
   rather than hoarded.
 - **Delegates.** Subagents get their own context for work that would otherwise

@@ -24,7 +24,16 @@ class TestTheReadmeStaysHonest:
         claimed = re.search(r"(\d+) curated skills across (\d+) packs", _readme())
         assert claimed, "the skills claim disappeared from the README"
         skills = len(list((REPO / "skills").rglob("SKILL.md")))
-        packs = len([p for p in (REPO / "skills").iterdir() if p.is_dir()])
+        # A pack is a directory a human wrote something into: every one of them
+        # carries a SKILL.md or a DESCRIPTION.md. Counting bare directories
+        # instead let the generated skills/index-cache — four JSON index files,
+        # untracked, present only in an installed tree — pass as a 24th pack,
+        # so this claim was true where the cache existed and false in a clean
+        # checkout of the same commit.
+        packs = len([
+            p for p in (REPO / "skills").iterdir()
+            if p.is_dir() and any(p.rglob("*.md"))
+        ])
         assert int(claimed.group(1)) == skills
         assert int(claimed.group(2)) == packs
 
