@@ -203,6 +203,120 @@ VIS_THREADS=4
 '''
 
 _ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_THREAD_KEY = re.compile(r"^(MAIN|AUX|VIS)_THREADS\s*=\s*(\d+)\s*(#.*)?$")
+
+
+def _physical_core_count() -> int:
+    """Count distinct (physical id, core id) pairs from /proc/cpuinfo.
+
+    ``nproc`` and ``os.cpu_count()`` both report logical CPUs (cores * threads),
+    which on a hyperthreaded Ryzen double-counts. llama-server's ``-t`` should
+    reflect PHYSICAL cores, so three servers each set to the logical count
+    will oversubscribe the box and thrash.
+    """
+    try:
+        text = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return max(1, os.cpu_count() or 1)
+    pairs: set[tuple[str, str]] = set()
+    phys, core = None, None
+    for line in text.splitlines():
+        if line.startswith("physical id"):
+            phys = line.split(":", 1)[1].strip()
+        elif line.startswith("core id"):
+            core = line.split(":", 1)[1].strip()
+            if phys is not None and core is not None:
+                pairs.add((phys, core))
+                phys, core = None, None
+    if pairs:
+        return max(1, len(pairs))
+    # Fallback: some virtualised kernels don't emit "core id". Trust "cpu cores".
+    cores_per_pkg: dict[str, int] = {}
+    pkg = None
+    for line in text.splitlines():
+        if line.startswith("physical id"):
+            pkg = line.split(":", 1)[1].strip()
+        elif line.startswith("cpu cores"):
+            val = line.split(":", 1)[1].strip()
+            if val.isdigit() and pkg is not None:
+                cores_per_pkg[pkg] = int(val)
+    if cores_per_pkg:
+        return max(1, sum(cores_per_pkg.values()))
+    return max(1, os.cpu_count() or 1)
+
+
+def _propose_threads(physical: int) -> tuple[int, int, int]:
+    """Split the physical-core budget across the three llama-server processes.
+
+    The intent is "pure cores only" — the sum never exceeds the physical count,
+    regardless of how many threads per core the silicon exposes. Main is
+    typically GPU-offloaded so it only needs a few CPU threads for prompt
+    eval; aux and vis are CPU-only and stay small. Any leftover is given to
+    main, which is the latency-sensitive one.
+    """
+    if physical <= 0:
+        return 1, 1, 1
+    if physical <= 4:
+        main, aux, vis = max(2, physical - 2), 1, 1
+    elif physical <= 8:
+        # 8 cores -> 4/2/2; 6 cores -> 3/2/1; 5 cores -> 3/1/1
+        main = max(2, physical - 4)
+        aux = 2 if physical >= 6 else 1
+        vis = 2 if physical >= 8 else 1
+    else:
+        # 16 -> 8/4/4; 12 -> 6/3/3; 10 -> 5/3/2
+        main = physical // 2
+        aux = max(2, physical // 4)
+        vis = max(2, physical // 4)
+    # Floor the total at the physical count — never oversubscribe.
+    while main + aux + vis > physical and main > 1:
+        main -= 1
+    return main, aux, vis
+
+
+def _patch_threads_in_conf(target: Path, main: int, aux: int, vis: int) -> bool:
+    """Rewrite MAIN/AUX/VIS_THREADS in stack.conf without touching the rest.
+
+    Existing lines are updated in place (preserving any trailing comment and
+    indentation). Missing keys are appended at the end so the audit trail in
+    the conf matches what the setup actually intended.
+
+    Returns True iff at least one line actually changed.
+    """
+    wanted = {"MAIN_THREADS": main, "AUX_THREADS": aux, "VIS_THREADS": vis}
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    trailing_nl = text.endswith("\n")
+    out: list[str] = []
+    seen: set[str] = set()
+    changed = False
+    for line in text.splitlines():
+        m = _THREAD_KEY.match(line)
+        if not m:
+            out.append(line)
+            continue
+        key, current, comment = m.group(1) + "_THREADS", int(m.group(2)), m.group(3) or ""
+        new_val = wanted[key]
+        seen.add(key)
+        if new_val == current:
+            out.append(line)
+            continue
+        indent = line[: len(line) - len(line.lstrip())]
+        rebuilt = f"{indent}{key}={new_val}{('  ' + comment.rstrip()) if comment else ''}"
+        out.append(rebuilt)
+        changed = True
+    for key, val in wanted.items():
+        if key not in seen:
+            out.append(f"{key}={val}")
+            changed = True
+    if not changed:
+        return False
+    new_text = "\n".join(out) + ("\n" if trailing_nl or out else "")
+    target.write_text(new_text, encoding="utf-8")
+    return True
+
 
 
 def _parse_conf(text: str) -> dict:
@@ -721,6 +835,31 @@ def cmd_doctor(args=None, conf: StackConf = None) -> int:
 
 def cmd_setup(args=None) -> int:
     conf = load_conf()
+
+    # --- thread budget: derive *_THREADS from PHYSICAL cores, not logical ---
+    physical = _physical_core_count()
+    logical = max(1, os.cpu_count() or physical)
+    proposed_main, proposed_aux, proposed_vis = _propose_threads(physical)
+    current_main = int(conf.str("MAIN_THREADS", "0") or 0)
+    current_aux = int(conf.str("AUX_THREADS", "0") or 0)
+    current_vis = int(conf.str("VIS_THREADS", "0") or 0)
+    current_total = current_main + current_aux + current_vis
+    desired_total = proposed_main + proposed_aux + proposed_vis
+    section("thread budget (pure physical cores)")
+    print(f"  hardware       : {physical} physical core(s), {logical} logical CPU(s)")
+    print(f"  current conf   : MAIN={current_main} AUX={current_aux} VIS={current_vis}"
+          f"  -> {current_total} thread slot(s)")
+    print(f"  proposed       : MAIN={proposed_main} AUX={proposed_aux} VIS={proposed_vis}"
+          f"  -> {desired_total} thread slot(s) (sum <= {physical})")
+    if (current_main, current_aux, current_vis) != (proposed_main, proposed_aux, proposed_vis):
+        if _patch_threads_in_conf(conf_path(), proposed_main, proposed_aux, proposed_vis):
+            conf = load_conf()  # refresh so the rest of setup uses the new values
+            ok("stack.conf updated to match physical cores")
+        else:
+            warn("could not rewrite stack.conf — edit it by hand")
+    else:
+        ok("stack.conf already on physical-core budget")
+    print()
 
     section("llama.cpp (adaptive KV streaming)")
     if not (conf.llama_dir / ".git").is_dir():
