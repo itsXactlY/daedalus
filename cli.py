@@ -2191,7 +2191,123 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if snap.get("cost_source") and snap["cost_source"] != "none":
             agent.session_cost_source = snap["cost_source"]
 
+    def _ensure_llama_telemetry_poller(self) -> None:
+        """Start/stop the background llama-server telemetry poller to match verbose mode.
+
+        The status bar (both render paths below) only ever reads
+        self._llama_telemetry -- never fetches inline. prompt_toolkit's
+        bottom toolbar re-renders on every keystroke, and a blocking HTTP
+        call from that path would make typing feel laggy the moment the
+        server is slow to answer. A daemon thread polls at a fixed interval
+        instead and the render path just reads whatever it last cached.
+        """
+        base_url = (getattr(self, "base_url", "") or "").lower()
+        is_local = "127.0.0.1" in base_url or "localhost" in base_url
+        should_run = bool(getattr(self, "verbose", False) and is_local)
+
+        thread = getattr(self, "_llama_telemetry_thread", None)
+        if should_run and (thread is None or not thread.is_alive()):
+            stop_event = threading.Event()
+            self._llama_telemetry_stop = stop_event
+            t = threading.Thread(
+                target=self._llama_telemetry_loop, args=(stop_event,),
+                daemon=True, name="llama-telemetry",
+            )
+            self._llama_telemetry_thread = t
+            t.start()
+        elif not should_run and thread is not None:
+            stop_event = getattr(self, "_llama_telemetry_stop", None)
+            if stop_event:
+                stop_event.set()
+            self._llama_telemetry_thread = None
+            self._llama_telemetry = None
+
+    def _llama_telemetry_loop(self, stop_event) -> None:
+        url = (getattr(self, "base_url", "") or "").rstrip("/")
+        if url.endswith("/v1"):
+            url = url[: -len("/v1")]
+        last: Dict[int, tuple] = {}
+        while not stop_event.is_set():
+            try:
+                snap = self._fetch_llama_telemetry(url, last)
+                if snap is not None:
+                    self._llama_telemetry = snap
+            except Exception:
+                pass
+            stop_event.wait(1.0)
+
+    @staticmethod
+    def _fetch_llama_telemetry(url: str, last: Dict[int, tuple]) -> Optional[Dict[str, Any]]:
+        """One snapshot: live tok/s (busiest slot), KV usage%, DFlash2 accept%.
+
+        `last` carries (n_decoded, monotonic_ts) per slot id across calls so
+        live tok/s can be derived from the delta -- same technique as
+        specbench/monitor.py's dashboard, condensed to the handful of numbers
+        that fit on a status-bar line.
+        """
+        import json as _json
+        import re as _re
+        import time as _time
+        import urllib.error
+        import urllib.request
+
+        try:
+            with urllib.request.urlopen(f"{url}/slots", timeout=1.5) as resp:
+                slots = _json.loads(resp.read())
+        except Exception:
+            return None
+
+        now = _time.monotonic()
+        best_tps = 0.0
+        kv_used = kv_ctx = 0
+        any_busy = False
+        for s in slots or []:
+            sid = s.get("id", 0)
+            n_decoded = int(((s.get("next_token") or [{}])[0]).get("n_decoded") or 0)
+            processing = bool(s.get("is_processing"))
+            if processing:
+                any_busy = True
+                if s.get("n_prompt_tokens", 0) or 0:
+                    kv_used = s.get("n_prompt_tokens", 0) or 0
+                    kv_ctx = s.get("n_ctx", 0) or 0
+                prev = last.get(sid)
+                if prev and n_decoded >= prev[0]:
+                    dt = now - prev[1]
+                    if dt > 0.05:
+                        best_tps = max(best_tps, (n_decoded - prev[0]) / dt)
+                last[sid] = (n_decoded, now)
+            else:
+                last.pop(sid, None)
+                if kv_ctx == 0:
+                    kv_ctx = s.get("n_ctx", 0) or kv_ctx
+
+        out: Dict[str, Any] = {
+            "busy": any_busy,
+            "live_tps": best_tps,
+            "kv_used": kv_used,
+            "kv_ctx": kv_ctx,
+        }
+
+        try:
+            with urllib.request.urlopen(f"{url}/metrics", timeout=1.5) as resp:
+                text = resp.read().decode("utf-8", "replace")
+            m = {}
+            for line in text.splitlines():
+                mm = _re.match(r'^llamacpp:(\S+?)\s+([0-9.eE+-]+)\s*$', line)
+                if mm:
+                    m[mm.group(1)] = float(mm.group(2))
+            n_draft = m.get("spec_decode_num_draft_tokens_total", 0.0)
+            n_accept = m.get("spec_decode_num_accepted_tokens_total", 0.0)
+            if n_draft > 0:
+                out["dflash_pct"] = n_accept / n_draft * 100.0
+            out["avg_gen_tps"] = m.get("predicted_tokens_seconds")
+        except Exception:
+            pass
+
+        return out
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+        self._ensure_llama_telemetry_poller()
         model_name = self.model or "unknown"
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
@@ -2219,6 +2335,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "llama_telemetry": getattr(self, "_llama_telemetry", None),
         }
 
         try:
@@ -2308,6 +2425,30 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             width += ch_width
         return "".join(out).rstrip() + ellipsis
 
+    @staticmethod
+    def _format_llama_telemetry_label(telemetry: Optional[Dict[str, Any]]) -> str:
+        """Compact verbose-mode label: live/avg tok/s, KV usage%, DFlash2 accept%.
+
+        Empty until the background poller (_ensure_llama_telemetry_poller)
+        has completed at least one /slots round-trip -- silently absent
+        rather than a placeholder, since the status bar already omits every
+        other snapshot field that has nothing to show yet.
+        """
+        if not telemetry:
+            return ""
+        bits = []
+        if telemetry.get("busy") and telemetry.get("live_tps"):
+            bits.append(f"{telemetry['live_tps']:.0f} tok/s")
+        elif telemetry.get("avg_gen_tps"):
+            bits.append(f"~{telemetry['avg_gen_tps']:.0f} tok/s")
+        kv_ctx = telemetry.get("kv_ctx") or 0
+        if kv_ctx:
+            kv_pct = (telemetry.get("kv_used") or 0) / kv_ctx * 100.0
+            bits.append(f"kv {kv_pct:.0f}%")
+        if telemetry.get("dflash_pct") is not None:
+            bits.append(f"dflash {telemetry['dflash_pct']:.0f}%")
+        return " ".join(bits)
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         try:
             snapshot = self._get_status_bar_snapshot()
@@ -2355,6 +2496,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
             if bg_subagent_count:
                 parts.append(f"⛓ {bg_subagent_count}")
+            if getattr(self, "verbose", False):
+                llama_label = self._format_llama_telemetry_label(snapshot.get("llama_telemetry"))
+                if llama_label:
+                    parts.append(llama_label)
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2411,6 +2556,15 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                    ]
+                    if getattr(self, "verbose", False):
+                        llama_label = self._format_llama_telemetry_label(snapshot.get("llama_telemetry"))
+                        if llama_label:
+                            frags += [
+                                ("class:status-bar-dim", " │ "),
+                                ("class:status-bar-strong", llama_label),
+                            ]
+                    frags += [
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
@@ -5522,6 +5676,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.agent.quiet_mode = not self.verbose
             self.agent.reasoning_callback = self._current_reasoning_callback()
             self.agent.stream_verbose_mode = self.tool_progress_mode == "verbose"
+
+        self._ensure_llama_telemetry_poller()
 
         from daedalus_cli.colors import Colors as _Colors
         labels = {
