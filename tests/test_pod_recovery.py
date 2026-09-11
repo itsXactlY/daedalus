@@ -20,10 +20,10 @@ def mz(monkeypatch):
 
 
 class _Result:
-    def __init__(self, rc=0, err=""):
+    def __init__(self, rc=0, err="", out=""):
         self.returncode = rc
         self.stderr = err
-        self.stdout = ""
+        self.stdout = out
 
 
 class TestAWedgedPodGetsRestarted:
@@ -54,8 +54,43 @@ class TestAWedgedPodGetsRestarted:
     def test_it_restarts_the_configured_unit(self, mz, monkeypatch):
         calls = []
         assert self._run(mz, monkeypatch, calls=calls) is True
-        assert calls and "probe-unit.service" in calls[0]
-        assert "restart" in calls[0]
+        restart_calls = [c for c in calls if "restart" in c]
+        assert restart_calls and "probe-unit.service" in restart_calls[0]
+
+    def test_it_probes_state_before_restarting(self, mz, monkeypatch):
+        # The wedge this exists for (2026-09-03) looks like "active" or
+        # "failed" while unreachable -- the default fake result (empty
+        # stdout) exercises that path, and a restart must still follow it.
+        calls = []
+        assert self._run(mz, monkeypatch, calls=calls) is True
+        assert calls and "is-active" in calls[0] and "probe-unit.service" in calls[0]
+
+    def test_a_deliberately_stopped_pod_is_left_alone(self, mz, monkeypatch):
+        # `mazemaker off` stops this exact unit on purpose. Observed live
+        # 2026-09-11: the operator ran it, a call failed past the wedge
+        # threshold on the next try, and this function restarted the unit
+        # right back regardless -- the same failure the pytest guard above
+        # was meant to close, just outside a test run. Cleanly stopped units
+        # report "inactive", never "active" or "failed", so that state alone
+        # is enough to tell "off on purpose" from "wedged" or "crashed".
+        import subprocess
+
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        calls = []
+
+        def fake(cmd, **kw):
+            calls.append(cmd)
+            return _Result(out="inactive\n")
+
+        monkeypatch.setattr(subprocess, "run", fake)
+        monkeypatch.setattr("shutil.which", lambda _n: "/usr/bin/systemctl")
+
+        assert mz._attempt_pod_recovery() is False
+        assert not any("restart" in c for c in calls)
+        # and it must not have consumed an attempt or the retry interval --
+        # a real recovery attempt should still be available right after.
+        assert mz._recovery_state["attempts"] == 0
+        assert mz._recovery_state["last"] == 0.0
 
     def test_a_second_attempt_waits_for_the_interval(self, mz, monkeypatch):
         assert self._run(mz, monkeypatch) is True

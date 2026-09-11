@@ -170,6 +170,28 @@ def test_prefetch_says_memory_is_down_instead_of_returning_nothing(
     assert block.startswith("[memory unavailable]")
 
 
+def test_history_pointer_says_memory_is_down_instead_of_claiming_safety(
+    monkeypatch, fresh_pod_health
+):
+    """2026-09-11: this claimed history was 'safely stored in mazemaker' for
+    a whole session while the pod was masked off on purpose (`mazemaker
+    off`). sync_turn's writes were landing in the local retry spool, not the
+    graph -- unrecallable until the pod came back -- but the model was never
+    told. prefetch() already had this exact guard; history_pointer() didn't.
+    """
+    _wedge(fresh_pod_health)
+    ptr = mzm.MazemakerMemoryProvider().history_pointer(session_id="s1")
+    assert ptr.startswith("[memory unavailable]")
+    assert "not stored" in ptr or "NOT" in ptr
+    assert "s1" not in ptr or "spool" in ptr  # honest, not the old happy-path text
+
+
+def test_history_pointer_is_normal_when_healthy(fresh_pod_health):
+    ptr = mzm.MazemakerMemoryProvider().history_pointer(session_id="s1")
+    assert ptr.startswith("Full conversation history")
+    assert "auto:turn:s1:" in ptr
+
+
 def test_prefetch_is_normal_when_healthy(monkeypatch, fresh_pod_health):
     monkeypatch.setattr(
         mzm.MazemakerMemoryProvider, "_build_enriched_context",

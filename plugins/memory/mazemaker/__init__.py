@@ -134,9 +134,76 @@ _FAILED_WRITE_SPOOL: "deque" = deque(maxlen=_FAILED_SPOOL_MAX)
 _SPOOL_LOCK = threading.Lock()
 
 
+def _spool_file_path() -> Optional[Path]:
+    try:
+        from daedalus_constants import get_daedalus_home
+        d = Path(get_daedalus_home()) / "cache"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / "mazemaker_failed_writes.jsonl"
+    except Exception:
+        return None
+
+
+def _persist_spool_locked() -> None:
+    """Rewrite the on-disk spool to match the in-memory queue.
+
+    2026-09-11: the spool was pure in-memory (a bare deque), so it only ever
+    protected against an outage shorter than this process's own lifetime --
+    a daedalus restart while the pod was down (exactly what happened during
+    tonight's masked-pod stretch) silently dropped everything still queued,
+    with no trace it had ever existed. Caller must hold _SPOOL_LOCK; this
+    mirrors the deque's contents 1:1 so a crash between calls loses nothing
+    already written and never replays something already claimed.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    path = _spool_file_path()
+    if path is None:
+        return
+    try:
+        with path.open("w", encoding="utf-8") as f:
+            for label, content in _FAILED_WRITE_SPOOL:
+                f.write(json.dumps({"label": label, "content": content}) + "\n")
+    except Exception:
+        pass
+
+
+def _load_spool_from_disk() -> None:
+    """Seed the in-memory spool from a prior process's leftovers, once at import.
+
+    Covers the gap _persist_spool_locked closes: entries written to disk by a
+    process that then exited (crash, restart, `daedalus` relaunch) before the
+    pod came back. Best-effort, never raises -- a missing or unreadable file
+    just means nothing to recover, not a startup failure.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    path = _spool_file_path()
+    if path is None or not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return
+    with _SPOOL_LOCK:
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+                _FAILED_WRITE_SPOOL.append((entry["label"], entry["content"]))
+            except Exception:
+                continue
+
+
+_load_spool_from_disk()
+
+
 def _spool_write(label: str, content: str) -> None:
     with _SPOOL_LOCK:
         _FAILED_WRITE_SPOOL.append((label, content))
+        _persist_spool_locked()
 
 
 def _replay_failed_writes() -> int:
@@ -146,7 +213,10 @@ def _replay_failed_writes() -> int:
     round-trip and requeued at the tail only on failure, so concurrent
     replays can never double-send one item nor pop a never-sent item
     (verify pass 2026-08-24: peek/send/pop race duplicated writes and lost
-    one). Any non-exception answer counts as delivered — see _remember.
+    one). Any non-exception answer counts as delivered — see _remember. The
+    on-disk mirror is rewritten at the same moment an entry is claimed, so a
+    crash mid-replay can duplicate at most the one in-flight item, never the
+    whole remaining queue.
     """
     replayed = 0
     while True:
@@ -154,6 +224,7 @@ def _replay_failed_writes() -> int:
             if not _FAILED_WRITE_SPOOL:
                 return replayed
             label, content = _FAILED_WRITE_SPOOL.popleft()
+            _persist_spool_locked()
         try:
             _tool("mazemaker_remember", {"label": label, "content": content})
         except Exception:
@@ -467,6 +538,38 @@ def _attempt_pod_recovery() -> bool:
         # not theirs to have.
         logger.debug("pod recovery suppressed under pytest")
         return False
+
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    # The pytest guard above caught the test-suite instance of this; it did
+    # not catch the real one. `mazemaker off` stops this exact unit on
+    # purpose (systemctl --job-mode=replace-irreversibly, specifically so a
+    # Restart=on-failure policy cannot requeue it) -- and this function,
+    # seeing "unreachable", restarted it right back. Observed live
+    # 2026-09-11: the operator ran `mazemaker off`, this fired on the next
+    # failed call, and the pod came back up regardless. A unit systemd
+    # cleanly stopped reports "inactive", not "active" or "failed" -- only
+    # the wedge this function exists for (container Up, unit active, socket
+    # open, front hung -- 2026-09-03) or a genuine crash looks like either of
+    # those while unreachable. Check state before touching anything.
+    _systemctl_probe = _shutil.which("systemctl")
+    if _systemctl_probe:
+        try:
+            _state = _subprocess.run(
+                [_systemctl_probe, "--user", "is-active", _RECOVERY_UNIT],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+        except Exception:
+            _state = ""
+        if _state == "inactive":
+            logger.info(
+                "pod recovery skipped — %s is cleanly inactive (deliberately "
+                "stopped, e.g. `mazemaker off`), not restarting it",
+                _RECOVERY_UNIT,
+            )
+            return False
+
     now = time.monotonic()
     with _recovery_lock:
         since = now - _recovery_state["last"]
@@ -966,10 +1069,33 @@ class MazemakerMemoryProvider(MemoryProvider):
         memories (see sync_turn). Instead of carrying it in context, the agent
         ships this pointer — the model knows the history is recallable on
         demand via mazemaker_get / mazemaker_recall / the pod's tools.
+
+        This is the contract that makes trim-and-recall safe, so it must not
+        claim the safety net exists when it doesn't: sync_turn's writes funnel
+        through _tool(), the same choke point _PodHealth watches, so a wedged
+        (or deliberately stopped, e.g. `mazemaker off`) pod is already visible
+        here via is_wedged() -- same signal prefetch() already checks below.
+        While wedged, sync_turn's writes are landing in the local retry spool
+        (_spool_write), not the graph, so mazemaker_get/mazemaker_recall
+        cannot see this session's turns until the pod is back and the spool
+        replays. Observed live 2026-09-11: this returned the "safely stored"
+        pointer for an entire session while the pod was masked off on purpose.
         """
         sid = session_id or self._session_id
         if not sid:
             return ""
+        if _POD_HEALTH.is_wedged():
+            down = _POD_HEALTH.wedged_for() or 0.0
+            return (
+                f"[memory unavailable] The mazemaker pod has not completed a call "
+                f"for {_fmt_duration(down)}. This session's turns are queued in a "
+                f"local retry spool, NOT stored in mazemaker yet -- mazemaker_get "
+                f"and mazemaker_recall cannot see anything from this session until "
+                f"the pod is back up and the spool replays. Do not tell the user "
+                f"older turns are safely archived; if something outside the "
+                f"current context window is needed, say memory is down instead of "
+                f"answering as if it were recallable."
+            )
         return (
             f"Full conversation history for this session ({sid}) is stored in "
             f"mazemaker as auto:turn:{sid}:* memories. It is NOT carried in "
