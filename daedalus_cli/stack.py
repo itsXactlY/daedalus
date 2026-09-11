@@ -109,7 +109,10 @@ MAIN_REPO="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
 MAIN_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
 MAIN_PORT=8080
 MAIN_HOST="127.0.0.1"
-MAIN_CTX=131072
+MAIN_CTX=81920
+# The pinned host KV buffer this reserves is sized to MAIN_CTX for the whole
+# process lifetime regardless of how much of it is ever actually live -- pick
+# a real ceiling above your compaction target, not headroom you'll never use.
 # Resident KV pool in VRAM, MiB. Raise it while watching peak VRAM; the rest of
 # the cache streams from host memory. Leave EMPTY to drop block KV streaming
 # entirely, which is what frees you to run more than one slot.
@@ -117,23 +120,45 @@ MAIN_KV_POOL=2048
 MAIN_NGL=99
 MAIN_THREADS=8
 MAIN_REASONING_BUDGET=12000
+# KV cache quantization. q8_0/q4_0 matches the benchmarked config
+# (~/projects/specbench/campaign/GOAT.sh) -- K-cache is more sensitive to
+# attention accuracy than V, so don't drop MAIN_CTK below q8_0 to save VRAM
+# without re-benchmarking; that trade was never actually validated.
+MAIN_CTK="q8_0"
+MAIN_CTV="q4_0"
 
-# Server slots. MUST be 1 whenever MAIN_KV_POOL is set.
+# Server slots. Block KV streaming needs a single KV *stream*, not literally
+# one sequence (llama.cpp-adaptive-kv-streaming commit 002b6bce1, 2026-09-11):
+# a unified KV buffer collapses any slot count to one stream, so MAIN_SLOTS>1
+# with MAIN_KV_POOL set works now. `start` auto-adds -kvu whenever both are
+# true; MAIN_KV_UNIFIED below is only for forcing it in the plain multi-slot
+# case (no KV pool). Verified running two real parallel slots on this fork:
+# main conversation on slot 1, auxiliary_client.py's hygiene/compression
+# calls on slot 0 (AUX_PORT == MAIN_PORT below shares this server's slot
+# instead of spawning a second process). Sidekick gets slot 0, not main,
+# because llama-server fills its shared batch in slot-index order each
+# iteration and stops at the first slot that would overflow it -- main's
+# prefill is usually the big one, so putting it on 0 let it starve the
+# sidekick's slot for many consecutive iterations (fixed 2026-09-12).
 #
-# This fork's block KV streaming — the thing that lets a 27B hold a 131072
-# context on a 16 GB card — is single-sequence only. Ask for more and the
-# server does not degrade, it refuses to start:
-#
+# Old builds without that patch refuse to start instead of degrading:
 #   E llama_init_from_model: failed to initialize the context:
 #     block KV streaming requires exactly one sequence (-np 1)
-#
-# So the one-slot queueing that makes an auxiliary call wait out its client
-# timeout is NOT tunable here: concurrency and the big context are mutually
-# exclusive in this build. The fix for that is a separate endpoint (see
-# the VIS_* block below), not a second slot. start enforces this pairing.
-MAIN_SLOTS=1
-# Only meaningful when MAIN_SLOTS > 1, which requires MAIN_KV_POOL empty.
+# — that means `daedalus doctor setup` needs to rebuild the fork.
+MAIN_SLOTS=2
+# Only meaningful for MAIN_SLOTS>1 with MAIN_KV_POOL empty; see above.
 MAIN_KV_UNIFIED=0
+
+# --- speculative decoding (DFlash2) -------------------------------------------
+# A real second model (~536MB), not the target's own MTP head -- benchmarked
+# in ~/projects/specbench (GOAT.sh is the winning config; n-max/n-min below
+# match it). Leave both empty to fall back to draft-mtp,ngram-mod (no extra
+# VRAM, no extra file, untuned) -- `start` degrades to that automatically
+# rather than failing when no draft model is configured.
+MAIN_DRAFT_REPO="HermiHg/Qwen3.8-27B-DFlash2-Q2_K_S-MIX-GGUF"
+MAIN_DRAFT_FILE="Qwen3.8-27B-DFlash2-Q2_K_S-MIX.gguf"
+MAIN_DRAFT_N_MAX=4
+MAIN_DRAFT_N_MIN=1
 
 # --- vision -------------------------------------------------------------------
 # The projector is a SEPARATE artifact from the model GGUF. The text weights
@@ -151,6 +176,10 @@ MAIN_KV_UNIFIED=0
 # `daedalus doctor` checks that rather than letting the server fail at runtime.
 MAIN_MMPROJ_FILE="mmproj-Qwen3.8-27B-BF16.gguf"
 MMPROJ=""
+# Off by default: the ~890MB tower is real VRAM competing with the draft
+# model + slots on a 16GB card, for a capability most turns never use.
+# `setup` still fetches the projector either way -- set this to 1 to load it.
+MAIN_VISION=0
 
 # --- all-in-one alternative --------------------------------------------------
 # golden-agent-cpp clones and builds the same adaptive-KV server this module
@@ -163,9 +192,9 @@ GOLDEN_AGENT_DIR="$HOME/projects/golden-agent-cpp"
 # --- auxiliary model ---------------------------------------------------------
 # Small, CPU-only, on its own port so background work never queues behind the
 # main model. -ngl 0 is deliberate: it costs no VRAM and runs truly in parallel.
-AUX_REPO="enacimie/Qwen3-1.7B-Q4_K_M-GGUF"
-AUX_FILE="qwen3-1.7b-q4_k_m.gguf"
-AUX_PORT=8081
+AUX_REPO="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
+AUX_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
+AUX_PORT=8080
 AUX_HOST="127.0.0.1"
 AUX_CTX=12096
 AUX_THREADS=6
@@ -397,9 +426,27 @@ class StackConf:
 
         Resolving it here (not at start time) is what makes doctor, setup and
         start agree on which file "the projector" is.
+
+        MMPROJ is documented as "an absolute path to override with a file
+        outside the cache" -- but it sits right next to MAIN_MMPROJ_FILE
+        (a bare filename resolved from the HF cache), and setting MMPROJ to
+        that same bare filename is the obvious thing to try if you don't
+        know the two have different rules (observed 2026-09-12). Anything in
+        MMPROJ that isn't already a usable path but has no directory
+        component gets one retry through the HF-cache lookup before giving
+        up -- silent for the common typo, and still returns the literal
+        MMPROJ value on failure so stack_report's "MMPROJ set but not found"
+        warning names the actual value the user set, not something resolved
+        out from under it.
         """
         explicit = self.path("MMPROJ")
         if explicit:
+            if os.path.isfile(explicit):
+                return explicit
+            if not os.path.dirname(explicit):
+                resolved = model_path(self.str("MAIN_REPO"), explicit)
+                if resolved:
+                    return resolved
             return explicit
         named = self.str("MAIN_MMPROJ_FILE")
         return model_path(self.str("MAIN_REPO"), named) if named else ""
@@ -789,12 +836,27 @@ def stack_report(conf: StackConf = None) -> None:
         else:
             bad("aux model missing", "— run: daedalus doctor setup")
 
+    draft_repo = conf.str("MAIN_DRAFT_REPO")
+    draft_file = conf.str("MAIN_DRAFT_FILE")
+    if draft_repo or draft_file:
+        draft = model_path(draft_repo, draft_file) if draft_repo and draft_file else ""
+        if draft:
+            ok(f"draft (DFlash2): {os.path.basename(draft)}", f"({_human_size(draft)})")
+        else:
+            bad("DFlash2 draft model configured but missing", "— run: daedalus doctor setup")
+    else:
+        warn("no DFlash2 draft model configured",
+             "— running MTP + ngram-mod instead (set MAIN_DRAFT_REPO/MAIN_DRAFT_FILE)")
+
     projector = conf.mmproj
+    vision_on = conf.flag("MAIN_VISION", False)
     if not projector:
         warn("no vision projector", "— image input will 500 ('provide the mmproj')")
         note("run: daedalus doctor setup")
     elif not os.path.isfile(projector):
         warn("MMPROJ set but not found", f"({projector})")
+    elif not vision_on:
+        dim(f"vision: off (MAIN_VISION=0) — {os.path.basename(projector)} present, not loaded")
     else:
         # Pair check. A projector from another model loads and then produces
         # garbage or a dim mismatch at the first image, which is a miserable
@@ -908,6 +970,9 @@ def cmd_setup(args=None) -> int:
     projector_file = conf.str("MAIN_MMPROJ_FILE")
     if projector_file and not fetch(conf.str("MAIN_REPO"), projector_file, "mmproj"):
         warn("mmproj download failed", "— vision stays off")
+    draft_repo, draft_file = conf.str("MAIN_DRAFT_REPO"), conf.str("MAIN_DRAFT_FILE")
+    if draft_repo and draft_file and not fetch(draft_repo, draft_file, "DFlash2 draft"):
+        warn("DFlash2 draft download failed", "— falls back to MTP + ngram-mod")
     if conf.enabled("aux") and not fetch(conf.str("AUX_REPO"), conf.str("AUX_FILE"), "aux"):
         return 1
     if conf.enabled("vis"):
@@ -926,14 +991,14 @@ def cmd_setup(args=None) -> int:
 def _main_argv(conf: StackConf, model: str) -> list:
     kv_pool = conf.str("MAIN_KV_POOL")
     slots = conf.int("MAIN_SLOTS", 1)
-    # Block KV streaming is single-sequence only. Asking for both is not a slow
-    # start, it is a dead server ("block KV streaming requires exactly one
-    # sequence (-np 1)"), so correct it here rather than letting the operator
-    # read it out of a log.
-    if kv_pool and slots != 1:
-        warn("MAIN_KV_POOL is set, so block KV streaming needs -np 1", "— forcing MAIN_SLOTS=1")
-        note("drop MAIN_KV_POOL to run multiple slots, at the cost of the large context")
-        slots = 1
+    # Block KV streaming needs a single KV *stream*, not literally one
+    # sequence (llama.cpp-adaptive-kv-streaming commit 002b6bce1, 2026-09-11):
+    # a unified KV buffer collapses any slot count to one stream, so -np N
+    # --kv-unified is fine and was verified running two real parallel slots
+    # on this fork. Old builds without that patch will refuse to start with
+    # "block KV streaming requires exactly one sequence (-np 1)" -- if that
+    # happens, `daedalus doctor setup` needs to rebuild the fork.
+    needs_unified = bool(kv_pool) and slots != 1
 
     argv = [
         str(conf.server), "--model", model,
@@ -945,7 +1010,13 @@ def _main_argv(conf: StackConf, model: str) -> list:
     if kv_pool:
         argv += ["--kv-stream-stage-mib", kv_pool]
     argv += [
-        "-ctk", "q4_0", "-ctv", "q4_0", "-fa", "on",
+        # 2026-09-12: this was hardcoded to q4_0/q4_0 -- the same "drifted
+        # from the actual benchmark" bug as the spec-decode and vision
+        # defaults above. ~/projects/specbench/campaign/GOAT.sh (the winning
+        # config) uses q8_0/q4_0: K-cache quantization is more sensitive to
+        # attention accuracy than V, so q4_0 on K was a silent quality
+        # regression, not a VRAM decision anyone made on purpose.
+        "-ctk", conf.str("MAIN_CTK", "q8_0"), "-ctv", conf.str("MAIN_CTV", "q4_0"), "-fa", "on",
         "-ngl", str(conf.int("MAIN_NGL", 99)), "-t", str(conf.int("MAIN_THREADS", 8)),
         "-np", str(slots),
         "-b", "512", "-ub", "512",
@@ -953,26 +1024,72 @@ def _main_argv(conf: StackConf, model: str) -> list:
         "--presence-penalty", "0.0", "--repeat-penalty", "1.0",
         "--reasoning", "on", "--reasoning-preserve", "--reasoning-format", "deepseek",
         "--reasoning-budget", str(conf.int("MAIN_REASONING_BUDGET", 12000)),
-        "--spec-type", "draft-mtp,ngram-mod", "--spec-draft-n-max", "2",
-        "--spec-ngram-mod-n-match", "24", "--spec-ngram-mod-n-min", "24",
-        "--spec-ngram-mod-n-max", "32",
         "--jinja", "--cont-batching",
+        # Exposes /metrics (Prometheus text) -- session tok/s, KV cache-hit
+        # counters, and the DFlash2/spec-decode draft-acceptance counters
+        # (spec_decode_num_{draft,accepted}_tokens_total) used nowhere else:
+        # /slots has per-turn cache usage but not draft-acceptance at all.
+        # Near-zero overhead (counter bumps only), off by default upstream.
+        "--metrics",
     ]
     # Keep MAIN_CTX as one shared buffer instead of MAIN_CTX/slots each.
-    if conf.flag("MAIN_KV_UNIFIED", False):
+    # Automatic whenever KV streaming is on with more than one slot -- that
+    # combination is a dead server without it (see needs_unified above) -- or
+    # when explicitly requested for the plain multi-slot case.
+    if needs_unified or conf.flag("MAIN_KV_UNIFIED", False):
         argv.append("-kvu")
 
-    projector = conf.mmproj
-    if projector and os.path.isfile(projector):
-        # --no-mmproj-offload keeps the ~890 MB tower in host RAM. On a 16 GB
-        # card already holding a 27B at -ngl 99 that is the difference between
-        # vision working and the weights not fitting.
-        argv += ["-mm", projector, "--no-mmproj-offload",
-                 "--image-min-tokens", "1024", "--image-max-tokens", "2048"]
-        dim(f"vision: {os.path.basename(projector)}")
+    # Speculative decoding: DFlash2 (a real second model, benchmarked in
+    # ~/projects/specbench -- GOAT.sh is the winning config, n-max 4 / n-min 1)
+    # whenever a draft model is configured and present, falling back to the
+    # target model's own MTP head + ngram matching (no extra VRAM, no extra
+    # file) when it isn't. 2026-09-12: this had been hardcoded to the MTP
+    # fallback unconditionally -- DFlash2 was fully tuned in specbench but
+    # never actually wired into the real launch path, so every daedalus
+    # session ran the untuned scheme while a validated ~536MB draft model sat
+    # unused on disk.
+    draft_repo = conf.str("MAIN_DRAFT_REPO")
+    draft_file = conf.str("MAIN_DRAFT_FILE")
+    draft = model_path(draft_repo, draft_file) if draft_repo and draft_file else ""
+    if draft:
+        argv += [
+            "--model-draft", draft,
+            "--spec-type", "draft-dflash",
+            "--spec-draft-n-max", str(conf.int("MAIN_DRAFT_N_MAX", 4)),
+            "--spec-draft-n-min", str(conf.int("MAIN_DRAFT_N_MIN", 1)),
+        ]
+        dim(f"speculative: DFlash2 ({os.path.basename(draft)})")
     else:
-        warn("no projector", "— vision_analyze will 500 with 'image input is not supported'")
-        note("fetch it with: daedalus doctor setup")
+        argv += [
+            "--spec-type", "draft-mtp,ngram-mod", "--spec-draft-n-max", "2",
+            "--spec-ngram-mod-n-match", "24", "--spec-ngram-mod-n-min", "24",
+            "--spec-ngram-mod-n-max", "32",
+        ]
+        if draft_repo or draft_file:
+            warn("DFlash2 draft model missing", "— run: daedalus doctor setup")
+        dim("speculative: MTP + ngram-mod (no draft model configured)")
+
+    # Vision is opt-in (MAIN_VISION, default off), not just "load it whenever
+    # the projector happens to be present": on a 16GB card already carrying a
+    # 27B + a DFlash2 draft model + 2 slots, the ~890MB mmproj tower is real
+    # VRAM competing with everything else, for a capability most turns never
+    # use. `daedalus doctor setup` still fetches it so it's one flag away.
+    projector = conf.mmproj
+    if conf.flag("MAIN_VISION", False):
+        if projector and os.path.isfile(projector):
+            # --no-mmproj-offload keeps the ~890 MB tower in host RAM. On a
+            # 16 GB card already holding a 27B at -ngl 99 that is the
+            # difference between vision working and the weights not fitting.
+            argv += ["-mm", projector, "--no-mmproj-offload",
+                     "--image-min-tokens", "1024", "--image-max-tokens", "2048"]
+            dim(f"vision: {os.path.basename(projector)}")
+        else:
+            warn("MAIN_VISION=1 but no projector", "— vision_analyze will 500")
+            note("fetch it with: daedalus doctor setup")
+    elif projector and os.path.isfile(projector):
+        dim("vision: off (MAIN_VISION=0) — projector present, set MAIN_VISION=1 to use it")
+    else:
+        note("vision: off — no projector fetched either (daedalus doctor setup to get one)")
     return argv
 
 
@@ -1000,8 +1117,18 @@ def cmd_start(args=None) -> int:
 
     if conf.enabled("aux"):
         aux = model_path(conf.str("AUX_REPO"), conf.str("AUX_FILE"))
-        if aux:
-            aux_host, aux_port = conf.host_port("aux")
+        aux_host, aux_port = conf.host_port("aux")
+        if aux_port == main_port:
+            # AUX_PORT == MAIN_PORT means aux is meant to share the main
+            # process's second slot (MAIN_SLOTS=2 --kv-unified), not run as
+            # its own process -- a separate process here would either refuse
+            # to bind the port main already holds, or bind it in a race and
+            # leave one of the two half-started. auxiliary_client.py routes
+            # to id_slot=1 on the main endpoint for exactly this case; there
+            # is nothing left for this branch to launch.
+            note(f"aux shares main's port ({main_port}) — served by slot 1 "
+                 f"of the main process, not launched separately")
+        elif aux:
             # --reasoning off is load-bearing: with thinking on, a 1.7B spends
             # its whole output budget reasoning and returns empty content.
             start_one("aux", [
