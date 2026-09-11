@@ -1999,6 +1999,16 @@ class AIAgent:
         )
         t.start()
 
+    def _sidekick_id_slot(self) -> int:
+        """The slot this instance is NOT pinned to, under -np 2.
+
+        Derived rather than hardcoded so it stays correct if the main/sidekick
+        assignment is flipped again (see _pinned_id_slot). Harmless on a
+        single-slot server: id_slot 1 simply does not exist there, and the
+        request defers or errors the same way any unavailable slot always has.
+        """
+        return 0 if getattr(self, "_pinned_id_slot", 1) != 0 else 1
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
@@ -7237,11 +7247,15 @@ class AIAgent:
                 # fully reprocessing when this summary call's trailing
                 # context overlaps the main slot's already-cached tail.
                 summary_extra_body["n_cache_reuse"] = 256
-                # this runs synchronously on the main turn (preflight
-                # compression), not beside it like auxiliary_client's hygiene
-                # calls -- same slot as main, so the cache-reuse above has
-                # something of its own to find.
-                summary_extra_body["id_slot"] = 0
+                # The summarization prompt goes to the sidekick slot, not
+                # main's. It is a large one-off prefill; putting it on main's
+                # slot would evict main's cached prefix and force main to
+                # re-prefill afterwards on top of the compaction cost it is
+                # already paying. Note this call is still synchronous on the
+                # main turn -- the sidekick slot only keeps the two caches
+                # from fighting, it does not make compaction non-blocking.
+                # docs/slot-hot-swap-design.md covers what would.
+                summary_extra_body["id_slot"] = self._sidekick_id_slot()
             if _is_nous:
                 summary_extra_body["tags"] = ["product=daedalus"]
 
