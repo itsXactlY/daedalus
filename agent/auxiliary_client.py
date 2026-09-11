@@ -1933,12 +1933,31 @@ def call_llm(
         _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
         _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
         if _main_base and _aux_base and _main_base == _aux_base:
+            # Same server, but as of 2026-09-11 it can run -np 2 --kv-unified:
+            # two real parallel slots sharing one streamed KV context (see
+            # llama.cpp-adaptive-kv-streaming commit 002b6bce1). Route this
+            # call to slot 0 so it runs BESIDE the main turn on slot 1 instead
+            # of queuing behind it for up to the full timeout budget. Slot 0,
+            # not 1, deliberately (2026-09-12): llama-server fills its shared
+            # per-iteration batch by walking slots in index order and stops
+            # at the first one that would overflow n_batch, skipping every
+            # later slot that round entirely. Main's prefill is usually the
+            # big one; on slot 0 it could occupy the whole batch budget for
+            # many consecutive iterations with this call's slot never even
+            # getting scheduled — see run_agent.py's matching comment on
+            # _pinned_id_slot. Falls back to the old queue-and-wait behavior
+            # harmlessly if the server wasn't started with -np 2 (id_slot 0
+            # just doesn't exist yet, so it defers/errors the same way an
+            # unavailable slot always has).
             logger.info(
-                "Auxiliary %s runs on the same endpoint as the main model (%s). "
-                "A single-slot server answers it only after the turn in flight, "
-                "so this call waits out its %.0fs budget instead of running "
-                "beside it — point auxiliary.%s at a second endpoint to avoid it.",
-                task or "call", _aux_base, effective_timeout, task or "task")
+                "Auxiliary %s runs on the same endpoint as the main model (%s); "
+                "routing to id_slot=0 so it runs beside main's slot instead of "
+                "waiting out its %.0fs budget after it (needs the server "
+                "started with -np 2 --kv-unified).",
+                task or "call", _aux_base, effective_timeout)
+            extra_body = dict(extra_body or {})
+            extra_body.setdefault("id_slot", 0)
+            extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
 
@@ -2120,12 +2139,17 @@ async def async_call_llm(
         _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
         _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
         if _main_base and _aux_base and _main_base == _aux_base:
+            # see the matching comment in call_llm(): route to slot 0 so this
+            # runs beside the main turn on slot 1 instead of queuing behind it.
             logger.info(
-                "Auxiliary %s runs on the same endpoint as the main model (%s). "
-                "A single-slot server answers it only after the turn in flight, "
-                "so this call waits out its %.0fs budget instead of running "
-                "beside it — point auxiliary.%s at a second endpoint to avoid it.",
-                task or "call", _aux_base, effective_timeout, task or "task")
+                "Auxiliary %s runs on the same endpoint as the main model (%s); "
+                "routing to id_slot=0 so it runs beside main's slot instead of "
+                "waiting out its %.0fs budget after it (needs the server "
+                "started with -np 2 --kv-unified).",
+                task or "call", _aux_base, effective_timeout)
+            extra_body = dict(extra_body or {})
+            extra_body.setdefault("id_slot", 0)
+            extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
 

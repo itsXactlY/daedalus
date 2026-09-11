@@ -1232,6 +1232,26 @@ class AIAgent:
         )
         self._user_turn_count = 0
 
+        # id_slot pin for this instance's own completion calls (see the
+        # extra_body block below that reads it). 1 = the main conversation's
+        # slot. A background-review AIAgent forked by _spawn_background_review
+        # overrides this to 0 -- the sidekick's slot, not main's -- so its
+        # multi-turn work actually runs beside the live main turn instead of
+        # contending with it. This is the opposite of an arbitrary choice:
+        # llama-server's batch filler (tools/server/server-context.cpp,
+        # "batch any pending prompts without exceeding n_batch") walks slots
+        # in index order and stops the moment the shared n_batch budget is
+        # full, skipping every later slot entirely that round. Main's prefill
+        # is usually the big one (tens of thousands of tokens after a
+        # compaction); putting it on slot 0 meant it could occupy the whole
+        # batch budget for many consecutive iterations, during which the
+        # sidekick's slot never got scheduled at all -- background work was
+        # pinned to "slot 1" in name only and still ran serialized behind
+        # main in practice. The sidekick's prompts are small, so giving it
+        # first claim on the batch each round costs main close to nothing;
+        # the reverse (observed 2026-09-12) starved the sidekick completely.
+        self._pinned_id_slot = 1
+
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
@@ -2025,6 +2045,13 @@ class AIAgent:
                     review_agent._user_profile_enabled = self._user_profile_enabled
                     review_agent._memory_nudge_interval = 0
                     review_agent._skill_nudge_interval = 0
+                    # Without this, review_agent inherits the class default
+                    # (1, main's slot) and its up-to-8-iteration
+                    # run_conversation() below queues behind the live main
+                    # turn instead of running beside it. 0, not 1, is the
+                    # sidekick's slot -- see the matching comment on
+                    # _pinned_id_slot for why main moved off slot 0 entirely.
+                    review_agent._pinned_id_slot = 0
 
                     review_agent.run_conversation(
                         user_message=prompt,
@@ -5808,7 +5835,66 @@ class AIAgent:
                 else:
                     _local_effort = None
             if _local_effort:
+                # This model's chat template only implements 3 levels (xhigh
+                # is its ceiling) -- the task-intensity gauge
+                # (agent/task_intensity.py) goes up to "ultra" for providers
+                # that support deeper tiers, and sending one of those here is
+                # a 500, not a graceful degrade:
+                #   Jinja Exception: Unexpected reasoning effort max.
+                #   Supported types are xhigh (default), medium, and low.
+                # (observed 2026-09-11, killed every call in the turn: 3
+                # retries, all identical). Round anything the template
+                # doesn't know down to its actual ceiling instead of relaying
+                # the gauge's value verbatim.
+                _local_effort = {"high": "xhigh", "max": "xhigh", "ultra": "xhigh"}.get(
+                    _local_effort, _local_effort)
                 extra_body["reasoning_effort"] = _local_effort
+
+            # llama-server chunk-reuse: when a turn's prompt has had a middle
+            # block removed (our own context-spill placing a shorter pointer
+            # where a bulky tool result used to be), the server's default
+            # longest-common-PREFIX match breaks at the edit point and
+            # reprocesses the entire remainder from scratch — tens of
+            # thousands of tokens, even though everything after the removed
+            # block is byte-identical. n_cache_reuse makes it instead scan
+            # for that unchanged tail elsewhere in the slot's cache and
+            # relocate its KV via seq_rm+seq_add (RoPE re-tag, no recompute).
+            # Verified 2026-09-11 against llama.cpp-adaptive-kv-streaming: a
+            # spliced-out middle block dropped the next turn's prompt-eval
+            # from N tokens to 1. 256 is a floor big enough to avoid matching
+            # on short coincidental runs (boilerplate, whitespace) — smaller
+            # floors risk mis-relocating a chunk that only looks like a match.
+            extra_body["n_cache_reuse"] = 256
+
+            # Pin this instance's calls to a slot. Left unset, llama-server
+            # auto-picks a slot per request by LCP similarity against
+            # whatever's cached — usually right, but under -np 2 it's a
+            # second variable stacked on top of the prompt-cache FIFO
+            # eviction between slots, and auxiliary_client.py now explicitly
+            # claims slot 0 for hygiene/compression calls (see the matching
+            # comment there). Pinning removes the ambiguity: the main
+            # conversation (self._pinned_id_slot == 1, the default) always
+            # lands on the slot with its own history and never contends with
+            # aux for slot selection. A background-review AIAgent
+            # (_spawn_background_review) overrides this to 0 on its own
+            # instance so its multi-turn review actually runs beside the live
+            # main turn instead of queuing behind it on the same slot.
+            #
+            # Main, not the sidekick, is on the higher slot number
+            # deliberately (2026-09-12): llama-server fills its shared
+            # per-iteration batch by walking slots in index order and stops
+            # at the first one that would overflow n_batch, skipping every
+            # later slot for that round entirely. Main's prefill is usually
+            # the big one (tens of thousands of tokens after a compaction);
+            # on slot 0 it could occupy the whole batch budget for many
+            # consecutive iterations, during which the sidekick's slot never
+            # got scheduled at all — background work was pinned to "its own
+            # slot" in name only and still ran serialized behind main. The
+            # sidekick's prompts are small, so it going first costs main
+            # close to nothing; the reverse starved the sidekick completely.
+            # Harmless on a single-slot (-np 1) server — id_slot 0 is also
+            # the only slot that exists there.
+            extra_body["id_slot"] = self._pinned_id_slot
 
         if _is_nous:
             extra_body["tags"] = ["product=daedalus"]
@@ -6250,7 +6336,30 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count,
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
         )
-        self.flush_memories(messages, min_turns=0)
+        # flush_memories makes a full API call over the entire pre-compaction
+        # history (asking the model what's worth remembering) BEFORE
+        # compression discards it -- and did so synchronously, blocking this
+        # thread, on every single compaction. Observed live 2026-09-11: the
+        # agent was mid-tool-call (searching a shader file) when "compaction
+        # approaching" fired and the whole turn stalled on this one call --
+        # the exact thing having a second slot was supposed to prevent, just
+        # never wired to actually run off the main thread.
+        #
+        # flush_memories only ever appends to / pops from the `messages` list
+        # it's handed -- it never touches self._session_messages or any other
+        # shared state -- so handing it a snapshot copy instead of the live
+        # list makes it safe to run detached: the background thread mutates
+        # its own copy, the caller's real `messages` is never touched, and
+        # this call returns immediately instead of blocking on the network
+        # round trip (now possibly seconds, on a big context) or on the
+        # memory-tool writes that follow it.
+        threading.Thread(
+            target=self.flush_memories,
+            args=(list(messages),),
+            kwargs={"min_turns": 0},
+            daemon=True,
+            name="flush-memories",
+        ).start()
 
         _mazemaker_archive_note = ""
         if self._memory_manager:
@@ -7116,7 +7225,23 @@ class AIAgent:
                     else:
                         _local_effort = None
                 if _local_effort:
+                    # see the matching comment on the main completion path:
+                    # this template maxes out at xhigh, round the gauge's
+                    # high/max/ultra down instead of sending a 500-causing
+                    # value it doesn't recognize.
+                    _local_effort = {"high": "xhigh", "max": "xhigh", "ultra": "xhigh"}.get(
+                        _local_effort, _local_effort)
                     summary_extra_body["reasoning_effort"] = _local_effort
+                # see the matching comment on the main completion path: lets
+                # llama-server relocate a matching cached chunk instead of
+                # fully reprocessing when this summary call's trailing
+                # context overlaps the main slot's already-cached tail.
+                summary_extra_body["n_cache_reuse"] = 256
+                # this runs synchronously on the main turn (preflight
+                # compression), not beside it like auxiliary_client's hygiene
+                # calls -- same slot as main, so the cache-reuse above has
+                # something of its own to find.
+                summary_extra_body["id_slot"] = 0
             if _is_nous:
                 summary_extra_body["tags"] = ["product=daedalus"]
 
