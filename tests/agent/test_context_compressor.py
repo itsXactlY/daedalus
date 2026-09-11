@@ -773,19 +773,25 @@ class TestSpillCallArguments:
         for msg in messages:
             for call in (msg.get("tool_calls") or []):
                 args = _json.loads(call["function"]["arguments"])
-                if any(isinstance(v, dict) and "_spilled_to" in v for v in args.values()):
+                if any(isinstance(v, str) and v.startswith("[[SPILLED ARGUMENT")
+                       for v in args.values()):
                     return args
         return None
 
     def test_the_bulky_value_moves_and_stays_readable(self):
         import os
+        import re
 
         c = self._c()
         out, n = c.prune_stale_tool_results(self._msgs(30), 90_000)
         assert n > 0
         args = self._first_spilled(out)
         assert args is not None
-        path = args["content"]["_spilled_to"]
+        # the marker is prose, not a {"_spilled_to": ...} object a model could
+        # mistake for reusable data -- pull the path out of the sentinel text
+        m = re.search(r'read_file\("([^"]+)"\)', args["content"])
+        assert m, args["content"]
+        path = m.group(1)
         assert os.path.isfile(path)
         assert open(path).read() == "Y" * 9000
 

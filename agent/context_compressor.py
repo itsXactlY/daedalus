@@ -49,6 +49,7 @@ _LIVE_WINDOW_BUDGET_RATIO = 0.5
 _PRUNE_MIN_CHARS = 2000
 _OFFLOAD_PREFIX = "[offloaded: "
 _SPILLED_ARG_KEY = "_spilled_to"
+_SPILL_MARKER_TAG = "[[SPILLED "  # idempotency tag shared by both marker strings below
 _SPILL_VALUE_MIN_CHARS = 800
 _SUBJECT_KEYS = ("file_path", "path", "command", "query", "url", "name")
 
@@ -345,7 +346,7 @@ class ContextCompressor:
             if not isinstance(raw, str) or len(raw) < _PRUNE_MIN_CHARS:
                 out.append(call)
                 continue
-            if _SPILLED_ARG_KEY in raw:
+            if _SPILL_MARKER_TAG in raw:
                 out.append(call)
                 continue
             name = fn.get("name") or "tool"
@@ -369,9 +370,12 @@ class ContextCompressor:
                 return None
             self.offloaded.append({"path": str(path), "chars": len(raw),
                                    "tool": f"{tool_name} (arguments)"})
-            return json.dumps({_SPILLED_ARG_KEY: str(path), "bytes": len(raw),
-                               "note": "arguments spilled from context; "
-                                       "read_file(path) to see them"})
+            return json.dumps(
+                f"[[SPILLED ARGUMENTS — NOT REAL DATA, do not copy this marker "
+                f"into a new tool call. {tool_name}'s original arguments "
+                f"({len(raw)} chars) were moved out of context; retrieve them "
+                f"with read_file(\"{path}\") if you actually need them again.]]"
+            )
 
         slim: Dict[str, Any] = {}
         moved = False
@@ -383,8 +387,20 @@ class ContextCompressor:
                     continue
                 self.offloaded.append({"path": str(path), "chars": len(value),
                                        "tool": f"{tool_name}.{key}"})
-                slim[key] = {_SPILLED_ARG_KEY: str(path), "bytes": len(value),
-                             "note": "read_file(path) to see this value"}
+                # A plain sentinel string, not a clean {"_spilled_to": ...}
+                # object: the latter reads as reusable data and a model deep
+                # in a long session can end up copying it verbatim into a new
+                # tool call's argument instead of regenerating the real
+                # content (observed 2026-09-11: a write_file call's `content`
+                # became this exact marker's JSON text). Prose a model can't
+                # mistake for a file's contents.
+                slim[key] = (
+                    f"[[SPILLED ARGUMENT — NOT REAL CONTENT, do not copy this "
+                    f"marker into a new tool call. This was {tool_name}.{key} "
+                    f"({len(value)} chars); retrieve the original with "
+                    f"read_file(\"{path}\") if you actually need it again — "
+                    f"do not reconstruct it from this marker.]]"
+                )
                 moved = True
             else:
                 slim[key] = value
