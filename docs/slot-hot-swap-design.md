@@ -1,142 +1,106 @@
-# Slot hot-swap: moving compaction recompute off the live turn
+# Slot hot-swap: moving compaction cost off the live turn
 
-Status: designed, not implemented.
+Implemented in `run_agent.py`. Tests: `tests/run_agent/test_hot_swap.py`.
 
 ## Problem
 
-`ContextCompressor` compacts history when usage crosses a threshold. With
-Qwen3.5 (`QWEN35`, IMROPE RoPE, `n_pos_per_embd() == 4`), any edit to history
-other than a tail truncation forces llama-server to reprocess the prompt from
-the edit point forward. `seq_add()`, the position-shift primitive that
-`n_cache_reuse` and any cache splice depend on, asserts on non-scalar RoPE
-positions. See commit `bad7199cd` in `llama.cpp-adaptive-kv-streaming`.
+`ContextCompressor` compacts history when a turn crosses `threshold_tokens`.
+The summarization is an LLM call made inline: `_compress_context` is invoked
+from the turn loop and the turn cannot continue until it returns.
 
-That reprocessing cannot be avoided on this model. It can be relocated. Today
-it runs inline with a turn, so the slot serving the live conversation absorbs
-the latency.
+On Qwen3.5 (`QWEN35`, IMROPE RoPE, `n_pos_per_embd() == 4`) the compacted
+prompt also cannot reuse the previous KV cache. Any edit other than a tail
+truncation forces a full reprocess, because `seq_add()` — the position-shift
+primitive `n_cache_reuse` and cache splicing both need — asserts on non-scalar
+RoPE positions (see `bad7199cd` in `llama.cpp-adaptive-kv-streaming`).
 
-## Approach
+So a compaction costs the turn a summarization call plus a full re-prefill.
+Neither can be removed on this model. Both can be moved off the turn.
 
-1. Trigger in the background ahead of the real compaction threshold. A separate
-   earlier threshold (`hot_swap_prep_threshold_percent`, around 70–80% of
-   `ContextCompressor`'s trigger) leaves time for the prefill to finish before
-   compaction would otherwise fire.
-2. Build the compacted message list with `_compress_context`, which returns
-   `(compressed_messages, new_system_prompt)` without mutating live state. Call
-   it on a snapshot of `messages`, not the live list.
-3. Prefill the result into the sidekick slot: a request with
-   `id_slot=<sidekick>` (`max_tokens=1` is enough) makes llama-server process
-   and cache every token on a slot the live conversation does not use.
-4. Swap which slot is main, at the start of the next turn only, never
-   mid-generation. The sidekick holds the warm compacted history and becomes
-   main; the previous main becomes the sidekick.
+## How it works
 
-## State
+Prep, in a daemon thread, when a turn reaches `_hot_swap_prep_ratio` (0.75) of
+the compaction threshold:
 
-Replace the static `_pinned_id_slot` with a mutable pair:
+1. `context_compressor.compress()` on a snapshot of `messages` produces the
+   compacted list. This is the expensive part.
+2. `_prime_slot_with_messages()` sends that list to the sidekick slot with
+   `max_tokens=1`, which makes llama-server prefill it into that slot's cache.
+3. The result is parked in `_hot_swap_ready`.
 
-```python
-self._main_slot = 1
-self._sidekick_slot = 0
-self._hot_swap_in_progress = False   # guards overlapping prep attempts
-self._hot_swap_ready = None          # None, or (compressed_messages, new_system_prompt)
-```
+Apply, at the start of the next turn, before anything sizes the request:
 
-Call sites reading `_pinned_id_slot` — the `extra_body["id_slot"]` assignment in
-the main completion path, `_spawn_background_review`'s override, and the two
-sites in `auxiliary_client.py` — each already know which role they play, so they
-read `_main_slot` or `_sidekick_slot` accordingly. That part is indirection, not
-new logic.
+4. `_apply_pending_hot_swap_if_ready()` merges the prepared compaction with
+   whatever arrived since, and promotes the warm slot to main.
+5. `_compress_context(..., precomputed=merged)` runs the remaining bookkeeping
+   with the summarization skipped.
 
-## Methods
+Prep deliberately calls `context_compressor.compress()` and not
+`_compress_context()`. The latter ends the SQLite session, rotates
+`session_id`, and archives to mazemaker; none of that may happen speculatively
+for a compaction that might be discarded. Those steps stay on the turn, where
+they are cheap.
 
-```python
-def _maybe_start_hot_swap_prep(self, messages: list) -> None:
-    """Called once per turn, where _compress_context is consulted.
+## Merging, not replacing
 
-    Returns early in the common case, so it adds no latency to a normal turn.
-    """
-    if self._hot_swap_in_progress or self._hot_swap_ready is not None:
-        return
-    if not self._context_compressor:
-        return
-    usage = self._context_compressor.last_prompt_tokens / self._context_compressor.context_length
-    if usage < self._hot_swap_prep_threshold_percent:
-        return
-    self._hot_swap_in_progress = True
-    threading.Thread(
-        target=self._run_hot_swap_prep,
-        args=(list(messages),),          # snapshot, not the live list
-        daemon=True, name="hot-swap-prep",
-    ).start()
+A prep describes a prefix of the conversation. Between prep and apply the user
+adds turns, so applying it as a wholesale replacement would drop them.
+`_apply_pending_hot_swap_if_ready` records `snapshot_len` at prep time and
+merges:
 
-def _run_hot_swap_prep(self, messages_snapshot: list) -> None:
-    try:
-        compressed, new_system_prompt = self._compress_context(
-            messages_snapshot, self._cached_system_prompt or "",
-        )
-        # A request against the sidekick slot forces the prefill. Read
-        # _sidekick_slot once here; it can change if a swap lands meanwhile.
-        self._prime_slot_with_messages(self._sidekick_slot, compressed, new_system_prompt)
-        self._hot_swap_ready = (compressed, new_system_prompt)
-    except Exception as e:
-        logger.debug("hot-swap prep failed, staying on current main: %s", e)
-    finally:
-        self._hot_swap_in_progress = False
+    merged = prepared_compressed + messages[snapshot_len:]
 
-def _apply_pending_hot_swap_if_ready(self) -> None:
-    """Called at the start of a turn, before building the request."""
-    if self._hot_swap_ready is None:
-        return
-    compressed, new_system_prompt = self._hot_swap_ready
-    self._hot_swap_ready = None
-    self._session_messages = compressed
-    self._cached_system_prompt = new_system_prompt
-    self._main_slot, self._sidekick_slot = self._sidekick_slot, self._main_slot
-```
+If `len(messages) < snapshot_len` the history no longer contains that prefix
+and the prep is refused.
 
-## Edge cases
+## Invalidation
 
-- A user message arrives while prep is in flight: the turn proceeds on the
-  current main slot. This holds as long as `_maybe_start_hot_swap_prep` only
-  spawns a detached thread and the live path reads `_hot_swap_ready` only at the
-  top of a turn.
-- Prep completes mid-generation: the swap waits for
-  `_apply_pending_hot_swap_if_ready` at the next turn boundary.
-  `_hot_swap_ready` holds the result until then.
-- Overlapping prep cycles: `_hot_swap_in_progress` guards this, matching the
-  liveness check `_spawn_background_review` uses for overlapping reviews.
-- Prep fails (server error, OOM, busy sidekick): log at debug, clear
-  `_hot_swap_in_progress`, leave `_hot_swap_ready` as `None`. The session
-  behaves as if the feature were absent. `ContextCompressor`'s normal blocking
-  compaction remains the fallback and must not be weakened by this feature.
-- Sidekick slot busy with `_spawn_background_review` or `auxiliary_client.py`
-  work when prep runs: the prime request queues behind it, which is acceptable
-  since none of this is on the live path. Worth measuring whether that delays
-  the following prep cycle.
-- Stale cache on the demoted slot: after a swap the old main still holds the
-  pre-compaction history. It is overwritten the next time that slot is used. An
-  explicit clear equivalent to `prompt_clear()` (`mem.seq_rm(id, -1, -1)`, which
-  shifts no positions and is therefore safe on IMROPE models) would reclaim the
-  KV footprint sooner.
+`_compaction_generation` increments on every `_compress_context` call. Prep
+records the generation it started under and is discarded if it no longer
+matches — checked both after summarization and again after the prefill. This
+is what stops a prep from being applied over a history that an inline
+compaction already replaced.
 
-## Unchanged by this
+## Slot assignment
 
-- `ContextCompressor`'s trigger threshold and blocking compaction path, which
-  remain the fallback when prep has not completed in time.
-- `n_cache_reuse` and cache-splice handling, already disabled for this model.
-- `flush_memories`'s background dispatch, which is an independent path.
+`_pinned_id_slot` holds main's slot (1 by default); `_sidekick_id_slot()`
+derives the other. A swap sets `_pinned_id_slot` to the warmed slot and calls
+`auxiliary_client.set_sidekick_id_slot()` with the old one, so hygiene and
+compression calls follow rather than landing on top of main.
+`_spawn_background_review` derives its slot the same way.
 
-## Implementation order
+If the prefill failed, `slot` is `None`: the summary is still applied, no swap
+happens, and main stays where it is.
 
-1. Rename `_pinned_id_slot` to the `_main_slot`/`_sidekick_slot` pair. No swap
-   logic, behavior identical to current.
-2. Add `_maybe_start_hot_swap_prep` and `_run_hot_swap_prep`, with
-   `_apply_pending_hot_swap_if_ready` stubbed to log instead of swapping. Verify
-   over a real session that prep fires at the intended threshold, completes, and
-   does not delay a turn.
-3. Enable the swap, with a test per edge case above. Existing tests in
-   `tests/run_agent/test_background_review_slot_pin.py` and
-   `tests/cli/test_llama_telemetry.py` show the pattern: bare `AIAgent.__new__`
-   instances, stubbed background functions, explicit thread joins rather than
-   sleeps.
+## Failure behavior
+
+Every failure path leaves the session running as if the feature were absent,
+with `ContextCompressor`'s inline compaction as the fallback:
+
+- Summarization raises: `_hot_swap_ready` stays `None`, `_hot_swap_in_progress`
+  is cleared in a `finally`, a later turn can try again.
+- Prefill fails or the backend is not local: summary kept, no swap.
+- A compaction lands mid-prep: prep discarded on the generation check.
+- Prep still running when the threshold is crossed: the turn takes the normal
+  blocking path. Prep is not waited on anywhere.
+- `_hot_swap_in_progress` prevents concurrent preps, matching the liveness
+  guard `_spawn_background_review` already uses.
+
+## Known rough edges
+
+- A discarded prep still increments `context_compressor.compression_count`,
+  because the counter lives inside `compress()`. Display only.
+- After a swap the demoted slot still holds the pre-compaction cache until
+  something else reuses it. An explicit `prompt_clear()`-equivalent
+  (`mem.seq_rm(id, -1, -1)`, which shifts no positions and is safe on IMROPE)
+  would reclaim it sooner.
+- A prefill queued behind real sidekick work waits for it. Acceptable, since
+  nothing on the live path depends on it, but worth measuring whether it
+  delays the following prep cycle.
+- `_hot_swap_prep_ratio` is untuned. Too early and the snapshot is stale by
+  apply time; too late and prep does not finish before the threshold.
+
+## Turning it off
+
+Set `self._hot_swap_enabled = False`. Prep never starts and the blocking path
+behaves exactly as before.

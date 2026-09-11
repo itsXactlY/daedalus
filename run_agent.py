@@ -1252,6 +1252,25 @@ class AIAgent:
         # the reverse (observed 2026-09-12) starved the sidekick completely.
         self._pinned_id_slot = 1
 
+        # --- slot hot-swap (docs/slot-hot-swap-design.md) ---------------
+        # Compaction's summarization is synchronous on the turn, and on an
+        # IMROPE model the compacted prompt cannot reuse the old cache, so the
+        # turn pays a summarize + a full re-prefill. Hot-swap does both in the
+        # background on the sidekick slot ahead of time, then promotes that
+        # slot to main at a turn boundary.
+        #
+        # _compaction_generation invalidates in-flight prep: any inline
+        # compaction bumps it, and prep whose generation no longer matches is
+        # discarded rather than applied over a history it no longer describes.
+        self._hot_swap_enabled = True
+        self._hot_swap_in_progress = False
+        self._hot_swap_ready = None          # dict, see _run_hot_swap_prep
+        self._compaction_generation = 0
+        # Fraction of the compaction threshold at which prep starts. Early
+        # enough that a summarize + prefill can finish first, late enough that
+        # the snapshot is still close to what the next turn will send.
+        self._hot_swap_prep_ratio = 0.75
+
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
         self.session_total_tokens = 0
@@ -2009,6 +2028,156 @@ class AIAgent:
         """
         return 0 if getattr(self, "_pinned_id_slot", 1) != 0 else 1
 
+    # ------------------------------------------------------------------
+    # Slot hot-swap. See docs/slot-hot-swap-design.md.
+    # ------------------------------------------------------------------
+
+    def _maybe_start_hot_swap_prep(self, messages: list, system_message: str,
+                                   approx_tokens: int, task_id: str) -> None:
+        """Start background compaction prep if the turn is approaching the
+        compaction threshold. Returns immediately; never blocks the turn."""
+        if not getattr(self, "_hot_swap_enabled", False):
+            return
+        if self._hot_swap_in_progress or self._hot_swap_ready is not None:
+            return
+        compressor = getattr(self, "context_compressor", None)
+        if not compressor or not compressor.threshold_tokens:
+            return
+        trigger = compressor.threshold_tokens * self._hot_swap_prep_ratio
+        if approx_tokens < trigger:
+            return
+
+        self._hot_swap_in_progress = True
+        threading.Thread(
+            target=self._run_hot_swap_prep,
+            # Snapshot: the live list keeps being appended to while this runs.
+            args=(list(messages), system_message, approx_tokens, task_id,
+                  self._compaction_generation),
+            daemon=True, name="hot-swap-prep",
+        ).start()
+
+    def _run_hot_swap_prep(self, snapshot: list, system_message: str,
+                           approx_tokens: int, task_id: str, generation: int) -> None:
+        """Produce the compacted message list, then warm the sidekick slot.
+
+        Only calls context_compressor.compress(), never _compress_context():
+        the latter ends the SQLite session, rotates session_id and archives to
+        mazemaker, none of which may happen for a compaction that might be
+        discarded. Those steps stay on the turn, where they are cheap.
+        """
+        try:
+            compressed = self.context_compressor.compress(
+                snapshot, current_tokens=approx_tokens,
+            )
+            if self._compaction_generation != generation:
+                logger.debug("hot-swap prep discarded: compaction happened while preparing")
+                return
+
+            # Best-effort: warm the sidekick slot with the compacted prompt so
+            # the promoted slot already holds it. Failure here costs only the
+            # prefill, not the summary, so the prep is still worth applying.
+            target_slot = self._sidekick_id_slot()
+            warmed = self._prime_slot_with_messages(target_slot, compressed, system_message)
+
+            if self._compaction_generation != generation:
+                logger.debug("hot-swap prep discarded after prefill: compaction raced it")
+                return
+
+            self._hot_swap_ready = {
+                "compressed": compressed,
+                "snapshot_len": len(snapshot),
+                "generation": generation,
+                "slot": target_slot if warmed else None,
+            }
+            logger.info(
+                "hot-swap prep ready: %d -> %d messages, slot %s",
+                len(snapshot), len(compressed),
+                target_slot if warmed else "not warmed",
+            )
+        except Exception as e:
+            logger.debug("hot-swap prep failed, staying on the blocking path: %s", e)
+        finally:
+            self._hot_swap_in_progress = False
+
+    def _prime_slot_with_messages(self, slot: int, compressed: list,
+                                  system_message: str) -> bool:
+        """Force llama-server to prefill `compressed` into `slot`'s KV cache."""
+        try:
+            base = (self.base_url or "").lower()
+            if "127.0.0.1" not in base and "localhost" not in base:
+                return False  # only meaningful against the local multi-slot server
+
+            api_messages = []
+            prompt = self._cached_system_prompt or system_message
+            if prompt:
+                api_messages.append({"role": "system", "content": prompt})
+            for m in compressed:
+                if not isinstance(m, dict) or not m.get("role"):
+                    continue
+                slim = {"role": m["role"], "content": m.get("content") or ""}
+                if m.get("tool_calls"):
+                    slim["tool_calls"] = m["tool_calls"]
+                if m.get("tool_call_id"):
+                    slim["tool_call_id"] = m["tool_call_id"]
+                api_messages.append(slim)
+            if len(api_messages) < 2:
+                return False
+
+            from agent.auxiliary_client import call_llm as _call_llm
+            _call_llm(
+                task="hot_swap_prefill",
+                messages=api_messages,
+                max_tokens=1,
+                temperature=0.0,
+                max_retries=0,
+                extra_body={"id_slot": slot},
+            )
+            return True
+        except Exception as e:
+            logger.debug("hot-swap prefill of slot %s failed (non-fatal): %s", slot, e)
+            return False
+
+    def _apply_pending_hot_swap_if_ready(self, messages: list):
+        """Adopt a background-prepared compaction at a turn boundary.
+
+        Returns the new `messages` list, or None to leave the turn alone.
+        Never called mid-generation.
+        """
+        ready = self._hot_swap_ready
+        if not ready:
+            return None
+        self._hot_swap_ready = None
+
+        if ready["generation"] != self._compaction_generation:
+            logger.debug("hot-swap discarded: a compaction landed since prep")
+            return None
+
+        # The prep covers a prefix of the conversation. Anything appended since
+        # the snapshot has to be carried forward, or those turns are lost.
+        snapshot_len = ready["snapshot_len"]
+        if len(messages) < snapshot_len:
+            logger.debug("hot-swap discarded: history shorter than the snapshot")
+            return None
+        tail = messages[snapshot_len:]
+
+        merged = list(ready["compressed"]) + tail
+        slot = ready["slot"]
+        if slot is not None and slot != self._pinned_id_slot:
+            previous = self._pinned_id_slot
+            self._pinned_id_slot = slot
+            try:
+                from agent.auxiliary_client import set_sidekick_id_slot
+                set_sidekick_id_slot(previous)
+            except Exception:
+                logger.debug("could not publish new sidekick slot", exc_info=True)
+            logger.info("hot-swap: main moved to slot %s, sidekick now %s", slot, previous)
+
+        logger.info(
+            "hot-swap applied: %d messages (%d compacted + %d since prep)",
+            len(merged), len(ready["compressed"]), len(tail),
+        )
+        return merged
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
@@ -2061,7 +2230,9 @@ class AIAgent:
                     # turn instead of running beside it. 0, not 1, is the
                     # sidekick's slot -- see the matching comment on
                     # _pinned_id_slot for why main moved off slot 0 entirely.
-                    review_agent._pinned_id_slot = 0
+                    # Derived, not hardcoded: a hot-swap can flip which slot
+                    # main holds, and this has to land on the other one.
+                    review_agent._pinned_id_slot = self._sidekick_id_slot()
 
                     review_agent.run_conversation(
                         user_message=prompt,
@@ -6334,7 +6505,7 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", precomputed: list = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
         Returns:
@@ -6378,7 +6549,19 @@ class AIAgent:
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        # Any compaction invalidates hot-swap prep that is still running: the
+        # prepared summary describes a history this call is about to replace.
+        self._compaction_generation = getattr(self, "_compaction_generation", 0) + 1
+
+        if precomputed is not None:
+            # Summary already produced in the background by _run_hot_swap_prep;
+            # this is the whole point of the hot-swap, so the turn does not pay
+            # for the LLM call again. Everything below (mazemaker archive,
+            # session split, prompt rebuild) is cheap bookkeeping and still runs
+            # exactly as it would have.
+            compressed = precomputed
+        else:
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
         if _mazemaker_archive_note:
             compressed.append({
@@ -7522,6 +7705,20 @@ class AIAgent:
 
         active_system_prompt = self._cached_system_prompt
 
+        # Hot-swap: if a background prep finished, adopt it here, at a turn
+        # boundary, before anything else looks at the size of this turn. The
+        # summary is already written, so _compress_context only does the cheap
+        # bookkeeping (mazemaker archive, session split, prompt rebuild) and
+        # the turn skips the summarization call it would otherwise block on.
+        if self.compression_enabled:
+            _hot_swapped = self._apply_pending_hot_swap_if_ready(messages)
+            if _hot_swapped is not None:
+                messages, active_system_prompt = self._compress_context(
+                    messages, system_message, task_id=effective_task_id,
+                    precomputed=_hot_swapped,
+                )
+                conversation_history = None
+
         if (
             self.compression_enabled
             and len(messages) > self.context_compressor.protect_first_n
@@ -7532,6 +7729,14 @@ class AIAgent:
                 system_prompt=active_system_prompt or "",
                 tools=self.tools or None,
             )
+
+            # Below the threshold but climbing: start preparing the next
+            # compaction in the background so the turn that crosses it does not
+            # have to stop and wait.
+            if _preflight_tokens < self.context_compressor.threshold_tokens:
+                self._maybe_start_hot_swap_prep(
+                    messages, system_message, _preflight_tokens, effective_task_id,
+                )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
                 logger.info(

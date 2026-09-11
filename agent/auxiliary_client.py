@@ -140,6 +140,22 @@ _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_daedalus_home() / "auth.json"
 
 _CODEX_AUX_MODEL = "gpt-5.2-codex"
+
+# Which llama-server slot hygiene calls claim when they share the main
+# model's endpoint. Not a constant: the slot hot-swap in run_agent.py flips
+# which slot serves the main conversation, and this has to follow it or these
+# calls land on top of main. run_agent publishes the new value on every swap.
+_SIDEKICK_ID_SLOT = 0
+
+
+def set_sidekick_id_slot(slot: int) -> None:
+    """Point hygiene/compression calls at `slot`. Called by run_agent on swap."""
+    global _SIDEKICK_ID_SLOT
+    _SIDEKICK_ID_SLOT = int(slot)
+
+
+def get_sidekick_id_slot() -> int:
+    return _SIDEKICK_ID_SLOT
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
 
@@ -1956,7 +1972,7 @@ def call_llm(
                 "started with -np 2 --kv-unified).",
                 task or "call", _aux_base, effective_timeout)
             extra_body = dict(extra_body or {})
-            extra_body.setdefault("id_slot", 0)
+            extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
             extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
@@ -2148,7 +2164,7 @@ async def async_call_llm(
                 "started with -np 2 --kv-unified).",
                 task or "call", _aux_base, effective_timeout)
             extra_body = dict(extra_body or {})
-            extra_body.setdefault("id_slot", 0)
+            extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
             extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
