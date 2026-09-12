@@ -237,10 +237,17 @@ class TestMazemakerBootstrap:
 
         prompt = agent._build_system_prompt()
 
-        assert "Mazemaker — your full context, memory, and history" in prompt
-        assert "mazemaker_recall" in prompt
-        assert "Rewind protocol" in prompt
-        assert "Do NOT answer 'I don't remember'" in prompt
+        # Assert the contract the guidance has to carry, not its exact prose:
+        # the heading, the tools by name, the retrieve-before-you-work rule,
+        # and the ban on claiming no memory without having asked. The wording
+        # was rewritten (the tmpfs-spill line arrived with 18f89e5) and this
+        # test kept asserting the old headline, so it sat red and hid others.
+        assert "# Mazemaker — persistent memory (MANDATORY)" in prompt
+        for tool in ("mazemaker_recall", "mazemaker_get",
+                     "mazemaker_think", "mazemaker_remember"):
+            assert tool in prompt, f"{tool} missing from the memory guidance"
+        assert "RETRIEVE BEFORE YOU WORK" in prompt
+        assert "never say you cannot remember" in prompt
 
     def test_compact_mazemaker_recall_result_removes_graph_bloat(self, agent):
         raw = json.dumps({
