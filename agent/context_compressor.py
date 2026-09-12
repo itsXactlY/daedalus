@@ -47,6 +47,15 @@ _LIVE_WINDOW_MESSAGES = 12
 _LIVE_WINDOW_FLOOR = 4
 _LIVE_WINDOW_BUDGET_RATIO = 0.5
 _PRUNE_MIN_CHARS = 2000
+# Under pressure the floor tightens. At 2000 the spill only ever caught the
+# big results: across four ten-hour sessions, 480-590 aged tool results sat
+# below it and were carried, uncut, for the life of the run (~77k-99k tokens
+# each). Dropping the floor to 800 reclaims most of that; going further to
+# 400 adds little and doubles the number of spill files and the read_file
+# round-trips the model needs to get anything back. Short sessions never
+# reach the pressure ratio and keep the relaxed floor.
+_PRUNE_MIN_CHARS_UNDER_PRESSURE = 800
+_PRUNE_PRESSURE_RATIO = 0.6
 _OFFLOAD_PREFIX = "[offloaded: "
 _SPILLED_ARG_KEY = "_spilled_to"
 _SPILL_MARKER_TAG = "[[SPILLED "  # idempotency tag shared by both marker strings below
@@ -290,6 +299,7 @@ class ContextCompressor:
         tail = self._adaptive_tail(messages)
         if len(messages) <= tail:
             return messages, 0
+        floor = self._prune_floor(current_tokens)
 
         names = self._tool_call_names(messages)
         subjects = self._tool_call_subjects(messages)
@@ -303,7 +313,7 @@ class ContextCompressor:
             content = msg.get("content", "")
             if not content or self._is_offloaded(content):
                 continue
-            if len(content) < _PRUNE_MIN_CHARS:
+            if len(content) < floor:
                 continue
             handle = None
             if self.archiver:
@@ -418,6 +428,21 @@ class ContextCompressor:
         if path:
             self._offload_seq += 1
         return path
+
+    def _prune_floor(self, current_tokens: int) -> int:
+        """Smallest tool result worth spilling, given how full the window is.
+
+        Spilling a result costs the model a read_file round-trip to get it
+        back, so the floor stays relaxed while there is room. Once the payload
+        passes _PRUNE_PRESSURE_RATIO of the compaction threshold, small aged
+        results stop being affordable: they are individually cheap and
+        collectively the largest thing nothing was pruning.
+        """
+        if self.threshold_tokens <= 0:
+            return _PRUNE_MIN_CHARS
+        if current_tokens >= self.threshold_tokens * _PRUNE_PRESSURE_RATIO:
+            return _PRUNE_MIN_CHARS_UNDER_PRESSURE
+        return _PRUNE_MIN_CHARS
 
     def _adaptive_tail(self, messages: List[Dict[str, Any]]) -> int:
         """How many of the newest messages stay untouched.
