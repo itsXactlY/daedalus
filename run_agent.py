@@ -2018,6 +2018,37 @@ class AIAgent:
         )
         t.start()
 
+    def _server_slot_count(self) -> int:
+        """How many slots the local llama-server actually has. Probed once.
+
+        Pinning to a slot the server does not have is not a soft failure: a
+        task naming an unknown id_slot matches nothing in get_available_slot()
+        and is deferred instead of scheduled. `-np 1` (which also silently
+        overrides an earlier --parallel N, they are the same flag) leaves only
+        slot 0, so a main pinned to 1 would simply never run.
+        """
+        cached = getattr(self, "_slot_count_cache", None)
+        if cached is not None:
+            return cached
+        count = 1
+        try:
+            base = (self.base_url or "").rstrip("/")
+            if base.endswith("/v1"):
+                base = base[: -len("/v1")]
+            low = base.lower()
+            if "127.0.0.1" in low or "localhost" in low:
+                import urllib.request
+                with urllib.request.urlopen(f"{base}/slots", timeout=2) as r:
+                    count = max(1, len(json.loads(r.read())))
+        except Exception:
+            count = 1  # assume single-slot; slot 0 always exists
+        self._slot_count_cache = count
+        return count
+
+    def _effective_main_slot(self) -> int:
+        """_pinned_id_slot clamped to what the server actually offers."""
+        return min(getattr(self, "_pinned_id_slot", 1), self._server_slot_count() - 1)
+
     def _sidekick_id_slot(self) -> int:
         """The slot this instance is NOT pinned to, under -np 2.
 
@@ -2026,6 +2057,8 @@ class AIAgent:
         single-slot server: id_slot 1 simply does not exist there, and the
         request defers or errors the same way any unavailable slot always has.
         """
+        if self._server_slot_count() < 2:
+            return 0  # only one slot exists; there is no sidekick to speak of
         return 0 if getattr(self, "_pinned_id_slot", 1) != 0 else 1
 
     # ------------------------------------------------------------------
@@ -6075,7 +6108,7 @@ class AIAgent:
             # close to nothing; the reverse starved the sidekick completely.
             # Harmless on a single-slot (-np 1) server — id_slot 0 is also
             # the only slot that exists there.
-            extra_body["id_slot"] = self._pinned_id_slot
+            extra_body["id_slot"] = self._effective_main_slot()
 
         if _is_nous:
             extra_body["tags"] = ["product=daedalus"]

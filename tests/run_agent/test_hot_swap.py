@@ -40,6 +40,7 @@ def _agent(**over):
     a._compaction_generation = 0
     a._hot_swap_prep_ratio = 0.75
     a._pinned_id_slot = 1
+    a._slot_count_cache = 2   # a real -np 2 server; see _server_slot_count
     a._cached_system_prompt = "sys"
     for k, v in over.items():
         setattr(a, k, v)
@@ -233,3 +234,21 @@ class TestWiredIntoThePathThatActuallyFires:
             "prep is wired into only one call path; the preflight check alone is "
             "not where compaction fires in practice"
         )
+
+
+class TestSingleSlotServer:
+    """-np 1 leaves only slot 0. Pinning main to 1 there is not a soft failure:
+    get_available_slot() matches nothing and the task is deferred, never run."""
+
+    def test_main_clamps_to_an_existing_slot(self):
+        a = _agent(_slot_count_cache=1)
+        assert a._effective_main_slot() == 0
+
+    def test_sidekick_collapses_to_zero(self):
+        a = _agent(_slot_count_cache=1)
+        assert a._sidekick_id_slot() == 0
+
+    def test_two_slot_server_keeps_the_split(self):
+        a = _agent(_slot_count_cache=2)
+        assert a._effective_main_slot() == 1
+        assert a._sidekick_id_slot() == 0
