@@ -246,3 +246,34 @@ class TestUnifiedMemoryIsSetForMain:
         monkeypatch.setattr(stack, "pid_file", lambda name: tmp_path / "y.pid")
         assert stack.start_one("aux", ["/bin/true"])
         assert seen["env"] is None
+
+
+class TestPromptCacheBudget:
+    """llama-server's prompt cache lives in ordinary host RAM and defaults to
+    8192 MiB. It is swappable, unlike the block-KV pinned buffer, so on a
+    machine that is already tight it does not fail -- it pages, and every
+    lookup becomes a disk fault. Throughput then decays over hours rather
+    than falling over, which is a much harder symptom to attribute.
+    """
+
+    def test_a_budget_is_always_passed(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(), "/models/main.gguf")
+        assert "--cache-ram" in argv, "leaving it at llama.cpp's 8192 MiB default is a choice, not an omission"
+
+    def test_default_is_well_under_the_llama_cpp_default(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(), "/models/main.gguf")
+        assert int(argv[argv.index("--cache-ram") + 1]) < 8192
+
+    def test_conf_value_is_honored(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(MAIN_CACHE_RAM="512"), "/models/main.gguf")
+        assert argv[argv.index("--cache-ram") + 1] == "512"
+
+    def test_zero_disables_the_cache_rather_than_being_dropped(self, monkeypatch):
+        """0 is a meaningful value to llama.cpp (cache off), so it must be
+        passed through, not treated as unset."""
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(MAIN_CACHE_RAM="0"), "/models/main.gguf")
+        assert argv[argv.index("--cache-ram") + 1] == "0"

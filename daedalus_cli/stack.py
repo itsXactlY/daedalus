@@ -117,6 +117,12 @@ MAIN_CTX=131072
 # the cache streams from host memory. Leave EMPTY to drop block KV streaming
 # entirely, which is what frees you to run more than one slot.
 MAIN_KV_POOL=2048
+# Prompt-cache budget in host RAM, MiB. llama-server defaults to 8192, which
+# is a lot to hand a machine that is also holding a multi-GiB pinned KV
+# buffer: the prompt cache is swappable, so it does not fail when RAM runs
+# short, it pages, and throughput decays over hours instead of stopping.
+# 0 disables the prompt cache; -1 is llama.cpp's "no limit".
+MAIN_CACHE_RAM=2048
 MAIN_NGL=99
 MAIN_THREADS=8
 MAIN_REASONING_BUDGET=12000
@@ -1042,6 +1048,14 @@ def _main_argv(conf: StackConf, model: str) -> list:
         "--reasoning", "on", "--reasoning-preserve", "--reasoning-format", "deepseek",
         "--reasoning-budget", str(conf.int("MAIN_REASONING_BUDGET", 12000)),
         "--jinja", "--cont-batching",
+        # llama-server's prompt cache lives in ordinary host RAM and defaults
+        # to 8192 MiB. Unlike the block-KV host buffer it is swappable, so on
+        # a box that is already tight it does not fail -- it pages, and every
+        # cache lookup becomes a disk fault. That is what a long session
+        # feels like when throughput decays over hours rather than falling
+        # over. MAIN_CACHE_RAM caps it; 0 disables the cache entirely, -1 is
+        # llama.cpp's "no limit".
+        "--cache-ram", str(conf.int("MAIN_CACHE_RAM", 2048)),
         # Exposes /metrics (Prometheus text) -- session tok/s, KV cache-hit
         # counters, and the DFlash2/spec-decode draft-acceptance counters
         # (spec_decode_num_{draft,accepted}_tokens_total) used nowhere else:
