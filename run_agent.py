@@ -538,6 +538,32 @@ class AIAgent:
         return os.path.join(base, f"daedalus-ctx-{os.getuid()}")
 
     @classmethod
+    def _ensure_workpath_ignored(cls, base: str) -> None:
+        """Make the workpath invisible to git, without touching the repo.
+
+        With terminal.cwd on auto, a .daedalus/ appears in whatever project
+        daedalus is started from. Editing that project's own .gitignore would
+        be modifying a file the user owns and reviews; a .gitignore INSIDE our
+        directory hides its whole content and leaves their repo alone. Same
+        pattern pip writes into a venv.
+
+        Never overwrites an existing file -- if someone put their own rules
+        here, they meant them.
+        """
+        try:
+            path = os.path.join(base, ".gitignore")
+            if os.path.exists(path):
+                return
+            os.makedirs(base, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("# Written by daedalus. This directory holds spilled tool\n"
+                         "# output and a STATE.md snapshot -- working material, not\n"
+                         "# source. Ignoring it here keeps your own .gitignore clean.\n"
+                         "*\n")
+        except OSError:
+            pass
+
+    @classmethod
     def _redirect_tmpdir(cls) -> str:
         """Point TMPDIR away from the shared /tmp, for this process and its
         children.
@@ -989,6 +1015,9 @@ class AIAgent:
         directory = os.path.join(root, safe_session)
         try:
             os.makedirs(root, exist_ok=True)
+            cls._ensure_workpath_ignored(
+                os.path.dirname(root)
+                if os.path.basename(root) == cls._SPILL_DIR_NAME else root)
             marker = os.path.join(root, cls._SPILL_MARKER)
             if not os.path.exists(marker):
                 with open(marker, "w", encoding="utf-8") as fh:
@@ -7088,6 +7117,7 @@ class AIAgent:
             base = (os.path.dirname(root)
                     if os.path.basename(root) == self._SPILL_DIR_NAME else root)
             os.makedirs(base, exist_ok=True)
+            self._ensure_workpath_ignored(base)
 
             body = []
             for msg in compressed or []:
