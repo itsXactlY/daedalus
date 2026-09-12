@@ -542,6 +542,74 @@ class AIAgent:
         except Exception as exc:
             logger.debug("injection report failed: %s", exc)
 
+    def _build_turn_injections(self, ext_prefetch: str,
+                               plugin_context: str) -> list:
+        """The context blocks appended to this turn's user message.
+
+        Called ONCE per turn, not once per API call. The blocks land on the
+        current turn's user message, which sits ahead of that turn's tool
+        calls and results, so re-deriving them mid-turn rewrites a message the
+        whole tail is cached against: llama.cpp then re-prefills everything
+        after it on every iteration. A long tool-using turn paid that on every
+        step.
+
+        Two of the five blocks were genuinely unstable:
+
+        - the mazemaker history pointer embeds a live "down for N seconds"
+          duration while the pod is wedged, so it changed every second --
+          worst exactly when memory is degraded and speed matters most. It
+          also cost a pod round-trip per iteration, since history_pointer_all
+          is a network call.
+        - the spill notice changes the moment a tool result is offloaded
+          mid-turn.
+
+        A spill that happens after this snapshot is therefore announced on the
+        next turn rather than this one. That loses nothing: the spilled result
+        is replaced inline in the message list by a line naming its path, so
+        the model still sees what happened where it happened -- the notice is
+        a summary of that, not the only signal.
+        """
+        injections, labels = [], []
+
+        if ext_prefetch:
+            fenced = build_memory_context_block(ext_prefetch)
+            if fenced:
+                injections.append(fenced)
+                labels.append(("mazemaker recall", fenced))
+
+        if getattr(self, "_soak_window_turns", -1) >= 0 and self._memory_manager:
+            try:
+                ptr = self._memory_manager.history_pointer_all(
+                    session_id=self.session_id or ""
+                )
+                if ptr:
+                    injections.append(f"[mazemaker] {ptr}")
+                    labels.append(("mazemaker history pointer", ptr))
+            except Exception as exc:
+                logger.warning("history_pointer_all failed (non-fatal): %s", exc)
+
+        try:
+            spill = self.context_compressor.offload_notice()
+        except Exception:
+            spill = ""
+        if spill:
+            injections.append(f"[context spill] {spill}")
+            labels.append(("context spill", spill))
+
+        if plugin_context:
+            injections.append(plugin_context)
+            labels.append(("plugin context", plugin_context))
+
+        route_block = getattr(self, "_skill_route_block", "")
+        if route_block:
+            injections.append(route_block)
+            labels.append(("auto-routed skills", route_block))
+
+        if labels and self.verbose_logging:
+            self._report_context_injections(labels)
+
+        return injections
+
     @classmethod
     def _archive_context_chunk(cls, session: str, seq: int, tool_name: str,
                                content: str):
@@ -3456,10 +3524,22 @@ class AIAgent:
         is written to the mazemaker pod by the provider's ``sync_turn``, so the
         model does NOT need the full transcript carried in context. This view
         keeps only:
-          - the current turn (the just-appended user message),
-          - the last ``window_turns`` turns before it,
-          - any in-flight tool results / assistant tool_calls newer than the
-            window (they are live state the model must see to continue).
+          - everything from the current user message onward -- the whole
+            in-flight turn, including its tool calls and results, which is
+            live state the model must see to continue,
+          - a head of ``window_turns * 2`` MESSAGES before it.
+
+        That head is counted in messages, not turns, despite the name. Two
+        messages per turn is the no-tools shape (one user, one assistant); a
+        tool-using turn is many more, so on real agent work ``window_turns: 3``
+        is six messages, which is usually a fragment of the previous turn
+        rather than three whole ones. Orphaned tool results in that fragment
+        are repaired by ``_sanitize_api_messages`` before the call.
+
+        This is deliberately left as-is rather than made to count real turn
+        boundaries: three tool-heavy turns can be hundreds of messages, and
+        the point of the soak model is that the transcript lives in the pod,
+        not in the window. Change it only with a payload measurement in hand.
 
         *messages* itself is NOT mutated — persistence, session_search, and
         /resume still see the full history. Only the API payload is windowed.
@@ -7916,6 +7996,20 @@ class AIAgent:
             except Exception as _prefetch_exc:
                 logger.warning("memory prefetch failed (non-fatal): %s", _prefetch_exc)
 
+        # Built ONCE per turn and reused by every iteration of the loop below.
+        # These are appended to the current turn's USER message, which sits
+        # ahead of that turn's tool calls and results -- so anything that
+        # changes them between iterations invalidates the KV cache for the
+        # whole tail, and a twenty-tool-call turn re-prefills it twenty times.
+        # Two of them used to change: history_pointer_all() embeds a live
+        # "down for N seconds" duration while the pod is wedged, and
+        # offload_notice() changes the moment a result spills mid-turn.
+        # Hoisting also stops history_pointer_all() making a pod round-trip
+        # on every single iteration, which it did.
+        _turn_injections = self._build_turn_injections(
+            _ext_prefetch_cache, _plugin_user_context
+        )
+
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             try:
                 from agent.task_intensity import adjust_agent_reasoning
@@ -8015,45 +8109,12 @@ class AIAgent:
                 api_msg = msg.copy()
 
                 if idx == _iter_cur and msg.get("role") == "user":
-                    _injections = []
-                    _injection_labels = []
-                    if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
-                        if _fenced:
-                            _injections.append(_fenced)
-                            _injection_labels.append(("mazemaker recall", _fenced))
-                    if getattr(self, "_soak_window_turns", -1) >= 0 and self._memory_manager:
-                        try:
-                            _ptr = self._memory_manager.history_pointer_all(
-                                session_id=self.session_id or ""
-                            )
-                            if _ptr:
-                                _injections.append(f"[mazemaker] {_ptr}")
-                                _injection_labels.append(("mazemaker history pointer", _ptr))
-                        except Exception as _hp_exc:
-                            logger.warning(
-                                "history_pointer_all failed (non-fatal): %s", _hp_exc
-                            )
-                    _spill = ""
-                    try:
-                        _spill = self.context_compressor.offload_notice()
-                    except Exception:
-                        _spill = ""
-                    if _spill:
-                        _injections.append(f"[context spill] {_spill}")
-                        _injection_labels.append(("context spill", _spill))
-                    if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
-                        _injection_labels.append(("plugin context", _plugin_user_context))
-                    if getattr(self, "_skill_route_block", ""):
-                        _injections.append(self._skill_route_block)
-                        _injection_labels.append(("auto-routed skills", self._skill_route_block))
-                    if _injection_labels and self.verbose_logging:
-                        self._report_context_injections(_injection_labels)
-                    if _injections:
+                    if _turn_injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                            api_msg["content"] = (
+                                _base + "\n\n" + "\n\n".join(_turn_injections)
+                            )
 
                 if msg.get("role") == "assistant":
                     reasoning_text = msg.get("reasoning")
