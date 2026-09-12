@@ -1160,9 +1160,12 @@ def cmd_start(args=None) -> int:
             # its own process -- a separate process here would either refuse
             # to bind the port main already holds, or bind it in a race and
             # leave one of the two half-started. auxiliary_client.py routes
-            # to id_slot=1 on the main endpoint for exactly this case; there
-            # is nothing left for this branch to launch.
-            note(f"aux shares main's port ({main_port}) — served by slot 1 "
+            # to id_slot=0 on the main endpoint for exactly this case -- slot
+            # 0 is the sidekick and slot 1 is the main conversation, because
+            # llama-server fills its batch in slot-index order and the lower
+            # index gets priority (see MAIN_SLOTS in stack.conf); there is
+            # nothing left for this branch to launch.
+            note(f"aux shares main's port ({main_port}) — served by slot 0 "
                  f"of the main process, not launched separately")
         elif aux:
             # --reasoning off is load-bearing: with thinking on, a 1.7B spends
