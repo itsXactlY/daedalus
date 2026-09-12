@@ -110,10 +110,16 @@ MAIN_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
 MAIN_PORT=8080
 MAIN_HOST="127.0.0.1"
 MAIN_CTX=262144
-# --gpu-layers all + --ctx-size 0 skips llama.cpp's memory fit and lands on
-# the model's full context; -ngl 99 (an exact count) lets the fit run instead.
-# Either is fine as long as this number and config.yaml's model.context_length
-# both match what /slots reports. Never write 0: it is not a fixed value.
+# --ctx-size 0 means the model's full trained context: llama.cpp's arg parser
+# sets fit_params_min_ctx = UINT32_MAX for it, which switches off context
+# reduction in the memory fit (the fit itself still runs for layers and the
+# draft model). An explicit number is fitted normally. Either is fine as long
+# as this value and config.yaml's model.context_length both match what /slots
+# reports. Never write 0 HERE though: it is not a fixed number, and these two
+# have to be comparable.
+#
+# Note --gpu-layers and -ngl are ONE option, last occurrence wins; 'all' sets
+# a -2 sentinel meaning every layer. It does not affect the context.
 # The pinned host KV buffer this reserves is sized to MAIN_CTX for the whole
 # process lifetime regardless of how much of it is ever actually live -- pick
 # a real ceiling above your compaction target, not headroom you'll never use.
