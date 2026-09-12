@@ -542,6 +542,50 @@ class AIAgent:
         except Exception as exc:
             logger.debug("injection report failed: %s", exc)
 
+    # How many of the newest assistant messages keep their reasoning in the
+    # payload. Everything older is scratch work that has already done its job.
+    _REASONING_WINDOW = 3
+
+    def _reasoning_window_indices(self, messages: list) -> set:
+        """Indices whose ``reasoning`` still rides along in the request.
+
+        Reasoning is re-sent as ``reasoning_content`` on every assistant
+        message in the payload, and it is never pruned -- unlike tool results,
+        which are spilled to tmpfs once they age. Measured over four ten-hour
+        sessions it was 22-30% of the entire payload (150k-240k tokens), the
+        single largest thing being re-read on every call.
+
+        It is also the most disposable thing in there. Reasoning is the
+        thinking that produced a tool call; once the result of that call is
+        back, it has served its purpose. The newest few are kept because the
+        model is still mid-thought on those.
+
+        The transcript is untouched -- ``messages`` keeps every reasoning
+        block for the session log, /resume and mazemaker. Only the request
+        thins out, which is the whole point of a rolling window.
+
+        Skipped for Anthropic-shaped models: there, thinking blocks are
+        signed and dropping one mid-turn invalidates the exchange rather than
+        merely shortening it.
+        """
+        model = (self.model or "").lower()
+        if "claude" in model or "anthropic" in model:
+            return {i for i, m in enumerate(messages) if m.get("role") == "assistant"}
+
+        keep = max(0, int(getattr(self, "_reasoning_window", self._REASONING_WINDOW)))
+        if keep <= 0:
+            return set()
+        out = set()
+        for i in range(len(messages) - 1, -1, -1):
+            if messages[i].get("role") != "assistant":
+                continue
+            if not messages[i].get("reasoning"):
+                continue
+            out.add(i)
+            if len(out) >= keep:
+                break
+        return out
+
     def _build_turn_injections(self, ext_prefetch: str,
                                plugin_context: str) -> list:
         """The context blocks appended to this turn's user message.
@@ -1115,6 +1159,15 @@ class AIAgent:
         self._memory_flush_timeout = 90.0
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        # How many of the newest assistant messages keep their reasoning in
+        # the request. See _reasoning_window_indices: it was 22-30% of the
+        # payload on long sessions and nothing ever pruned it.
+        try:
+            _ctx_cfg = _agent_cfg.get("context", {}) or {}
+            self._reasoning_window = int(_ctx_cfg.get("reasoning_window",
+                                                      self._REASONING_WINDOW))
+        except Exception:
+            self._reasoning_window = self._REASONING_WINDOW
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -8104,6 +8157,8 @@ class AIAgent:
             else:
                 _iter_messages, _iter_cur = messages, current_turn_user_idx
 
+            _reasoning_keep = self._reasoning_window_indices(_iter_messages)
+
             api_messages = []
             for idx, msg in enumerate(_iter_messages):
                 api_msg = msg.copy()
@@ -8118,6 +8173,8 @@ class AIAgent:
 
                 if msg.get("role") == "assistant":
                     reasoning_text = msg.get("reasoning")
+                    if reasoning_text and idx not in _reasoning_keep:
+                        reasoning_text = None      # aged out of the window
                     if reasoning_text:
                         api_msg["reasoning_content"] = reasoning_text
                     elif "deepseek" in (self.model or "").lower():
