@@ -78,6 +78,7 @@ from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, build_mazemaker_guidance, SKILLS_GUIDANCE,
+    WORKSPACE_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -473,6 +474,32 @@ class AIAgent:
             return override
         base = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
         return os.path.join(base, f"daedalus-ctx-{os.getuid()}")
+
+    @classmethod
+    def _redirect_tmpdir(cls, session_id: str) -> str:
+        """Point TMPDIR away from the shared /tmp, for this process and its
+        children.
+
+        Everything the agent shells out to inherits this: compilers, cmake,
+        package managers, anything calling tempfile. On this machine /tmp is a
+        RAM-backed tmpfs shared with the user, and filling it does not degrade
+        gracefully -- it takes the shell down for every process on the box,
+        including the agent mid-task.
+
+        This only covers *implicit* temp files. A command that writes
+        `> /tmp/build.log` names the path itself and lands there regardless;
+        that is what WORKSPACE_GUIDANCE is for.
+        """
+        safe = "".join(c for c in str(session_id or "") if c.isalnum() or c in "-_")
+        path = os.path.join(cls._spill_root(), safe or "session", "tmp")
+        try:
+            os.makedirs(path, mode=0o700, exist_ok=True)
+        except OSError as exc:
+            logger.debug("could not create a private TMPDIR (%s); leaving it alone", exc)
+            return ""
+        for var in ("TMPDIR", "TMP", "TEMP"):
+            os.environ[var] = path
+        return path
 
     @classmethod
     def purge_stale_spills(cls, max_age_seconds: int = 86400,
@@ -1545,6 +1572,9 @@ class AIAgent:
                 keep_sessions=(getattr(self, "session_id", "") or "",))
         except Exception as _spill_exc:
             logger.debug("spill purge skipped: %s", _spill_exc)
+        # Children of this process get a TMPDIR of their own, so a build that
+        # does not name its paths cannot fill the /tmp the user is also using.
+        self._redirect_tmpdir(getattr(self, "session_id", "") or "")
         self.compression_enabled = compression_enabled
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
@@ -3596,6 +3626,8 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        if "terminal" in self.valid_tool_names:
+            tool_guidance.append(WORKSPACE_GUIDANCE)
         if tool_guidance:
             prompt_parts.append("\n\n".join(b.strip() for b in tool_guidance))
 

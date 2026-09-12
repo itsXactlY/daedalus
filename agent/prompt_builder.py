@@ -231,6 +231,23 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+WORKSPACE_GUIDANCE = (
+    "# Scratch files stay with the project\n"
+    "Build logs, generated output, intermediate files: write them inside the "
+    "project you are working on — its build directory, or a scratch folder "
+    "next to it. Not /tmp.\n"
+    "\n"
+    "/tmp is shared with the user and with everything else on the machine, "
+    "and on this one it is a RAM-backed tmpfs. Filling it does not just make "
+    "a mess, it takes the shell down for everyone — including you, mid-task. "
+    "A build log also belongs with the build it came from; the next step "
+    "needs it, and so does anyone reading the tree afterwards.\n"
+    "\n"
+    "So `cmake --build build > build/build.log 2>&1`, not `> /tmp/build.log`. "
+    "If you genuinely need somewhere disposable, $TMPDIR is set for you and "
+    "does not point at /tmp."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "
