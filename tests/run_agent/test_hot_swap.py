@@ -193,3 +193,43 @@ class TestPrefillGuard:
     def test_remote_backend_is_not_prefilled(self):
         a = _agent(base_url="https://api.example.com/v1")
         assert a._prime_slot_with_messages(0, [{"role": "user", "content": "x"}], "sys") is False
+
+
+class TestWiredIntoThePathThatActuallyFires:
+    """The first version hooked only the preflight check at the top of a turn.
+
+    In a real session that path fired 3 times while the mid-turn path -- after
+    tool results are posted, inside the iteration loop -- fired 60. The feature
+    was live for days of log and never once ran. Wiring, not logic, so guard it
+    structurally: both hot-swap calls must sit next to the should_compress()
+    trigger that actually decides to compact.
+    """
+
+    def _source(self):
+        import inspect
+        return inspect.getsourcefile(run_agent), open(
+            inspect.getsourcefile(run_agent), encoding="utf-8"
+        ).read().splitlines()
+
+    def test_hooks_surround_the_real_compaction_trigger(self):
+        _, lines = self._source()
+        trigger = [i for i, l in enumerate(lines) if "should_compress(" in l and "def " not in l]
+        assert trigger, "should_compress() call site not found"
+
+        for t in trigger:
+            window = "\n".join(lines[max(0, t - 30): t + 30])
+            assert "_apply_pending_hot_swap_if_ready(" in window, (
+                f"no hot-swap apply near the should_compress() trigger at line {t+1}; "
+                "the feature will never run on this path"
+            )
+            assert "_maybe_start_hot_swap_prep(" in window, (
+                f"no hot-swap prep start near the should_compress() trigger at line {t+1}"
+            )
+
+    def test_prep_is_reachable_from_more_than_the_preflight_path(self):
+        _, lines = self._source()
+        starts = [i for i, l in enumerate(lines) if "_maybe_start_hot_swap_prep(" in l and "def " not in l]
+        assert len(starts) >= 2, (
+            "prep is wired into only one call path; the preflight check alone is "
+            "not where compaction fires in practice"
+        )

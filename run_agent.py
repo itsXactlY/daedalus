@@ -9460,13 +9460,33 @@ class AIAgent:
                                 _bytes_before, _message_payload_chars(messages),
                             )
 
-                    if self.compression_enabled and _compressor.should_compress(_real_tokens):
-                        messages, active_system_prompt = self._compress_context(
-                            messages, system_message,
-                            approx_tokens=self.context_compressor.last_prompt_tokens,
-                            task_id=effective_task_id,
-                        )
-                        conversation_history = None
+                    # This is where compaction actually fires in practice — after
+                    # tool results are posted, between API calls. The preflight
+                    # check at the top of a turn catches a small minority of
+                    # cases, so the hot-swap has to be wired in here to be worth
+                    # anything. Not mid-generation: nothing is streaming at this
+                    # point, so promoting a slot here is safe.
+                    if self.compression_enabled:
+                        _hot_swapped = self._apply_pending_hot_swap_if_ready(messages)
+                        if _hot_swapped is not None:
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message,
+                                task_id=effective_task_id,
+                                precomputed=_hot_swapped,
+                            )
+                            conversation_history = None
+                        elif _compressor.should_compress(_real_tokens):
+                            # Prep was not ready in time; take the blocking path.
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message,
+                                approx_tokens=self.context_compressor.last_prompt_tokens,
+                                task_id=effective_task_id,
+                            )
+                            conversation_history = None
+                        else:
+                            self._maybe_start_hot_swap_prep(
+                                messages, system_message, _real_tokens, effective_task_id,
+                            )
                     
                     self._session_messages = messages
                     self._save_session_log(messages)
