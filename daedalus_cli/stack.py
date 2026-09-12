@@ -109,7 +109,7 @@ MAIN_REPO="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
 MAIN_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
 MAIN_PORT=8080
 MAIN_HOST="127.0.0.1"
-MAIN_CTX=81920
+MAIN_CTX=131072
 # The pinned host KV buffer this reserves is sized to MAIN_CTX for the whole
 # process lifetime regardless of how much of it is ever actually live -- pick
 # a real ceiling above your compaction target, not headroom you'll never use.
@@ -150,11 +150,17 @@ MAIN_SLOTS=2
 MAIN_KV_UNIFIED=0
 
 # --- speculative decoding (DFlash2) -------------------------------------------
-# A real second model (~536MB), not the target's own MTP head -- benchmarked
-# in ~/projects/specbench (GOAT.sh is the winning config; n-max/n-min below
-# match it). Leave both empty to fall back to draft-mtp,ngram-mod (no extra
-# VRAM, no extra file, untuned) -- `start` degrades to that automatically
-# rather than failing when no draft model is configured.
+# A real second model, not the target's own MTP head -- benchmarked in
+# ~/projects/specbench (GOAT.sh is the winning config; n-max/n-min below match
+# it). Leave both empty to fall back to draft-mtp,ngram-mod (no extra VRAM, no
+# extra file, untuned) -- `start` degrades to that automatically rather than
+# failing when no draft model is configured.
+#
+# MAIN_DRAFT_FILE also takes a plain path (a locally built GGUF outside any HF
+# cache); MAIN_DRAFT_REPO is then irrelevant and setup skips the download.
+# Do not economise on the drafter's quantization: a Q2 draft proposes badly
+# enough that acceptance collapses, and you pay for it in both speed and
+# output quality. Q4_K_M is the floor that held up here.
 MAIN_DRAFT_REPO="HermiHg/Qwen3.8-27B-DFlash2-Q2_K_S-MIX-GGUF"
 MAIN_DRAFT_FILE="Qwen3.8-27B-DFlash2-Q2_K_S-MIX.gguf"
 MAIN_DRAFT_N_MAX=4
@@ -514,7 +520,16 @@ def model_path(repo: str, filename: str) -> str:
     Snapshot entries are symlinks into ``blobs/``, so any search that insists
     on real files misses every one of them — hence the followed walk.
     """
-    if not repo or not filename:
+    if not filename:
+        return ""
+    # A plain path is not every GGUF's home. The winning DFlash2 drafter was
+    # built locally and lives in ~/models, outside any HF cache -- before this,
+    # such a file was unreachable from the config and the launch silently fell
+    # back to whatever repo-hosted draft was named instead.
+    if filename.startswith(("/", "~", "./")):
+        expanded = Path(filename).expanduser()
+        return str(expanded) if expanded.is_file() else ""
+    if not repo:
         return ""
     root = Path.home() / ".cache/huggingface/hub" / f"models--{repo.replace('/', '--')}"
     if not root.is_dir():
@@ -680,7 +695,7 @@ def socket_up(host: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
-def start_one(name: str, argv: list) -> bool:
+def start_one(name: str, argv: list, env: dict | None = None) -> bool:
     state = state_of(name)
     if state != "stopped":
         warn(f"{name} already {state}")
@@ -701,6 +716,7 @@ def start_one(name: str, argv: list) -> bool:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            env=({**os.environ, **env} if env else None),
         )
     except OSError as exc:
         bad(f"{name} failed to launch", f"({exc})")
@@ -839,7 +855,7 @@ def stack_report(conf: StackConf = None) -> None:
     draft_repo = conf.str("MAIN_DRAFT_REPO")
     draft_file = conf.str("MAIN_DRAFT_FILE")
     if draft_repo or draft_file:
-        draft = model_path(draft_repo, draft_file) if draft_repo and draft_file else ""
+        draft = model_path(draft_repo, draft_file) if draft_file else ""
         if draft:
             ok(f"draft (DFlash2): {os.path.basename(draft)}", f"({_human_size(draft)})")
         else:
@@ -971,7 +987,8 @@ def cmd_setup(args=None) -> int:
     if projector_file and not fetch(conf.str("MAIN_REPO"), projector_file, "mmproj"):
         warn("mmproj download failed", "— vision stays off")
     draft_repo, draft_file = conf.str("MAIN_DRAFT_REPO"), conf.str("MAIN_DRAFT_FILE")
-    if draft_repo and draft_file and not fetch(draft_repo, draft_file, "DFlash2 draft"):
+    if draft_repo and draft_file and not draft_file.startswith(("/", "~", "./")) \
+            and not fetch(draft_repo, draft_file, "DFlash2 draft"):
         warn("DFlash2 draft download failed", "— falls back to MTP + ngram-mod")
     if conf.enabled("aux") and not fetch(conf.str("AUX_REPO"), conf.str("AUX_FILE"), "aux"):
         return 1
@@ -1038,6 +1055,13 @@ def _main_argv(conf: StackConf, model: str) -> list:
     # when explicitly requested for the plain multi-slot case.
     if needs_unified or conf.flag("MAIN_KV_UNIFIED", False):
         argv.append("-kvu")
+        # --cache-idle-slots is on by default and, under -kvu, saves an idle
+        # slot's prompt to the prompt cache and then calls slot.prompt_clear()
+        # on it. With two slots that means every task launched on one slot
+        # wipes the other's cached prefix, so both slots spend their lives
+        # re-prefilling the same history and appear to be fighting over the
+        # same work. Only harmful in the unified case, hence the placement.
+        argv.append("--no-cache-idle-slots")
 
     # Speculative decoding: DFlash2 (a real second model, benchmarked in
     # ~/projects/specbench -- GOAT.sh is the winning config, n-max 4 / n-min 1)
@@ -1050,10 +1074,14 @@ def _main_argv(conf: StackConf, model: str) -> list:
     # unused on disk.
     draft_repo = conf.str("MAIN_DRAFT_REPO")
     draft_file = conf.str("MAIN_DRAFT_FILE")
-    draft = model_path(draft_repo, draft_file) if draft_repo and draft_file else ""
+    draft = model_path(draft_repo, draft_file) if draft_file else ""
     if draft:
         argv += [
             "--model-draft", draft,
+            # -ngld defaults to auto (-1), which lets the memory fitter decide
+            # how much of the drafter to offload. It is ~1.1GB; offload it all
+            # -- a drafter running partly on CPU costs more than it saves.
+            "-ngld", str(conf.int("MAIN_NGL", 99)),
             "--spec-type", "draft-dflash",
             "--spec-draft-n-max", str(conf.int("MAIN_DRAFT_N_MAX", 4)),
             "--spec-draft-n-min", str(conf.int("MAIN_DRAFT_N_MIN", 1)),
@@ -1104,7 +1132,15 @@ def cmd_start(args=None) -> int:
         return 1
 
     section("Starting")
-    if not start_one("main", _main_argv(conf, main)):
+    # Block KV streaming keeps most of the cache in pinned host memory and
+    # pages it in; unified memory is what lets an allocation that overshoots
+    # VRAM spill to the host instead of failing the launch outright. Without
+    # it, MAIN_KV_POOL is a hard ceiling and overshooting it is an OOM at
+    # startup rather than a slowdown. The hand-written launch this stack
+    # mirrors has always set it; the stack did not, so the two behaved
+    # differently under exactly the conditions that matter.
+    main_env = {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
+    if not start_one("main", _main_argv(conf, main), env=main_env):
         return 1
 
     # The main model must be READY before the helper starts. Both loading at
