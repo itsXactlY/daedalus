@@ -542,48 +542,200 @@ class AIAgent:
         except Exception as exc:
             logger.debug("injection report failed: %s", exc)
 
-    # How many of the newest assistant messages keep their reasoning in the
-    # payload. Everything older is scratch work that has already done its job.
+    # Reasoning's TTL, counted in assistant messages rather than seconds:
+    # the newest _REASONING_WINDOW keep theirs verbatim. Message count, not
+    # wall clock, because what makes a thought stale is the work that has
+    # happened since, not how long the user spent reading.
     _REASONING_WINDOW = 3
+    # Below this, spilling is not worth the read_file round-trip it costs the
+    # model: the handle naming the path is itself ~250 chars (measured, not
+    # estimated), so a 600-char block would buy back only ~350. At 1000 the
+    # trade is clearly positive. Mean reasoning block in real sessions ~2300.
+    _REASONING_SPILL_MIN_CHARS = 1000
 
-    def _reasoning_window_indices(self, messages: list) -> set:
-        """Indices whose ``reasoning`` still rides along in the request.
+    def _reasoning_payload(self, messages: list) -> dict:
+        """What each assistant message's ``reasoning_content`` should be.
 
-        Reasoning is re-sent as ``reasoning_content`` on every assistant
-        message in the payload, and it is never pruned -- unlike tool results,
-        which are spilled to tmpfs once they age. Measured over four ten-hour
-        sessions it was 22-30% of the entire payload (150k-240k tokens), the
-        single largest thing being re-read on every call.
+        Preserved thinking is worth having -- it is why the model does not
+        re-derive a conclusion it already reached. It is just not worth
+        re-sending for the life of the session: measured across four ten-hour
+        session logs it was 22-30% of the entire payload (150k-240k tokens),
+        the largest single thing being re-read on every call, and nothing
+        pruned it the way tool results are pruned.
 
-        It is also the most disposable thing in there. Reasoning is the
-        thinking that produced a tool call; once the result of that call is
-        back, it has served its purpose. The newest few are kept because the
-        model is still mid-thought on those.
+        So it expires rather than being deleted. Past the TTL a block is
+        spilled to RAM-backed tmpfs and replaced by a short handle naming the
+        path, exactly as a bulky tool result is -- the model can still read it
+        back, and it stops riding along in every request. Blocks too small to
+        be worth a handle keep their text.
 
-        The transcript is untouched -- ``messages`` keeps every reasoning
-        block for the session log, /resume and mazemaker. Only the request
-        thins out, which is the whole point of a rolling window.
+        The handle is cached on the message under a transient underscore key,
+        so a block is written once and every later turn reuses the same path
+        instead of spilling it again. ``reasoning`` itself is never touched:
+        the session log, /resume and mazemaker keep the full text.
 
-        Skipped for Anthropic-shaped models: there, thinking blocks are
-        signed and dropping one mid-turn invalidates the exchange rather than
-        merely shortening it.
+        Anthropic-shaped models are exempt. Their thinking blocks are signed,
+        so replacing one mid-turn invalidates the exchange rather than merely
+        shortening it.
         """
+        out = {}
         model = (self.model or "").lower()
-        if "claude" in model or "anthropic" in model:
-            return {i for i, m in enumerate(messages) if m.get("role") == "assistant"}
+        anthropic = "claude" in model or "anthropic" in model
 
         keep = max(0, int(getattr(self, "_reasoning_window", self._REASONING_WINDOW)))
-        if keep <= 0:
-            return set()
-        out = set()
+        fresh = 0
         for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") != "assistant":
+            msg = messages[i]
+            if msg.get("role") != "assistant":
                 continue
-            if not messages[i].get("reasoning"):
+            text = msg.get("reasoning")
+            if not text:
                 continue
-            out.add(i)
-            if len(out) >= keep:
-                break
+            if anthropic or fresh < keep:
+                out[i] = text
+                fresh += 1
+                continue
+            cached = msg.get("_reasoning_spill")
+            if cached:
+                out[i] = cached
+                continue
+            if len(text) < self._REASONING_SPILL_MIN_CHARS:
+                out[i] = text          # smaller than the handle would be
+                continue
+            handle = None
+            try:
+                handle = self.context_compressor.spill_reasoning(text)
+            except Exception as exc:
+                logger.debug("reasoning spill failed (non-fatal): %s", exc)
+            if handle:
+                msg["_reasoning_spill"] = handle
+                out[i] = handle
+            else:
+                out[i] = text          # nowhere to put it; carrying beats losing it
+        return out
+
+    # How many of the newest tool-call groups keep their full JSON in the
+    # payload. A "group" is one assistant message carrying tool_calls plus
+    # the tool results answering it.
+    _TOOL_GROUP_TTL = 8
+    _ID_ARG_KEYS = ("file_path", "path", "command", "cmd", "pattern", "query",
+                    "url", "name", "target", "expression")
+
+    @staticmethod
+    def _describe_tool_call(call: dict) -> str:
+        """One short, readable line for a call whose JSON is being dropped.
+
+        The point is that the collapsed record still says what the agent did.
+        A hole in the history invites it to redo work; "patch(src/world.cpp)"
+        does not.
+        """
+        fn = call.get("function") or {}
+        name = fn.get("name") or "tool"
+        raw = fn.get("arguments")
+        arg = ""
+        if isinstance(raw, str) and raw:
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                for key in AIAgent._ID_ARG_KEYS:
+                    val = parsed.get(key)
+                    if isinstance(val, str) and val.strip():
+                        arg = val.strip()
+                        break
+                if not arg:
+                    for val in parsed.values():
+                        if isinstance(val, str) and val.strip():
+                            arg = val.strip()
+                            break
+            elif raw.strip() not in ("{}", ""):
+                arg = raw.strip()
+        arg = " ".join(arg.split())
+        if len(arg) > 60:
+            arg = arg[:57] + "..."
+        return f"{name}({arg})" if arg else f"{name}()"
+
+    @staticmethod
+    def _spill_path_in(content) -> str:
+        """The tmpfs path a result was already offloaded to, if it was."""
+        if not isinstance(content, str) or "/dev/shm/" not in content:
+            return ""
+        match = re.search(r'(/dev/shm/[^\s")\]]+)', content)
+        return match.group(1) if match else ""
+
+    def _collapse_aged_tool_groups(self, messages: list) -> list:
+        """Replace old tool-call exchanges with a line saying what happened.
+
+        Tool calls are the largest thing left in the payload that nothing
+        prunes. Measured over four ten-hour sessions: ~700 calls each,
+        carrying ~50k tokens of pure JSON envelope (id, type, the function
+        wrapper) with no semantic content at all, plus 145k-180k tokens of
+        arguments of which only 10% are big enough to reach the spill floor.
+        The median argument is 338 characters -- far too small to be worth
+        its own spill handle, and far too numerous to keep.
+
+        Spilling them individually is the wrong unit. An exchange that is
+        finished is finished as a whole, so the whole group goes: the
+        assistant message carrying the calls AND the tool results answering
+        it, replaced by one assistant line naming each call and, where the
+        result was already spilled, the path it went to.
+
+        Removing both halves together is what keeps the payload valid --
+        chat-completions requires every tool result to answer a tool_call in
+        a preceding assistant message, so dropping one side alone would
+        orphan the other.
+
+        Payload only. ``messages`` keeps every call and result for the
+        session log, /resume and mazemaker.
+        """
+        ttl = max(0, int(getattr(self, "_tool_group_ttl", self._TOOL_GROUP_TTL)))
+
+        groups, i = [], 0
+        while i < len(messages):
+            msg = messages[i]
+            calls = msg.get("tool_calls") if msg.get("role") == "assistant" else None
+            if not calls:
+                i += 1
+                continue
+            ids = {self._get_tool_call_id_static(c) for c in calls}
+            ids.discard(None)
+            end = i + 1
+            while end < len(messages) and messages[end].get("role") == "tool" \
+                    and messages[end].get("tool_call_id") in ids:
+                end += 1
+            groups.append((i, end))
+            i = end
+
+        if len(groups) <= ttl:
+            return messages
+
+        doomed = {start: end for start, end in groups[:len(groups) - ttl]}
+        out, i = [], 0
+        while i < len(messages):
+            if i in doomed:
+                end = doomed[i]
+                lines = []
+                for call in messages[i].get("tool_calls") or []:
+                    label = self._describe_tool_call(call)
+                    cid = self._get_tool_call_id_static(call)
+                    path = ""
+                    for res in messages[i + 1:end]:
+                        if res.get("tool_call_id") == cid:
+                            path = self._spill_path_in(res.get("content"))
+                            break
+                    lines.append(f"{label} -> {path}" if path else label)
+                if lines:
+                    out.append({
+                        "role": "assistant",
+                        "content": "[aged out of context] " + "; ".join(lines)
+                                   + ". Paths are readable with read_file(path);"
+                                     " the full exchange is in mazemaker.",
+                    })
+                i = end
+                continue
+            out.append(messages[i])
+            i += 1
         return out
 
     def _build_turn_injections(self, ext_prefetch: str,
@@ -1166,8 +1318,11 @@ class AIAgent:
             _ctx_cfg = _agent_cfg.get("context", {}) or {}
             self._reasoning_window = int(_ctx_cfg.get("reasoning_window",
                                                       self._REASONING_WINDOW))
+            self._tool_group_ttl = int(_ctx_cfg.get("tool_group_ttl",
+                                                    self._TOOL_GROUP_TTL))
         except Exception:
             self._reasoning_window = self._REASONING_WINDOW
+            self._tool_group_ttl = self._TOOL_GROUP_TTL
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -6600,6 +6755,7 @@ class AIAgent:
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
                 api_msg.pop("_thinking_prefill", None)
+                api_msg.pop("_reasoning_spill", None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
@@ -8157,7 +8313,27 @@ class AIAgent:
             else:
                 _iter_messages, _iter_cur = messages, current_turn_user_idx
 
-            _reasoning_keep = self._reasoning_window_indices(_iter_messages)
+            # Collapse finished tool exchanges before anything indexes into
+            # the list. _iter_cur is re-found by identity rather than
+            # arithmetic: collapsing removes messages ahead of it, so the
+            # stored index would otherwise point at the wrong message and the
+            # turn injections would land on a tool result.
+            _pre_collapse_anchor = (
+                _iter_messages[_iter_cur]
+                if 0 <= _iter_cur < len(_iter_messages) else None
+            )
+            _iter_messages = self._collapse_aged_tool_groups(_iter_messages)
+            if _pre_collapse_anchor is not None:
+                for _ci, _cm in enumerate(_iter_messages):
+                    if _cm is _pre_collapse_anchor:
+                        _iter_cur = _ci
+                        break
+                else:
+                    _iter_cur = max(0, len(_iter_messages) - 1)
+            else:
+                _iter_cur = max(0, len(_iter_messages) - 1)
+
+            _reasoning_keep = self._reasoning_payload(_iter_messages)
 
             api_messages = []
             for idx, msg in enumerate(_iter_messages):
@@ -8172,9 +8348,7 @@ class AIAgent:
                             )
 
                 if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text and idx not in _reasoning_keep:
-                        reasoning_text = None      # aged out of the window
+                    reasoning_text = _reasoning_keep.get(idx)
                     if reasoning_text:
                         api_msg["reasoning_content"] = reasoning_text
                     elif "deepseek" in (self.model or "").lower():

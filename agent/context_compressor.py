@@ -545,6 +545,30 @@ class ContextCompressor:
         return (f"{_OFFLOAD_PREFIX}{tool_name}{about} — result ({len(content)} chars) "
                 f"spilled to {path}. Retrieve it verbatim with read_file(\"{path}\").]")
 
+    def spill_reasoning(self, content: str, label: str = "") -> Optional[str]:
+        """Age a reasoning block out of the window without deleting it.
+
+        Preserved thinking is worth keeping -- it is why the model does not
+        re-derive a conclusion it already reached. It is just not worth
+        re-sending forever: measured over four ten-hour sessions it was
+        22-30% of the whole payload and nothing ever pruned it.
+
+        So it expires the same way a bulky tool result does, rather than
+        being dropped: the bytes go to RAM-backed tmpfs and the model keeps a
+        path it can read back. Same trade as _offload -- deleting is amnesia,
+        carrying it is the KV cache problem, a path is neither.
+        """
+        if not content:
+            return None
+        path = self._write_spill("reasoning", content)
+        if not path:
+            return None
+        self.offloaded.append({"path": str(path), "tool": "reasoning",
+                               "chars": len(content), "subject": label or ""})
+        return (f"{_OFFLOAD_PREFIX}reasoning ({len(content)} chars) aged out of the "
+                f"window and was spilled to {path}. Read it back with "
+                f"read_file(\"{path}\") if this step needs revisiting.]")
+
     def offload_notice(self, limit: int = 6) -> str:
         """One line naming what left the window, so the model can pull it back."""
         if not self.offloaded:
