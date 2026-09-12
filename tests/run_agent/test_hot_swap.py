@@ -278,3 +278,95 @@ class TestDefaultsOff:
         assert called == []                       # summary computed, no prefill
         assert a._hot_swap_ready is not None       # still usable
         assert a._hot_swap_ready["slot"] is None   # nothing warmed, so no swap
+
+
+class TestSlotProbeDoesNotCacheFailure:
+    """llama-server takes tens of seconds to load a 27B plus a draft model.
+    An agent started alongside it reaches /slots before the server answers.
+
+    Caching that miss pinned the process to single-slot for its whole life --
+    main and the sidekick both landing on slot 0 -- and no later restart of
+    the server could undo it. That is the "one slot doing everything"
+    symptom, arriving purely from startup order.
+    """
+
+    def _probing_agent(self, responses):
+        """responses: a list popped per probe; an Exception instance raises."""
+        a = _agent()
+        del a._slot_count_cache
+        a._slot_probe_last = 0.0
+        seen = []
+
+        class _Resp:
+            def __init__(self, n):
+                self._n = n
+
+            def read(self):
+                import json
+                return json.dumps([{"id": i} for i in range(self._n)]).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        import urllib.request
+        def fake_urlopen(url, timeout=None):
+            seen.append(url)
+            nxt = responses.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return _Resp(nxt)
+
+        return a, fake_urlopen, seen
+
+    def test_failed_probe_is_retried_not_remembered(self, monkeypatch):
+        import urllib.request
+        a, fake, seen = self._probing_agent([OSError("connection refused"), 2])
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+        assert a._server_slot_count() == 1          # server still loading
+        assert getattr(a, "_slot_count_cache", None) is None
+
+        a._slot_probe_last = 0.0                    # past the retry interval
+        assert a._server_slot_count() == 2          # server is up now
+        assert a._slot_count_cache == 2
+        assert len(seen) == 2
+
+    def test_retry_is_rate_limited(self, monkeypatch):
+        import urllib.request
+        a, fake, seen = self._probing_agent([OSError("refused")])
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+        assert a._server_slot_count() == 1
+        assert a._server_slot_count() == 1   # inside the window: no second probe
+        assert len(seen) == 1, "a down server must not cost a timeout per call"
+
+    def test_successful_probe_is_cached(self, monkeypatch):
+        import urllib.request
+        a, fake, seen = self._probing_agent([2])
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+        assert a._server_slot_count() == 2
+        assert a._server_slot_count() == 2
+        assert len(seen) == 1
+
+    def test_main_and_sidekick_split_once_the_server_answers(self, monkeypatch):
+        import urllib.request
+        a, fake, _ = self._probing_agent([OSError("refused"), 2])
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+        assert a._effective_main_slot() == 0   # collapsed while the server loads
+        assert a._sidekick_id_slot() == 0
+
+        a._slot_probe_last = 0.0
+        assert a._effective_main_slot() == 1   # and recovers, rather than staying stuck
+        assert a._sidekick_id_slot() == 0
+
+    def test_remote_backend_is_cached_as_single_slot(self, monkeypatch):
+        a = _agent(base_url="https://api.example.com/v1")
+        del a._slot_count_cache
+        a._slot_probe_last = 0.0
+        assert a._server_slot_count() == 1
+        assert a._slot_count_cache == 1        # no server to come up later

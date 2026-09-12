@@ -2028,8 +2028,13 @@ class AIAgent:
         )
         t.start()
 
+    _SLOT_PROBE_RETRY_S = 15.0
+
     def _server_slot_count(self) -> int:
-        """How many slots the local llama-server actually has. Probed once.
+        """How many slots the local llama-server actually has.
+
+        Probed once *successfully*; a failed probe is retried rather than
+        remembered.
 
         Pinning to a slot the server does not have is not a soft failure: a
         task naming an unknown id_slot matches nothing in get_available_slot()
@@ -2040,18 +2045,32 @@ class AIAgent:
         cached = getattr(self, "_slot_count_cache", None)
         if cached is not None:
             return cached
-        count = 1
+        # A failed probe is NOT cached. llama-server takes tens of seconds to
+        # load a 27B plus a draft model, so an agent started alongside it
+        # reaches /slots before the server answers. Caching that miss pinned
+        # the process to single-slot for its whole life -- main and the
+        # sidekick both on slot 0, which is the "one slot doing everything"
+        # symptom, and no later restart of the server could undo it.
+        # Retried at _SLOT_PROBE_RETRY_S intervals so a down server does not
+        # mean a 2s timeout on every call that asks.
+        now = time.monotonic()
+        last = getattr(self, "_slot_probe_last", 0.0)
+        if last and now - last < self._SLOT_PROBE_RETRY_S:
+            return 1
+        self._slot_probe_last = now
         try:
             base = (self.base_url or "").rstrip("/")
             if base.endswith("/v1"):
                 base = base[: -len("/v1")]
             low = base.lower()
-            if "127.0.0.1" in low or "localhost" in low:
-                import urllib.request
-                with urllib.request.urlopen(f"{base}/slots", timeout=2) as r:
-                    count = max(1, len(json.loads(r.read())))
+            if "127.0.0.1" not in low and "localhost" not in low:
+                self._slot_count_cache = 1   # remote backend: no slots to speak of
+                return 1
+            import urllib.request
+            with urllib.request.urlopen(f"{base}/slots", timeout=2) as r:
+                count = max(1, len(json.loads(r.read())))
         except Exception:
-            count = 1  # assume single-slot; slot 0 always exists
+            return 1  # server not up yet; ask again later, do not cache it
         self._slot_count_cache = count
         return count
 
