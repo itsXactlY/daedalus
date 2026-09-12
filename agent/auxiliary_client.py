@@ -1820,6 +1820,18 @@ def _build_call_kwargs(
         "model": model,
         "messages": messages,
         "timeout": timeout,
+        # Explicit, not merely omitted. Everything built here runs on the
+        # sidekick slot and its caller waits for a complete response -- there
+        # is no consumer of deltas on this path (the Codex responses.stream()
+        # route is a different class entirely). Streaming would buy nothing
+        # and costs the one thing that actually hurts here: a half-delivered
+        # stream that dies on the socket takes a full prefill with it, and
+        # the retry pays for it again.
+        #
+        # The rule is slot 0 -> stream false, slot 1 (the live turn) -> stream
+        # true. Leaving it to the SDK default made it true by accident of
+        # omission, one refactor away from flipping.
+        "stream": False,
     }
 
     if temperature is not None:
