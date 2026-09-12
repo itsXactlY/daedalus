@@ -40,7 +40,7 @@ def _agent(**over):
     a = _RealAIAgent.__new__(_RealAIAgent)
     a.base_url = "http://127.0.0.1:8080/v1"
     a.context_compressor = _Compressor()
-    a._hot_swap_enabled = True    # default is off; tests opt in explicitly
+    a._hot_swap_enabled = True    # set explicitly; these tests do not probe the default
     a._hot_swap_prefill = True
     a._hot_swap_in_progress = False
     a._hot_swap_ready = None
@@ -270,10 +270,12 @@ class TestSingleSlotServer:
         assert a._sidekick_id_slot() == 0
 
 
-class TestDefaultsOff:
-    """Prep competes with main for a shared, bounded resident KV pool. On a
-    1024 MiB pool it starved: 19+ minutes for one summary, and main dropped to
-    24% cache. Off unless asked for."""
+class TestExplicitlyDisabled:
+    """The summary half is ON by default -- it is the whole reason for the
+    second slot, and it is the same compress() call the turn would make
+    anyway, just off the turn's thread. The PREFILL half stays opt-in: that
+    is the one that starved on a 1024 MiB pool (19+ minutes for one summary,
+    main down to 24% cache)."""
 
     def test_disabled_agent_never_starts_prep(self, monkeypatch):
         a = _agent(_hot_swap_enabled=False)

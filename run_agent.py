@@ -1765,13 +1765,22 @@ class AIAgent:
         # _compaction_generation invalidates in-flight prep: any inline
         # compaction bumps it, and prep whose generation no longer matches is
         # discarded rather than applied over a history it no longer describes.
-        # Default OFF. Measured 2026-09-12 on a 1024 MiB resident KV pool with
-        # two sequences: prep starved for residency, ran 19+ minutes for one
-        # summary, and cost main a 117s call at 24% cache the moment it
-        # started. It only pays off when the resident pool is large enough for
-        # both sequences at once (--kv-stream-stage-mib well above 1024) --
-        # otherwise the blocking compaction is cheaper. Enable deliberately.
-        self._hot_swap_enabled = bool(os.environ.get("DAEDALUS_HOT_SWAP"))
+        # Default ON, because this is the entire point of running two slots.
+        # Without it the turn stops dead while the summary is produced: a
+        # measured 58 seconds on a 219-message session, and the aux call was
+        # already correctly routed to slot 0 the whole time -- routing does
+        # nothing while the caller blocks on the result.
+        #
+        # It was briefly defaulted OFF after a 2026-09-12 measurement (prep
+        # starved on a 1024 MiB pool, 19+ minutes for one summary, main down
+        # to 24% cache). That was the PREFILL half, which re-sends the whole
+        # compacted context to warm the sidekick and is still opt-in below.
+        # The summary alone is the same single compress() call the turn makes
+        # today, just off the turn's thread, so it costs the server nothing
+        # extra. DAEDALUS_HOT_SWAP=0 turns it off.
+        self._hot_swap_enabled = str(
+            os.environ.get("DAEDALUS_HOT_SWAP", "1")
+        ).strip().lower() not in ("0", "false", "no", "off", "")
         # The prefill half is the expensive half: it re-sends the whole
         # compacted context to warm the sidekick. Separately opt-in, because
         # the summary alone already removes the blocking LLM call.
