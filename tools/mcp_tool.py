@@ -5602,8 +5602,16 @@ def get_mcp_status() -> List[dict]:
     configured but have not been started in this process yet.
     """
     result: List[dict] = []
+    configured = _load_mcp_config() or {}
 
-    if not any(srv.get("name") == "mazemaker" for srv in result):
+    # Probe the pod directly so mazemaker still shows up when no MCP config
+    # exists at all. Skipped when it IS configured, because the loop below
+    # already emits an entry for it.
+    #
+    # The guard used to read `for srv in result` -- a list that is empty by
+    # construction two lines above, so it never fired and the banner listed
+    # mazemaker twice, once connected and once as a dead duplicate.
+    if "mazemaker" not in configured:
         try:
             import urllib.request as _ur
             _url = os.environ.get("MM_WONDERLAND_URL", "http://127.0.0.1:8765")
@@ -5624,7 +5632,6 @@ def get_mcp_status() -> List[dict]:
         except Exception:
             pass
 
-    configured = _load_mcp_config()
     if not configured:
         return result
 
