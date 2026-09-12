@@ -152,9 +152,17 @@ class TestItCanNeverLandOnDaedalusHome:
         monkeypatch.delenv("DAEDALUS_SPILL_ROOT", raising=False)
         monkeypatch.setenv("DAEDALUS_HOME", str(home))
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-        root = run_agent.AIAgent._spill_root()
-        assert not root.startswith(str(home)), f"spill root sits in DAEDALUS_HOME: {root}"
-        assert "daedalus-ctx-" in root
+        root = os.path.realpath(run_agent.AIAgent._spill_root())
+        # With the separator, not a bare string prefix: ".daedalus-spill" is
+        # a prefix-match of ".daedalus" and is NOT inside it. Getting that
+        # wrong here is the same mistake that, in the code, would have let
+        # the purge loose on DAEDALUS_HOME.
+        real_home = os.path.realpath(str(home))
+        assert root != real_home and not root.startswith(real_home + os.sep), (
+            f"spill root sits in DAEDALUS_HOME: {root}"
+        )
+        # The sibling on disk is preferred over volatile RAM.
+        assert root == os.path.realpath(str(tmp_path / ".daedalus-spill"))
 
     def test_a_different_project_is_still_fine(self, monkeypatch, tmp_path):
         home = tmp_path / "home" / ".daedalus"
