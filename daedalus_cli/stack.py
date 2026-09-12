@@ -1282,6 +1282,129 @@ def cmd_conf(args=None) -> int:
     return 0
 
 
+
+# ------------------------------------------------------------- watchdog ------
+
+def read_metrics(host: str, port: int, timeout: float = 3.0) -> dict:
+    """Scrape llama-server's Prometheus endpoint into a plain dict.
+
+    Needs --metrics on the server (``start`` passes it). Returns {} on any
+    trouble: a watchdog that mistakes its own scrape failure for a slow
+    server would restart a perfectly healthy one.
+    """
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/metrics", timeout=timeout) as r:
+            body = r.read().decode("utf-8", "replace")
+    except Exception:
+        return {}
+    out = {}
+    for line in body.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name, _, value = line.partition(" ")
+        if name.startswith("llamacpp:") and "{" not in name:
+            try:
+                out[name[len("llamacpp:"):]] = float(value)
+            except ValueError:
+                continue
+    return out
+
+
+def sample_decode_rate(prev: dict, cur: dict):
+    """Generation tokens/s between two /metrics scrapes, or None.
+
+    Deliberately a windowed rate from the counters rather than the
+    ``predicted_tokens_seconds`` gauge: that gauge is a lifetime average, so
+    after a fast hour it takes a very long slow patch to drag it under any
+    threshold worth acting on. None means "no verdict" -- the server produced
+    no tokens in this window (it was idle), a counter went backwards (it
+    restarted underneath us), or a scrape failed. Idle must never look slow.
+    """
+    if not prev or not cur:
+        return None
+    d_tokens = cur.get("tokens_predicted_total", 0.0) - prev.get("tokens_predicted_total", 0.0)
+    d_seconds = cur.get("tokens_predicted_seconds_total", 0.0) - prev.get("tokens_predicted_seconds_total", 0.0)
+    if d_tokens <= 0 or d_seconds <= 0:
+        return None
+    return d_tokens / d_seconds
+
+
+def cmd_watch(args) -> int:
+    """Restart the main server when generation throughput collapses.
+
+    Long sessions on this fork degrade rather than fail: throughput drifts
+    down and stays down, and the fix is a restart. That is cheap here in a way
+    it is not for a conventional harness -- daedalus keeps its transcript in
+    mazemaker and sends only a window, so a cold KV cache costs one small
+    prefill, not a replay of the whole conversation.
+
+    Restarts only on sustained slowness across consecutive *productive*
+    windows, and never twice inside the cooldown, because a restart loop on a
+    machine that is merely busy is worse than the slowness it is treating.
+    """
+    conf = load_conf()
+    host, port = conf.host_port("main")
+    threshold = float(args.threshold)
+    interval = max(5.0, float(args.interval))
+    trips_needed = max(1, int(args.trips))
+    cooldown = max(0.0, float(args.cooldown))
+
+    section("Throughput watchdog")
+    dim(f"{host}:{port} · restart below {threshold:g} tok/s for "
+        f"{trips_needed} consecutive {interval:g}s windows · cooldown {cooldown:g}s")
+
+    if not port_up(host, port):
+        bad("main server is not up", "— nothing to watch")
+        return 1
+    if not read_metrics(host, port):
+        bad("/metrics returned nothing",
+            "— the server needs --metrics (daedalus doctor start passes it)")
+        return 1
+
+    prev = read_metrics(host, port)
+    trips = 0
+    last_restart = 0.0
+    try:
+        while True:
+            time.sleep(interval)
+            cur = read_metrics(host, port)
+            rate = sample_decode_rate(prev, cur)
+            prev = cur or prev
+            if rate is None:
+                continue                      # idle, restarted, or scrape failed
+            if rate >= threshold:
+                if trips:
+                    dim(f"recovered at {rate:.1f} tok/s")
+                trips = 0
+                continue
+            trips += 1
+            warn(f"{rate:.1f} tok/s", f"— below {threshold:g} ({trips}/{trips_needed})")
+            if trips < trips_needed:
+                continue
+            since = time.time() - last_restart
+            if last_restart and since < cooldown:
+                dim(f"cooldown: {cooldown - since:.0f}s before another restart")
+                continue
+            bad("sustained slow generation", "— restarting the main server")
+            stop_one("main")
+            model = model_path(conf.str("MAIN_REPO"), conf.str("MAIN_FILE"))
+            if not model:
+                bad("main model missing", "— cannot restart")
+                return 1
+            if not start_one("main", _main_argv(conf, model),
+                             env={"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}):
+                return 1
+            if not wait_ready("main", host, port, 300):
+                return 1
+            last_restart = time.time()
+            trips = 0
+            prev = read_metrics(host, port)
+    except KeyboardInterrupt:
+        print()
+        dim("watchdog stopped")
+        return 0
+
+
 # -------------------------------------------------------------- wiring -------
 
 def register_cli(parser: argparse.ArgumentParser) -> None:
@@ -1304,6 +1427,17 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     add("pause", "Freeze the servers, keeping the weights loaded").set_defaults(func=cmd_pause)
     add("resume", "Unfreeze paused servers").set_defaults(func=cmd_resume)
     add("conf", "Show the stack.conf path and the values in force").set_defaults(func=cmd_conf)
+
+    p_watch = add("watch", "Restart the main server if generation throughput collapses")
+    p_watch.add_argument("--threshold", type=float, default=20.0,
+                         help="Generation tok/s below which a window counts as slow (default 20)")
+    p_watch.add_argument("--interval", type=float, default=30.0,
+                         help="Seconds between /metrics samples (default 30)")
+    p_watch.add_argument("--trips", type=int, default=3,
+                         help="Consecutive slow windows before restarting (default 3)")
+    p_watch.add_argument("--cooldown", type=float, default=300.0,
+                         help="Minimum seconds between restarts (default 300)")
+    p_watch.set_defaults(func=cmd_watch)
 
     p_logs = add("logs", "Tail a server log")
     p_logs.add_argument("server", nargs="?", default="main", choices=list(SERVERS),
