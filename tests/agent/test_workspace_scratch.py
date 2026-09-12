@@ -100,6 +100,9 @@ class TestTmpdirRedirect:
         """TMPDIR points here for the life of the process. Purging it would
         leave every child process writing into a path that no longer exists."""
         monkeypatch.setenv("DAEDALUS_SPILL_ROOT", str(tmp_path))
+        # The purge refuses roots it did not create, so mark this one as its
+        # own -- otherwise this test passes for the wrong reason.
+        (tmp_path / run_agent.AIAgent._SPILL_MARKER).write_text("x")
         path = run_agent.AIAgent._redirect_tmpdir()
         (tmp_path / "some-old-session").mkdir()
         run_agent.AIAgent.purge_stale_spills(max_age_seconds=0)

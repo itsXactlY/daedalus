@@ -118,21 +118,73 @@ class TestReasoningIsSoakedButToolsAreNot:
 
 
 class TestTheWorkpathIsBesideTheProject:
-    def test_it_uses_a_dotted_dir_in_the_working_directory(self, monkeypatch, tmp_path):
+    def test_it_uses_a_dedicated_spill_dir_in_the_working_directory(self, monkeypatch, tmp_path):
         monkeypatch.delenv("DAEDALUS_SPILL_ROOT", raising=False)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
-        root = run_agent.AIAgent._spill_root()
-        assert root == str(tmp_path / ".daedalus")
+        assert run_agent.AIAgent._spill_root() == str(tmp_path / ".daedalus" / "spill")
 
     def test_it_falls_back_when_the_workdir_is_unusable(self, monkeypatch):
         monkeypatch.delenv("DAEDALUS_SPILL_ROOT", raising=False)
         monkeypatch.setenv("TERMINAL_CWD", "/proc/nonexistent/nope")
         monkeypatch.setattr(os, "getcwd", lambda: "/proc/nonexistent/nope")
-        root = run_agent.AIAgent._spill_root()
-        assert "daedalus-ctx-" in root, "a volatile spill beats no spill at all"
+        assert "daedalus-ctx-" in run_agent.AIAgent._spill_root()
 
     def test_the_env_override_still_wins(self, monkeypatch, tmp_path):
         """conftest relies on this to keep the suite out of a live root."""
         monkeypatch.setenv("DAEDALUS_SPILL_ROOT", str(tmp_path / "iso"))
         monkeypatch.setenv("TERMINAL_CWD", "/home/somewhere")
         assert run_agent.AIAgent._spill_root() == str(tmp_path / "iso")
+
+
+class TestItCanNeverLandOnDaedalusHome:
+    """purge_stale_spills rmtree's whole subdirectories of the spill root.
+
+    An earlier version returned <workdir>/.daedalus directly. The agent's
+    working directory is $HOME, so that resolved to the operator's real
+    ~/.daedalus -- and the purge deleted venv/, cron/ and logs/ out of it.
+    The spill root must be a directory daedalus owns outright, and it must
+    never be, or sit inside, DAEDALUS_HOME.
+    """
+
+    def test_a_workdir_whose_dot_daedalus_is_the_home_is_refused(self, monkeypatch, tmp_path):
+        home = tmp_path / ".daedalus"
+        home.mkdir()
+        monkeypatch.delenv("DAEDALUS_SPILL_ROOT", raising=False)
+        monkeypatch.setenv("DAEDALUS_HOME", str(home))
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        root = run_agent.AIAgent._spill_root()
+        assert not root.startswith(str(home)), f"spill root sits in DAEDALUS_HOME: {root}"
+        assert "daedalus-ctx-" in root
+
+    def test_a_different_project_is_still_fine(self, monkeypatch, tmp_path):
+        home = tmp_path / "home" / ".daedalus"
+        home.mkdir(parents=True)
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        monkeypatch.delenv("DAEDALUS_SPILL_ROOT", raising=False)
+        monkeypatch.setenv("DAEDALUS_HOME", str(home))
+        monkeypatch.setenv("TERMINAL_CWD", str(proj))
+        assert run_agent.AIAgent._spill_root() == str(proj / ".daedalus" / "spill")
+
+
+class TestThePurgeRefusesForeignDirectories:
+    def test_an_unmarked_root_is_left_alone(self, monkeypatch, tmp_path):
+        """Exactly the shape of ~/.daedalus: real directories, no marker."""
+        monkeypatch.setenv("DAEDALUS_SPILL_ROOT", str(tmp_path))
+        for name in ("venv", "cron", "logs", "sessions"):
+            (tmp_path / name).mkdir()
+        assert run_agent.AIAgent.purge_stale_spills(max_age_seconds=0) == 0
+        for name in ("venv", "cron", "logs", "sessions"):
+            assert (tmp_path / name).is_dir(), f"{name} was deleted from an unmarked root"
+
+    def test_a_marked_root_is_purged_normally(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DAEDALUS_SPILL_ROOT", str(tmp_path))
+        (tmp_path / run_agent.AIAgent._SPILL_MARKER).write_text("x")
+        (tmp_path / "old-session").mkdir()
+        assert run_agent.AIAgent.purge_stale_spills(max_age_seconds=0) >= 1
+        assert not (tmp_path / "old-session").exists()
+
+    def test_writing_a_spill_lays_down_the_marker(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("DAEDALUS_SPILL_ROOT", str(tmp_path))
+        run_agent.AIAgent._archive_context_chunk("s1", 0, "terminal", "output")
+        assert (tmp_path / run_agent.AIAgent._SPILL_MARKER).is_file()

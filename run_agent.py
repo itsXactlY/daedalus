@@ -459,29 +459,43 @@ class AIAgent:
         self._base_url_lower = value.lower() if value else ""
 
 
-    #: Per-project work directory. Spilled output and the process TMPDIR live
-    #: here, beside the code being worked on.
+    #: Per-project work directory. Spilled output and the process TMPDIR
+    #: live under it, beside the code being worked on.
     _WORKPATH_NAME = ".daedalus"
+    #: Dedicated subdirectory that daedalus owns outright. purge_stale_spills
+    #: deletes whole subdirectories, so it must never be pointed at anything
+    #: that also holds things it did not create.
+    _SPILL_DIR_NAME = "spill"
+    #: Written into a spill root so the purge can tell its own directory from
+    #: someone else's.
+    _SPILL_MARKER = ".daedalus-spill-root"
+    #: Process-wide scratch directory under the spill root. The purge skips
+    #: it: it is not a session, and TMPDIR points at it for the life of the
+    #: process.
+    _TMPDIR_NAME = "tmp"
 
     @staticmethod
     def _spill_root() -> str:
-        """Where spilled tool output lives: a .daedalus/ beside the work.
+        """Where spilled tool output lives: a .daedalus/spill/ beside the work.
 
         Spills used to go to /dev/shm. That is RAM, shared with everything
         else on the machine, and it does not survive a reboot -- so the
         handles carried in context outlive the files they name. Tool output
-        belongs with the project that produced it: it is that session's
-        working material, it is findable afterwards by a human, and a
-        checkout can gitignore one dotted directory.
+        belongs with the project that produced it.
+
+        The `spill` subdirectory is not decoration. purge_stale_spills
+        rmtree's every subdirectory older than its cutoff, so the root has to
+        be a directory daedalus owns outright. An earlier version returned
+        `<workdir>/.daedalus` directly; with the agent's working directory set
+        to $HOME, that resolved to the operator's real ~/.daedalus and the
+        purge deleted venv/, cron/ and logs/ out of it. Never point this at a
+        directory that holds anything the agent did not write.
 
         Falls back to /dev/shm when there is no usable working directory --
-        better a volatile spill than none, since the alternative is carrying
-        everything in context.
+        better a volatile spill than none.
 
-        DAEDALUS_SPILL_ROOT overrides both. The test suite sets it in
-        conftest: without it, test_purge_removes_stale_directories calls
-        purge_stale_spills(max_age_seconds=0) against the operator's real
-        root and deletes a live session's spill mid-task. That happened.
+        DAEDALUS_SPILL_ROOT overrides both; the test suite sets it in conftest
+        so a run cannot purge a live session's spill.
         """
         import tempfile
 
@@ -489,6 +503,8 @@ class AIAgent:
         if override:
             return override
 
+        home = os.path.realpath(
+            os.environ.get("DAEDALUS_HOME") or os.path.expanduser("~/.daedalus"))
         workdir = os.environ.get("TERMINAL_CWD") or ""
         if not workdir:
             try:
@@ -496,15 +512,16 @@ class AIAgent:
             except OSError:
                 workdir = ""
         if workdir and os.path.isdir(workdir) and os.access(workdir, os.W_OK):
-            return os.path.join(workdir, AIAgent._WORKPATH_NAME)
+            candidate = os.path.join(workdir, AIAgent._WORKPATH_NAME,
+                                     AIAgent._SPILL_DIR_NAME)
+            real = os.path.realpath(candidate)
+            # Never inside DAEDALUS_HOME, and never DAEDALUS_HOME itself:
+            # that directory holds the venv, the sessions and the config.
+            if real != home and not real.startswith(home + os.sep):
+                return candidate
 
         base = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
         return os.path.join(base, f"daedalus-ctx-{os.getuid()}")
-
-    # Name of the process-wide scratch directory under the spill root.
-    # purge_stale_spills skips it: it is not a session and TMPDIR points at it
-    # for the life of the process.
-    _TMPDIR_NAME = "tmp"
 
     @classmethod
     def _redirect_tmpdir(cls) -> str:
@@ -549,6 +566,16 @@ class AIAgent:
 
         root = cls._spill_root()
         if not os.path.isdir(root):
+            return 0
+        # Refuse to purge a directory daedalus did not create. This function
+        # rmtree's whole subdirectories, so pointing it at the wrong root is
+        # not a cosmetic mistake: aimed at ~/.daedalus it deleted the venv,
+        # cron/ and logs/. The marker is written by _archive_context_chunk
+        # when the root is first used, so an empty or foreign directory is
+        # left strictly alone.
+        if not os.path.isfile(os.path.join(root, cls._SPILL_MARKER)):
+            logger.debug("spill purge skipped: %s carries no %s marker",
+                         root, cls._SPILL_MARKER)
             return 0
         removed = 0
         cutoff = time.time() - max_age_seconds
@@ -944,7 +971,17 @@ class AIAgent:
 
         safe_session = "".join(c for c in str(session) if c.isalnum() or c in "-_") or "session"
         safe_tool = "".join(c for c in str(tool_name) if c.isalnum() or c in "-_") or "tool"
-        directory = os.path.join(cls._spill_root(), safe_session)
+        root = cls._spill_root()
+        directory = os.path.join(root, safe_session)
+        try:
+            os.makedirs(root, exist_ok=True)
+            marker = os.path.join(root, cls._SPILL_MARKER)
+            if not os.path.exists(marker):
+                with open(marker, "w", encoding="utf-8") as fh:
+                    fh.write("daedalus spill root — purge_stale_spills deletes "
+                             "subdirectories here. Do not put anything else in it.\n")
+        except OSError:
+            pass
         try:
             os.makedirs(directory, exist_ok=True)
             path = os.path.join(directory, f"{seq:04d}-{safe_tool}.txt")
