@@ -466,6 +466,8 @@ class AIAgent:
     #: deletes whole subdirectories, so it must never be pointed at anything
     #: that also holds things it did not create.
     _SPILL_DIR_NAME = "spill"
+    #: Used when <workdir>/.daedalus/spill would fall inside DAEDALUS_HOME.
+    _WORKPATH_SIBLING = ".daedalus-spill"
     #: Written into a spill root so the purge can tell its own directory from
     #: someone else's.
     _SPILL_MARKER = ".daedalus-spill-root"
@@ -511,14 +513,26 @@ class AIAgent:
                 workdir = os.getcwd()
             except OSError:
                 workdir = ""
+        def _outside_home(path: str) -> bool:
+            # Never inside DAEDALUS_HOME, and never DAEDALUS_HOME itself:
+            # that directory holds the venv, the sessions and the config, and
+            # purge_stale_spills rmtree's subdirectories of the spill root.
+            real = os.path.realpath(path)
+            return real != home and not real.startswith(home + os.sep)
+
         if workdir and os.path.isdir(workdir) and os.access(workdir, os.W_OK):
             candidate = os.path.join(workdir, AIAgent._WORKPATH_NAME,
                                      AIAgent._SPILL_DIR_NAME)
-            real = os.path.realpath(candidate)
-            # Never inside DAEDALUS_HOME, and never DAEDALUS_HOME itself:
-            # that directory holds the venv, the sessions and the config.
-            if real != home and not real.startswith(home + os.sep):
+            if _outside_home(candidate):
                 return candidate
+            # The working directory IS the parent of DAEDALUS_HOME -- with
+            # terminal.cwd set to $HOME, <workdir>/.daedalus/spill lands
+            # inside it. Use a sibling on the same disk rather than dropping
+            # to /dev/shm: spilled output is what the model reads back, and
+            # RAM that does not survive a reboot is the wrong place for it.
+            sibling = os.path.join(workdir, AIAgent._WORKPATH_SIBLING)
+            if _outside_home(sibling):
+                return sibling
 
         base = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
         return os.path.join(base, f"daedalus-ctx-{os.getuid()}")
