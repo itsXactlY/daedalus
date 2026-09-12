@@ -122,7 +122,9 @@ class HttpPodClient(PodClient):
         for r in rows:
             if not isinstance(r, dict):
                 continue
-            mid = r.get("id") or r.get("memory_id")
+            mid = r.get("id")
+            if mid is None:
+                mid = r.get("memory_id")   # not `or`: id 0 is a real key
             if mid is None:
                 continue
             try:
@@ -138,11 +140,29 @@ class HttpPodClient(PodClient):
                            str(r.get("content") or r.get("snippet") or ""), score))
         return out
 
+    #: mazemaker_recall declares `limit` maximum 50 and answers 422 above it.
+    #: Clamped here rather than in the budget: a budget is a preference, this
+    #: is the API's hard edge, and crossing it does not degrade -- it returns
+    #: nothing at all, and fetch() swallows the error, so a permanently dead
+    #: recall looks exactly like a corpus with no relevant hits.
+    #:
+    #: routing.hits_per_angle 15 * overfetch 4 = 60 exceeded it. That broke
+    #: only SINGLE-angle turns, which is what made it survive so long: the
+    #: planner splits most prompts into several angles and those go to
+    #: recall_multi, which declares no such cap. Short instructions -- the
+    #: "continue where you left off" turns, the ones that need recall most --
+    #: produce one angle, and got nothing at all.
+    MAX_RECALL_LIMIT = 50
+
     def recall(self, query: str, limit: int, timeout_s: float) -> list[Hit]:
+        limit = max(1, min(int(limit), self.MAX_RECALL_LIMIT))
         return self._as_hits(self._call("mazemaker_recall",
                                         {"query": query, "limit": limit}, timeout_s))
 
     def recall_multi(self, queries: list[str], limit: int, timeout_s: float) -> list[Hit]:
+        # No declared maximum on `k` for this tool, so no ceiling is imposed
+        # here -- narrowing it would quietly cost breadth across angles.
+        limit = max(1, int(limit))
         return self._as_hits(self._call("mazemaker_recall_multi",
                                         {"angles": queries, "k": limit}, timeout_s))
 
