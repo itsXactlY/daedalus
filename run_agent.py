@@ -26,6 +26,7 @@ import concurrent.futures
 import copy
 import dataclasses
 import hashlib
+import errno
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -5784,8 +5785,25 @@ class AIAgent:
                         _is_timeout = isinstance(
                             e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
                         )
+                        # A socket pulled out from under the reader surfaces as
+                        # a bare OSError, NOT a ConnectionError: EBADF is what
+                        # you get when the fd is closed mid-read, which is
+                        # exactly what an aborted stream does. Unclassified, it
+                        # skipped the retry-with-a-fresh-connection path and
+                        # went straight to re-sending the entire prompt
+                        # non-streamed -- a full prefill, measured at 44s and
+                        # ~32k tokens on this box, to recover from a dead
+                        # socket that a reconnect fixes for nothing.
+                        #
+                        # Only reached when deltas_were_sent is false, so there
+                        # is nothing half-delivered to duplicate by retrying.
                         _is_conn_err = isinstance(
                             e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
+                        ) or (
+                            isinstance(e, OSError)
+                            and getattr(e, "errno", None) in (
+                                errno.EBADF, errno.EPIPE, errno.ECONNRESET, errno.ENOTCONN,
+                            )
                         )
 
                         _is_sse_conn_err = False
