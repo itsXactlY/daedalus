@@ -1,6 +1,6 @@
 # Daedalus
 
-**A 27-billion-parameter model, a 131,000-token context, its own speculative
+**A 27-billion-parameter model, a 262,000-token context, its own speculative
 drafter and a memory engine — all on one gaming graphics card that costs about
 as much as a phone.**
 
@@ -9,7 +9,7 @@ That sentence is supposed to be impossible. Here is the machine it runs on:
 ```
 NVIDIA RTX 4060 Ti · 16 GB · a mid-range consumer card
 
-main model        10,035 MB   Qwen3.8-27B dense, 131,072-token context
+main model        10,035 MB   Qwen3.8-27B dense, 262,144-token context
 draft model        1,090 MB   DFlash2 Q4_K_M, speculative decoding
 resident KV pool   2,048 MB   the window it reads from; the rest is in system RAM
 memory engine        300 MB   222,409 memories, 1.5M connections
@@ -31,12 +31,12 @@ the actual brain, about 10 GB here. And **the conversation** — everything it
 has been told so far, which it has to keep looking at while it answers.
 
 That second part is the problem nobody warns you about. It is called the KV
-cache, and it grows with every word. For this model it costs **73 kilobytes
-per token**. A full 131,000-token conversation therefore needs **9.1 GB** of
-memory — on top of the 10 GB the brain already takes.
+cache, and it grows with every word. Unquantised, this model costs **73
+kilobytes per token**. A full 262,000-token conversation would therefore need
+**19 GB** of memory — on top of the 10 GB the brain already takes.
 
-10 plus 9 is 19. The card holds 16. So it does not fit, and normally you stop
-here: shrink the conversation to a quarter of its size, or buy a card that
+10 plus 19 is 29. The card holds 16. So it does not fit, and normally you stop
+here: shrink the conversation to a fraction of its size, or buy a card that
 costs five figures.
 
 **The trick is that the conversation does not have to live on the graphics
@@ -239,8 +239,8 @@ copying values that will not fit:
 | setting | why this number |
 |---|---|
 | KV pool 2048 MB | what fits beside 10 GB of weights on a 16 GB card |
-| context 131,072 | 9.1 GB of conversation in system RAM, which 31 GB can hold |
-| compaction at 64,225 | `min(0.49 x 131,072, 66,000)` — the fraction of the window, capped. Raise the cap before the window: past ~134k context the cap binds and a bigger window buys nothing |
+| context 262,144 | 6.6 GB of pinned host RAM, measured in `/proc/<pid>/smaps` — the 73 KB/token above is unquantised; at `q8_0`/`q4_0` it is 25 KB/token. Allocated for the process lifetime, so it is a standing reservation, not a ceiling you only pay for when full |
+| compaction at 66,000 | `min(0.49 x 262,144, 66,000)` — a fraction of the window, capped. Past ~134k context the cap binds, so the window above that is headroom for one long turn's tail, not more carried history. Raise the cap, not the window |
 | thinking budget 12,000 | measured: answers land between 150 and 2,400 tokens |
 | KV cache q8_0 / q4_0 | K is more sensitive to attention accuracy than V. Dropping K to q4_0 saves VRAM and was never benchmarked as an even trade |
 | drafter at Q4_K_M, not Q2 | a Q2 drafter proposes badly enough that acceptance collapses, and it drags answer quality down with it. The cheaper file is the more expensive choice |
