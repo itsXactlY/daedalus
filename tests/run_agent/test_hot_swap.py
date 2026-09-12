@@ -15,6 +15,12 @@ import time
 
 import run_agent
 
+# Captured at import. Patch THIS, never run_agent.AIAgent: other suites
+# (tests/cron/test_codex_execution_paths.py, test_anthropic_error_handling.py)
+# swap the module attribute for a stub, and a test that instantiates the
+# captured class while patching the module attribute is patching a different
+# object -- the real _prime_slot_with_messages then runs, fails to reach a
+# server, and the prep records no warm slot. Green alone, red in a full run.
 _RealAIAgent = run_agent.AIAgent
 
 
@@ -53,48 +59,57 @@ def _msgs(n):
 
 
 class TestPrepTrigger:
+    """Prep runs on a daemon thread, so these used to assert after a fixed
+    time.sleep(0.05). Under a loaded test run the thread was not always
+    scheduled inside that window and the assertions flapped -- green alone,
+    red in a full-suite run. They wait on an Event now; nothing here depends
+    on how quickly the machine gets round to the thread."""
+
     def test_below_ratio_does_not_start(self, monkeypatch):
         a = _agent()
-        started = []
-        monkeypatch.setattr(run_agent.AIAgent, "_run_hot_swap_prep",
-                            lambda self, *args: started.append(1))
+        started = threading.Event()
+        monkeypatch.setattr(_RealAIAgent, "_run_hot_swap_prep",
+                            lambda self, *args: started.set())
         a._maybe_start_hot_swap_prep(_msgs(5), "sys", 700, "t")  # 700 < 750
-        time.sleep(0.05)
-        assert started == []
+        # A negative: give a thread that should never run real time to prove it.
+        assert not started.wait(0.5)
         assert a._hot_swap_in_progress is False
 
     def test_at_ratio_starts_once(self, monkeypatch):
         a = _agent()
         started = []
-        done = threading.Event()
+        entered = threading.Event()
+        release = threading.Event()
 
         def fake(self, *args):
             started.append(1)
-            done.wait(2.0)
+            entered.set()
+            release.wait(5.0)
             self._hot_swap_in_progress = False
 
-        monkeypatch.setattr(run_agent.AIAgent, "_run_hot_swap_prep", fake)
+        monkeypatch.setattr(_RealAIAgent, "_run_hot_swap_prep", fake)
         a._maybe_start_hot_swap_prep(_msgs(5), "sys", 800, "t")
-        time.sleep(0.05)
-        a._maybe_start_hot_swap_prep(_msgs(5), "sys", 900, "t")  # must not double-start
-        time.sleep(0.05)
+        assert entered.wait(5.0), "prep thread never started"
+
+        # Prep is now demonstrably in flight; a second trigger must not fork.
+        a._maybe_start_hot_swap_prep(_msgs(5), "sys", 900, "t")
+        assert not entered.wait(0.3) or len(started) == 1
         assert started == [1]
-        done.set()
+        release.set()
 
     def test_disabled_never_starts(self, monkeypatch):
         a = _agent(_hot_swap_enabled=False)
-        started = []
-        monkeypatch.setattr(run_agent.AIAgent, "_run_hot_swap_prep",
-                            lambda self, *args: started.append(1))
+        started = threading.Event()
+        monkeypatch.setattr(_RealAIAgent, "_run_hot_swap_prep",
+                            lambda self, *args: started.set())
         a._maybe_start_hot_swap_prep(_msgs(5), "sys", 5000, "t")
-        time.sleep(0.05)
-        assert started == []
+        assert not started.wait(0.5)
 
 
 class TestPrep:
     def test_stores_result_and_warm_slot(self, monkeypatch):
         a = _agent()
-        monkeypatch.setattr(run_agent.AIAgent, "_prime_slot_with_messages",
+        monkeypatch.setattr(_RealAIAgent, "_prime_slot_with_messages",
                             lambda self, slot, c, s: True)
         a._run_hot_swap_prep(_msgs(6), "sys", 900, "t", 0)
         assert a._hot_swap_ready is not None
@@ -104,7 +119,7 @@ class TestPrep:
 
     def test_prefill_failure_keeps_the_summary(self, monkeypatch):
         a = _agent()
-        monkeypatch.setattr(run_agent.AIAgent, "_prime_slot_with_messages",
+        monkeypatch.setattr(_RealAIAgent, "_prime_slot_with_messages",
                             lambda self, slot, c, s: False)
         a._run_hot_swap_prep(_msgs(6), "sys", 900, "t", 0)
         assert a._hot_swap_ready is not None          # summary still usable
@@ -117,7 +132,7 @@ class TestPrep:
             self._compaction_generation += 1          # a compaction raced us
             return True
 
-        monkeypatch.setattr(run_agent.AIAgent, "_prime_slot_with_messages", bump_then_ok)
+        monkeypatch.setattr(_RealAIAgent, "_prime_slot_with_messages", bump_then_ok)
         a._run_hot_swap_prep(_msgs(6), "sys", 900, "t", 0)
         assert a._hot_swap_ready is None
 
@@ -262,17 +277,16 @@ class TestDefaultsOff:
 
     def test_disabled_agent_never_starts_prep(self, monkeypatch):
         a = _agent(_hot_swap_enabled=False)
-        started = []
-        monkeypatch.setattr(run_agent.AIAgent, "_run_hot_swap_prep",
-                            lambda self, *args: started.append(1))
+        started = threading.Event()
+        monkeypatch.setattr(_RealAIAgent, "_run_hot_swap_prep",
+                            lambda self, *args: started.set())
         a._maybe_start_hot_swap_prep(_msgs(5), "sys", 10**6, "t")
-        time.sleep(0.05)
-        assert started == []
+        assert not started.wait(0.5)
 
     def test_prefill_is_separately_opt_in(self, monkeypatch):
         a = _agent(_hot_swap_prefill=False)
         called = []
-        monkeypatch.setattr(run_agent.AIAgent, "_prime_slot_with_messages",
+        monkeypatch.setattr(_RealAIAgent, "_prime_slot_with_messages",
                             lambda self, slot, c, s: called.append(1) or True)
         a._run_hot_swap_prep(_msgs(6), "sys", 900, "t", 0)
         assert called == []                       # summary computed, no prefill
