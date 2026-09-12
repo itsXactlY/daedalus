@@ -1,18 +1,20 @@
 # Daedalus
 
-**A 27-billion-parameter model, a 131,000-token memory, and two AI servers —
-all on one gaming graphics card that costs about as much as a phone.**
+**A 27-billion-parameter model, a 131,000-token context, its own speculative
+drafter and a memory engine — all on one gaming graphics card that costs about
+as much as a phone.**
 
 That sentence is supposed to be impossible. Here is the machine it runs on:
 
 ```
 NVIDIA RTX 4060 Ti · 16 GB · a mid-range consumer card
 
-main model        13,822 MB   Qwen3.8-27B dense, 131,072-token context
-helper model         200 MB   Qwen3-1.7B, runs on the CPU
+main model        10,035 MB   Qwen3.8-27B dense, 131,072-token context
+draft model        1,090 MB   DFlash2 Q4_K_M, speculative decoding
+resident KV pool   2,048 MB   the window it reads from; the rest is in system RAM
 memory engine        300 MB   222,409 memories, 1.5M connections
-                  ─────────
-free                 924 MB   yes, that is under one gigabyte to spare
+                  ──────────
+left                ~2.9 GB   compute buffers, CUDA context, and the display
 ```
 
 About 27 tokens a second on average, peaking near 40. Not a datacenter. Not
@@ -218,11 +220,17 @@ and made the model look slow.
 One machine, everything running at once. The table at the top of this page is a
 live snapshot, not a best case stitched together from separate runs.
 
-Two inference servers and a memory engine, with 924 MB left over. The helper
-model runs entirely on the CPU and still holds 200 MB of graphics memory — the
-price of being on the same machine at all. It earns that back by never making
-the main model wait: background work runs *beside* your turn instead of after
-it.
+One inference server and a memory engine. The server runs two slots over a
+unified KV cache, and that is what lets background work run *beside* your turn
+instead of after it: the agent's own conversation is pinned to slot 1, while
+compaction, summarisation and memory hygiene go to slot 0.
+
+Slot 0 rather than slot 1 for the background work, because llama-server fills
+its shared decode batch by walking slots in index order and stops at the first
+one that would overflow it. The lower index gets priority. The main turn's
+prefill is the big one, so putting it on slot 0 starved the background slot for
+many consecutive iterations — background work ran in the foreground. Swapping
+them fixed it.
 
 **Every tuned number here is tuned for that box.** They are written down with
 the reason next to them, so you can redo the arithmetic for yours rather than
@@ -232,9 +240,11 @@ copying values that will not fit:
 |---|---|
 | KV pool 2048 MB | what fits beside 10 GB of weights on a 16 GB card |
 | context 131,072 | 9.1 GB of conversation in system RAM, which 31 GB can hold |
-| compaction at 116,000 | the window, minus thinking budget, minus reserve |
+| compaction at 64,225 | `min(0.49 x 131,072, 66,000)` — the fraction of the window, capped. Raise the cap before the window: past ~134k context the cap binds and a bigger window buys nothing |
 | thinking budget 12,000 | measured: answers land between 150 and 2,400 tokens |
-| helper model, thinking off | with thinking on, a 1.7B model spends its entire output budget reasoning and returns an empty answer. 24 seconds for nothing, against 2.6 with a result. |
+| KV cache q8_0 / q4_0 | K is more sensitive to attention accuracy than V. Dropping K to q4_0 saves VRAM and was never benchmarked as an even trade |
+| drafter at Q4_K_M, not Q2 | a Q2 drafter proposes badly enough that acceptance collapses, and it drags answer quality down with it. The cheaper file is the more expensive choice |
+| `--no-cache-idle-slots` | on by default, and under a unified KV cache it clears idle slots on every task launch — so each slot wipes the other's cached prefix and both re-prefill the same history |
 
 Move to a different card and every one of them changes.
 
@@ -252,7 +262,7 @@ of the servers it already reports on:
 |---|---|
 | `daedalus doctor` | what is present and what is missing — toolchain, sources, models, memory backend, servers |
 | `daedalus doctor setup` | clones and builds the adaptive-KV llama.cpp, pulls both models |
-| `daedalus doctor start` | brings both servers up, the helper only once the main model answers |
+| `daedalus doctor start` | brings the server up with both slots, and the memory backend if it is not already running |
 | `daedalus doctor pause` / `resume` | freezes them with the weights still loaded |
 | `daedalus doctor stop` · `status` · `logs` | the rest of it |
 

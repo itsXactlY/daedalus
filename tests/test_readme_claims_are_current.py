@@ -101,3 +101,70 @@ class TestTheReadmeStaysHonest:
         # 2048` gets a number tuned for one specific 16 GB card.
         flags = re.findall(r"(?<![\w-])--[a-z][a-z-]{3,}", section)
         assert not flags, f"tuned flags do not belong in a README: {sorted(set(flags))}"
+
+
+class TestTheTunedNumbersMatchTheShippedDefaults:
+    """The README's "why this number" table is the part people copy.
+
+    It rotted silently: it advertised compaction at 116,000 long after the
+    real trigger had moved to 64,225, and described a CPU helper model and a
+    second inference server that the shipped stack.conf no longer starts.
+    Nothing checked it, because the existing claims tests cover the skill
+    count and the subcommand list but not the numbers.
+
+    Every value below is one `daedalus doctor` actually launches with, read
+    out of stack.py's DEFAULT_CONF rather than restated here.
+    """
+
+    @staticmethod
+    def _readme():
+        import pathlib
+        return pathlib.Path(__file__).resolve().parents[1].joinpath("README.md").read_text()
+
+    @staticmethod
+    def _default_conf_value(key):
+        import re
+        from daedalus_cli.stack import DEFAULT_CONF
+        m = re.search(rf'^{key}=("?)([^"\n#]+)\1', DEFAULT_CONF, re.M)
+        assert m, f"{key} not found in DEFAULT_CONF"
+        return m.group(2).strip()
+
+    def test_kv_pool_matches(self):
+        pool = self._default_conf_value("MAIN_KV_POOL")
+        assert f"KV pool {pool} MB" in self._readme(), (
+            f"README's KV pool row disagrees with DEFAULT_CONF ({pool})"
+        )
+
+    def test_context_size_matches(self):
+        ctx = int(self._default_conf_value("MAIN_CTX"))
+        assert f"context {ctx:,}" in self._readme(), (
+            f"README's context row disagrees with DEFAULT_CONF ({ctx:,})"
+        )
+
+    def test_thinking_budget_matches(self):
+        budget = int(self._default_conf_value("MAIN_REASONING_BUDGET"))
+        assert f"thinking budget {budget:,}" in self._readme()
+
+    def test_cache_quant_claim_matches(self):
+        ctk = self._default_conf_value("MAIN_CTK")
+        ctv = self._default_conf_value("MAIN_CTV")
+        assert f"KV cache {ctk} / {ctv}" in self._readme(), (
+            f"README's cache-quant row disagrees with DEFAULT_CONF ({ctk}/{ctv})"
+        )
+
+    def test_it_does_not_advertise_a_second_inference_server(self):
+        """AUX_PORT == MAIN_PORT in the shipped conf, and `start` explicitly
+        does not launch a second process for it -- the background role is a
+        slot on the main server. The README described two servers and a
+        1.7B CPU helper for a long time after that stopped being true."""
+        readme = self._readme()
+        for stale in ("two AI servers", "Two inference servers", "both servers"):
+            assert stale not in readme, f"README still claims: {stale!r}"
+
+    def test_the_compaction_row_shows_a_capped_minimum(self):
+        """The trigger is min(threshold * ctx, max_tokens), and the cap binds
+        above ~134k context -- the reason a bigger window buys almost nothing.
+        Stating a bare number invites exactly the drift that happened."""
+        readme = self._readme()
+        assert "compaction at" in readme
+        assert "66,000" in readme, "the cap that actually binds is not stated"
