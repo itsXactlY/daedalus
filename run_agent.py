@@ -7068,6 +7068,71 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _write_state_snapshot(self, compressed: list, todo_snapshot: str,
+                              previous_session_id: str = "") -> str:
+        """Drop a STATE.md into the workpath after a compaction.
+
+        Compaction is the last moment the process is guaranteed to still be
+        alive with a coherent picture of the work: it happens because context
+        is filling, which is also when an OOM is most likely. Waiting for a
+        clean shutdown is waiting for the one thing a crash does not give you.
+
+        Rewritten each compaction rather than appended -- the summary is
+        already cumulative, and a human opening this file wants the current
+        position, not an archive.
+
+        Never fatal: a failed write must not take the compaction with it.
+        """
+        try:
+            root = self._spill_root()
+            base = (os.path.dirname(root)
+                    if os.path.basename(root) == self._SPILL_DIR_NAME else root)
+            os.makedirs(base, exist_ok=True)
+
+            body = []
+            for msg in compressed or []:
+                if msg.get("display_kind") == "hidden":
+                    continue
+                content = msg.get("content")
+                if isinstance(content, str) and content.strip():
+                    body.append(content.strip())
+
+            lines = [
+                "# Daedalus — session state",
+                "",
+                f"Written {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+                "after a context compaction, and rewritten on every one.",
+                "It exists so a crash or an OOM does not take the thread with it.",
+                "",
+                f"- session: `{self.session_id or 'unknown'}`"
+                + (f" (continues `{previous_session_id}`)" if previous_session_id else ""),
+                f"- model: `{self.model or 'unknown'}`",
+                f"- workpath: `{base}`",
+                "",
+                "## Open work",
+                "",
+                (todo_snapshot.strip() if todo_snapshot and todo_snapshot.strip()
+                 else "_nothing recorded in the todo list._"),
+                "",
+                "## Where things stand",
+                "",
+                ("\n\n".join(body) if body else "_the compaction produced no summary._"),
+                "",
+                "## Where to look",
+                "",
+                f"- full transcript: `{self.session_log_file}`",
+                f"- spilled tool output: `{root}`",
+                f"- mazemaker: `auto:turn:{self.session_id}:*`, `auto:compression:*`",
+            ]
+            path = os.path.join(base, "STATE.md")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(lines) + "\n")
+            logger.info("state snapshot written: %s", path)
+            return path
+        except Exception as exc:
+            logger.warning("state snapshot failed (non-fatal): %s", exc)
+            return ""
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", precomputed: list = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -7133,6 +7198,7 @@ class AIAgent:
                 "display_kind": "hidden",
             })
 
+        _pre_compaction_session = self.session_id or ""
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot, "display_kind": "hidden"})
@@ -7164,6 +7230,11 @@ class AIAgent:
                 self._last_flushed_db_idx = 0
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+
+        # After the session split, so the file names the session that
+        # continues rather than the one that just ended.
+        self._write_state_snapshot(compressed, todo_snapshot,
+                                   previous_session_id=_pre_compaction_session)
 
         _compressed_est = (
             estimate_tokens_rough(new_system_prompt)
