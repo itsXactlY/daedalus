@@ -1375,20 +1375,6 @@ class AIAgent:
             if missing_reqs:
                 print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
 
-        # The mazemaker router is the agent's retrieval path and has nothing
-        # to do with pony. It used to be built inside build_pony_mode() and
-        # only when pony was enabled, which made a persona switch the
-        # gatekeeper for whether anything was recalled at all. Pony is a
-        # prompt mode; this is memory.
-        self._maze_router = None
-        self._maze_needs = None
-        try:
-            from agent.maze_router import HeuristicNeeds, router_from_config
-            self._maze_router = router_from_config(_agent_cfg)
-            self._maze_needs = HeuristicNeeds()
-        except Exception as _router_exc:
-            logger.debug("maze router unavailable: %s", _router_exc)
-
         self._pony_mode = None
         try:
             from agent.pony_mode import build_pony_mode as _build_pony
@@ -1489,6 +1475,26 @@ class AIAgent:
         # How many of the newest assistant messages keep their reasoning in
         # the request. See _reasoning_window_indices: it was 22-30% of the
         # payload on long sessions and nothing ever pruned it.
+        # The mazemaker router is the agent's retrieval path and has nothing
+        # to do with pony. It used to be built inside build_pony_mode() and
+        # only when pony was enabled, which made a persona switch the
+        # gatekeeper for whether anything was recalled at all. Pony is a
+        # prompt mode; this is memory.
+        #
+        # Built HERE, after _agent_cfg exists. It sat above the config load
+        # and raised NameError into a broad except, so the router was never
+        # constructed and every turn recalled nothing -- visible only as one
+        # DEBUG line.
+        self._maze_router = None
+        self._maze_needs = None
+        try:
+            from agent.maze_router import HeuristicNeeds, router_from_config
+            self._maze_router = router_from_config(_agent_cfg)
+            self._maze_needs = HeuristicNeeds()
+        except Exception as _router_exc:
+            logger.warning("maze router unavailable — no context will be "
+                           "recalled this session: %s", _router_exc)
+
         try:
             _ctx_cfg = _agent_cfg.get("context", {}) or {}
             self._reasoning_window = int(_ctx_cfg.get("reasoning_window",

@@ -759,6 +759,27 @@ def _split_soaked_turn(content: str) -> tuple:
     return user, assistant
 
 
+# Only harness notices, and only when the message LEADS with one. "No
+# response was needed here, so I moved on to the shader" is an answer;
+# matching a bare "no response" anywhere would have dropped it.
+_NON_ANSWER_RE = re.compile(
+    r"^\s*(operation interrupted\b|\[?request interrupted\b|"
+    r"interrupted by user\b)", re.I)
+
+
+def _is_non_answer(text: str) -> bool:
+    """True when this turn produced no answer worth remembering.
+
+    These are harness notices, not content: an interrupt, a retry, a wait
+    that timed out. Soaking them fills the graph with rows that match a
+    recall and say nothing, which is how a session gets its own question
+    handed back to it and starts over from zero.
+    """
+    if not text or not text.strip():
+        return True
+    return bool(_NON_ANSWER_RE.match(text.strip()))
+
+
 class MazemakerMemoryProvider(MemoryProvider):
     """Soak + on-demand recall against the local mazemaker pod."""
 
@@ -953,27 +974,6 @@ class MazemakerMemoryProvider(MemoryProvider):
     def get_config_schema(self) -> List[Dict[str, Any]]:
         """Zero-config provider — no setup prompts needed."""
         return []
-
-
-# Only harness notices, and only when the message LEADS with one. "No
-# response was needed here, so I moved on to the shader" is an answer;
-# matching a bare "no response" anywhere would have dropped it.
-_NON_ANSWER_RE = re.compile(
-    r"^\s*(operation interrupted\b|\[?request interrupted\b|"
-    r"interrupted by user\b)", re.I)
-
-
-def _is_non_answer(text: str) -> bool:
-    """True when this turn produced no answer worth remembering.
-
-    These are harness notices, not content: an interrupt, a retry, a wait
-    that timed out. Soaking them fills the graph with rows that match a
-    recall and say nothing, which is how a session gets its own question
-    handed back to it and starts over from zero.
-    """
-    if not text or not text.strip():
-        return True
-    return bool(_NON_ANSWER_RE.match(text.strip()))
 
 
     def soak_reasoning(self, text: str, *, session_id: str = "",
