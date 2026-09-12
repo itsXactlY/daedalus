@@ -189,3 +189,42 @@ class TestWiredIntoThePayload:
         window = "\n".join(lines[max(0, call - 10): call + 14])
         assert "_pre_collapse_anchor" in window
         assert "is _pre_collapse_anchor" in window, "remap must compare identity, not equality"
+
+
+class TestSpillPathExtraction:
+    """The bare path in a spill handle is followed by a full stop --
+    "spilled to /path/x.txt. Read it back with read_file(...)" -- so a greedy
+    match on the first occurrence captures the stop as part of the filename.
+    Every collapsed tool-group line and every reasoning pointer carried it.
+    """
+
+    _HANDLE = ('[offloaded: read_file — result (4200 chars) spilled to '
+               '/home/p/.daedalus/s/0007-read_file.txt. Retrieve it verbatim '
+               'with read_file("/home/p/.daedalus/s/0007-read_file.txt").]')
+
+    def test_the_trailing_full_stop_is_not_part_of_the_path(self):
+        got = _RealAIAgent._spill_path_in(self._HANDLE)
+        assert got == "/home/p/.daedalus/s/0007-read_file.txt"
+        assert not got.endswith(".txt.")
+
+    def test_it_prefers_the_quoted_form(self):
+        got = _RealAIAgent._spill_path_in(self._HANDLE)
+        assert got.endswith("0007-read_file.txt")
+
+    def test_a_bare_path_still_works(self):
+        got = _RealAIAgent._spill_path_in("moved to /var/x/y.txt, carry on")
+        assert got == "/var/x/y.txt"
+
+    def test_plain_content_yields_nothing(self):
+        assert _RealAIAgent._spill_path_in("just some output") == ""
+
+    def test_non_string_is_safe(self):
+        assert _RealAIAgent._spill_path_in(None) == ""
+        assert _RealAIAgent._spill_path_in({"a": 1}) == ""
+
+    def test_a_project_local_workpath_is_found_too(self):
+        """Spills moved off /dev/shm into <project>/.daedalus; an extractor
+        hardcoded to /dev/shm/ would silently stop finding them."""
+        got = _RealAIAgent._spill_path_in(
+            'spilled to /home/alca/projects/mc-clone/.daedalus/sess/0003-terminal.txt.')
+        assert got == "/home/alca/projects/mc-clone/.daedalus/sess/0003-terminal.txt"

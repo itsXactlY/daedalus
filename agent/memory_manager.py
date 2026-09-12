@@ -719,6 +719,40 @@ class MemoryManager:
         return "\n\n".join(parts)
 
 
+    def soak_reasoning_all(self, text: str, *, session_id: str = "",
+                           spill_path: str = "") -> None:
+        """Persist a reasoning chain that aged out of the context window.
+
+        Tool calls and their output are deliberately NOT soaked -- they are
+        this session's working material and belong in the project workpath,
+        not in a semantic graph. The thinking is the opposite: it is what
+        days and weeks of work actually amount to, and it is the thing a
+        later session cannot reconstruct from the files.
+
+        Fire-and-forget, on the same background worker as sync_turn: this is
+        called while a request payload is being assembled, and a pod
+        round-trip there would be paid on every aged block.
+        """
+        if not (text or "").strip():
+            return
+        providers = [p for p in self._providers
+                     if hasattr(p, "soak_reasoning")]
+        if not providers:
+            return
+
+        def _run() -> None:
+            for provider in providers:
+                try:
+                    provider.soak_reasoning(text, session_id=session_id,
+                                            spill_path=spill_path)
+                except Exception as e:
+                    logger.warning(
+                        "Memory provider '%s' soak_reasoning failed (non-fatal): %s",
+                        provider.name, e,
+                    )
+
+        self._submit_background(_run)
+
     def _submit_background(self, fn, *, kind: str = "write") -> None:
         """Queue ``fn`` on the serialized worker and track its durability class."""
         executor = self._get_sync_executor()

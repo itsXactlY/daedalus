@@ -28,6 +28,9 @@ Optional hooks (override to opt in):
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
+  soak_reasoning(text, session_id=, spill_path=) — a reasoning chain that aged
+      out of the window; the thinking is the accumulated intelligence, so it
+      is kept even though tool calls and their output deliberately are not
   backup_paths() -> list[str]            — extra on-disk paths to include in `daedalus backup`
 """
 

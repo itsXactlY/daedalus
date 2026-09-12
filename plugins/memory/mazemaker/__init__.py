@@ -955,6 +955,57 @@ class MazemakerMemoryProvider(MemoryProvider):
         return []
 
 
+# Only harness notices, and only when the message LEADS with one. "No
+# response was needed here, so I moved on to the shader" is an answer;
+# matching a bare "no response" anywhere would have dropped it.
+_NON_ANSWER_RE = re.compile(
+    r"^\s*(operation interrupted\b|\[?request interrupted\b|"
+    r"interrupted by user\b)", re.I)
+
+
+def _is_non_answer(text: str) -> bool:
+    """True when this turn produced no answer worth remembering.
+
+    These are harness notices, not content: an interrupt, a retry, a wait
+    that timed out. Soaking them fills the graph with rows that match a
+    recall and say nothing, which is how a session gets its own question
+    handed back to it and starts over from zero.
+    """
+    if not text or not text.strip():
+        return True
+    return bool(_NON_ANSWER_RE.match(text.strip()))
+
+
+    def soak_reasoning(self, text: str, *, session_id: str = "",
+                       spill_path: str = "") -> None:
+        """Keep a reasoning chain that aged out of the context window.
+
+        Tools and their output are deliberately not soaked: that is working
+        material, it belongs in the project's own workpath, and a semantic
+        graph full of build logs is a graph that cannot find anything. The
+        thinking is the opposite -- it is what accumulates over days and
+        weeks of work, and the one thing a later session cannot rebuild by
+        reading the files.
+
+        The full block stays in the spill file; what goes in the graph is
+        the text plus a pointer to it. mazemaker is the signpost, not the
+        warehouse -- so a long chain is searchable here and readable in full
+        from the path, rather than half-stored in both places.
+        """
+        body = _scrub_think((text or "")).strip()
+        if not body:
+            return
+        sid = session_id or self._session_id
+        ts = int(time.time())
+        label = f"auto:reasoning:{sid}:{ts:x}"
+        head = (f"session:{sid} @ "
+                f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}")
+        if spill_path:
+            head += f"\nfull text: {spill_path}"
+        if len(body) > MAX_CONTENT_CHARS:
+            body = body[:MAX_CONTENT_CHARS] + "\n…[truncated — read the full text at the path above]"
+        _remember(label, f"{head}\n\n=== REASONING ===\n{body}")
+
     def sync_turn(self, user: str, asst: str, **kwargs) -> None:
         """SOAK this turn into the mazemaker pod (fire-and-forget).
 
@@ -974,9 +1025,20 @@ class MazemakerMemoryProvider(MemoryProvider):
             return
         self._last_soak_ts = now
 
+        clean_asst = _scrub_think((asst or "")[:MAX_CONTENT_CHARS]).strip()
+        if _is_non_answer(clean_asst):
+            # Nothing was produced, so there is nothing worth recalling. The
+            # old behaviour stored the user's question with
+            # "Operation interrupted: waiting for model response (43.3s
+            # elapsed)" as the assistant side -- 236 to 440 characters that
+            # carry no information at all, yet score as a hit on recall and
+            # hand a future session its own question back. That is worse than
+            # a miss: a miss tells the agent to look elsewhere.
+            logger.debug("soak skipped: assistant produced no answer this turn")
+            return
+
         ts = int(now)
         label = f"auto:turn:{self._session_id}:{ts:x}"
-        clean_asst = _scrub_think((asst or "")[:MAX_CONTENT_CHARS]).strip()
         content = (
             f"session:{self._session_id} @ "
             f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n\n"
