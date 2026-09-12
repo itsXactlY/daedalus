@@ -459,24 +459,55 @@ class AIAgent:
         self._base_url_lower = value.lower() if value else ""
 
 
+    #: Per-project work directory. Spilled output and the process TMPDIR live
+    #: here, beside the code being worked on.
+    _WORKPATH_NAME = ".daedalus"
+
     @staticmethod
     def _spill_root() -> str:
-        """Where spilled tool output lives.
+        """Where spilled tool output lives: a .daedalus/ beside the work.
 
-        DAEDALUS_SPILL_ROOT lets tests point somewhere disposable; without it
-        a test that purges by age would delete a live session's spill and turn
-        every handle in its context into a dangling path.
+        Spills used to go to /dev/shm. That is RAM, shared with everything
+        else on the machine, and it does not survive a reboot -- so the
+        handles carried in context outlive the files they name. Tool output
+        belongs with the project that produced it: it is that session's
+        working material, it is findable afterwards by a human, and a
+        checkout can gitignore one dotted directory.
+
+        Falls back to /dev/shm when there is no usable working directory --
+        better a volatile spill than none, since the alternative is carrying
+        everything in context.
+
+        DAEDALUS_SPILL_ROOT overrides both. The test suite sets it in
+        conftest: without it, test_purge_removes_stale_directories calls
+        purge_stale_spills(max_age_seconds=0) against the operator's real
+        root and deletes a live session's spill mid-task. That happened.
         """
         import tempfile
 
         override = os.environ.get("DAEDALUS_SPILL_ROOT")
         if override:
             return override
+
+        workdir = os.environ.get("TERMINAL_CWD") or ""
+        if not workdir:
+            try:
+                workdir = os.getcwd()
+            except OSError:
+                workdir = ""
+        if workdir and os.path.isdir(workdir) and os.access(workdir, os.W_OK):
+            return os.path.join(workdir, AIAgent._WORKPATH_NAME)
+
         base = "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
         return os.path.join(base, f"daedalus-ctx-{os.getuid()}")
 
+    # Name of the process-wide scratch directory under the spill root.
+    # purge_stale_spills skips it: it is not a session and TMPDIR points at it
+    # for the life of the process.
+    _TMPDIR_NAME = "tmp"
+
     @classmethod
-    def _redirect_tmpdir(cls, session_id: str) -> str:
+    def _redirect_tmpdir(cls) -> str:
         """Point TMPDIR away from the shared /tmp, for this process and its
         children.
 
@@ -486,12 +517,18 @@ class AIAgent:
         gracefully -- it takes the shell down for every process on the box,
         including the agent mid-task.
 
-        This only covers *implicit* temp files. A command that writes
+        ONE directory per process, not one per agent. The first version keyed
+        it on the session id, and daedalus builds an AIAgent for every
+        auxiliary call -- 467 empty directories in /dev/shm within an hour,
+        which is the same littering this was added to stop, moved one mount
+        across. Session granularity buys nothing here: nothing is ever read
+        back out of it.
+
+        Only covers *implicit* temp files. A command that writes
         `> /tmp/build.log` names the path itself and lands there regardless;
         that is what WORKSPACE_GUIDANCE is for.
         """
-        safe = "".join(c for c in str(session_id or "") if c.isalnum() or c in "-_")
-        path = os.path.join(cls._spill_root(), safe or "session", "tmp")
+        path = os.path.join(cls._spill_root(), cls._TMPDIR_NAME)
         try:
             os.makedirs(path, mode=0o700, exist_ok=True)
         except OSError as exc:
@@ -516,6 +553,7 @@ class AIAgent:
         removed = 0
         cutoff = time.time() - max_age_seconds
         protected = {str(s) for s in (keep_sessions or ()) if s}
+        protected.add(cls._TMPDIR_NAME)   # TMPDIR lives here, not a session
         for entry in os.listdir(root):
             if entry in protected:
                 continue
@@ -637,6 +675,22 @@ class AIAgent:
             if handle:
                 msg["_reasoning_spill"] = handle
                 out[i] = handle
+                # The thinking goes into mazemaker as it ages out. Tool calls
+                # and their output never do -- those are working material for
+                # the project workpath. Reasoning is what accumulates across
+                # days of work and is the one thing a later session cannot
+                # reconstruct from the files. Fire-and-forget; the graph gets
+                # the text and a pointer to the full spill.
+                mm = getattr(self, "_memory_manager", None)
+                if mm is not None and hasattr(mm, "soak_reasoning_all"):
+                    try:
+                        mm.soak_reasoning_all(
+                            text,
+                            session_id=getattr(self, "session_id", "") or "",
+                            spill_path=self._spill_path_in(handle),
+                        )
+                    except Exception as exc:
+                        logger.debug("reasoning soak failed (non-fatal): %s", exc)
             else:
                 out[i] = text          # nowhere to put it; carrying beats losing it
         return out
@@ -683,13 +737,27 @@ class AIAgent:
             arg = arg[:57] + "..."
         return f"{name}({arg})" if arg else f"{name}()"
 
-    @staticmethod
-    def _spill_path_in(content) -> str:
-        """The tmpfs path a result was already offloaded to, if it was."""
-        if not isinstance(content, str) or "/dev/shm/" not in content:
+    #: Trailing characters that belong to the sentence, not to the path.
+    _PATH_TRAILING = '.,;:)]}"\''
+
+    @classmethod
+    def _spill_path_in(cls, content) -> str:
+        """The path a result was already spilled to, if it was.
+
+        Prefers the read_file("...") form, where the quote ends the path
+        unambiguously. The bare occurrence earlier in the same sentence is
+        followed by a full stop -- "spilled to /path/x.txt. Read it back
+        with..." -- and a greedy match there captures the stop as part of the
+        filename, producing a path that does not exist. Every collapsed
+        tool-group line and every reasoning pointer would have carried it.
+        """
+        if not isinstance(content, str):
             return ""
-        match = re.search(r'(/dev/shm/[^\s")\]]+)', content)
-        return match.group(1) if match else ""
+        quoted = re.search(r'read_file\(\s*["\'](.+?)["\']\s*\)', content)
+        if quoted:
+            return quoted.group(1).strip()
+        bare = re.search(r'(/\S+)', content)
+        return bare.group(1).rstrip(cls._PATH_TRAILING) if bare else ""
 
     def _collapse_aged_tool_groups(self, messages: list) -> list:
         """Replace old tool-call exchanges with a line saying what happened.
@@ -1574,7 +1642,7 @@ class AIAgent:
             logger.debug("spill purge skipped: %s", _spill_exc)
         # Children of this process get a TMPDIR of their own, so a build that
         # does not name its paths cannot fill the /tmp the user is also using.
-        self._redirect_tmpdir(getattr(self, "session_id", "") or "")
+        self._redirect_tmpdir()
         self.compression_enabled = compression_enabled
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,

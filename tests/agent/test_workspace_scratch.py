@@ -66,56 +66,50 @@ class TestItReachesThePrompt:
 
 
 class TestTmpdirRedirect:
-    def _cleanup(self, path):
-        if path:
-            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
-
     def test_it_moves_tmpdir_off_the_shared_tmp(self, monkeypatch):
-        monkeypatch.setenv("TMPDIR", "/tmp")
-        path = run_agent.AIAgent._redirect_tmpdir("sess-a")
-        try:
-            assert path and not path.startswith("/tmp")
-            assert os.environ["TMPDIR"] == path
-        finally:
-            self._cleanup(path)
+        """The contract is "not the shared system temp dir", not "nowhere
+        below /tmp" -- under test the spill root is itself an mkdtemp under
+        /tmp, and that is fine: it is private to this run."""
+        import tempfile
+        monkeypatch.setenv("TMPDIR", tempfile.gettempdir())
+        path = run_agent.AIAgent._redirect_tmpdir()
+        assert path
+        assert os.path.realpath(path) != os.path.realpath(tempfile.gettempdir())
+        assert path.startswith(run_agent.AIAgent._spill_root())
+        assert os.environ["TMPDIR"] == path
 
-    def test_it_sets_the_other_two_names_too(self, monkeypatch):
+    def test_it_sets_the_other_two_names_too(self):
         """Not everything reads TMPDIR; TMP and TEMP are both in the wild."""
-        path = run_agent.AIAgent._redirect_tmpdir("sess-b")
-        try:
-            assert os.environ["TMP"] == path == os.environ["TEMP"]
-        finally:
-            self._cleanup(path)
+        path = run_agent.AIAgent._redirect_tmpdir()
+        assert os.environ["TMP"] == path == os.environ["TEMP"]
 
-    def test_the_directory_exists_and_is_private(self, monkeypatch):
-        path = run_agent.AIAgent._redirect_tmpdir("sess-c")
-        try:
-            assert os.path.isdir(path)
-            assert oct(os.stat(path).st_mode)[-3:] == "700"
-        finally:
-            self._cleanup(path)
+    def test_the_directory_exists_and_is_private(self):
+        path = run_agent.AIAgent._redirect_tmpdir()
+        assert os.path.isdir(path)
+        assert oct(os.stat(path).st_mode)[-3:] == "700"
 
-    def test_sessions_do_not_share_a_directory(self, monkeypatch):
-        a = run_agent.AIAgent._redirect_tmpdir("sess-d")
-        b = run_agent.AIAgent._redirect_tmpdir("sess-e")
-        try:
-            assert a != b
-        finally:
-            self._cleanup(a)
-            self._cleanup(b)
+    def test_one_directory_per_process_not_per_agent(self):
+        """Keyed on the session id, this made a directory for every auxiliary
+        AIAgent daedalus builds -- 467 empty ones in /dev/shm within an hour,
+        the same littering it was added to stop, one mount across."""
+        first = run_agent.AIAgent._redirect_tmpdir()
+        second = run_agent.AIAgent._redirect_tmpdir()
+        assert first == second
 
-    def test_a_hostile_session_id_cannot_escape_the_root(self, monkeypatch):
-        path = run_agent.AIAgent._redirect_tmpdir("../../../etc/evil")
-        try:
-            assert run_agent.AIAgent._spill_root() in path
-            assert ".." not in path
-        finally:
-            self._cleanup(path)
+    def test_the_purge_does_not_delete_it(self, monkeypatch, tmp_path):
+        """TMPDIR points here for the life of the process. Purging it would
+        leave every child process writing into a path that no longer exists."""
+        monkeypatch.setenv("DAEDALUS_SPILL_ROOT", str(tmp_path))
+        path = run_agent.AIAgent._redirect_tmpdir()
+        (tmp_path / "some-old-session").mkdir()
+        run_agent.AIAgent.purge_stale_spills(max_age_seconds=0)
+        assert os.path.isdir(path), "the purge removed the process TMPDIR"
+        assert not (tmp_path / "some-old-session").exists()
 
     def test_an_unwritable_root_leaves_tmpdir_alone(self, monkeypatch):
         """Better the shared /tmp than a TMPDIR pointing at nothing."""
         monkeypatch.setenv("TMPDIR", "/tmp")
         monkeypatch.setattr(run_agent.AIAgent, "_spill_root",
                             staticmethod(lambda: "/proc/nonexistent/nope"))
-        assert run_agent.AIAgent._redirect_tmpdir("sess-f") == ""
+        assert run_agent.AIAgent._redirect_tmpdir() == ""
         assert os.environ["TMPDIR"] == "/tmp"

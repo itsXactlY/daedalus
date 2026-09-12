@@ -28,6 +28,19 @@ def pytest_configure(config):
 
     session_home = tempfile.mkdtemp(prefix="daedalus-test-home-")
     os.environ["DAEDALUS_HOME"] = session_home
+    # Same reasoning, for the spill root. Without it the suite writes its
+    # spills into the operator's live /dev/shm/daedalus-ctx-<uid>/ AND
+    # test_purge_removes_stale_directories calls purge_stale_spills(
+    # max_age_seconds=0) with no keep_sessions -- which deletes every
+    # directory under that root regardless of age, including the session a
+    # running agent is spilling into right now. Every handle in that agent's
+    # context becomes a dangling path mid-task.
+    #
+    # This is not hypothetical: it happened on 2026-09-12, during a live
+    # mc-clone build, and _spill_root's own docstring had predicted it. The
+    # escape hatch existed and nothing used it.
+    os.environ["DAEDALUS_SPILL_ROOT"] = os.path.join(session_home, "spill")
+    os.makedirs(os.environ["DAEDALUS_SPILL_ROOT"], exist_ok=True)
     for sub in ("sessions", "cron", "memories", "skills", "logs"):
         os.makedirs(os.path.join(session_home, sub), exist_ok=True)
     _detach_foreign_file_handlers(session_home)
