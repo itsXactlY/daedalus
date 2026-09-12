@@ -2789,12 +2789,24 @@ class AIAgent:
                 with open(_os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
+                    # Housekeeping only. Without enabled_toolsets this fork
+                    # inherits the FULL surface -- terminal, write_file,
+                    # patch, execute_code, delegate_task -- and runs up to
+                    # eight tool-using iterations beside the live turn with
+                    # no user watching. Two agents then work the same repo in
+                    # parallel, blind to each other; observed overnight, and
+                    # it is not what "background review" was ever meant to be.
+                    #
+                    # Its prompts ask for exactly two things: save to memory,
+                    # save or update a skill. Those are the only toolsets it
+                    # gets. It saves, it finishes, it goes back to idle.
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        enabled_toolsets=["memory", "skills"],
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
