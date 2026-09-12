@@ -1793,6 +1793,16 @@ class AIAgent:
         # enough that a summarize + prefill can finish first, late enough that
         # the snapshot is still close to what the next turn will send.
         self._hot_swap_prep_ratio = 0.75
+        # Crossing the compaction threshold is a SOFT event: the summary is
+        # produced on the sidekick slot and swapped in at the next boundary,
+        # and the turn keeps going meanwhile. The window is far larger than the
+        # threshold (262k vs 66k here), so there is room to wait. Only past this
+        # fraction of the real context window does the turn stop and compact
+        # inline, because continuing risks overflowing the server context.
+        self._hot_swap_hard_ratio = 0.85
+        # A failing summarizer must not be re-fired on every iteration.
+        self._hot_swap_failed_at = 0.0
+        self._hot_swap_retry_after_s = 60.0
 
         self.session_prompt_tokens = 0
         self.session_completion_tokens = 0
@@ -2615,6 +2625,9 @@ class AIAgent:
             return
         if self._hot_swap_in_progress or self._hot_swap_ready is not None:
             return
+        failed_at = getattr(self, "_hot_swap_failed_at", 0.0)
+        if failed_at and time.time() - failed_at < getattr(self, "_hot_swap_retry_after_s", 60.0):
+            return
         compressor = getattr(self, "context_compressor", None)
         if not compressor or not compressor.threshold_tokens:
             return
@@ -2673,7 +2686,9 @@ class AIAgent:
                 target_slot if warmed else "not warmed",
             )
         except Exception as e:
-            logger.info("hot-swap prep failed, staying on the blocking path: %s", e)
+            self._hot_swap_failed_at = time.time()
+            logger.warning("hot-swap prep failed (retrying in %.0fs): %s",
+                           getattr(self, "_hot_swap_retry_after_s", 60.0), e)
         finally:
             self._hot_swap_in_progress = False
 
@@ -2714,6 +2729,48 @@ class AIAgent:
         except Exception as e:
             logger.debug("hot-swap prefill of slot %s failed (non-fatal): %s", slot, e)
             return False
+
+    def _defer_compaction_to_background(self, tokens: int, messages: list,
+                                        system_message: str, task_id: str) -> bool:
+        """True when a threshold crossing should NOT stop the turn.
+
+        The old mid-turn logic tested the threshold before a prep had
+        ever been started, and compacted inline whenever the prep was not
+        finished yet. Two ways that blocked a turn that had a background
+        summary available by design:
+
+        - one large tool result jumping from under the 75% prep trigger to
+          over the threshold in a single step, so no prep existed;
+        - a prep in flight but not done, where the inline compaction also
+          bumped _compaction_generation and so DISCARDED the background
+          summary -- the same LLM call paid twice, the turn blocked for it.
+
+        Below the hard ceiling the turn now continues: a prep is started if
+        none is running (or skipped while a failed one is backing off) and
+        the result is applied at the next boundary. Past the ceiling the
+        caller compacts inline, because continuing would risk the real
+        context window.
+        """
+        if not getattr(self, "_hot_swap_enabled", False):
+            return False
+        compressor = getattr(self, "context_compressor", None)
+        ctx = int(getattr(compressor, "context_length", 0) or 0)
+        if ctx <= 0:
+            return False
+        ceiling = int(ctx * getattr(self, "_hot_swap_hard_ratio", 0.85))
+        if tokens >= ceiling:
+            logger.warning(
+                "compaction: %s tokens past the hard ceiling %s — compacting inline",
+                f"{tokens:,}", f"{ceiling:,}")
+            return False
+        self._maybe_start_hot_swap_prep(messages, system_message, tokens, task_id)
+        logger.info(
+            "compaction threshold crossed at %s tokens; summary %s on the sidekick "
+            "slot, turn continues (hard ceiling %s)",
+            f"{tokens:,}",
+            "in flight" if self._hot_swap_in_progress else "backing off after a failure",
+            f"{ceiling:,}")
+        return True
 
     def _apply_pending_hot_swap_if_ready(self, messages: list):
         """Adopt a background-prepared compaction at a turn boundary.
@@ -8441,7 +8498,9 @@ class AIAgent:
                     messages, system_message, _preflight_tokens, effective_task_id,
                 )
 
-            if _preflight_tokens >= self.context_compressor.threshold_tokens:
+            if (_preflight_tokens >= self.context_compressor.threshold_tokens
+                    and not self._defer_compaction_to_background(
+                        _preflight_tokens, messages, system_message, effective_task_id)):
                 logger.info(
                     "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                     f"{_preflight_tokens:,}",
@@ -10194,8 +10253,11 @@ class AIAgent:
                                 precomputed=_hot_swapped,
                             )
                             conversation_history = None
-                        elif _compressor.should_compress(_real_tokens):
-                            # Prep was not ready in time; take the blocking path.
+                        elif (_compressor.should_compress(_real_tokens)
+                              and not self._defer_compaction_to_background(
+                                  _real_tokens, messages, system_message,
+                                  effective_task_id)):
+                            # Past the hard ceiling (or hot-swap disabled): block.
                             messages, active_system_prompt = self._compress_context(
                                 messages, system_message,
                                 approx_tokens=self.context_compressor.last_prompt_tokens,
