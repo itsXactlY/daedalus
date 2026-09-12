@@ -738,6 +738,35 @@ class AIAgent:
             i += 1
         return out
 
+    def _fetch_maze_material(self, turn: str) -> str:
+        """Recall the context this turn needs, or "" if it needs none.
+
+        The agent's retrieval path. It is deliberately independent of pony:
+        the router used to be constructed inside build_pony_mode() and only
+        when pony was enabled, so a persona switch decided whether anything
+        was recalled at all. Pony is a prompt mode; this is memory, and the
+        harness is amnesic by design -- it has no history of its own to fall
+        back on if this does not run.
+
+        Whether a turn is worth a pod round-trip is HeuristicNeeds' question,
+        which lives next to the router for the same reason.
+        """
+        router = getattr(self, "_maze_router", None)
+        if router is None or not (turn or "").strip():
+            return ""
+        needs = getattr(self, "_maze_needs", None)
+        if needs is not None:
+            try:
+                if not needs.assess(turn).material:
+                    return ""
+            except Exception as exc:
+                logger.debug("needs assessment failed, routing anyway: %s", exc)
+        try:
+            return router.fetch(turn).text or ""
+        except Exception as exc:
+            logger.debug("maze router fetch failed (non-fatal): %s", exc)
+            return ""
+
     def _build_turn_injections(self, ext_prefetch: str,
                                plugin_context: str) -> list:
         """The context blocks appended to this turn's user message.
@@ -1213,6 +1242,20 @@ class AIAgent:
             missing_reqs = [name for name, available in requirements.items() if not available]
             if missing_reqs:
                 print(f"⚠️  Some tools may not work due to missing requirements: {missing_reqs}")
+
+        # The mazemaker router is the agent's retrieval path and has nothing
+        # to do with pony. It used to be built inside build_pony_mode() and
+        # only when pony was enabled, which made a persona switch the
+        # gatekeeper for whether anything was recalled at all. Pony is a
+        # prompt mode; this is memory.
+        self._maze_router = None
+        self._maze_needs = None
+        try:
+            from agent.maze_router import HeuristicNeeds, router_from_config
+            self._maze_router = router_from_config(_agent_cfg)
+            self._maze_needs = HeuristicNeeds()
+        except Exception as _router_exc:
+            logger.debug("maze router unavailable: %s", _router_exc)
 
         self._pony_mode = None
         try:
@@ -8176,40 +8219,53 @@ class AIAgent:
             logger.debug("Mazemaker bootstrap recall failed (non-fatal): %s", exc)
             _mazemaker_bootstrap_messages = []
 
-        _ext_prefetch_cache = ""
+        _pq = original_user_message if isinstance(original_user_message, str) else ""
+        _parts = []
+
+        # Retrieval first, and unconditionally: the router runs whether or not
+        # pony is on. Whether this turn is worth a pod round-trip is the
+        # router's own question (HeuristicNeeds), not a pony setting.
+        _material = self._fetch_maze_material(_pq)
+        if _material:
+            _parts.append(_material)
+
+        # Pony contributes only what is genuinely pony's: the environment
+        # snapshot and the tool reminder. It no longer decides whether memory
+        # is consulted.
         _pony_live = getattr(self, "_pony_mode", None)
         if _pony_live is not None and getattr(_pony_live, "enabled", False):
             try:
-                _pq = original_user_message if isinstance(original_user_message, str) else ""
-                _parts = []
                 _env = _pony_live.environment()
                 if _env:
                     _parts.append(_env)
-                _mat = _pony_live.material_for(_pq) or ""
-                if _mat:
-                    _parts.append(_mat)
                 if _pony_live.assess(_pq).tools:
                     _note = _pony_live.tool_note_for(_pq)
                     if _note:
                         _parts.append(_note)
-                _ext_prefetch_cache = "\n\n".join(_parts)
-                if _ext_prefetch_cache and not self.quiet_mode:
-                    self._safe_print(
-                        f"🐴 router supplied {len(_ext_prefetch_cache)} chars of context")
             except Exception as _pl_exc:
-                logger.debug("pony material injection failed: %s", _pl_exc)
-                _ext_prefetch_cache = ""
-        if (not _ext_prefetch_cache and self._memory_manager
+                logger.debug("pony context injection failed: %s", _pl_exc)
+
+        _ext_prefetch_cache = "\n\n".join(_parts)
+        if _material and not self.quiet_mode:
+            self._safe_print(f"🧠 recalled {len(_material)} chars of context")
+
+        # The fallback keys on whether MATERIAL was retrieved, never on
+        # whether the blob is non-empty. Pony's environment block alone used
+        # to make it non-empty, so this path could not run even on a turn
+        # that had recalled nothing at all.
+        if (not _material and self._memory_manager
                 and not _mazemaker_bootstrap_messages):
             try:
-                _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(
-                    _query, session_id=self.session_id or ""
+                _fallback = self._memory_manager.prefetch_all(
+                    _pq, session_id=self.session_id or ""
                 ) or ""
+                if _fallback:
+                    _parts.insert(0, _fallback)
+                    _ext_prefetch_cache = "\n\n".join(_parts)
                 if self.verbose_logging:
                     logger.info(
-                        "memory prefetch: %d chars for %r",
-                        len(_ext_prefetch_cache), (_query or "")[:60],
+                        "memory prefetch fallback: %d chars for %r",
+                        len(_fallback), (_pq or "")[:60],
                     )
             except Exception as _prefetch_exc:
                 logger.warning("memory prefetch failed (non-fatal): %s", _prefetch_exc)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 import sys
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
-from agent.pony_mode import (DEFAULT_PONY_PROMPT, ENV_HEADER, EnvironmentFacts,
+from agent.pony_mode import (DEFAULT_PONY_PROMPT, ENV_HEADER, MATERIAL_HEADER, EnvironmentFacts,
                              HeuristicNeeds, Need, PonyConfig,
                              PonyMode, TOOL_NOTE, build_pony_mode)
 from agent.maze_router import Budget, Hit, Material, MazeRouter, PodClient
@@ -56,7 +56,13 @@ check("router consulted once", r.calls == 1)
 print("  == fail-open ==")
 p = PonyMode(PonyConfig(enabled=True), FakeRouter(raises=RuntimeError("pod down")))
 check("material_for returns empty", p.material_for("x") == "")
-check("augment falls back to raw turn", p.augment("just this") == "just this")
+# Fail-open means the turn survives a dead router, not that nothing is added:
+# the environment block is pony's own and does not come from the router. This
+# check used to read == "just this", which only held because the old needs
+# gate returned material=False for short turns and made augment() a no-op.
+_out = p.augment("just this")
+check("augment keeps the turn when the router is down", "just this" in _out)
+check("no material block from a dead router", MATERIAL_HEADER not in _out)
 p2 = PonyMode(PonyConfig(enabled=True), None)
 check("no router -> empty material", p2.material_for("x") == "")
 check("empty turn -> empty material", PonyMode(PonyConfig(enabled=True), FakeRouter()).material_for("  ") == "")

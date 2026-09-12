@@ -9,7 +9,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from agent.maze_router import Budget, MazeRouter, router_from_config
+from agent.maze_router import (Budget, HeuristicNeeds, MazeRouter, Need,
+                               NeedsAssessor, router_from_config)
 from agent.tool_broker import NEED_PREFIX, ToolAdvisor, ToolBroker, ToolResult
 
 logger = logging.getLogger(__name__)
@@ -35,58 +36,6 @@ TOOL_NOTE_GENERIC = (
     "reply with exactly one line:\nNEED: <what you need, in plain words>\n"
     "It will be carried out and the result given to you."
 )
-
-
-@dataclass(frozen=True)
-class Need:
-    material: bool = False
-    tools: bool = False
-
-    @property
-    def nothing(self) -> bool:
-        return not self.material and not self.tools
-
-
-class NeedsAssessor(ABC):
-    @abstractmethod
-    def assess(self, turn: str) -> Need: ...
-
-
-class HeuristicNeeds(NeedsAssessor):
-    _TRIVIAL = re.compile(
-        r"^\s*(hi|hey|hello|yo|ok|okay|thanks|thank you|danke|ja|nein|yes|no|lol|"
-        r"sure|cool|nice|good|morning|servus|moin)[\s!.?,]*$", re.I)
-    _MEMORY = re.compile(
-        r"\b(remember|recall|erinner|was war|earlier|before|last time|previously|"
-        r"we (?:did|had|decided|discussed)|my |our |the plan|status|why did|"
-        r"notes?|decided|history)\b", re.I)
-    _ACTION = re.compile(
-        r"\b(read|open|show|cat|list|find|grep|search|run|execute|build|test|"
-        r"install|start|stop|restart|edit|write|patch|fix|create|delete|deploy|"
-        r"check|log|file|command|script|repo|commit)\b", re.I)
-    _MAKE = re.compile(
-        r"\b(do|make|give|generate|draft|design|produce|whip up|put together|"
-        r"knock up|set up|scaffold|implement|add)\b.{0,30}\b(website|site|page|"
-        r"landing|script|dashboard|chart|diagram|doc|docs|report|readme|demo|"
-        r"app|tool|api|endpoint|test|suite|config|template|mockup|intro)\b", re.I)
-
-    _FACTUAL = re.compile(
-        r"\b(who|what|when|where|which)\b.{0,40}\b(is|are|was|were|made|created|"
-        r"built|wrote|owns|maintains|released|founded|invented|behind)\b", re.I)
-    _QUESTION = re.compile(r"\?\s*$")
-
-    def assess(self, turn: str) -> Need:
-        t = (turn or "").strip()
-        if not t or self._TRIVIAL.match(t):
-            return Need(False, False)
-        if len(t) < 8:
-            return Need(False, False)
-        factual = bool(self._FACTUAL.search(t))
-        return Need(
-            material=(bool(self._MEMORY.search(t)) or factual
-                      or bool(self._QUESTION.search(t)) or len(t.split()) >= 6),
-            tools=bool(self._ACTION.search(t)) or factual
-                  or bool(self._MAKE.search(t)))
 
 
 @dataclass(frozen=True)
@@ -313,10 +262,12 @@ def build_pony_mode(config: Optional[dict] = None) -> PonyMode:
     if config is None:
         config = _load_config()
     cfg = PonyConfig.from_config(config)
-    router = None
-    if cfg.enabled:
-        try:
-            router = router_from_config(config)
-        except Exception as exc:
-            logger.warning("pony router unavailable: %s", exc)
-    return PonyMode(cfg, router)
+    # No router. Pony used to construct one here, and only when it was
+    # enabled, which made a persona switch decide whether the harness
+    # recalled anything from mazemaker at all. Retrieval belongs to the agent
+    # (run_agent._fetch_maze_material) and runs whether pony is on or off.
+    #
+    # PonyMode still ACCEPTS a router, so material_for/augment remain usable
+    # and testable on their own; the production path simply does not hand it
+    # one, and material_for returns "" without it.
+    return PonyMode(cfg, None)

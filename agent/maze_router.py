@@ -338,6 +338,82 @@ class MazeRouter:
             return Material(text="", elapsed_s=time.perf_counter() - started)
 
 
+# --------------------------------------------------------------------------
+# Whether a turn is worth routing at all.
+#
+# This used to live in pony_mode, which made pony the gatekeeper for whether
+# anything was retrieved from mazemaker. It is not a pony concern: it decides
+# whether to spend a pod round-trip on this turn, so it belongs next to the
+# router that would make the call. pony_mode re-exports it for its own use.
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Need:
+    material: bool = False
+    tools: bool = False
+
+    @property
+    def nothing(self) -> bool:
+        return not self.material and not self.tools
+
+
+class NeedsAssessor(ABC):
+    @abstractmethod
+    def assess(self, turn: str) -> Need: ...
+
+
+class HeuristicNeeds(NeedsAssessor):
+    _TRIVIAL = re.compile(
+        r"^\s*(hi|hey|hello|yo|ok|okay|thanks|thank you|danke|ja|nein|yes|no|lol|"
+        r"sure|cool|nice|good|morning|servus|moin)[\s!.?,]*$", re.I)
+    _MEMORY = re.compile(
+        r"\b(remember|recall|erinner|was war|earlier|before|last time|previously|"
+        r"we (?:did|had|decided|discussed)|my |our |the plan|status|why did|"
+        r"notes?|decided|history)\b", re.I)
+    _ACTION = re.compile(
+        r"\b(read|open|show|cat|list|find|grep|search|run|execute|build|test|"
+        r"install|start|stop|restart|edit|write|patch|fix|create|delete|deploy|"
+        r"check|log|file|command|script|repo|commit)\b", re.I)
+    _MAKE = re.compile(
+        r"\b(do|make|give|generate|draft|design|produce|whip up|put together|"
+        r"knock up|set up|scaffold|implement|add)\b.{0,30}\b(website|site|page|"
+        r"landing|script|dashboard|chart|diagram|doc|docs|report|readme|demo|"
+        r"app|tool|api|endpoint|test|suite|config|template|mockup|intro)\b", re.I)
+
+    _FACTUAL = re.compile(
+        r"\b(who|what|when|where|which)\b.{0,40}\b(is|are|was|were|made|created|"
+        r"built|wrote|owns|maintains|released|founded|invented|behind)\b", re.I)
+    _QUESTION = re.compile(r"\?\s*$")
+
+    def assess(self, turn: str) -> Need:
+        t = (turn or "").strip()
+        if not t or self._TRIVIAL.match(t):
+            return Need(False, False)
+        factual = bool(self._FACTUAL.search(t))
+        # Material is the DEFAULT, not the exception.
+        #
+        # This used to require the turn to look like a memory question --
+        # match _MEMORY, be factual, end in "?", or run to six words. That is
+        # the right bias for a harness that carries its own transcript, where
+        # retrieval is a special request. Here the agent carries nothing: its
+        # history was deliberately moved into mazemaker, so on any real turn
+        # the context it needs is behind a recall.
+        #
+        # What the old rule actually excluded: "continue", "weiter", "mach
+        # weiter", "go on", "finish it", "push it", "fix the mesh generation
+        # bug" -- every one of them material=False. Those are the canonical
+        # recall triggers, the ones the guidance itself names, and they were
+        # the only turns guaranteed NOT to get any.
+        #
+        # Greetings and acknowledgements are still excluded above; they are
+        # the only turns where a pod round-trip buys nothing.
+        return Need(
+            material=True,
+            tools=bool(self._ACTION.search(t)) or factual
+                  or bool(self._MAKE.search(t)))
+
+
+
 def router_from_config(config: dict) -> MazeRouter:
     d = (config or {}).get("delegation") or {}
     r = (config or {}).get("routing") or {}
