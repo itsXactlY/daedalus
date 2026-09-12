@@ -1262,7 +1262,17 @@ class AIAgent:
         # _compaction_generation invalidates in-flight prep: any inline
         # compaction bumps it, and prep whose generation no longer matches is
         # discarded rather than applied over a history it no longer describes.
-        self._hot_swap_enabled = True
+        # Default OFF. Measured 2026-09-12 on a 1024 MiB resident KV pool with
+        # two sequences: prep starved for residency, ran 19+ minutes for one
+        # summary, and cost main a 117s call at 24% cache the moment it
+        # started. It only pays off when the resident pool is large enough for
+        # both sequences at once (--kv-stream-stage-mib well above 1024) --
+        # otherwise the blocking compaction is cheaper. Enable deliberately.
+        self._hot_swap_enabled = bool(os.environ.get("DAEDALUS_HOT_SWAP"))
+        # The prefill half is the expensive half: it re-sends the whole
+        # compacted context to warm the sidekick. Separately opt-in, because
+        # the summary alone already removes the blocking LLM call.
+        self._hot_swap_prefill = bool(os.environ.get("DAEDALUS_HOT_SWAP_PREFILL"))
         self._hot_swap_in_progress = False
         self._hot_swap_ready = None          # dict, see _run_hot_swap_prep
         self._compaction_generation = 0
@@ -2103,17 +2113,20 @@ class AIAgent:
                 snapshot, current_tokens=approx_tokens,
             )
             if self._compaction_generation != generation:
-                logger.debug("hot-swap prep discarded: compaction happened while preparing")
+                logger.info("hot-swap prep discarded: a compaction landed while preparing")
                 return
 
             # Best-effort: warm the sidekick slot with the compacted prompt so
             # the promoted slot already holds it. Failure here costs only the
             # prefill, not the summary, so the prep is still worth applying.
             target_slot = self._sidekick_id_slot()
-            warmed = self._prime_slot_with_messages(target_slot, compressed, system_message)
+            warmed = (
+                self._prime_slot_with_messages(target_slot, compressed, system_message)
+                if getattr(self, "_hot_swap_prefill", False) else False
+            )
 
             if self._compaction_generation != generation:
-                logger.debug("hot-swap prep discarded after prefill: compaction raced it")
+                logger.info("hot-swap prep discarded after prefill: a compaction raced it")
                 return
 
             self._hot_swap_ready = {
@@ -2128,7 +2141,7 @@ class AIAgent:
                 target_slot if warmed else "not warmed",
             )
         except Exception as e:
-            logger.debug("hot-swap prep failed, staying on the blocking path: %s", e)
+            logger.info("hot-swap prep failed, staying on the blocking path: %s", e)
         finally:
             self._hot_swap_in_progress = False
 
@@ -2182,7 +2195,7 @@ class AIAgent:
         self._hot_swap_ready = None
 
         if ready["generation"] != self._compaction_generation:
-            logger.debug("hot-swap discarded: a compaction landed since prep")
+            logger.info("hot-swap discarded: a compaction landed since prep")
             return None
 
         # The prep covers a prefix of the conversation. Anything appended since

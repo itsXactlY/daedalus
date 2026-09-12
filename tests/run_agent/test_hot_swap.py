@@ -34,7 +34,8 @@ def _agent(**over):
     a = _RealAIAgent.__new__(_RealAIAgent)
     a.base_url = "http://127.0.0.1:8080/v1"
     a.context_compressor = _Compressor()
-    a._hot_swap_enabled = True
+    a._hot_swap_enabled = True    # default is off; tests opt in explicitly
+    a._hot_swap_prefill = True
     a._hot_swap_in_progress = False
     a._hot_swap_ready = None
     a._compaction_generation = 0
@@ -252,3 +253,28 @@ class TestSingleSlotServer:
         a = _agent(_slot_count_cache=2)
         assert a._effective_main_slot() == 1
         assert a._sidekick_id_slot() == 0
+
+
+class TestDefaultsOff:
+    """Prep competes with main for a shared, bounded resident KV pool. On a
+    1024 MiB pool it starved: 19+ minutes for one summary, and main dropped to
+    24% cache. Off unless asked for."""
+
+    def test_disabled_agent_never_starts_prep(self, monkeypatch):
+        a = _agent(_hot_swap_enabled=False)
+        started = []
+        monkeypatch.setattr(run_agent.AIAgent, "_run_hot_swap_prep",
+                            lambda self, *args: started.append(1))
+        a._maybe_start_hot_swap_prep(_msgs(5), "sys", 10**6, "t")
+        time.sleep(0.05)
+        assert started == []
+
+    def test_prefill_is_separately_opt_in(self, monkeypatch):
+        a = _agent(_hot_swap_prefill=False)
+        called = []
+        monkeypatch.setattr(run_agent.AIAgent, "_prime_slot_with_messages",
+                            lambda self, slot, c, s: called.append(1) or True)
+        a._run_hot_swap_prep(_msgs(6), "sys", 900, "t", 0)
+        assert called == []                       # summary computed, no prefill
+        assert a._hot_swap_ready is not None       # still usable
+        assert a._hot_swap_ready["slot"] is None   # nothing warmed, so no swap
