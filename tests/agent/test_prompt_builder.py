@@ -47,9 +47,19 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
-    def test_session_search_guidance_is_simple_cross_session_recall(self):
-        assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+    def test_session_search_defers_to_mazemaker(self):
+        """It used to read "use session_search to recall it" and sat AHEAD of
+        the mazemaker block, so it was the first retrieval instruction the
+        model met -- for a job mazemaker does better, over a transcript
+        mazemaker already indexes. It now says so itself, and the assembly
+        orders it after mazemaker (see tests/agent/test_guidance_assembly.py).
+        """
+        assert "strict subset" in SESSION_SEARCH_GUIDANCE
+        assert "recall from it first" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_session_search_still_beats_asking_the_user_to_repeat(self):
+        assert "before asking the user to repeat themselves" in SESSION_SEARCH_GUIDANCE
 
 
 

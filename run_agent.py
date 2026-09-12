@@ -3533,19 +3533,28 @@ class AIAgent:
             if not _soul_loaded:
                 prompt_parts = [DEFAULT_AGENT_IDENTITY]
 
+        # Mazemaker first: it is the living context, and the agent's own
+        # history was deliberately taken out of the window on the assumption
+        # that it will be recalled. Anything that reads like a competing
+        # first move -- session_search especially -- has to come after it.
+        #
+        # Joined with blank lines, not spaces. These blocks are markdown with
+        # their own headings; " ".join ran them together mid-sentence and left
+        # "# Mazemaker - persistent memory (MANDATORY)" sitting inside a line,
+        # where it is not a heading at all, just more prose in a wall of it.
         tool_guidance = []
-        if "memory" in self.valid_tool_names:
-            tool_guidance.append(MEMORY_GUIDANCE)
-        if "session_search" in self.valid_tool_names:
-            tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if _MAZEMAKER_TOOL_NAMES & self.valid_tool_names:
             tool_guidance.append(
                 build_mazemaker_guidance(getattr(self, "_soak_window_turns", -1))
             )
+        if "memory" in self.valid_tool_names:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        if "session_search" in self.valid_tool_names:
+            tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
-            prompt_parts.append(" ".join(tool_guidance))
+            prompt_parts.append("\n\n".join(b.strip() for b in tool_guidance))
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
