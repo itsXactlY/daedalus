@@ -4231,6 +4231,42 @@ class AIAgent:
 
         return None
 
+    def _tool_schema(self, name: str) -> dict | None:
+        """Return the parameter schema for a loaded tool, or None if unknown."""
+        for tool in self.tools:
+            fn = tool.get("function", {})
+            if fn.get("name") == name:
+                return fn.get("parameters") or {}
+        return None
+
+    def _repair_dispatcher_args(self, tool_call, orig_name: str) -> None:
+        """Fix a tool call that was auto-repaired onto a dispatcher-style tool.
+
+        When a sub-tool name (e.g. ``mazemaker_get``) is fuzzy-matched onto its
+        dispatcher (``mazemaker``), the model's native-style arguments
+        (``{"memory_ids": [...]}``) are left as-is, so the dispatcher receives
+        no ``tool`` field and errors with "requires a 'tool' name". Re-package
+        the call as dispatcher form: ``{"tool": <orig>, "args": <orig args>}``.
+        Only applied when the repaired tool's schema actually requires a
+        ``tool`` field and the model did not already supply one.
+        """
+        schema = self._tool_schema(tool_call.function.name)
+        if not schema:
+            return
+        if "tool" not in (schema.get("required") or []):
+            return
+        try:
+            args = tool_call.function.arguments
+            if isinstance(args, str):
+                args = json.loads(args)
+            if not isinstance(args, dict):
+                args = {}
+        except Exception:
+            args = {}
+        if args.get("tool"):
+            return  # already dispatcher-shaped
+        tool_call.function.arguments = json.dumps({"tool": orig_name, "args": args})
+
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
@@ -10059,8 +10095,10 @@ class AIAgent:
                         if tc.function.name not in self.valid_tool_names:
                             repaired = self._repair_tool_call(tc.function.name)
                             if repaired:
-                                print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                                orig = tc.function.name
+                                print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{orig}' -> '{repaired}'")
                                 tc.function.name = repaired
+                                self._repair_dispatcher_args(tc, orig)
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls
                         if tc.function.name not in self.valid_tool_names

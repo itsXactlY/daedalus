@@ -672,6 +672,25 @@ class PodOffline(RuntimeError):
     pass
 
 
+def _sanitize_id_fields(obj: Any) -> Any:
+    """Coerce integer-valued ``id`` keys to strings, recursively.
+
+    Strict providers (e.g. Cohere via OpenRouter) reject a chat-completion
+    request when a tool result carries a non-string ``id`` field
+    ("A tool result's output's id field must be a string"). Mazemaker lookups
+    legitimately return integer ids, so stringify them before the result is
+    handed back into the LLM conversation.
+    """
+    if isinstance(obj, dict):
+        return {
+            k: (str(v) if (k == "id" and not isinstance(v, str)) else _sanitize_id_fields(v))
+            for k, v in obj.items()
+        }
+    if isinstance(obj, list):
+        return [_sanitize_id_fields(x) for x in obj]
+    return obj
+
+
 def _tool(name: str, arguments: dict, timeout: float = 8.0) -> Any:
     """Call a wonderland tool and return its ``result``. Raises on failure.
 
@@ -1498,7 +1517,12 @@ class MazemakerMemoryProvider(MemoryProvider):
             return self._tool_help(str(args.get("tool") or "").strip())
         if tool_name == DISPATCH_TOOL:
             inner = str(args.get("tool") or "").strip()
-            inner_args = args.get("args") or {}
+            inner_args = args.get("args")
+            if inner_args is None:
+                # No explicit 'args' key: fall back to the remaining
+                # top-level keys so e.g. mazemaker(tool="mazemaker_get",
+                # memory_ids=[...]) isn't silently dropped to {}.
+                inner_args = {k: v for k, v in args.items() if k != "tool"}
             if isinstance(inner_args, str):
                 try:
                     inner_args = json.loads(inner_args)
@@ -1532,6 +1556,8 @@ class MazemakerMemoryProvider(MemoryProvider):
             return json.dumps(self._degraded_payload(tool_name, "empty result"))
         if isinstance(result, str):
             return result
+        if isinstance(result, dict):
+            result = _sanitize_id_fields(result)
         return json.dumps(result, ensure_ascii=False)
 
     def shutdown(self) -> None:
