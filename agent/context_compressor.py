@@ -148,19 +148,26 @@ class ContextCompressor:
 
     CTX_REFRESH_INTERVAL = 300
 
-    def maybe_refresh_context_length(self) -> bool:
+    def maybe_refresh_context_length(self, allow_post_probe: bool = False) -> bool:
         """Re-detect context length from a local server that may have reloaded.
 
         No-ops unless all of these hold:
           * the endpoint is local (remote model limits do not change under us),
           * no explicit config override is set (the user's number wins),
-          * ``_context_probed`` is False -- a step-down from a real context
-            error is a discovered hard limit and must never be raised back up,
+          * either the first probe hasn't happened yet, OR ``allow_post_probe``
+            is True (post-success re-probes require explicit opt-in to avoid
+            accidentally raising a discovered hard limit back up),
           * ``CTX_REFRESH_INTERVAL`` has elapsed.
 
         Returns True when the value actually changed.
         """
-        if self._config_context_length is not None or self._context_probed:
+        if self._config_context_length is not None:
+            return False
+        if not self._context_probed:
+            # First probe: always allowed to discover the hard limit.
+            pass
+        elif not allow_post_probe:
+            # Already probed successfully; only re-probe if caller opts in.
             return False
         if not self.base_url or not is_local_endpoint(self.base_url):
             return False
