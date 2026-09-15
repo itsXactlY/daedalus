@@ -798,6 +798,10 @@ def _read_main_model() -> str:
             default = model_cfg.get("default", "")
             if isinstance(default, str) and default.strip():
                 return default.strip()
+            # Also check 'model' key (common config format)
+            direct_model = model_cfg.get("model", "")
+            if isinstance(direct_model, str) and direct_model.strip():
+                return direct_model.strip()
             active = str(model_cfg.get("provider") or "").strip()
             providers = cfg.get("providers")
             if active and isinstance(providers, dict):
@@ -1082,9 +1086,14 @@ def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     main_provider = _read_main_provider()
     main_model = _read_main_model()
+    # Inherit main provider + model for auxiliary tasks when:
+    #   - Provider is configured (including "custom" which means local/Ollama/vLLM/etc.)
+    #   - Model is configured
+    #   - Provider is NOT an aggregator (OpenRouter/Nous) that needs separate API keys
+    #   - Provider is NOT "auto" or empty
     if (main_provider and main_model
             and main_provider not in _AGGREGATOR_PROVIDERS
-            and main_provider not in ("auto", "custom", "")):
+            and main_provider not in ("auto", "")):
         client, resolved = resolve_provider_client(main_provider, main_model)
         if client is not None:
             logger.info("Auxiliary auto-detect: using main provider %s (%s)",
@@ -1776,6 +1785,30 @@ def _resolve_task_provider_model(
             return "custom", resolved_model, cfg_base_url, cfg_api_key
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None
+
+        # Inherit from main model config when no explicit task config is set.
+        # This makes the main model the single source of truth — auxiliary tasks
+        # (vision, compression, web_extract, flush_memories, curator) automatically
+        # reuse the provider/base_url/model/api_key configured in the top-level
+        # `model:` section unless overridden via env var or auxiliary.* config.
+        main_provider = _read_main_provider()
+        main_model = _read_main_model()
+        if main_provider and main_provider not in ("", "auto"):
+            try:
+                from daedalus_cli.config import load_config
+                mcfg = load_config().get("model", {}) or {}
+                if isinstance(mcfg, dict):
+                    _mb = str(mcfg.get("base_url") or "").strip() or None
+                    _mk = str(mcfg.get("api_key") or "").strip() or None
+                else:
+                    _mb = None
+                    _mk = None
+            except Exception:
+                _mb = None
+                _mk = None
+            inherited_model = resolved_model or main_model
+            return main_provider, inherited_model, _mb, _mk
+
         return "auto", resolved_model, None, None
 
     return "auto", resolved_model, None, None

@@ -8758,6 +8758,18 @@ class AIAgent:
                 )
                 conversation_history = None
 
+        # Mid-session re-probe: if the provider restarted with a different
+        # context limit, catch it immediately — don't wait for the API response
+        # to come back. This closes the drift window where the harness and
+        # provider could disagree on context length.
+        if self.compression_enabled:
+            try:
+                self.context_compressor.maybe_refresh_context_length(
+                    allow_post_probe=True,
+                )
+            except Exception as _probe_exc:
+                logger.debug("Mid-session context probe failed (non-fatal): %s", _probe_exc)
+
         if (
             self.compression_enabled
             and len(messages) > self.context_compressor.protect_first_n
