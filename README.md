@@ -107,6 +107,8 @@ mixture-of-experts with only 3 billion parameters active per token, at
 a few trick questions it produced a 682-line animated WebGL page from scratch,
 in about 40,000 tokens total. It is not a toy. It was being starved.
 
+Watch it live at: [mazemaker.online/wall-of-shame](https://mazemaker.online/wall-of-shame)
+
 ---
 
 ## ⚠️ It needs a memory engine. This is not a suggestion.
