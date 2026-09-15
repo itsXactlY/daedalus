@@ -930,6 +930,48 @@ class AIAgent:
             logger.debug("maze router fetch failed (non-fatal): %s", exc)
             return ""
 
+    def _build_state_card(self) -> str:
+        """Assemble the compact state card for periodic re-injection.
+
+        After a compaction the rolling window no longer contains the goals /
+        open work / where-things-stand the model had, so the card re-anchors
+        from live in-memory state: the last compaction summary body ("Where
+        things stand") and the current todo list (the open-work anchor).
+        Falls back to a pointer-only card when neither is available.
+        """
+        try:
+            lines = ["[STATE CARD -- re-anchored from the last compaction]"]
+            summary = (getattr(self, "_last_state_summary_body", "") or "").strip()
+            todo_text = ""
+            todo_store = getattr(self, "_todo_store", None)
+            if todo_store is not None:
+                try:
+                    todo_text = (todo_store.format_for_injection() or "").strip()
+                except Exception:
+                    todo_text = ""
+            if summary:
+                lines.append("## Where things stand (last compaction summary)")
+                lines.append(summary)
+            if todo_text:
+                lines.append("## Active tasks (live todo list)")
+                lines.append(todo_text)
+            if not (summary or todo_text):
+                lines.append(
+                    "No in-memory state snapshots survived the last "
+                    "compaction. Full history: `auto:turn:{session_id}:*` "
+                    "in mazemaker; crash-recovery copy: {path}".format(
+                        session_id=self.session_id or "",
+                        path=getattr(self, "_state_card_path", "") or "STATE.md",
+                    )
+                )
+            card = "\n".join(lines).strip()
+            max_chars = int(getattr(self, "_state_card_max_chars", 4000) or 4000)
+            if max_chars > 0 and len(card) > max_chars:
+                card = card[:max_chars].rstrip() + "\n...[state card truncated]"
+            return card
+        except Exception:
+            return ""
+
     def _build_turn_injections(self, ext_prefetch: str,
                                plugin_context: str) -> list:
         """The context blocks appended to this turn's user message.
@@ -958,6 +1000,33 @@ class AIAgent:
         a summary of that, not the only signal.
         """
         injections, labels = [], []
+
+        # Periodic state re-anchoring (the deepseek-harness pattern): after a
+        # compaction the rolling window no longer contains the goals / open
+        # work / where-things-stand the model had, so re-inject a compact state
+        # card the first turn after a compaction and every N turns afterwards.
+        # The counters are only initialized when the soak subsystem is on;
+        # an agent without it must simply get no card, not an AttributeError.
+        _turns_since = getattr(self, "_turns_since_state_card", None)
+        _reinject_every = int(getattr(self, "_state_reinject_every", 0) or 0)
+        _pending = bool(getattr(self, "_state_card_pending", False))
+        if _turns_since is not None:
+            # Advance the cadence counter every turn so the "every N turns"
+            # re-injection actually fires. It is reset to 0 on injection,
+            # so without this the periodic path would stay at 0 forever and
+            # only the post-compaction card would ever appear.
+            self._turns_since_state_card = _turns_since + 1
+            _turns_since = _turns_since + 1
+        if _turns_since is not None and (
+                _pending or
+                (_reinject_every > 0 and
+                 _turns_since >= _reinject_every)):
+            card = self._build_state_card()
+            if card:
+                injections.append(card)
+                labels.append(("state card", card))
+            self._state_card_pending = False
+            self._turns_since_state_card = 0
 
         if ext_prefetch:
             fenced = build_memory_context_block(ext_prefetch)
@@ -1516,6 +1585,9 @@ class AIAgent:
         self._memory_flush_timeout = 90.0
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        # Auto-recall mazemaker context every N turns (0 = disabled)
+        self._mazemaker_auto_recall_every = 5
+        self._turns_since_mazemaker_recall = 0
         # How many of the newest assistant messages keep their reasoning in
         # the request. See _reasoning_window_indices: it was 22-30% of the
         # payload on long sessions and nothing ever pruned it.
@@ -1564,6 +1636,14 @@ class AIAgent:
                 self._soak_prefetch_on_turn = bool(_soak_cfg.get("prefetch_on_turn", True)) if _soak_configured else True
                 self._soak_ttl_seconds = int(_soak_cfg.get("ttl_seconds", 0) or 0) if _soak_configured else 0
                 self._soak_cfg_for_provider = _soak_cfg if _soak_configured else {}
+                # State-card re-injection: after a compaction the model's view is
+                # a rolling window over fresh history, so the anchors (goals,
+                # open work, where-things-stand) it had before the compaction
+                # are gone from context. We re-inject a compact state card the
+                # first turn after a compaction and then every N turns, the
+                # same periodic re-anchoring the deepseek harness does.
+                self._state_reinject_every = int(_soak_cfg.get("state_reinject_every", 5) or 5) if _soak_configured else 5
+                self._state_card_max_chars = int(_soak_cfg.get("state_card_max_chars", 4000) or 4000) if _soak_configured else 4000
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
@@ -1627,6 +1707,13 @@ class AIAgent:
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
                 self._memory_manager = None
+
+        # State card vars: always initialize so they exist even when memory
+        # is disabled or no soak config is present.
+        self._turns_since_state_card = 0
+        self._state_card_pending = False
+        self._last_state_summary_body = ""
+        self._state_card_path = ""
 
         if self._memory_manager and self.tools is not None:
             existing_tool_names = {
@@ -3087,13 +3174,45 @@ class AIAgent:
             "You may call one or more functions to assist with the user query. If available tools are not relevant in assisting "
             "with user query, just respond in natural conversational language. Don't make assumptions about what values to plug "
             "into functions. After calling & executing the functions, you will be provided with function results within "
-            "<tool_response> </tool_response> XML tags. Here are the available tools:\n"
+            "<tool_response> </tool_call> XML tags. Here are the available tools:\n"
             f"<tools>\n{self._format_tools_for_system_message()}\n</tools>\n"
             "For each function call return a JSON object, with the following pydantic model json schema for each:\n"
             "{'title': 'FunctionCall', 'type': 'object', 'properties': {'name': {'title': 'Name', 'type': 'string'}, "
             "'arguments': {'title': 'Arguments', 'type': 'object'}}, 'required': ['name', 'arguments']}\n"
-            "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
-            "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
+            "Each function call should be enclosed within <tool_call></tool_call> XML tags.\n"
+            "Example: <tool_call>\n{'name': 'tool_name','arguments': {'key': 'value'}}\n</tool_call>\n\n"
+            "=== MAZEMAKER TOOL USAGE GUIDE ===\n"
+            "MANDATORY: Use mazemaker BEFORE any other action. This is your memory system.\n\n"
+            "1. mazemaker_recall — USE THIS FIRST on EVERY turn\n"
+            "   Purpose: Find relevant past context before doing anything\n"
+            "   When: At the start of every task, especially when continuing previous work\n"
+            "   Query: Describe what you need in natural language\n\n"
+            "2. mazemaker_remember — Save durable facts\n"
+            "   Purpose: Persist knowledge for future sessions\n"
+            "   When: After completing tasks, learning user preferences, discovering stable facts\n"
+            "   Format: {\"content\": \"fact description\", \"label\": \"fact:topic\"}\n\n"
+            "3. mazemaker_think — Graph traversal\n"
+            "   Purpose: Find related concepts from a memory ID\n"
+            "   When: You found a relevant memory and need connected context\n"
+            "   Format: {\"memory_id\": 12345, \"depth\": 2}\n\n"
+            "4. mazemaker_get — Replay specific turns\n"
+            "   Purpose: Read exact conversation history\n"
+            "   When: Need verbatim transcript of a past interaction\n"
+            "   Format: {\"args\": {\"memory_ids\": [12345]}}\n\n"
+            "5. mazemaker_afe_facts — Extract atomic facts\n"
+            "   Purpose: Get structured facts from the corpus\n"
+            "   When: Need machine-readable facts for analysis\n\n"
+            "6. mazemaker_classify_intent — Classify queries\n"
+            "   Purpose: Determine query intent without full recall\n"
+            "   When: Analyzing what type of query this is\n\n"
+            "7. mazemaker_rebake — Refine embeddings\n"
+            "   Purpose: Improve recall quality for specific sessions\n"
+            "   When: After identifying gaps in memory retrieval\n\n"
+            "CRITICAL RULES:\n"
+            "- Always start with mazemaker_recall unless explicitly told not to\n"
+            "- Save important decisions, preferences, and bug fixes with mazemaker_remember\n"
+            "- Use mazemaker_think to follow connections from relevant memories\n"
+            "- Never ignore [mazemaker] hints in the context - they point to relevant memories\n"
         )
         
         trajectory.append({
@@ -7229,6 +7348,62 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _write_spill_summary(self, compressed: list, system_message: str, task_id: str) -> None:
+        """Write a human-readable summary to the spill directory.
+
+        The compressed messages contain placeholders like "[Old tool output
+        cleared to save context space]" which are useless noise. This method
+        produces a clean summary from live agent state that's actually useful
+        for post-mortems and crash recovery.
+        """
+        try:
+            from datetime import datetime
+            root = self._spill_root()
+            os.makedirs(root, exist_ok=True)
+
+            # Build a clean summary from live session messages
+            session_msgs = getattr(self, '_session_messages', None) or []
+            summary_lines = [
+                f"# Spill Summary — {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"task_id: {task_id}",
+                f"messages_compressed: {len(compressed)}",
+                f"session_messages: {len(session_msgs)}",
+                "",
+                "## Recent Activity (last 20 assistant messages)",
+                "",
+            ]
+
+            # Extract meaningful assistant messages
+            recent_assistant = [m for m in reversed(session_msgs[-30:])
+                              if m.get('role') == 'assistant']
+            for msg in recent_assistant[:20]:
+                content = msg.get('content', '')
+                # Skip placeholders
+                if isinstance(content, str) and '[Old tool output cleared' in content:
+                    continue
+                if isinstance(content, str) and '[state card truncated' in content:
+                    continue
+                if isinstance(content, str) and content.strip():
+                    summary_lines.append(f"### Assistant Message")
+                    summary_lines.append(content.strip()[:2000])  # truncate long messages
+                    summary_lines.append("")
+
+            # Add todo snapshot
+            todo_snapshot = self._todo_store.format_for_injection()
+            if todo_snapshot:
+                summary_lines.append("## Current TODO")
+                summary_lines.append(todo_snapshot)
+                summary_lines.append("")
+
+            # Write to spill dir
+            summary_path = os.path.join(root, "spill_summary.txt")
+            with open(summary_path, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(summary_lines))
+
+            logger.info("spill summary written: %s", summary_path)
+        except Exception as exc:
+            logger.warning("spill summary write failed (non-fatal): %s", exc)
+
     def _write_state_snapshot(self, compressed: list, todo_snapshot: str,
                               previous_session_id: str = "") -> str:
         """Drop a STATE.md into the workpath after a compaction.
@@ -7243,6 +7418,11 @@ class AIAgent:
         position, not an archive.
 
         Never fatal: a failed write must not take the compaction with it.
+
+        IMPORTANT: We extract only SEMANTIC content from the compressed messages.
+        Tool results, function outputs, raw JSON dumps are NOT useful in the
+        state snapshot. We look for: assistant reasoning, user intent, goals,
+        decisions, progress reports, TODO items.
         """
         try:
             root = self._spill_root()
@@ -7251,13 +7431,55 @@ class AIAgent:
             os.makedirs(base, exist_ok=True)
             self._ensure_workpath_ignored(base)
 
+            # Extract only SEMANTIC content from compressed messages.
+            # BUT: compressed messages may contain placeholders like
+            # "[Old tool output cleared to save context space]" which are
+            # useless noise. We want a clean, human-readable summary built
+            # from LIVE agent state whenever possible.
             body = []
-            for msg in compressed or []:
-                if msg.get("display_kind") == "hidden":
+
+            # First, try to get a clean summary from live session messages
+            session_msgs = getattr(self, '_session_messages', None) or []
+            # Filter out the placeholder garbage and keep only meaningful content
+            for msg in session_msgs[-50:]:  # last 50 messages for context
+                role = msg.get('role', '')
+                content = msg.get('content', '')
+                kind = msg.get('display_kind', '')
+
+                # Skip placeholders
+                if isinstance(content, str) and '[Old tool output cleared' in content:
                     continue
-                content = msg.get("content")
-                if isinstance(content, str) and content.strip():
-                    body.append(content.strip())
+                if isinstance(content, str) and '[state card truncated' in content:
+                    continue
+
+                # Keep assistant reasoning and user intent
+                if role == 'assistant' and kind != 'tool_result':
+                    if isinstance(content, str) and content.strip():
+                        body.append(f"[assistant] {content.strip()}")
+                elif role == 'user':
+                    if isinstance(content, str) and content.strip():
+                        body.append(f"[user] {content.strip()}")
+
+            # If we got nothing from live messages, fall back to compressed
+            if not body:
+                for msg in compressed or []:
+                    kind = msg.get("display_kind")
+                    if kind == "hidden":
+                        continue
+                    content = msg.get("content")
+                    role = msg.get("role", "")
+
+                    # Skip pure tool/function output
+                    if role == "tool" or (kind == "tool_result"):
+                        continue
+                    if isinstance(content, str):
+                        # Filter placeholder garbage
+                        if "[Old tool output cleared" in content:
+                            continue
+                        if "[state card truncated" in content:
+                            continue
+                        if content.strip():
+                            body.append(content.strip())
 
             lines = [
                 "# Daedalus — session state",
@@ -7290,6 +7512,17 @@ class AIAgent:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("\n".join(lines) + "\n")
             logger.info("state snapshot written: %s", path)
+
+            # Keep the card data for the periodic re-injection: the compaction
+            # just rewrote what the model knows, so the very next turn must
+            # re-anchor it, and every N turns afterwards keep the anchors
+            # inside the rolling window.
+            try:
+                self._last_state_summary_body = "\n\n".join(body) if body else ""
+                self._state_card_path = path
+                self._state_card_pending = True
+            except Exception:
+                pass
             return path
         except Exception as exc:
             logger.warning("state snapshot failed (non-fatal): %s", exc)
@@ -7307,30 +7540,6 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count,
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
         )
-        # flush_memories makes a full API call over the entire pre-compaction
-        # history (asking the model what's worth remembering) BEFORE
-        # compression discards it -- and did so synchronously, blocking this
-        # thread, on every single compaction. Observed live 2026-09-11: the
-        # agent was mid-tool-call (searching a shader file) when "compaction
-        # approaching" fired and the whole turn stalled on this one call --
-        # the exact thing having a second slot was supposed to prevent, just
-        # never wired to actually run off the main thread.
-        #
-        # flush_memories only ever appends to / pops from the `messages` list
-        # it's handed -- it never touches self._session_messages or any other
-        # shared state -- so handing it a snapshot copy instead of the live
-        # list makes it safe to run detached: the background thread mutates
-        # its own copy, the caller's real `messages` is never touched, and
-        # this call returns immediately instead of blocking on the network
-        # round trip (now possibly seconds, on a big context) or on the
-        # memory-tool writes that follow it.
-        threading.Thread(
-            target=self.flush_memories,
-            args=(list(messages),),
-            kwargs={"min_turns": 0},
-            daemon=True,
-            name="flush-memories",
-        ).start()
 
         _mazemaker_archive_note = ""
         if self._memory_manager:
@@ -7397,6 +7606,9 @@ class AIAgent:
         # continues rather than the one that just ended.
         self._write_state_snapshot(compressed, todo_snapshot,
                                    previous_session_id=_pre_compaction_session)
+        # Also save a human-readable summary for the spill directory so
+        # post-mortems and crash recovery have something useful to look at.
+        self._write_spill_summary(compressed, system_message, task_id)
 
         _compressed_est = (
             estimate_tokens_rough(new_system_prompt)
@@ -8435,7 +8647,38 @@ class AIAgent:
                 _should_review_memory = True
                 self._turns_since_memory = 0
 
+        # Auto-recall mazemaker context periodically
+        _mazemaker_auto_recall_messages = []
+        if (self._mazemaker_auto_recall_every > 0
+                and "mazemaker" in self.valid_tool_names):
+            self._turns_since_mazemaker_recall += 1
+            if self._turns_since_mazemaker_recall >= self._mazemaker_auto_recall_every:
+                self._turns_since_mazemaker_recall = 0
+                try:
+                    _recall_query = user_message.strip()[:200]
+                    if len(_recall_query) < 10:
+                        _recall_query = "current session context and goals"
+                    # Use the existing compactor for consistent formatting
+                    _raw_result = self._memory_manager.handle_tool_call(
+                        "mazemaker_recall",
+                        {"query": _recall_query, "limit": 3},
+                        session_id=self.session_id or ""
+                    )
+                    if isinstance(_raw_result, dict) and not _raw_result.get("error"):
+                        _compact_result = self._compact_mazemaker_recall_result(
+                            json.dumps(_raw_result), _recall_query
+                        )
+                        _mazemaker_auto_recall_messages.append({
+                            "role": "system",
+                            "content": f"[MAZEMAKER AUTO-RECALL]\n{_compact_result}"
+                        })
+                except Exception as _maz_r_exc:
+                    logger.debug("mazemaker auto-recall failed: %s", _maz_r_exc)
+
         user_msg = {"role": "user", "content": user_message}
+        # Inject auto-recall messages before user message so context is fresh
+        for _recall_msg in _mazemaker_auto_recall_messages:
+            messages.insert(len(messages), _recall_msg)
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx

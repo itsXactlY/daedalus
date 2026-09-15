@@ -59,7 +59,7 @@ DISPATCH_HELP_TOOL = "mazemaker_help"
 NATIVE_TOOLS = tuple(
     n.strip() for n in os.environ.get(
         "MM_NATIVE_TOOLS",
-        "mazemaker_recall,mazemaker_remember,mazemaker_think",
+        "mazemaker_recall,mazemaker_remember,mazemaker_think,mazemaker_get",
     ).split(",") if n.strip()
 )
 _CATALOGUE_TTL_S = 900.0
@@ -689,6 +689,73 @@ def _sanitize_id_fields(obj: Any) -> Any:
     if isinstance(obj, list):
         return [_sanitize_id_fields(x) for x in obj]
     return obj
+
+
+def _format_tool_result(result: dict, tool_name: str) -> str:
+    """Format a tool result as human-readable text instead of JSON.
+
+    Models read plain text much better than raw JSON with escaped newlines.
+    """
+    lines = []
+    if tool_name == "mazemaker_recall":
+        count = result.get("count", 0)
+        lines.append(f"**{count} memories found:**")
+        results = result.get("results", [])
+        for i, item in enumerate(results[:5], 1):
+            content = item.get("content", "")
+            score = item.get("score", 0)
+            label = item.get("label", "")
+            truncated = item.get("truncated", False)
+            trunc_mark = " (truncated)" if truncated else ""
+            lines.append(f"\n--- Memory {i} (score={score:.3f}, label={label}){trunc_mark} ---")
+            # Extract a readable summary
+            if content:
+                # Show first meaningful chunk
+                preview = content[:2000] if len(content) > 2000 else content
+                lines.append(preview)
+        if len(results) > 5:
+            lines.append(f"\n... and {len(results) - 5} more results (use mazemaker_get to read full memories by ID)")
+    elif tool_name == "mazemaker_remember":
+        status = result.get("status", "")
+        if status == "ok":
+            lines.append("**Memory saved successfully.**")
+            mid = result.get("id", "unknown")
+            lines.append(f"New memory ID: {mid}")
+        else:
+            lines.append(f"Status: {status}")
+            content = result.get("content", "")
+            if content:
+                lines.append(f"Error: {content}")
+    elif tool_name == "mazemaker_think":
+        depth = result.get("depth", 0)
+        lines.append(f"**Graph traversal from memory (depth={depth}):**")
+        paths = result.get("paths", [])
+        for i, path in enumerate(paths[:10], 1):
+            path_labels = [node.get("label", "") for node in path]
+            similarity = path[-1].get("similarity", 0) if path else 0
+            lines.append(f"\nPath {i}:")
+            lines.append(" -> ".join(path_labels or ["(empty path)"]))
+            lines.append(f"Similarity: {similarity:.3f}")
+    elif tool_name == "mazemaker_get":
+        mid = result.get("id", "")
+        lines.append(f"**Memory #{mid}:**")
+        content = result.get("content", "")
+        label = result.get("label", "")
+        score = result.get("score", 0)
+        lines.append(f"Label: {label} | Score: {score:.3f}")
+        if content:
+            lines.append(f"\n{content}")
+    else:
+        # Generic fallback: pretty-print key values
+        for k, v in result.items():
+            if isinstance(v, (list, dict)):
+                lines.append(f"{k}: [{len(v) if isinstance(v, list) else 'dict'} items]")
+            else:
+                val_str = str(v)[:500]
+                if len(str(v)) > 500:
+                    val_str += "..."
+                lines.append(f"{k}: {val_str}")
+    return "\n".join(lines)
 
 
 def _tool(name: str, arguments: dict, timeout: float = 8.0) -> Any:
@@ -1558,6 +1625,7 @@ class MazemakerMemoryProvider(MemoryProvider):
             return result
         if isinstance(result, dict):
             result = _sanitize_id_fields(result)
+            return _format_tool_result(result, tool_name)
         return json.dumps(result, ensure_ascii=False)
 
     def shutdown(self) -> None:

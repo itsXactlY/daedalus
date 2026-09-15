@@ -874,6 +874,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     term_width = shutil.get_terminal_size().columns
     if term_width >= 95:
         _logo_raw = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else DAEDALUS_LOGO
-        console.print(_normalize_hero_lines(_logo_raw))
+        _logo_norm = _normalize_hero_lines(_logo_raw)
+        _logo_lines = _logo_norm.strip().split('\n')
+        _logo_max = max(len(l) for l in _logo_lines)
+        for _line in _logo_lines:
+            console.print(_line.center(_logo_max))
         console.print()
     console.print(outer_panel)

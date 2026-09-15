@@ -2063,6 +2063,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._image_counter = 0
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
+        # Verbose toggle animation state
+        self._verbose_anim_start: float = 0
+        self._verbose_anim_frame: int = 0
 
         self._voice_lock = threading.Lock()
         self._voice_mode = False
@@ -2984,8 +2987,35 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Return the current spinner frame for slow slash commands."""
         import time as _time
 
-        frame_idx = int(_time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
+        # Fast spinner when verbose mode is active (15fps vs 10fps)
+        if getattr(self, 'verbose', False):
+            speed = 15
+        else:
+            speed = 10
+
+        # Handle verbose toggle animation
+        if self._verbose_anim_start > 0:
+            elapsed = _time.monotonic() - self._verbose_anim_start
+            if elapsed > 1.5:
+                # Animation done, clear it
+                self._verbose_anim_start = 0
+                self._verbose_anim_frame = 0
+            else:
+                # Return animated frame
+                self._verbose_anim_frame = int(elapsed * 12) % len(_COMMAND_SPINNER_FRAMES)
+                return _COMMAND_SPINNER_FRAMES[self._verbose_anim_frame]
+
+        frame_idx = int(_time.monotonic() * speed) % len(_COMMAND_SPINNER_FRAMES)
         return _COMMAND_SPINNER_FRAMES[frame_idx]
+
+    def _start_verbose_animation(self, is_on: bool) -> None:
+        """Start the verbose toggle animation in the spinner area."""
+        import time as _time
+        self._verbose_anim_start = _time.monotonic()
+        self._verbose_anim_frame = 0
+        status = "VERBOSE ON" if is_on else "VERBOSE OFF"
+        self._spinner_text = f"{status}..."
+        self._invalidate()
 
     @contextmanager
     def _busy_command(self, status: str):
@@ -5669,6 +5699,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except ValueError:
             idx = 2
         self.tool_progress_mode = cycle[(idx + 1) % len(cycle)]
+        was_verbose = self.verbose
         self.verbose = self.tool_progress_mode == "verbose"
 
         if self.agent:
@@ -5678,6 +5709,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self.agent.stream_verbose_mode = self.tool_progress_mode == "verbose"
 
         self._ensure_llama_telemetry_poller()
+
+        # Trigger animation
+        self._start_verbose_animation(self.verbose)
 
         from daedalus_cli.colors import Colors as _Colors
         labels = {
@@ -7322,6 +7356,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return [("class:prompt-working", f"⚕ {state_suffix}")]
         if self._voice_mode:
             return [("class:voice-prompt", f"🎤 {state_suffix}")]
+        # Show [V] badge when verbose is active
+        if self.verbose:
+            return [("class:verbose-badge", f"[V] {symbol}")]
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:
@@ -8423,6 +8460,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+            'verbose-badge': '#FFD700 bold',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
