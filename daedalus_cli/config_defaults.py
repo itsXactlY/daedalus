@@ -635,7 +635,18 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,
         "user_char_limit": 1375,
-        "provider": "",
+        "provider": "mazemaker",
+        "flush_max_chars": 16000,
+        "flush_max_tokens": 512,
+        "flush_timeout": 90,
+        "soak": {
+            "enabled": True,
+            "window_turns": 8,
+            "prefetch_on_turn": True,
+            "ttl_seconds": 3600,
+            "state_reinject_every": 2,
+            "state_card_max_chars": 4000,
+        },
     },
 
     "delegation": {
