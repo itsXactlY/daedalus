@@ -3638,7 +3638,14 @@ def cmd_update(args):
             print("→ Updating Python dependencies...")
             uv_bin = shutil.which("uv")
             if uv_bin:
-                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                # Install into the environment this daedalus is running from.
+                # It used to be hard-coded to PROJECT_ROOT/venv, which does not
+                # exist once the code lives in DAEDALUS_HOME/daedalus-agent and
+                # the venv beside it in DAEDALUS_HOME/venv — so dependency
+                # updates never reached the interpreter that runs the agent.
+                running_venv = sys.prefix if sys.prefix != sys.base_prefix else None
+                target_venv = running_venv or str(PROJECT_ROOT / "venv")
+                uv_env = {**os.environ, "VIRTUAL_ENV": target_venv}
                 _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
             else:
                 pip_cmd = [sys.executable, "-m", "pip"]
