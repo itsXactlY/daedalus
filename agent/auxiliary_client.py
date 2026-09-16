@@ -1714,49 +1714,46 @@ def _resolve_task_provider_model(
 ) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
+    SINGLE SOURCE OF TRUTH: if the top-level `model:` config is set,
+    everything inherits from it. No env vars, no per-task sections,
+    no secondary declarations. Period.
+
     Priority:
-      1. Explicit provider/model/base_url/api_key args (always win)
-      2. Env var overrides (AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
-      3. Config file (auxiliary.{task}.* or compression.*)
-      4. "auto" (full auto-detection chain)
+      1. Explicit provider/model/base_url/api_key args (call-site overrides)
+      2. Top-level `model:` config (single source of truth)
+      3. "auto" (full auto-detection — only if model: not configured)
 
     Returns (provider, model, base_url, api_key) where model may be None
     (use provider default). When base_url is set, provider is forced to
     "custom" and the task uses that direct endpoint.
     """
-    config = {}
-    cfg_provider = None
-    cfg_model = None
-    cfg_base_url = None
-    cfg_api_key = None
+    # 1. Explicit args always win (caller can override)
+    if base_url or provider:
+        return "custom" if base_url else provider, model, base_url, api_key
 
-    if task:
-        try:
-            from daedalus_cli.config import load_config
-            config = load_config()
-        except ImportError:
-            config = {}
+    # 2. Read from top-level model: config — THIS IS THE SINGLE SOURCE OF TRUTH
+    try:
+        from daedalus_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
 
-        aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
-        task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-        if not isinstance(task_config, dict):
-            task_config = {}
-        cfg_provider = str(task_config.get("provider", "")).strip() or None
-        cfg_model = str(task_config.get("model", "")).strip() or None
-        cfg_base_url = str(task_config.get("base_url", "")).strip() or None
-        cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        if isinstance(model_cfg, dict):
+            m_provider = str(model_cfg.get("provider") or "").strip() or None
+            m_base_url = str(model_cfg.get("base_url") or "").strip() or None
+            m_api_key = str(model_cfg.get("api_key") or "").strip() or None
+            m_model = str(model_cfg.get("model") or model_cfg.get("default") or "").strip() or None
 
-        if task == "compression" and (not cfg_provider or cfg_provider == "auto"):
-            comp = config.get("compression", {}) if isinstance(config, dict) else {}
-            if isinstance(comp, dict):
-                cfg_provider = comp.get("summary_provider", "").strip() or None
-                cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
-                _sbu = comp.get("summary_base_url") or ""
-                cfg_base_url = cfg_base_url or _sbu.strip() or None
+            # If provider and base_url are set in model:, use them
+            if m_provider and m_base_url:
+                return m_provider, m_model or model, m_base_url, m_api_key
+            # If only provider is set (no base_url), return it
+            if m_provider:
+                return m_provider, m_model or model, None, None
 
-    env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
-    resolved_model = model or env_model or cfg_model
+    except Exception:
+        pass
 
+<<<<<<< Updated upstream
     if base_url:
         return "custom", resolved_model, base_url, api_key
     if provider:
@@ -1779,6 +1776,10 @@ def _resolve_task_provider_model(
         return "auto", resolved_model, None, None
 
     return "auto", resolved_model, None, None
+=======
+    # 3. Fallback to auto-detection only if model: is NOT configured
+    return "auto", model, None, None
+>>>>>>> Stashed changes
 
 
 _DEFAULT_AUX_TIMEOUT = 30.0
