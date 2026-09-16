@@ -251,6 +251,23 @@ VIS_PORT=8082
 VIS_HOST="127.0.0.1"
 VIS_CTX=16384
 VIS_THREADS=4
+
+# --- mazemaker AFE model ------------------------------------------------------
+# mazemaker's nightly fact extraction calls an LLM on :8888. The doctor serves
+# it (`daedalus doctor afe`), and only ever as the ONLY model on the card: it
+# refuses to start beside main/aux/vis or when VRAM use is already above
+# AFE_VRAM_BLOCK_MIB, and `daedalus doctor start` refuses while it is up.
+# `daedalus doctor setup` downloads it beforehand.
+AFE_ENABLED=1
+AFE_REPO="unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
+AFE_FILE="Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
+AFE_PORT=8888
+AFE_CTX=16384
+AFE_SLOTS=1
+# Experts of the first N layers in system RAM. N=12 measured: 10.6 GiB VRAM,
+# 4.4 GiB left for the mazemaker pod, 23.9 tok/s.
+AFE_N_CPU_MOE=12
+AFE_VRAM_BLOCK_MIB=10240
 '''
 
 _ASSIGN = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
@@ -919,6 +936,10 @@ def stack_report(conf: StackConf = None) -> None:
     section("Inference servers")
     cmd_status(conf=conf)
 
+    section("mazemaker AFE model")
+    from daedalus_cli import stack_afe
+    stack_afe.cmd_status(conf=conf)
+
 
 def cmd_doctor(args=None, conf: StackConf = None) -> int:
     """``daedalus doctor stack`` — the stack half on its own."""
@@ -1015,6 +1036,14 @@ def cmd_setup(args=None) -> int:
             fetch(vis_repo, conf.str("VIS_MMPROJ_FILE"), "vision mmproj")
         else:
             warn("VIS_ENABLED=1 but VIS_REPO is empty", f"— set it in {conf_path()}")
+
+    # mazemaker's AFE model is fetched here, beforehand, so a nightly pass
+    # never finds it missing.
+    from daedalus_cli import stack_afe
+    if stack_afe.enabled(conf) and not fetch(
+            stack_afe._get(conf, "AFE_REPO"), stack_afe._get(conf, "AFE_FILE"), "AFE (mazemaker)"):
+        bad("AFE model download failed", "— retry: daedalus doctor afe fetch")
+        return 1
 
     print()
     ok("setup complete", "— daedalus doctor start")
@@ -1153,6 +1182,14 @@ def cmd_start(args=None) -> int:
         return 1
     if not main:
         bad("main model missing", "— run: daedalus doctor setup")
+        return 1
+
+    # Never two models on the card: mazemaker's AFE server is a model too.
+    from daedalus_cli import stack_afe
+    if stack_afe.afe_serving(conf):
+        host, port = stack_afe.host_port(conf)
+        bad(f"AFE model is serving on {host}:{port} — never two models",
+            "— stop it first: daedalus doctor afe stop")
         return 1
 
     section("Starting")
@@ -1452,6 +1489,9 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     add("resume", "Unfreeze paused servers").set_defaults(func=cmd_resume)
     add("conf", "Show the stack.conf path and the values in force").set_defaults(func=cmd_conf)
 
+    from daedalus_cli import stack_afe
+    stack_afe.register(subs)
+
     p_watch = add("watch", "Restart the main server if generation throughput collapses")
     p_watch.add_argument("--threshold", type=float, default=20.0,
                          help="Generation tok/s below which a window counts as slow (default 20)")
@@ -1464,7 +1504,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_watch.set_defaults(func=cmd_watch)
 
     p_logs = add("logs", "Tail a server log")
-    p_logs.add_argument("server", nargs="?", default="main", choices=list(SERVERS),
+    p_logs.add_argument("server", nargs="?", default="main", choices=list(SERVERS) + ["afe"],
                         help="Which server's log (default: main)")
     p_logs.add_argument("-n", "--lines", type=int, default=200,
                         help="Lines of history to show first (default 200)")
