@@ -219,6 +219,51 @@ def argv(conf: S.StackConf, gguf: str) -> List[str]:
     return cmd
 
 
+UNIT = "daedalus-afe"
+
+
+def launch(cmd: List[str]) -> bool:
+    """Start the server as its own transient systemd user unit when possible.
+
+    `wake` runs inside mazemaker-llm-watch.service, a oneshot. A plain child
+    process lives in that unit's cgroup, and when the oneshot finished systemd
+    SIGKILLed everything left in it — including the model it had just loaded.
+    Observed live: "afe wake: started", then "Killing process (llama-server)
+    with signal SIGKILL", and the caller got RemoteDisconnected. A new session
+    does not leave a cgroup; a unit of its own does, and it also shows up in
+    `systemctl --user status daedalus-afe`. Without a user systemd (a
+    container, a CI box) it falls back to the plain detached child.
+    """
+    if shutil.which("systemd-run") and shutil.which("systemctl"):
+        log = S.log_file(NAME)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["systemctl", "--user", "reset-failed", UNIT],
+                       capture_output=True, timeout=10)
+        run = subprocess.run(
+            ["systemd-run", "--user", "--unit", UNIT, "--collect", "--quiet",
+             "-p", f"StandardOutput=append:{log}", "-p", f"StandardError=append:{log}",
+             "--", *cmd],
+            capture_output=True, text=True, timeout=30,
+        )
+        if run.returncode == 0:
+            for _ in range(50):
+                show = subprocess.run(
+                    ["systemctl", "--user", "show", "-p", "MainPID", "--value", UNIT],
+                    capture_output=True, text=True, timeout=10,
+                )
+                pid = show.stdout.strip()
+                if pid.isdigit() and int(pid) > 0:
+                    S.pid_file(NAME).write_text(pid, encoding="utf-8")
+                    S.dim(f"{NAME} starting as {UNIT}.service (pid {pid})…")
+                    return True
+                time.sleep(0.1)
+            S.warn(f"{UNIT}.service started but reported no MainPID")
+            return False
+        S.warn("systemd-run failed, starting as a plain child",
+               f"({(run.stderr or '').strip()[:120]})")
+    return S.start_one(NAME, cmd)
+
+
 def healthy(conf: S.StackConf) -> bool:
     """/health answers 200 — loaded and able to take work.
 
@@ -259,7 +304,7 @@ def start(conf: S.StackConf, ready_timeout: Optional[int] = None) -> tuple:
     if reasons:
         return False, "; ".join(reasons)
     gguf = model(conf)
-    if not S.start_one(NAME, argv(conf, gguf)):
+    if not launch(argv(conf, gguf)):
         return False, "llama-server failed to launch — daedalus doctor logs afe"
     timeout = ready_timeout if ready_timeout is not None else _int(conf, "AFE_READY_TIMEOUT")
     if not wait_healthy(conf, timeout):
