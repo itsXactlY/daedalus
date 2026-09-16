@@ -12,6 +12,7 @@ This module provides:
 - daedalus config wizard   - Re-run setup wizard
 """
 
+import copy
 import os
 import platform
 import re
@@ -1937,8 +1938,76 @@ _COMMENTED_SECTIONS = """
 """
 
 
+CONFIG_BACKUP_KEEP = 30
+
+_ABSENT = object()
+
+
+def backup_before_write(path: Path) -> Optional[Path]:
+    """Copy *path* to ``$DAEDALUS_HOME/backups/<name>/`` before it is replaced.
+
+    Every rewrite of config.yaml or .env goes through here first, so a bad
+    write — an update, a migration, a model switch — is one `cp` away from
+    undone instead of reconstructed from memory. The newest
+    CONFIG_BACKUP_KEEP copies are kept; they hold secrets and are 0600.
+    """
+    try:
+        if not path.is_file():
+            return None
+        from datetime import datetime
+        import shutil
+
+        backup_dir = get_daedalus_home() / "backups" / path.name.lstrip(".")
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        target = backup_dir / f"{path.name.lstrip('.')}.{datetime.now():%Y%m%d-%H%M%S-%f}"
+        shutil.copy2(path, target)
+        _secure_file(target)
+        for old in sorted(backup_dir.iterdir())[:-CONFIG_BACKUP_KEEP]:
+            old.unlink(missing_ok=True)
+        return target
+    except Exception:
+        return None
+
+
+def _patch_raw_config(raw: Dict[str, Any], baseline: Dict[str, Any],
+                      desired: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply to *raw* only what *desired* changes relative to *baseline*.
+
+    Callers build *desired* from ``load_config()``, which is the user's file
+    deep-merged with every default and with ``${VAR}`` references expanded.
+    Writing that back is what kept rewriting config.yaml: it froze the whole
+    default set into the file (so later default changes never arrived),
+    turned env references into literal secrets, and made a one-key change
+    look like a rewrite of everything. Diffing against a fresh
+    ``load_config()`` isolates what the caller actually did — set, changed or
+    removed — and only that is written, onto the file as it stands.
+    """
+    out = dict(raw)
+    for key in list(desired) + [k for k in baseline if k not in desired]:
+        want = desired.get(key, _ABSENT)
+        base = baseline.get(key, _ABSENT)
+        if want is _ABSENT:
+            out.pop(key, None)
+            continue
+        if isinstance(want, dict) and isinstance(base, dict):
+            current = out.get(key)
+            sub = _patch_raw_config(current if isinstance(current, dict) else {}, base, want)
+            if sub or key in out:
+                out[key] = sub
+            continue
+        if base is _ABSENT or want != base:
+            out[key] = copy.deepcopy(want)
+    return out
+
+
 def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.daedalus/config.yaml."""
+    """Save configuration to ~/.daedalus/config.yaml.
+
+    An existing file is patched, not replaced: only the keys the caller set,
+    changed or removed are written, everything else in the file is left as
+    the operator wrote it, and the previous file is backed up first. A
+    missing file is created from *config* in full.
+    """
     if is_managed():
         managed_error("save configuration")
         return
@@ -1948,17 +2017,33 @@ def save_config(config: Dict[str, Any]):
     config_path = get_config_path()
     normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
 
+    to_write = normalized
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+        except Exception as exc:
+            print(f"Warning: {config_path} is not valid YAML ({exc}); "
+                  f"writing only the requested change, previous file backed up")
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        to_write = _patch_raw_config(raw, load_config(), normalized)
+        if to_write == raw:
+            return
+
     parts = []
-    sec = normalized.get("security", {})
+    sec = to_write.get("security", {})
     if not sec or sec.get("redact_secrets") is None:
         parts.append(_SECURITY_COMMENT)
-    fb = normalized.get("fallback_model", {})
+    fb = to_write.get("fallback_model", {})
     if not fb or not (fb.get("provider") and fb.get("model")):
         parts.append(_FALLBACK_COMMENT)
 
+    backup_before_write(config_path)
     atomic_yaml_write(
         config_path,
-        normalized,
+        to_write,
         extra_content="".join(parts) if parts else None,
     )
     _secure_file(config_path)
@@ -2052,6 +2137,7 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
+    backup_before_write(env_path)
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
     try:
         with os.fdopen(fd, "w", **write_kw) as f:
@@ -2100,7 +2186,8 @@ def save_env_value(key: str, value: str):
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
-    
+
+    backup_before_write(env_path)
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     try:
         with os.fdopen(fd, 'w', **write_kw) as f:
@@ -2151,6 +2238,7 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
 
     if found:
+        backup_before_write(env_path)
         fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
         try:
             with os.fdopen(fd, 'w', **write_kw) as f:
