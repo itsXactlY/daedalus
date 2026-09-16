@@ -837,6 +837,15 @@ def cmd_status(args=None, conf: StackConf = None) -> int:
         if not conf.enabled(name):
             continue
         host, port = conf.host_port(name)
+        if name == "aux" and port == conf.host_port("main")[1]:
+            # Sharing main's port means aux IS slot 0 of the main process; it
+            # has no pid of its own, so the generic branch below reported it
+            # as "answering — not started by daedalus", a wrong alarm.
+            if state_of("main") == "running":
+                ok(f"aux  slot 0 of main on {host}:{port}")
+            else:
+                dim("aux  stopped (slot 0 of main)")
+            continue
         state, pid = state_of(name), pid_of(name)
         if state == "running":
             if name == "main" and running_profile():

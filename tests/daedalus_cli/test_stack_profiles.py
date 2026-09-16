@@ -113,6 +113,14 @@ def test_status_names_the_running_model(fake_main, monkeypatch, capsys):
     assert "main (a3b)" in capsys.readouterr().out
 
 
+def test_status_reports_a_port_sharing_aux_as_slot_zero(fake_main, monkeypatch, capsys):
+    monkeypatch.setattr(S, "port_up", lambda *a, **k: True)
+    S.cmd_status(conf=_conf(AUX_ENABLED=1, MAIN_PORT=8080, AUX_PORT=8080))
+    out = capsys.readouterr().out
+    assert "aux  slot 0 of main" in out
+    assert "not started by daedalus" not in out
+
+
 def test_stop_forgets_the_profile(monkeypatch):
     S.run_dir().mkdir(parents=True, exist_ok=True)
     S.profile_file().write_text("a3b")
