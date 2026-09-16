@@ -55,9 +55,13 @@ DEFAULTS = {
     # Experts of the first N layers stay in system RAM. Fully offloaded the
     # 35B-A3B needed 15.7 GiB with the pod up — under 1 GiB left, below the
     # 1 GiB mazemaker's recall reranker needs. MEASURED 2026-09-16, RTX 16 GiB,
-    # ctx 16384, 1 slot: N=12 holds 10616 MiB, leaves 4376 MiB free, loads in
-    # 80 s and decodes at 23.9 tok/s.
-    "AFE_N_CPU_MOE": "12",
+    # ctx 16384, 1 slot:
+    #   N=12  10616 MiB, 23.9 tok/s — does NOT fit a real pass: the AFE window
+    #         worker's own CUDA context brings pod usage to ~5.4 GiB, and
+    #         mazemaker's in-pod floor refused the wake at 10979 MiB free.
+    #   N=18   8965 MiB, 60.2 tok/s, same extraction output — ~2 GiB stays
+    #         free beside the worker.
+    "AFE_N_CPU_MOE": "18",
     "AFE_VRAM_BLOCK_MIB": "10240",
     "AFE_READY_TIMEOUT": "420",
     "AFE_IDLE_SECONDS": "600",

@@ -264,9 +264,10 @@ AFE_FILE="Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
 AFE_PORT=8888
 AFE_CTX=16384
 AFE_SLOTS=1
-# Experts of the first N layers in system RAM. N=12 measured: 10.6 GiB VRAM,
-# 4.4 GiB left for the mazemaker pod, 23.9 tok/s.
-AFE_N_CPU_MOE=12
+# Experts of the first N layers in system RAM. N=18 measured: 8965 MiB VRAM,
+# which leaves ~2 GiB beside the AFE window worker's own CUDA context. N=12
+# (10.6 GiB) did not fit a real pass.
+AFE_N_CPU_MOE=18
 AFE_VRAM_BLOCK_MIB=10240
 '''
 
