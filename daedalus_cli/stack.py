@@ -789,12 +789,16 @@ def health_ok(host: str, port: int, timeout: float = 2.0) -> bool:
 def wait_ready(name: str, host: str, port: int, seconds: int = 180) -> bool:
     waited = 0
     while waited < seconds:
-        if health_ok(host, port):
-            ok(f"{name} up on {host}:{port}")
-            return True
+        # Our own process has to be the one alive. A healthy port proves
+        # nothing on its own: with a hand-started server already on :8080 the
+        # launched process died binding the port, /health still answered 200
+        # from the other server, and this printed "up" for a dead process.
         if not alive(pid_of(name)):
             bad(f"{name} died", f"— daedalus doctor logs {name}")
             return False
+        if health_ok(host, port):
+            ok(f"{name} up on {host}:{port}")
+            return True
         time.sleep(2)
         waited += 2
     bad(f"{name} did not answer within {seconds}s", f"— daedalus doctor logs {name}")
@@ -1351,18 +1355,26 @@ def cmd_start(args=None) -> int:
     # startup rather than a slowdown. The hand-written launch this stack
     # mirrors has always set it; the stack did not, so the two behaved
     # differently under exactly the conditions that matter.
+    main_host, main_port = conf.host_port("main")
+    if state_of("main") == "stopped" and port_up(main_host, main_port):
+        # Something daedalus did not start already serves the port — a
+        # hand-started llama-server, say. Launching anyway only produces a
+        # process that dies binding the port, and never two models.
+        bad(f"{main_host}:{main_port} is already served by a process daedalus did not start",
+            "— never two models: stop that server, or keep using it as it is")
+        return 1
     _model, argv, main_env = main_launch(conf, profile)
     if not start_one("main", argv, env=main_env):
         return 1
-    profile_file().write_text(profile, encoding="utf-8")
 
     # The main model must be READY before the helper starts. Both loading at
     # once means two processes fighting for RAM while the big one is pinning
     # its KV cache: the machine swaps, and anything else on it (a memory pod
     # running consolidation, for one) stalls behind the page-outs.
-    main_host, main_port = conf.host_port("main")
     if not wait_ready("main", main_host, main_port, 300):
+        profile_file().unlink(missing_ok=True)
         return 1
+    profile_file().write_text(profile, encoding="utf-8")
 
     if conf.enabled("aux"):
         aux = model_path(conf.str("AUX_REPO"), conf.str("AUX_FILE"))

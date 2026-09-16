@@ -128,6 +128,25 @@ def test_stop_forgets_the_profile(monkeypatch):
     assert S.running_profile() == ""
 
 
+def test_start_refuses_when_a_foreign_server_holds_the_port(no_launch, monkeypatch, capsys):
+    # Observed: a hand-started llama-server on :8080; the doctor launched a
+    # duplicate that died binding the port and still printed "main up".
+    monkeypatch.setattr(S, "profile_model", lambda conf, profile: (f"/m/{profile}.gguf", ""))
+    monkeypatch.setattr(S.os, "access", lambda *a, **k: True)
+    monkeypatch.setattr(S, "port_up", lambda *a, **k: True)
+    from daedalus_cli import stack_afe
+    monkeypatch.setattr(stack_afe, "afe_serving", lambda conf: False)
+    assert S.cmd_start(argparse.Namespace(model="dense")) == 1
+    assert "daedalus did not start" in capsys.readouterr().out
+    assert S.running_profile() == ""
+
+
+def test_wait_ready_rejects_a_dead_process_behind_a_healthy_port(monkeypatch):
+    monkeypatch.setattr(S, "health_ok", lambda *a, **k: True)
+    monkeypatch.setattr(S, "alive", lambda pid: False)
+    assert S.wait_ready("main", "127.0.0.1", 8080, seconds=4) is False
+
+
 def test_wait_ready_does_not_accept_a_loading_server(monkeypatch):
     # llama-server answers 503 while loading; that is not ready.
     monkeypatch.setattr(S, "health_ok", lambda *a, **k: False)
