@@ -525,29 +525,6 @@ class TestGetTextAuxiliaryClient:
         call_kwargs = mock_openai.call_args
         assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
 
-    def test_task_direct_endpoint_override(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_API_KEY", "task-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert model == "task-model"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "task-key"
-
-    def test_task_direct_endpoint_without_openai_key_uses_placeholder(self, monkeypatch):
-        """Local endpoints without an API key should use 'no-key-required' placeholder."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert client is not None
-        assert model == "task-model"
-        assert mock_openai.call_args.kwargs["api_key"] == "no-key-required"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
-
     def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
         config = {
             "model": {
@@ -754,28 +731,6 @@ class TestAuxiliaryPoolAwareness:
         assert client is not None
         assert provider == "custom:local"
 
-    def test_vision_direct_endpoint_override(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
-        monkeypatch.setenv("AUXILIARY_VISION_API_KEY", "vision-key")
-        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert model == "vision-model"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:4567/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "vision-key"
-
-    def test_vision_direct_endpoint_without_key_uses_placeholder(self, monkeypatch):
-        """Vision endpoint without API key should use 'no-key-required' placeholder."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "http://localhost:4567/v1")
-        monkeypatch.setenv("AUXILIARY_VISION_MODEL", "vision-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert client is not None
-        assert model == "vision-model"
-        assert mock_openai.call_args.kwargs["api_key"] == "no-key-required"
-
     def test_vision_uses_openrouter_when_available(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         with patch("agent.auxiliary_client.OpenAI") as mock_openai:
@@ -790,31 +745,6 @@ class TestAuxiliaryPoolAwareness:
             client, model = get_vision_auxiliary_client()
         assert model == "google/gemini-3-flash-preview"
         assert client is not None
-
-    def test_vision_config_google_provider_uses_gemini_credentials(self, monkeypatch):
-        config = {
-            "auxiliary": {
-                "vision": {
-                    "provider": "google",
-                    "model": "gemini-3.1-pro-preview",
-                }
-            }
-        }
-        monkeypatch.setattr("daedalus_cli.config.load_config", lambda: config)
-        with (
-            patch("daedalus_cli.auth.resolve_api_key_provider_credentials", return_value={
-                "api_key": "gemini-key",
-                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-            }),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-        ):
-            resolved_provider, client, model = resolve_vision_provider_client()
-
-        assert resolved_provider == "gemini"
-        assert client is not None
-        assert model == "gemini-3.1-pro-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "gemini-key"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
 
     def test_vision_forced_main_uses_custom_endpoint(self, monkeypatch):
         """When explicitly forced to 'main', vision CAN use custom endpoint."""
@@ -852,16 +782,6 @@ class TestAuxiliaryPoolAwareness:
             client, model = get_vision_auxiliary_client()
         assert client is None
         assert model is None
-
-    def test_vision_forced_codex(self, monkeypatch, codex_auth_dir):
-        """When forced to 'codex', vision uses Codex OAuth."""
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "codex")
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_vision_auxiliary_client()
-        from agent.auxiliary_client import CodexAuxiliaryClient
-        assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
 
 
 class TestGetAuxiliaryProvider:
@@ -1044,23 +964,6 @@ class TestTaskSpecificOverrides:
             client, model = get_text_auxiliary_client("web_extract")
         assert model == "google/gemini-3-flash-preview"
 
-    def test_task_direct_endpoint_from_config(self, monkeypatch, tmp_path):
-        daedalus_home = tmp_path / "daedalus"
-        daedalus_home.mkdir(parents=True, exist_ok=True)
-        (daedalus_home / "config.yaml").write_text(
-            """auxiliary:
-  web_extract:
-    base_url: http://localhost:3456/v1
-    api_key: config-key
-    model: config-model
-"""
-        )
-        monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert model == "config-model"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:3456/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "config-key"
 
     def test_task_without_override_uses_auto(self, monkeypatch):
         """A task with no provider env var falls through to auto chain."""
@@ -1069,23 +972,68 @@ class TestTaskSpecificOverrides:
             client, model = get_text_auxiliary_client("compression")
         assert model == "google/gemini-3-flash-preview"
 
-    def test_compression_summary_base_url_from_config(self, monkeypatch, tmp_path):
-        """compression.summary_base_url should produce a custom-endpoint client."""
-        daedalus_home = tmp_path / "daedalus"
-        daedalus_home.mkdir(parents=True, exist_ok=True)
-        (daedalus_home / "config.yaml").write_text(
-            """compression:
+
+class TestAuxiliaryInheritsMainModel:
+    """Every auxiliary task goes where the main model goes. Period.
+
+    The per-task routing these replace (auxiliary.<task>.*, AUXILIARY_<TASK>_*,
+    compression.summary_*) failed open: a task whose section was empty resolved
+    to `auto`, which picks OpenRouter first, and private turn content left the
+    machine. These pin the closed behaviour.
+    """
+
+    LOCAL = "http://127.0.0.1:8080/v1"
+
+    def _home(self, tmp_path, monkeypatch, body):
+        home = tmp_path / "daedalus"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(body)
+        monkeypatch.setenv("DAEDALUS_HOME", str(home))
+
+    def test_every_task_including_unnamed_ones_uses_the_main_model(self, monkeypatch, tmp_path):
+        self._home(tmp_path, monkeypatch, f"model:\n  provider: custom\n  base_url: {self.LOCAL}\n")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        from agent.auxiliary_client import _resolve_task_provider_model
+        for task in ("vision", "web_extract", "compression", "flush_memories",
+                     "curator", "session_search", "hot_swap_prefill",
+                     "a_task_added_next_year"):
+            provider, _model, base_url, _key = _resolve_task_provider_model(task=task)
+            assert (provider, base_url) == ("custom", self.LOCAL), task
+
+    def test_leftover_per_task_config_cannot_reroute_a_task(self, monkeypatch, tmp_path):
+        self._home(tmp_path, monkeypatch, f"""model:
+  provider: custom
+  base_url: {self.LOCAL}
+auxiliary:
+  web_extract:
+    provider: openrouter
+    base_url: https://openrouter.ai/api/v1
+    model: google/gemini-3-flash-preview
+compression:
   summary_provider: custom
-  summary_model: glm-4.7
   summary_base_url: https://api.z.ai/api/coding/paas/v4
-"""
-        )
-        monkeypatch.setenv("DAEDALUS_HOME", str(daedalus_home))
-        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("compression")
-        assert model == "glm-4.7"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+""")
+        from agent.auxiliary_client import _resolve_task_provider_model
+        for task in ("web_extract", "compression"):
+            _p, _m, base_url, _k = _resolve_task_provider_model(task=task)
+            assert base_url == self.LOCAL, task
+
+    def test_env_overrides_cannot_reroute_a_task(self, monkeypatch, tmp_path):
+        self._home(tmp_path, monkeypatch, f"model:\n  provider: custom\n  base_url: {self.LOCAL}\n")
+        monkeypatch.setenv("AUXILIARY_VISION_BASE_URL", "https://example.invalid/v1")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "openrouter")
+        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
+        from agent.auxiliary_client import _resolve_task_provider_model
+        for task in ("vision", "web_extract", "compression"):
+            _p, _m, base_url, _k = _resolve_task_provider_model(task=task)
+            assert base_url == self.LOCAL, task
+
+    def test_an_explicit_call_site_endpoint_still_wins(self, monkeypatch, tmp_path):
+        self._home(tmp_path, monkeypatch, f"model:\n  provider: custom\n  base_url: {self.LOCAL}\n")
+        from agent.auxiliary_client import _resolve_task_provider_model
+        provider, _m, base_url, _k = _resolve_task_provider_model(
+            task="vision", base_url="http://127.0.0.1:8082/v1")
+        assert (provider, base_url) == ("custom", "http://127.0.0.1:8082/v1")
 
 
 class TestAuxiliaryMaxTokensParam:
