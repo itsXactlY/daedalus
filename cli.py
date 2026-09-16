@@ -2208,6 +2208,17 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         is_local = "127.0.0.1" in base_url or "localhost" in base_url
         should_run = bool(getattr(self, "verbose", False) and is_local)
 
+        # The session baseline is taken at session start whether or not the
+        # status bar is in verbose mode, so /usage and a later /verbose both
+        # report the whole session, not whatever followed the first poll.
+        if is_local and not self._llama_session_stats().has_baseline:
+            base_thread = getattr(self, "_llama_baseline_thread", None)
+            if base_thread is None or not base_thread.is_alive():
+                bt = threading.Thread(target=self._scrape_llama_session,
+                                      daemon=True, name="llama-session-baseline")
+                self._llama_baseline_thread = bt
+                bt.start()
+
         thread = getattr(self, "_llama_telemetry_thread", None)
         if should_run and (thread is None or not thread.is_alive()):
             stop_event = threading.Event()
@@ -2226,14 +2237,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._llama_telemetry = None
 
     def _llama_telemetry_loop(self, stop_event) -> None:
-        url = (getattr(self, "base_url", "") or "").rstrip("/")
-        if url.endswith("/v1"):
-            url = url[: -len("/v1")]
+        url = self._llama_base()
         last: Dict[int, tuple] = {}
         while not stop_event.is_set():
             try:
                 snap = self._fetch_llama_telemetry(url, last)
                 if snap is not None:
+                    stats = self._llama_session_stats()
+                    if snap.get("metrics"):
+                        stats.update(snap["metrics"])
+                    if snap.get("busy") and snap.get("kv_ctx"):
+                        stats.observe_kv(snap.get("kv_used") or 0, snap["kv_ctx"])
+                    snap["session"] = stats.summary()
                     self._llama_telemetry = snap
             except Exception:
                 pass
@@ -2292,22 +2307,57 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         }
 
         try:
+            from daedalus_cli.llama_session_stats import parse_metrics
             with urllib.request.urlopen(f"{url}/metrics", timeout=1.5) as resp:
-                text = resp.read().decode("utf-8", "replace")
-            m = {}
-            for line in text.splitlines():
-                mm = _re.match(r'^llamacpp:(\S+?)\s+([0-9.eE+-]+)\s*$', line)
-                if mm:
-                    m[mm.group(1)] = float(mm.group(2))
-            n_draft = m.get("spec_decode_num_draft_tokens_total", 0.0)
-            n_accept = m.get("spec_decode_num_accepted_tokens_total", 0.0)
-            if n_draft > 0:
-                out["dflash_pct"] = n_accept / n_draft * 100.0
-            out["avg_gen_tps"] = m.get("predicted_tokens_seconds")
+                out["metrics"] = parse_metrics(resp.read().decode("utf-8", "replace"))
         except Exception:
             pass
 
         return out
+
+    def _llama_session_stats(self):
+        """Session-lifetime counters for the local llama-server.
+
+        Keyed to session_start so /new and friends get a fresh session, and
+        kept on the CLI rather than on the poller thread: the poller is torn
+        down whenever verbose goes off, and the session's numbers must not
+        go with it.
+        """
+        from daedalus_cli.llama_session_stats import SessionCounters
+        key = getattr(self, "session_start", None)
+        stats = getattr(self, "_llama_session", None)
+        if stats is None or getattr(self, "_llama_session_key", None) != key:
+            stats = SessionCounters()
+            self._llama_session = stats
+            self._llama_session_key = key
+        return stats
+
+    def _llama_base(self) -> str:
+        url = (getattr(self, "base_url", "") or "").rstrip("/")
+        return url[: -len("/v1")] if url.endswith("/v1") else url
+
+    def _scrape_llama_session(self, timeout: float = 1.5) -> Optional[str]:
+        """One /metrics read folded into the session counters.
+
+        Returns None on success, otherwise why it failed — /usage prints that
+        instead of silently leaving its server section out.
+        """
+        import urllib.error
+        import urllib.request
+        from daedalus_cli.llama_session_stats import parse_metrics
+        try:
+            with urllib.request.urlopen(f"{self._llama_base()}/metrics", timeout=timeout) as resp:
+                metrics = parse_metrics(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 501:
+                return "server ohne --metrics gestartet"
+            if exc.code == 503:
+                return "server lädt oder ist nicht bereit (503)"
+            return f"HTTP {exc.code}"
+        except Exception as exc:
+            return f"nicht erreichbar ({type(exc).__name__})"
+        self._llama_session_stats().update(metrics)
+        return None
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         self._ensure_llama_telemetry_poller()
@@ -2439,18 +2489,31 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         if not telemetry:
             return ""
+        session = telemetry.get("session") or {}
         bits = []
+        # Throughput: live while a slot generates, and the whole-session mean
+        # always — the mean alone once idle.
+        tps = []
         if telemetry.get("busy") and telemetry.get("live_tps"):
-            bits.append(f"{telemetry['live_tps']:.0f} tok/s")
-        elif telemetry.get("avg_gen_tps"):
-            bits.append(f"~{telemetry['avg_gen_tps']:.0f} tok/s")
+            tps.append(f"{telemetry['live_tps']:.0f}")
+        if session.get("gen_tps"):
+            tps.append(f"⌀{session['gen_tps']:.0f}")
+        if tps:
+            bits.append(" ".join(tps) + " tok/s")
         kv_ctx = telemetry.get("kv_ctx") or 0
         if kv_ctx:
             kv_pct = (telemetry.get("kv_used") or 0) / kv_ctx * 100.0
-            bits.append(f"kv {kv_pct:.0f}%")
-        if telemetry.get("dflash_pct") is not None:
-            bits.append(f"dflash {telemetry['dflash_pct']:.0f}%")
-        return " ".join(bits)
+            kv = f"kv {kv_pct:.0f}%"
+            if session.get("kv_avg_pct") is not None:
+                kv += f" ⌀{session['kv_avg_pct']:.0f}%"
+            if session.get("kv_peak_pct"):
+                kv += f" ▲{session['kv_peak_pct']:.0f}%"
+            bits.append(kv)
+        if session.get("cache_hit_pct") is not None:
+            bits.append(f"cache {session['cache_hit_pct']:.0f}%")
+        if session.get("draft_pct") is not None:
+            bits.append(f"draft {session['draft_pct']:.0f}%")
+        return " · ".join(bits)
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         try:
@@ -5987,6 +6050,46 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"  {'':<22}{'':>12}   Pricing unknown for {agent.model}")
         else:
             row("kosten", f"${cost:.4f}", f"{status} · {source}")
+
+        base_url = (getattr(self, "base_url", "") or "").lower()
+        if "127.0.0.1" in base_url or "localhost" in base_url:
+            # /usage is an explicit command, so it can wait for a busy server
+            # longer than the status-bar poller does.
+            scrape_error = self._scrape_llama_session(timeout=5.0)
+            print()
+            print("  LOKALER SERVER (SITZUNG)")
+            print(rule)
+            if scrape_error is not None:
+                # Never drop the section silently: say why there are no numbers.
+                row("metrics", "--", scrape_error)
+                if self._llama_session_stats().has_baseline:
+                    row("", "", "bisher gemessene sitzungswerte bleiben erhalten")
+            else:
+                s = self._llama_session_stats().summary()
+
+                def pct(v):
+                    return f"{v:.1f}%" if v is not None else "--"
+
+                def rate(v, unit):
+                    return f"⌀ {v:,.1f} {unit}" if v else "noch nichts gemessen"
+
+                row("generiert", f"{int(s['gen_tokens']):,}", rate(s["gen_tps"], "tok/s"))
+                row("prompt verarbeitet", f"{int(s['prompt_tokens']):,}",
+                    rate(s["prefill_tps"], "tok/s prefill"))
+                row("aus kv-cache", f"{int(s['prompt_cached']):,}",
+                    f"{pct(s['cache_hit_pct'])} des prompts wiederverwendet")
+                if s["draft_tokens"]:
+                    row("draft akzeptiert",
+                        f"{int(s['draft_accepted']):,}/{int(s['draft_tokens']):,}",
+                        pct(s["draft_pct"]))
+                if s["kv_peak_pct"] is not None:
+                    row("kv-füllung", pct(s["kv_now_pct"]),
+                        f"⌀ {pct(s['kv_avg_pct'])} · spitze {pct(s['kv_peak_pct'])}")
+                else:
+                    row("kv-füllung", "--", "nur mit /verbose gemessen")
+                if s["restarts"]:
+                    row("", "", f"server {int(s['restarts'])}× neu gestartet — "
+                                "zähler über die neustarts summiert")
 
         per_model = getattr(agent, "model_ledger", None) or {}
         if len(per_model) > 1 or (per_model and calls > 1):
