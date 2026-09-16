@@ -265,6 +265,7 @@ of the servers it already reports on:
 | `daedalus doctor` | what is present and what is missing — toolchain, sources, models, memory backend, servers |
 | `daedalus doctor setup` | clones and builds the adaptive-KV llama.cpp, pulls both models |
 | `daedalus doctor start` | brings the server up with both slots, and the memory backend if it is not already running |
+| `daedalus doctor start a3b` | the same, with the Qwen3.6-35B-A3B MoE instead of the dense 27B — same port, slots and context; `restart` keeps whichever is running unless you name one |
 | `daedalus doctor watch` | restarts the server if generation throughput collapses — cheap here, because a cold cache costs one small prefill rather than a replayed transcript |
 | `daedalus doctor pause` / `resume` | freezes them with the weights still loaded |
 | `daedalus doctor stop` · `status` · `logs` | the rest of it |

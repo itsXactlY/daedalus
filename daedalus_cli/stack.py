@@ -252,6 +252,14 @@ VIS_HOST="127.0.0.1"
 VIS_CTX=16384
 VIS_THREADS=4
 
+# --- main model profile: a3b ----------------------------------------------------
+# `daedalus doctor start a3b` serves Qwen3.6-35B-A3B on MAIN_PORT instead of the
+# dense 27B; a plain `daedalus doctor start` stays dense. Same port, slots and
+# context, so daedalus does not notice the switch. Defaults to the AFE file.
+# Its KV cache is small (10 full-attention layers, 2 KV heads), so there is no
+# block KV streaming here; the lever is how many layers' experts stay in RAM.
+A3B_N_CPU_MOE=18
+
 # --- mazemaker AFE model ------------------------------------------------------
 # mazemaker's nightly fact extraction calls an LLM on :8888. The doctor serves
 # it (`daedalus doctor afe`), and only ever as the ONLY model on the card: it
@@ -763,10 +771,25 @@ def start_one(name: str, argv: list, env: dict | None = None) -> bool:
     return True
 
 
+def health_ok(host: str, port: int, timeout: float = 2.0) -> bool:
+    """/health answers 200: the model is loaded and can take work.
+
+    port_up counts any HTTP answer, and llama-server answers 503 for the whole
+    time it is loading. Measured: `main up` printed 2 s after launch on a model
+    that took ~40 s to load, so the aux helper started while main was still
+    pinning memory, which is exactly what cmd_start waits to avoid.
+    """
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=timeout) as response:
+            return response.status == 200
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
+
+
 def wait_ready(name: str, host: str, port: int, seconds: int = 180) -> bool:
     waited = 0
     while waited < seconds:
-        if port_up(host, port):
+        if health_ok(host, port):
             ok(f"{name} up on {host}:{port}")
             return True
         if not alive(pid_of(name)):
@@ -816,6 +839,8 @@ def cmd_status(args=None, conf: StackConf = None) -> int:
         host, port = conf.host_port(name)
         state, pid = state_of(name), pid_of(name)
         if state == "running":
+            if name == "main" and running_profile():
+                name = f"main ({running_profile()})"
             if port_up(host, port):
                 ok(f"{name}  {host}:{port}  pid {pid}")
             else:
@@ -876,9 +901,14 @@ def stack_report(conf: StackConf = None) -> None:
     section("Local models")
     main = model_path(conf.str("MAIN_REPO"), conf.str("MAIN_FILE"))
     if main:
-        ok(f"main: {os.path.basename(main)}", f"({_human_size(main)})")
+        ok(f"main (dense): {os.path.basename(main)}", f"({_human_size(main)})")
     else:
         bad("main model missing", "— run: daedalus doctor setup")
+    a3b, _how = profile_model(conf, "a3b")
+    if a3b:
+        ok(f"main (a3b):   {os.path.basename(a3b)}", f"({_human_size(a3b)}) — daedalus doctor start a3b")
+    else:
+        dim("main (a3b): not downloaded — daedalus doctor setup")
     if conf.enabled("aux"):
         aux = model_path(conf.str("AUX_REPO"), conf.str("AUX_FILE"))
         if aux:
@@ -1045,6 +1075,11 @@ def cmd_setup(args=None) -> int:
             stack_afe._get(conf, "AFE_REPO"), stack_afe._get(conf, "AFE_FILE"), "AFE (mazemaker)"):
         bad("AFE model download failed", "— retry: daedalus doctor afe fetch")
         return 1
+    # `daedalus doctor start a3b` — usually the very same file AFE serves, in
+    # which case fetch() just reports it present.
+    a3b_repo, a3b_file = _a3b_repo_file(conf)
+    if not fetch(a3b_repo, a3b_file, "a3b (doctor start a3b)"):
+        warn("a3b model download failed", "— `daedalus doctor start a3b` stays unavailable")
 
     print()
     ok("setup complete", "— daedalus doctor start")
@@ -1175,14 +1210,120 @@ def _main_argv(conf: StackConf, model: str) -> list:
     return argv
 
 
+# ------------------------------------------------------------ model profiles --
+#
+# The main server can run one of two models on the same port, with the same
+# slots and context, so nothing that talks to :8080 has to know which:
+#
+#   dense  Qwen3.8-27B (MAIN_*): block KV streaming, DFlash2 draft. Default.
+#   a3b    Qwen3.6-35B-A3B MoE (A3B_*): the file `daedalus doctor afe` uses.
+#          Only 10 of its 40 layers are full attention with 2 KV heads, so
+#          the whole 262144 context is ~2 GiB of plain KV and needs no
+#          streaming; expert weights of the first A3B_N_CPU_MOE layers stay
+#          in system RAM so the rest fits the card beside the mazemaker pod.
+
+PROFILES = ("dense", "a3b")
+DEFAULT_PROFILE = "dense"
+
+
+def profile_file() -> Path:
+    return run_dir() / "main.profile"
+
+
+def running_profile() -> str:
+    """The profile the running main server was started with, or ''."""
+    try:
+        name = profile_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return name if name in PROFILES else ""
+
+
+def _a3b_repo_file(conf: StackConf) -> tuple:
+    from daedalus_cli import stack_afe
+    return (conf.str("A3B_REPO", stack_afe._get(conf, "AFE_REPO")),
+            conf.str("A3B_FILE", stack_afe._get(conf, "AFE_FILE")))
+
+
+def profile_model(conf: StackConf, profile: str) -> tuple:
+    """(gguf path or '', the command that fetches it)."""
+    if profile == "a3b":
+        repo, name = _a3b_repo_file(conf)
+        return model_path(repo, name), "daedalus doctor setup"
+    return model_path(conf.str("MAIN_REPO"), conf.str("MAIN_FILE")), "daedalus doctor setup"
+
+
+def _a3b_argv(conf: StackConf, model: str) -> list:
+    slots = conf.int("MAIN_SLOTS", 1)
+    argv = [
+        str(conf.server), "--model", model,
+        "-a", conf.str("A3B_ALIAS", "qwen3.6-35b-a3b"),
+        "--host", conf.str("MAIN_HOST", "127.0.0.1"), "--port", str(conf.int("MAIN_PORT", 8080)),
+        # Same context as the dense profile by default: daedalus sizes its
+        # compaction from model.context_length, which must match the server.
+        "--ctx-size", str(conf.int("A3B_CTX", conf.int("MAIN_CTX", 131072))),
+        "-ctk", conf.str("MAIN_CTK", "q8_0"), "-ctv", conf.str("MAIN_CTV", "q4_0"), "-fa", "on",
+        "-ngl", str(conf.int("MAIN_NGL", 99)),
+        "--n-cpu-moe", str(conf.int("A3B_N_CPU_MOE", 18)),
+        "-t", str(conf.int("MAIN_THREADS", 8)),
+        "-np", str(slots),
+        "-b", "512", "-ub", "512",
+        "--temp", "1.0", "--top-k", "20", "--min-p", "0.00", "--top-p", "0.95",
+        "--presence-penalty", "0.0", "--repeat-penalty", "1.0",
+        "--reasoning", "on", "--reasoning-preserve", "--reasoning-format", "deepseek",
+        "--reasoning-budget", str(conf.int("MAIN_REASONING_BUDGET", 12000)),
+        "--jinja", "--cont-batching",
+        "--cache-ram", str(conf.int("MAIN_CACHE_RAM", 2048)),
+        "--metrics",
+        # The DFlash2 drafter is trained against the 27B and useless here; the
+        # MTP GGUF carries its own draft head.
+        "--spec-type", "draft-mtp,ngram-mod", "--spec-draft-n-max", "2",
+        "--spec-ngram-mod-n-match", "24", "--spec-ngram-mod-n-min", "24",
+        "--spec-ngram-mod-n-max", "32",
+    ]
+    if slots != 1 or conf.flag("MAIN_KV_UNIFIED", False):
+        # Same reason as the dense profile: aux shares slot 0 of this process,
+        # and without --no-cache-idle-slots each slot wipes the other's prefix.
+        argv += ["-kvu", "--no-cache-idle-slots"]
+    dim("speculative: MTP + ngram-mod (a3b)")
+    if conf.flag("MAIN_VISION", False):
+        repo, _name = _a3b_repo_file(conf)
+        projector = model_path(repo, conf.str("A3B_MMPROJ_FILE", "mmproj-BF16.gguf"))
+        if projector:
+            argv += ["-mm", projector, "--no-mmproj-offload",
+                     "--image-min-tokens", "1024", "--image-max-tokens", "2048"]
+            dim(f"vision: {os.path.basename(projector)}")
+        else:
+            warn("MAIN_VISION=1 but the a3b projector is missing", "— run: daedalus doctor setup")
+    return argv
+
+
+def main_launch(conf: StackConf, profile: str) -> tuple:
+    """(model, argv, env) for the main server; model is '' when not on disk."""
+    model, _how = profile_model(conf, profile)
+    if not model:
+        return "", [], {}
+    argv = _a3b_argv(conf, model) if profile == "a3b" else _main_argv(conf, model)
+    # Unified memory lets an allocation that overshoots VRAM spill to the host
+    # instead of failing the launch. See cmd_start for why the dense stack
+    # needs it; the a3b profile keeps parity rather than a second behaviour.
+    return model, argv, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
+
+
 def cmd_start(args=None) -> int:
     conf = load_conf()
-    main = model_path(conf.str("MAIN_REPO"), conf.str("MAIN_FILE"))
+    profile = getattr(args, "model", None) or DEFAULT_PROFILE
     if not os.access(conf.server, os.X_OK):
         bad("llama-server not built", "— run: daedalus doctor setup")
         return 1
-    if not main:
-        bad("main model missing", "— run: daedalus doctor setup")
+    model, how = profile_model(conf, profile)
+    if not model:
+        bad(f"{profile} model missing", f"— run: {how}")
+        return 1
+    current = running_profile()
+    if state_of("main") != "stopped" and current and current != profile:
+        bad(f"main is already serving {current} — never two models",
+            f"— switch with: daedalus doctor restart {profile}")
         return 1
 
     # Never two models on the card: mazemaker's AFE server is a model too.
@@ -1193,7 +1334,7 @@ def cmd_start(args=None) -> int:
             "— stop it first: daedalus doctor afe stop")
         return 1
 
-    section("Starting")
+    section(f"Starting ({profile})")
     # Block KV streaming keeps most of the cache in pinned host memory and
     # pages it in; unified memory is what lets an allocation that overshoots
     # VRAM spill to the host instead of failing the launch outright. Without
@@ -1201,9 +1342,10 @@ def cmd_start(args=None) -> int:
     # startup rather than a slowdown. The hand-written launch this stack
     # mirrors has always set it; the stack did not, so the two behaved
     # differently under exactly the conditions that matter.
-    main_env = {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
-    if not start_one("main", _main_argv(conf, main), env=main_env):
+    _model, argv, main_env = main_launch(conf, profile)
+    if not start_one("main", argv, env=main_env):
         return 1
+    profile_file().write_text(profile, encoding="utf-8")
 
     # The main model must be READY before the helper starts. Both loading at
     # once means two processes fighting for RAM while the big one is pinning
@@ -1272,12 +1414,16 @@ def cmd_stop(args=None) -> int:
     # Reverse of start: the dependents go first, the main model last.
     for name in ("vis", "aux", "main"):
         stop_one(name)
+    profile_file().unlink(missing_ok=True)
     return 0
 
 
 def cmd_restart(args=None) -> int:
+    # No model named: restart what is running. A plain restart, or the
+    # watchdog's, must never quietly turn an a3b session back into dense.
+    profile = getattr(args, "model", None) or running_profile() or DEFAULT_PROFILE
     cmd_stop(args)
-    return cmd_start(args)
+    return cmd_start(argparse.Namespace(model=profile))
 
 
 def _signal_all(sig, verb: str) -> int:
@@ -1448,14 +1594,15 @@ def cmd_watch(args) -> int:
                 dim(f"cooldown: {cooldown - since:.0f}s before another restart")
                 continue
             bad("sustained slow generation", "— restarting the main server")
+            profile = running_profile() or DEFAULT_PROFILE
             stop_one("main")
-            model = model_path(conf.str("MAIN_REPO"), conf.str("MAIN_FILE"))
+            model, argv, env = main_launch(conf, profile)
             if not model:
-                bad("main model missing", "— cannot restart")
+                bad(f"{profile} model missing", "— cannot restart")
                 return 1
-            if not start_one("main", _main_argv(conf, model),
-                             env={"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}):
+            if not start_one("main", argv, env=env):
                 return 1
+            profile_file().write_text(profile, encoding="utf-8")
             if not wait_ready("main", host, port, 300):
                 return 1
             last_restart = time.time()
@@ -1483,9 +1630,15 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     add("status", "Show the inference servers: ports, pids, VRAM").set_defaults(func=cmd_status)
     add("stack", "Only the local inference stack section of the report").set_defaults(func=cmd_doctor)
     add("setup", "Clone and build llama.cpp, then fetch the models").set_defaults(func=cmd_setup)
-    add("start", "Start the inference servers (helper waits for the main model)").set_defaults(func=cmd_start)
+    p_start = add("start", "Start the inference servers: dense (default) or a3b")
+    p_start.add_argument("model", nargs="?", choices=list(PROFILES), default=None,
+                         help="dense = Qwen3.8-27B (default), a3b = Qwen3.6-35B-A3B MoE")
+    p_start.set_defaults(func=cmd_start)
     add("stop", "Stop the inference servers").set_defaults(func=cmd_stop)
-    add("restart", "Stop, then start").set_defaults(func=cmd_restart)
+    p_restart = add("restart", "Stop, then start — the running model unless one is named")
+    p_restart.add_argument("model", nargs="?", choices=list(PROFILES), default=None,
+                           help="Switch to this model; omit to restart the running one")
+    p_restart.set_defaults(func=cmd_restart)
     add("pause", "Freeze the servers, keeping the weights loaded").set_defaults(func=cmd_pause)
     add("resume", "Unfreeze paused servers").set_defaults(func=cmd_resume)
     add("conf", "Show the stack.conf path and the values in force").set_defaults(func=cmd_conf)
