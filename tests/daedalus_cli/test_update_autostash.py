@@ -404,7 +404,7 @@ def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
     ff_only_fails=False,
-    reset_fails=False,
+    rebase_fails=False,
     fetch_fails=False,
     fetch_stderr="",
 ):
@@ -432,17 +432,25 @@ def _make_update_side_effect(
                     returncode=128,
                 )
             return SimpleNamespace(stdout="Updating abc..def\n", stderr="", returncode=0)
-        if "reset" in joined and "--hard" in joined:
-            if reset_fails:
-                return SimpleNamespace(stdout="", stderr="error: unable to write\n", returncode=1)
-            return SimpleNamespace(stdout="HEAD is now at abc123\n", stderr="", returncode=0)
+        if cmd[1:2] == ["rebase"] and "--abort" not in cmd:
+            if rebase_fails:
+                return SimpleNamespace(
+                    stdout="", stderr="CONFLICT (content): Merge conflict in run_agent.py\n",
+                    returncode=1,
+                )
+            return SimpleNamespace(stdout="Successfully rebased\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return side_effect, recorded
 
 
-def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path, capsys):
-    """When --ff-only fails (diverged history), update resets to origin/{branch}."""
+def test_cmd_update_rebases_local_commits_when_ff_only_fails(monkeypatch, tmp_path, capsys):
+    """Diverged history means this checkout has commits origin lacks.
+
+    They are replayed onto origin, never discarded: a `reset --hard` here is
+    what silently threw away six local commits and an uncommitted resolver on
+    2026-09-16.
+    """
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -451,12 +459,48 @@ def test_cmd_update_falls_back_to_reset_when_ff_only_fails(monkeypatch, tmp_path
 
     daedalus_main.cmd_update(SimpleNamespace())
 
-    reset_calls = [c for c in recorded if "reset" in c and "--hard" in c]
-    assert len(reset_calls) == 1
-    assert reset_calls[0] == ["git", "reset", "--hard", "origin/main"]
+    assert not [c for c in recorded if "reset" in c and "--hard" in c]
+    rebase_calls = [c for c in recorded if c[1:2] == ["rebase"]]
+    assert rebase_calls == [["git", "rebase", "origin/main"]]
+
+    # The backup ref must exist BEFORE HEAD moves.
+    backup = [i for i, c in enumerate(recorded) if c[1:2] == ["update-ref"]]
+    rebase = [i for i, c in enumerate(recorded) if c[1:2] == ["rebase"]]
+    assert backup and backup[0] < rebase[0]
+    assert recorded[backup[0]][2].startswith("refs/daedalus/pre-update/")
 
     out = capsys.readouterr().out
-    assert "Fast-forward not possible" in out
+    assert "Local commits replayed" in out
+
+
+def test_cmd_update_keeps_everything_when_rebase_conflicts(monkeypatch, tmp_path, capsys):
+    """A conflicting rebase is aborted and the checkout left as it was found."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        daedalus_main, "_stash_local_changes_if_needed",
+        lambda *a, **kw: "abc123deadbeef",
+    )
+    restore_calls = []
+    monkeypatch.setattr(
+        daedalus_main, "_restore_stashed_changes",
+        lambda *a, **kw: restore_calls.append(kw) or True,
+    )
+
+    side_effect, recorded = _make_update_side_effect(ff_only_fails=True, rebase_fails=True)
+    monkeypatch.setattr(daedalus_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        daedalus_main.cmd_update(SimpleNamespace())
+
+    assert not [c for c in recorded if "reset" in c and "--hard" in c]
+    assert ["git", "rebase", "--abort"] in recorded
+    # Uncommitted work goes back exactly once, and not via the
+    # "preserved in stash, restore it yourself" path.
+    assert len(restore_calls) == 1
+
+    out = capsys.readouterr().out
+    assert "Nothing was changed" in out
+    assert "preserved in stash" not in out
 
 
 def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
@@ -590,26 +634,3 @@ def test_cmd_update_auth_error_shows_friendly_message(monkeypatch, tmp_path, cap
 
 
 
-def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, capsys):
-    """When reset --hard fails, stash restore is skipped with a helpful message."""
-    _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        daedalus_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
-    restore_calls = []
-    monkeypatch.setattr(
-        daedalus_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-
-    side_effect, _ = _make_update_side_effect(ff_only_fails=True, reset_fails=True)
-    monkeypatch.setattr(daedalus_main.subprocess, "run", side_effect)
-
-    with pytest.raises(SystemExit, match="1"):
-        daedalus_main.cmd_update(SimpleNamespace())
-
-    assert len(restore_calls) == 0
-
-    out = capsys.readouterr().out
-    assert "preserved in stash" in out

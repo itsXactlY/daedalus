@@ -3558,20 +3558,59 @@ def cmd_update(args):
                     text=True,
                 )
                 if pull_result.returncode != 0:
-                    print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
-                    reset_result = subprocess.run(
-                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                    # History diverged: this checkout has commits origin does
+                    # not. They used to be discarded here with
+                    # `reset --hard origin/<branch>`, which is how uncommitted-
+                    # to-origin work vanished on an ordinary update. Replay
+                    # them on top instead, and never move HEAD without a ref
+                    # pointing back at where it was.
+                    from datetime import timezone as _tz
+
+                    backup_ref = datetime.now(_tz.utc).strftime(
+                        "refs/daedalus/pre-update/%Y%m%d-%H%M%S"
+                    )
+                    subprocess.run(
+                        git_cmd + ["update-ref", backup_ref, "HEAD"],
                         cwd=PROJECT_ROOT,
                         capture_output=True,
                         text=True,
                     )
-                    if reset_result.returncode != 0:
-                        print(f"✗ Failed to reset to origin/{branch}.")
-                        if reset_result.stderr.strip():
-                            print(f"  {reset_result.stderr.strip()}")
-                        print("  Try manually: git fetch origin && git reset --hard origin/main")
+                    print(
+                        f"  ⚠ Fast-forward not possible — this checkout has commits "
+                        f"origin/{branch} does not. Rebasing them on top..."
+                    )
+                    print(f"    (previous HEAD kept at {backup_ref})")
+                    rebase_result = subprocess.run(
+                        git_cmd + ["rebase", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rebase_result.returncode != 0:
+                        subprocess.run(
+                            git_cmd + ["rebase", "--abort"],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                        )
+                        print(f"✗ Your local commits conflict with origin/{branch}. Nothing was changed.")
+                        print(f"  Your commits are still on {branch}, and also at {backup_ref}.")
+                        print(f"  Resolve by hand: git rebase origin/{branch}")
+                        # The abort put HEAD back exactly where the stash was
+                        # taken, so handing the changes back cannot conflict:
+                        # the checkout ends as it was before the update ran.
+                        if auto_stash_ref is not None:
+                            _restore_stashed_changes(
+                                git_cmd,
+                                PROJECT_ROOT,
+                                auto_stash_ref,
+                                prompt_user=False,
+                                input_fn=gw_input_fn,
+                            )
+                            auto_stash_ref = None
                         _restore_original_branch(git_cmd, PROJECT_ROOT, current_branch, branch)
                         sys.exit(1)
+                    print(f"  ✓ Local commits replayed onto origin/{branch}")
                 update_succeeded = True
             finally:
                 if auto_stash_ref is not None:
