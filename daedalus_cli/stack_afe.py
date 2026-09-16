@@ -137,6 +137,36 @@ def _api_key() -> str:
     return ""
 
 
+def share_key_with_pod() -> None:
+    """Put the llm.toml credential where the AFE container can read it.
+
+    The server binds 0.0.0.0 because the pod reaches the host as
+    host.containers.internal, which maps to a host interface, not loopback
+    (measured: a 127.0.0.1-bound server refuses the pod). Without a key that
+    would be an unauthenticated LLM on the LAN. But the AFE window container
+    mounts only specific children of ~/.mazemaker, never llm.toml, so its
+    calls arrived without the key and got HTTP 401 — observed on the first
+    real pass. sockets/ is the directory every pod member already mounts, and
+    llm_transport also reads the key from there.
+    """
+    source = Path.home() / ".mazemaker" / "llm.toml"
+    target = mazemaker_sockets() / "llm.toml"
+    try:
+        data = source.read_bytes()
+    except OSError:
+        return
+    try:
+        if target.exists() and target.read_bytes() == data:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+    except OSError:
+        pass
+
+
 # ----------------------------------------------------------------- gating ----
 
 def vram_used_mib() -> Optional[int]:
@@ -304,6 +334,7 @@ def start(conf: S.StackConf, ready_timeout: Optional[int] = None) -> tuple:
     if reasons:
         return False, "; ".join(reasons)
     gguf = model(conf)
+    share_key_with_pod()
     if not launch(argv(conf, gguf)):
         return False, "llama-server failed to launch — daedalus doctor logs afe"
     timeout = ready_timeout if ready_timeout is not None else _int(conf, "AFE_READY_TIMEOUT")
