@@ -462,7 +462,7 @@ class _PodHealth:
                 "GET /health cannot see this: it reports the front process only.",
                 failures, detail, name,
             )
-            _attempt_pod_recovery()
+            _report_pod_fault()
         else:
             logger.warning(
                 "mazemaker call %s failed (%d in a row): %s",
@@ -507,118 +507,61 @@ _POD_HEALTH = _PodHealth()
 _OFFLINE_BACKOFF_S = (120.0, 300.0, 600.0, 900.0)
 
 
-_RECOVERY_UNIT = os.environ.get("MM_RECOVERY_UNIT", "mazemaker-wonderland.service")
-_RECOVERY_MIN_INTERVAL_S = float(os.environ.get("MM_RECOVERY_MIN_INTERVAL_S", "600"))
-_RECOVERY_MAX_ATTEMPTS = int(os.environ.get("MM_RECOVERY_MAX_ATTEMPTS", "3"))
-_recovery_lock = threading.Lock()
-_recovery_state = {"last": 0.0, "attempts": 0}
+_POD_UNITS = (
+    "mazemaker-mcp.service",
+    "mazemaker-wonderland.service",
+    "mazemaker-pod.service",
+)
 
 
-def _attempt_pod_recovery() -> bool:
-    """Restart the pod's front process once a wedge is confirmed.
+def _report_pod_fault() -> Optional[str]:
+    """Name the broken pod unit once a wedge is declared. Never restart anything.
 
-    A wedged pod is invisible to every supervisor it has. The container stays
-    Up, the unit stays active, the socket stays open, and the front keeps
-    accepting connections it never finishes -- observed 2026-09-03, four hours
-    of silence with everything reporting healthy. Nothing recovers from that on
-    its own, so the layer that can actually tell (this one, because it is the
-    thing making the calls) asks systemd for a restart.
-
-    Deliberately conservative: at most _RECOVERY_MAX_ATTEMPTS restarts, never
-    closer together than _RECOVERY_MIN_INTERVAL_S, and only when the harness
-    can see a user systemd. Set MM_RECOVERY_UNIT="" to switch it off.
+    This used to restart mazemaker-wonderland on every wedge. It never fixed
+    one. On 2026-09-17 the fault sat inside mcp -- the engine-sha preflight
+    refused every start, then a CUDA OOM refused recall -- and two daedalus
+    processes restarted wonderland twice in two minutes. Each restart dropped
+    every other client's MCP session (Claude Code died on "Session not found")
+    while this process's own pod stayed exactly as broken. The layer making the
+    calls is the one that can tell something is wrong; saying where is its job,
+    fixing it is the operator's.
     """
-    if not _RECOVERY_UNIT:
-        return False
     if os.environ.get("PYTEST_CURRENT_TEST"):
-        # A unit test exercising the wedge detector must not restart a system
-        # service. This one did: the suite drove record_fail past the threshold
-        # and the recovery brought a deliberately stopped pod back up
-        # (2026-09-03). Detection is what the tests are for; the side effect is
-        # not theirs to have.
-        logger.debug("pod recovery suppressed under pytest")
-        return False
-
-    import shutil as _shutil
-    import subprocess as _subprocess
-
-    # The pytest guard above caught the test-suite instance of this; it did
-    # not catch the real one. `mazemaker off` stops this exact unit on
-    # purpose (systemctl --job-mode=replace-irreversibly, specifically so a
-    # Restart=on-failure policy cannot requeue it) -- and this function,
-    # seeing "unreachable", restarted it right back. Observed live
-    # 2026-09-11: the operator ran `mazemaker off`, this fired on the next
-    # failed call, and the pod came back up regardless. A unit systemd
-    # cleanly stopped reports "inactive", not "active" or "failed" -- only
-    # the wedge this function exists for (container Up, unit active, socket
-    # open, front hung -- 2026-09-03) or a genuine crash looks like either of
-    # those while unreachable. Check state before touching anything.
-    _systemctl_probe = _shutil.which("systemctl")
-    if _systemctl_probe:
-        try:
-            _state = _subprocess.run(
-                [_systemctl_probe, "--user", "is-active", _RECOVERY_UNIT],
-                capture_output=True, text=True, timeout=10,
-            ).stdout.strip()
-        except Exception:
-            _state = ""
-        if _state == "inactive":
-            logger.info(
-                "pod recovery skipped — %s is cleanly inactive (deliberately "
-                "stopped, e.g. `mazemaker off`), not restarting it",
-                _RECOVERY_UNIT,
-            )
-            return False
-
-    now = time.monotonic()
-    with _recovery_lock:
-        since = now - _recovery_state["last"]
-        if _recovery_state["last"] and since < _RECOVERY_MIN_INTERVAL_S:
-            logger.info(
-                "pod recovery skipped — last attempt %.0fs ago, waiting %.0fs between tries",
-                since, _RECOVERY_MIN_INTERVAL_S,
-            )
-            return False
-        if _recovery_state["attempts"] >= _RECOVERY_MAX_ATTEMPTS:
-            logger.error(
-                "pod recovery giving up after %d attempts on %s — restarting it "
-                "is not fixing whatever is wrong. Look at the pod by hand.",
-                _recovery_state["attempts"], _RECOVERY_UNIT,
-            )
-            return False
-        _recovery_state["last"] = now
-        _recovery_state["attempts"] += 1
-        attempt = _recovery_state["attempts"]
+        return None
 
     import shutil
     import subprocess
 
     systemctl = shutil.which("systemctl")
     if not systemctl:
-        logger.warning("pod recovery unavailable — no systemctl on PATH")
-        return False
+        return None
 
-    logger.error(
-        "attempting pod recovery (%d/%d): systemctl --user restart %s",
-        attempt, _RECOVERY_MAX_ATTEMPTS, _RECOVERY_UNIT,
-    )
-    try:
-        proc = subprocess.run(
-            [systemctl, "--user", "restart", _RECOVERY_UNIT],
-            capture_output=True, text=True, timeout=120,
+    down = []
+    for unit in _POD_UNITS:
+        try:
+            state = subprocess.run(
+                [systemctl, "--user", "is-active", unit],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip() or "unknown"
+        except Exception:
+            state = "unknown"
+        if state != "active":
+            down.append((unit, state))
+
+    if down:
+        report = (
+            "mazemaker pod fault — not active: "
+            + ", ".join(f"{unit}={state}" for unit, state in down)
+            + f". Nothing restarted; `systemctl --user status {down[0][0]}` says why."
         )
-    except Exception as exc:
-        logger.error("pod recovery failed to run: %s", exc)
-        return False
-    if proc.returncode != 0:
-        logger.error(
-            "pod recovery restart returned %d: %s",
-            proc.returncode, (proc.stderr or "").strip()[:200],
+    else:
+        report = (
+            "mazemaker pod fault — every unit is active, so the fault is inside "
+            "one: `podman logs --tail 50 systemd-mazemaker-mcp` (preflight, CUDA "
+            "OOM, recall refused). Nothing restarted."
         )
-        return False
-    logger.error("pod recovery: %s restarted — next call decides whether it took",
-                 _RECOVERY_UNIT)
-    return True
+    logger.error(report)
+    return report
 
 
 class _Breaker:
