@@ -35,7 +35,9 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
 
     try:
         response = call_llm(
-            task="compression",
+            # Not "compression": that task name is hygiene in the sidekick
+            # queue, and a title is the least urgent thing on the slot.
+            task="title_generation",
             messages=messages,
             max_tokens=30,
             temperature=0.3,

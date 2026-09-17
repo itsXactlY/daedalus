@@ -265,7 +265,7 @@ Daedalus uses a different boundary:
 ```mermaid
 flowchart TD
     Start["epoch starts<br/>view rendered once, hygiene applied"] --> Req["request<br/>frozen bytes + newly appended messages"]
-    Req --> Check{"prompt below<br/>65,000 tokens?"}
+    Req --> Check{"prompt below the<br/>fast-layer budget?"}
     Check -- "yes: previous prompt reused" --> Req
     Check -- "no" --> Rebase["rebase<br/>summary + 4 head / 6 tail messages"]
     Rebase --> Memory[("older material<br/>recalled from Mazemaker")]
@@ -302,6 +302,15 @@ The replacement treats the request as a tape. A message is rendered once;
 every later request reuses those exact bytes. Context hygiene happens at the
 rebase boundary, not on every call.
 
+The budget is set by the fast layer, not by the context window. KV streaming
+keeps a fixed number of 256-token pages per layer on the GPU — 157 at a
+1,024 MiB stage, about 40,200 tokens — and under a unified KV cache both slots
+share them. Past that the server starts demoting pages to system RAM and decode
+slows (measured: 30–35 t/s up to ~33k tokens, 16–22 t/s at 45–48k). So the
+rebase lands at 32,000 tokens and its summary starts at 60%, while the summary
+job and the conversation still fit side by side. A larger stage raises all of
+it proportionally.
+
 ```mermaid
 sequenceDiagram
     participant H as Daedalus
@@ -336,7 +345,7 @@ Move to another GPU, CPU or memory configuration and the trade-offs change.
 | ---------------------- | -----------------: | ---------------------------------------------------------------------------------- |
 | KV pool                |            2048 MB | what fits beside the weights on a 16 GB card                                       |
 | Context                |            262,144 | ~6.6 GB of pinned host RAM, a standing reservation for the process lifetime        |
-| Rebase                 |      65,000 tokens | `min(0.5 × 262,144, 65,000)`, counted in tokens the server actually saw            |
+| Rebase                 |      32,000 tokens | what the resident KV window holds: 256-token pages, 157 per layer at a 1,024 MiB stage ≈ 40,200 tokens, shared by both slots; prep starts at 60% |
 | Rebase keeps           |    4 head · 6 tail | small enough that the next epoch has room; older material is recalled, not carried |
 | Thinking budget        |             12,000 | measured answers land between 150 and 2,400 tokens                                 |
 | KV cache               | K=`q8_0`, V=`q4_0` | K is more sensitive to attention accuracy than V; ~25 KB/token at this setting     |
@@ -377,6 +386,11 @@ into one. Launch `-np 2` without it and the server refuses to start with
 `block KV streaming requires exactly one sequence (-np 1)`. `daedalus doctor
 start` adds `-kvu` whenever a KV pool and more than one slot are configured; a
 hand-written launch has to add it itself.
+
+Background work does not fight over slot 0. Compaction summaries, memory
+flushes and the skill/memory review go through one queue, one request at a
+time, and hygiene always goes first: a waiting compaction overtakes a queued
+review, and nothing that is already running gets interrupted.
 
 One flag is part of the performance model rather than a preference.
 `--cache-idle-slots` is **on by default**, and under a unified KV cache it clears

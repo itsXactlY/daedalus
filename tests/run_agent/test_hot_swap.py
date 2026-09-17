@@ -49,6 +49,9 @@ def _agent(**over):
     a._pinned_id_slot = 1
     a._slot_count_cache = 2   # a real -np 2 server; see _server_slot_count
     a._cached_system_prompt = "sys"
+    # These tests cover the prep/swap mechanics with the summarizer engine;
+    # the retrieval engine has its own suite (test_retrieval_rebase.py).
+    a._compaction_engine = "summary"
     for k, v in over.items():
         setattr(a, k, v)
     return a

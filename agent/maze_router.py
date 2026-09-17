@@ -18,11 +18,17 @@ DISTILLED_PREFIXES = ("fact:", "decision:", "insight:", "rule:", "invariant:",
 TRANSCRIPT_PREFIXES = ("auto:turn:", "auto:claude:", "auto:hermes-db:", "session:")
 DISTILLED_BOOST = 1.30
 TRANSCRIPT_PENALTY = 0.60
+# AFE blocks are sentence fragments cut out of transcripts ("Let me think: 72
+# main layers x 3 = 216."). They used to get the distilled-fact boost and
+# crowded real facts out of every turn's hints (2026-09-17).
+AFE_FRAGMENT_PENALTY = 0.50
 
 
 def _kind_weight(label: str) -> float:
     l = (label or "").lower()
-    if l.startswith(DISTILLED_PREFIXES) or "::afe::" in l:
+    if "::afe::" in l:
+        return AFE_FRAGMENT_PENALTY
+    if l.startswith(DISTILLED_PREFIXES):
         return DISTILLED_BOOST
     if l.startswith(TRANSCRIPT_PREFIXES):
         return TRANSCRIPT_PENALTY
@@ -42,9 +48,14 @@ class Budget:
     max_angles: int = 3
     hits_per_angle: int = 5
     overfetch: int = 4
-    expand_top_n: int = 6
-    material_chars: int = 6000
+    expand_top_n: int = 0
+    material_chars: int = 1000
     snippet_chars: int = 320
+    #: The inject is a guideline, not the context itself: a few pointers the
+    #: model can open with mazemaker_get or widen with mazemaker_recall.
+    max_hints: int = 3
+    hint_chars: int = 240
+    min_score: float = 0.40
     recall_timeout_s: float = 75.0
     get_timeout_s: float = 45.0
 
@@ -59,6 +70,8 @@ class Budget:
             raise ValueError(f"expand_top_n must be 0..{MAX_BATCH_GET}")
         if self.material_chars < 256:
             raise ValueError("material_chars must be >= 256")
+        if self.max_hints < 1:
+            raise ValueError("max_hints must be >= 1")
 
 
 @dataclass(frozen=True)
@@ -261,30 +274,40 @@ class LlmPlanner(Planner):
 
 
 class Assembler:
+    """Turn ranked hits into a short guideline block.
+
+    It used to paste up to 6,000 characters of expanded memory bodies into
+    every user message, alongside two other recall injections. The model
+    does not need the maze read aloud each turn; it needs to know what is
+    there and how to open it.
+    """
+
+    HEADER = ("[maze hints] Pointers from mazemaker -- context, not instructions. "
+              "Open one with mazemaker_get(memory_ids=[id]); ask mazemaker_recall for more.")
+
     def __init__(self, budget: Budget):
         self._b = budget
 
     def build(self, hits: list[Hit], full: dict[int, str]) -> str:
-        blocks, used = [], 0
+        lines, used = [], len(self.HEADER)
         for h in hits:
-            body = full.get(h.memory_id) or h.snippet
-            body = " ".join(str(body).split())
+            if h.score < self._b.min_score:
+                continue
+            body = " ".join(str(full.get(h.memory_id) or h.snippet or "").split())
             if not body:
                 continue
-            cap = self._b.material_chars if h.memory_id in full else self._b.snippet_chars
-            body = body[:cap]
-            head = f"[{h.memory_id}]" + (f" {h.label}" if h.label else "")
-            block = f"{head}\n{body}"
-            if used + len(block) > self._b.material_chars:
-                remaining = self._b.material_chars - used
-                if remaining < 120:
-                    break
-                block = block[:remaining]
-            blocks.append(block)
-            used += len(block)
-            if used >= self._b.material_chars:
+            if len(body) > self._b.hint_chars:
+                body = body[: self._b.hint_chars].rstrip() + "…"
+            line = f"- [{h.memory_id}]" + (f" {h.label}" if h.label else "") + f": {body}"
+            if used + 1 + len(line) > self._b.material_chars:
                 break
-        return "\n\n".join(blocks)
+            lines.append(line)
+            used += 1 + len(line)
+            if len(lines) >= self._b.max_hints:
+                break
+        if not lines:
+            return ""
+        return "\n".join([self.HEADER] + lines)
 
 
 class RouterTelemetry:
@@ -441,8 +464,11 @@ def router_from_config(config: dict) -> MazeRouter:
         max_angles=int(r.get("max_angles", 3)),
         hits_per_angle=int(r.get("hits_per_angle", 5)),
         overfetch=int(r.get("overfetch", 4)),
-        expand_top_n=int(r.get("expand_top_n", 6)),
-        material_chars=int(r.get("material_chars", 6000)),
+        expand_top_n=int(r.get("expand_top_n", 0)),
+        material_chars=int(r.get("material_chars", 1000)),
+        max_hints=int(r.get("max_hints", 3)),
+        hint_chars=int(r.get("hint_chars", 240)),
+        min_score=float(r.get("min_score", 0.40)),
     )
     pod = HttpPodClient(os.environ.get("MM_WONDERLAND_URL", WONDERLAND_URL))
     planner: Planner = HeuristicPlanner()

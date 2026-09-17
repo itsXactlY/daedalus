@@ -23,6 +23,7 @@ Usage:
 import asyncio
 import base64
 import concurrent.futures
+import contextlib
 import copy
 import dataclasses
 import hashlib
@@ -968,14 +969,10 @@ class AIAgent:
                 lines.append("## Active tasks (live todo list)")
                 lines.append(todo_text)
             if not (summary or todo_text):
-                lines.append(
-                    "No in-memory state snapshots survived the last "
-                    "compaction. Full history: `auto:turn:{session_id}:*` "
-                    "in mazemaker; crash-recovery copy: {path}".format(
-                        session_id=self.session_id or "",
-                        path=getattr(self, "_state_card_path", "") or "STATE.md",
-                    )
-                )
+                # A card with nothing to anchor is prompt weight that pays no
+                # rent: it said "no state survived" every other turn, whether
+                # or not a compaction had even happened.
+                return ""
             card = "\n".join(lines).strip()
             max_chars = int(getattr(self, "_state_card_max_chars", 4000) or 4000)
             if max_chars > 0 and len(card) > max_chars:
@@ -1888,7 +1885,7 @@ class AIAgent:
         # The prefill half is the expensive half: it re-sends the whole
         # compacted context to warm the sidekick. Separately opt-in, because
         # the summary alone already removes the blocking LLM call.
-        self._hot_swap_prefill = bool(os.environ.get("DAEDALUS_HOT_SWAP_PREFILL"))
+        self._hot_swap_prefill = os.environ.get("DAEDALUS_HOT_SWAP_PREFILL", "1") != "0"
         self._hot_swap_in_progress = False
         self._hot_swap_ready = None          # dict, see _run_hot_swap_prep
         self._compaction_generation = 0
@@ -1896,6 +1893,34 @@ class AIAgent:
         # enough that a summarize + prefill can finish first, late enough that
         # the snapshot is still close to what the next turn will send.
         self._hot_swap_prep_ratio = 0.75
+        try:
+            _prep_ratio = float(((_agent_cfg.get("compression") or {}).get("hot_swap_prep_ratio")) or 0)
+            if 0 < _prep_ratio < 1:
+                self._hot_swap_prep_ratio = _prep_ratio
+        except Exception:
+            pass
+        _comp_cfg = (_agent_cfg.get("compression") or {}) if isinstance(_agent_cfg, dict) else {}
+        self._compaction_engine = str(_comp_cfg.get("engine", "retrieval") or "retrieval")
+        self._watermarks = None
+        try:
+            _fast = int(_comp_cfg.get("fast_layer_tokens", 0) or 0)
+            if _fast > 0:
+                from agent.kv_watermarks import Watermarks
+                _wm = _comp_cfg.get("watermarks") or {}
+                self._watermarks = Watermarks(
+                    fast_layer_tokens=_fast,
+                    low=float(_wm.get("low", 0.60)),
+                    high=float(_wm.get("high", 0.80)),
+                    hard=float(_wm.get("hard", 0.90)),
+                )
+                # The rebase point and the prewarm point follow the fast layer,
+                # so harness and server count the same budget.
+                _cc = self.context_compressor
+                _cc.max_tokens = self._watermarks.hard_tokens
+                _cc.threshold_tokens = _cc._effective_threshold(_cc.context_length)
+                self._hot_swap_prep_ratio = self._watermarks.high_ratio_of_hard
+        except Exception as _wm_exc:
+            logger.warning("watermarks disabled: %s", _wm_exc)
         # Crossing the compaction threshold is a SOFT event: the summary is
         # produced on the sidekick slot and swapped in at the next boundary,
         # and the turn keeps going meanwhile. The window is far larger than the
@@ -2721,10 +2746,20 @@ class AIAgent:
     # ------------------------------------------------------------------
 
     def _maybe_start_hot_swap_prep(self, messages: list, system_message: str,
-                                   approx_tokens: int, task_id: str) -> None:
+                                   approx_tokens: int, task_id: str,
+                                   between_turns: bool = False) -> None:
         """Start background compaction prep if the turn is approaching the
-        compaction threshold. Returns immediately; never blocks the turn."""
+        compaction threshold. Returns immediately; never blocks the turn.
+
+        With the retrieval engine the prep includes a prefill of the next turn
+        0 on the sidekick, and a prefill beside a decoding main slot stalls it:
+        2026-09-17 a 16.9k prime took main from ~20 to 1-3 t/s for 42 s. So it
+        only starts between turns, while the operator reads. Mid-turn, the hard
+        watermark rebases inline instead.
+        """
         if not getattr(self, "_hot_swap_enabled", False):
+            return
+        if self._retrieval_engine() and not between_turns:
             return
         if self._hot_swap_in_progress or self._hot_swap_ready is not None:
             return
@@ -2757,9 +2792,12 @@ class AIAgent:
         discarded. Those steps stay on the turn, where they are cheap.
         """
         try:
-            compressed = self.context_compressor.compress(
-                snapshot, current_tokens=approx_tokens,
-            )
+            if self._retrieval_engine():
+                compressed = self._build_retrieval_base(snapshot)
+            else:
+                compressed = self.context_compressor.compress(
+                    snapshot, current_tokens=approx_tokens,
+                )
             if self._compaction_generation != generation:
                 logger.info("hot-swap prep discarded: a compaction landed while preparing")
                 return
@@ -2776,6 +2814,9 @@ class AIAgent:
             if self._compaction_generation != generation:
                 logger.info("hot-swap prep discarded after prefill: a compaction raced it")
                 return
+            if warmed:
+                from agent.sidekick_queue import sidekick_gate
+                sidekick_gate.reserve(900)
 
             self._hot_swap_ready = {
                 "compressed": compressed,
@@ -2797,41 +2838,162 @@ class AIAgent:
 
     def _prime_slot_with_messages(self, slot: int, compressed: list,
                                   system_message: str) -> bool:
-        """Force llama-server to prefill `compressed` into `slot`'s KV cache."""
-        try:
-            base = (self.base_url or "").lower()
-            if "127.0.0.1" not in base and "localhost" not in base:
-                return False  # only meaningful against the local multi-slot server
+        """Prefill the next epoch's turn 0 into `slot`, exactly as main will send it.
 
-            api_messages = []
+        The old prime sent slim role/content messages and no tool schemas, so
+        its KV matched main's next request only up to the system prompt. This
+        renders through the same path as a real request -- system prompt, tool
+        schemas, the epoch-start render with this turn's injections -- asks for
+        one token, and goes through the sidekick queue as hygiene.
+        """
+        try:
+            from agent.kv_watermarks import server_root
+            if not server_root(self.base_url) or self._server_slot_count() < 2:
+                return False
+            cur = None
+            for i in range(len(compressed) - 1, -1, -1):
+                m = compressed[i]
+                if m.get("role") == "user" and not m.get("display_kind"):
+                    cur = i
+                    break
+            api_messages, _ = self._build_payload_messages(
+                compressed, cur if cur is not None else len(compressed) - 1, None,
+                list(getattr(self, "_current_turn_injections", []) or []),
+                list(getattr(self, "_current_bootstrap", []) or []),
+                use_tape=False,
+            )
             prompt = self._cached_system_prompt or system_message
+            if self.ephemeral_system_prompt:
+                prompt = ((prompt or "") + "\n\n" + self.ephemeral_system_prompt).strip()
             if prompt:
-                api_messages.append({"role": "system", "content": prompt})
-            for m in compressed:
-                if not isinstance(m, dict) or not m.get("role"):
-                    continue
-                slim = {"role": m["role"], "content": m.get("content") or ""}
-                if m.get("tool_calls"):
-                    slim["tool_calls"] = m["tool_calls"]
-                if m.get("tool_call_id"):
-                    slim["tool_call_id"] = m["tool_call_id"]
-                api_messages.append(slim)
+                api_messages = [{"role": "system", "content": prompt}] + api_messages
+            api_messages = self._normalise_system_messages(api_messages)
+            api_messages = self._sanitize_api_messages(api_messages)
             if len(api_messages) < 2:
                 return False
-
-            from agent.auxiliary_client import call_llm as _call_llm
-            _call_llm(
-                task="hot_swap_prefill",
-                messages=api_messages,
-                max_tokens=1,
-                temperature=0.0,
-                max_retries=0,
-                extra_body={"id_slot": slot},
-            )
+            kwargs = self._build_api_kwargs(api_messages)
+            kwargs.pop("stream", None)
+            kwargs.pop("stream_options", None)
+            extra = dict(kwargs.get("extra_body") or {})
+            extra["id_slot"] = slot
+            kwargs["extra_body"] = extra
+            for key in ("max_tokens", "max_completion_tokens"):
+                kwargs.pop(key, None)
+            kwargs["max_tokens"] = 1
+            from agent.sidekick_queue import HYGIENE, sidekick_gate
+            with sidekick_gate.hold(HYGIENE):
+                self._ensure_primary_openai_client(reason="hot_swap_prime").chat.completions.create(**kwargs)
             return True
         except Exception as e:
             logger.debug("hot-swap prefill of slot %s failed (non-fatal): %s", slot, e)
             return False
+
+    def _retrieval_engine(self) -> bool:
+        return getattr(self, "_compaction_engine", "retrieval") == "retrieval"
+
+    def _build_retrieval_base(self, messages: list) -> list:
+        """Turn 0 of the next epoch, built from retrieval. No summarizer call.
+
+        The LLM summary was the slow part of every compaction: a ~41k prompt on
+        the sidekick slot that timed out on 2026-09-17 after six minutes and
+        dropped the middle of the conversation with nothing in its place.
+        Everything it tried to preserve is already in mazemaker -- every turn is
+        soaked as it happens, reasoning the first time it is sent -- so the new
+        epoch starts from the question, the live state, a targeted recall and
+        the unfinished tail, and asks the maze for the rest.
+        """
+        compressor = self.context_compressor
+        cur = None
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.get("role") == "user" and not m.get("display_kind"):
+                cur = i
+                break
+
+        protect = getattr(compressor, "protect_last_n", 6)
+        protect = max(2, protect if isinstance(protect, int) else 6)
+        cut = max(0, len(messages) - protect)
+        try:
+            aligned = compressor._align_boundary_backward(messages, cut)
+            if isinstance(aligned, int):
+                cut = aligned
+        except Exception:
+            pass
+        if cur is not None and cur >= cut:
+            cut = cur + 1  # the question leads the base; the tail starts after it
+
+        base = []
+        query = ""
+        if cur is not None:
+            base.append(messages[cur])
+            content = messages[cur].get("content")
+            query = content if isinstance(content, str) else ""
+
+        blocks = [
+            "[rebased] This conversation was rebuilt to keep the working context "
+            "inside the GPU's fast layer. Everything before this point is in "
+            f"mazemaker under auto:turn:{self.session_id or ''}:* -- recall it "
+            "before redoing any of it."
+        ]
+        card = self._build_state_card()
+        if card:
+            blocks.append(card)
+        mm = getattr(self, "_memory_manager", None)
+        if query and mm is not None and self._maze_reachable():
+            try:
+                recalled = (mm.prefetch_all(query, session_id=self.session_id or "") or "").strip()
+                if recalled:
+                    blocks.append(build_memory_context_block(recalled) or recalled)
+            except Exception as exc:
+                logger.debug("rebase recall failed (non-fatal): %s", exc)
+        base.append({"role": "user", "content": "\n\n".join(blocks),
+                     "display_kind": "hidden"})
+
+        current = messages[cur] if cur is not None else None
+        tail = [m for m in messages[cut:] if m is not current]
+        return base + tail
+
+    def _sidekick_hold(self):
+        """The sidekick queue for background instances; a no-op for the live conversation."""
+        priority = getattr(self, "_sidekick_priority", None)
+        if priority is None:
+            return contextlib.nullcontext()
+        from agent.sidekick_queue import sidekick_gate
+        return sidekick_gate.hold(priority)
+
+    def _kv_pool_tokens(self, main_tokens: int) -> int:
+        """Main's tokens plus what the sidekick slot still holds, as the server reports it."""
+        wm = getattr(self, "_watermarks", None)
+        if wm is None or self._server_slot_count() < 2:
+            return main_tokens
+        from agent.kv_watermarks import read_slots, slot_tokens
+        slots = read_slots(self.base_url)
+        self._last_slots = slots
+        return main_tokens + slot_tokens(slots, self._sidekick_id_slot())
+
+    def _kv_free_idle_sidekick(self, pool_tokens: int) -> None:
+        """Past the low watermark, an idle sidekick slot's leftover KV pays no rent."""
+        wm = getattr(self, "_watermarks", None)
+        if wm is None or self._server_slot_count() < 2:
+            return
+        from agent.kv_watermarks import OK, erase_slot, slot_busy, slot_tokens
+        from agent.sidekick_queue import sidekick_gate
+        level = wm.level(pool_tokens)
+        if level == OK:
+            return
+        side = self._sidekick_id_slot()
+        ready = getattr(self, "_hot_swap_ready", None)
+        if self._hot_swap_in_progress or (ready and ready.get("slot") == side):
+            return  # it holds the next epoch's turn 0
+        if sidekick_gate.is_busy():
+            return
+        slots = getattr(self, "_last_slots", []) or []
+        held = slot_tokens(slots, side)
+        if held <= 0 or slot_busy(slots, side):
+            return
+        if erase_slot(self.base_url, side):
+            logger.info("watermark %s at %s pool tokens: erased idle sidekick slot %s (%s tokens)",
+                        level, f"{pool_tokens:,}", side, f"{held:,}")
 
     def _real_payload_tokens(self, messages: list, system_prompt: str) -> int:
         """Prompt size as the server counted it last call, else a rough estimate."""
@@ -2875,6 +3037,10 @@ class AIAgent:
                 "compaction: %s tokens past the hard ceiling %s — compacting inline",
                 f"{tokens:,}", f"{ceiling:,}")
             return False
+        if self._retrieval_engine() and not self._hot_swap_in_progress:
+            # Building a retrieval base takes one recall, not an LLM summary;
+            # nothing is gained by letting the fast layer overflow meanwhile.
+            return False
         self._maybe_start_hot_swap_prep(messages, system_message, tokens, task_id)
         logger.info(
             "compaction threshold crossed at %s tokens; summary %s on the sidekick "
@@ -2902,6 +3068,9 @@ class AIAgent:
                 and tokens < self.context_compressor.threshold_tokens):
             return None
         self._hot_swap_ready = None
+        # Applied or discarded below, the prewarmed slot is done being special.
+        from agent.sidekick_queue import sidekick_gate
+        sidekick_gate.release_reservation()
 
         if ready["generation"] != self._compaction_generation:
             logger.info("hot-swap discarded: a compaction landed since prep")
@@ -2926,6 +3095,12 @@ class AIAgent:
             except Exception:
                 logger.debug("could not publish new sidekick slot", exc_info=True)
             logger.info("hot-swap: main moved to slot %s, sidekick now %s", slot, previous)
+            try:
+                from agent.kv_watermarks import erase_slot
+                if erase_slot(self.base_url, previous):
+                    logger.info("hot-swap: erased slot %s (old epoch)", previous)
+            except Exception:
+                logger.debug("erasing the old main slot failed", exc_info=True)
 
         logger.info(
             "hot-swap applied: %d messages (%d compacted + %d since prep)",
@@ -2933,11 +3108,47 @@ class AIAgent:
         )
         return merged
 
+    @staticmethod
+    def _review_snapshot_is_hollow(messages_snapshot: List[Dict]) -> bool:
+        """True when a rebase has evacuated everything reviewable to mazemaker.
+
+        After a rebase the working history is rebuilt to start with a
+        ``[rebased] ... Everything before this point is in mazemaker ...
+        recall it before redoing any of it`` anchor (see the block built
+        around the ``[rebased]`` string in the compactor). If nothing but a
+        text tail follows that anchor -- no tool exchanges survived the
+        rebase in-context -- then the only material a reviewer could learn a
+        skill or preference from is on the far side of the rebase, and the
+        anchor's own "recall it" instruction is exactly what lured the fork
+        into an all-recall, zero-save loop (observed 2026-09-17, session
+        ...c76c24: 11 read calls, 0 saves, hit the iteration cap). Reviewing
+        an evacuated snapshot is not worth a fork; skip it.
+        """
+        if not messages_snapshot:
+            return False
+        last_rebased = -1
+        for i, m in enumerate(messages_snapshot):
+            if not isinstance(m, dict):
+                continue
+            c = m.get("content")
+            if isinstance(c, str) and c.lstrip().startswith("[rebased]"):
+                last_rebased = i
+        if last_rebased < 0:
+            return False  # not rebased -- the real content is here in front of us
+        # A tool result surviving in-context after the anchor means there is
+        # genuine post-rebase work to review; the read-tool strip below then
+        # keeps the fork from wandering back across the rebase for the rest.
+        for m in messages_snapshot[last_rebased + 1:]:
+            if isinstance(m, dict) and m.get("role") == "tool":
+                return False
+        return True
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
         review_memory: bool = False,
         review_skills: bool = False,
+        manual: bool = False,
     ) -> None:
         """Spawn a background thread to review the conversation for memory/skill saves.
 
@@ -2945,8 +3156,18 @@ class AIAgent:
         main session. The review prompt is appended as the next user turn in the
         forked conversation. Writes directly to the shared memory/skill stores.
         Never modifies the main conversation history or produces user-visible output.
+
+        ``manual=True`` (a user-driven /refine) bypasses the post-rebase-hollow
+        skip below -- if the operator explicitly asked, run it regardless.
         """
         import threading
+
+        if not manual and self._review_snapshot_is_hollow(messages_snapshot):
+            logger.info(
+                "bg-review skipped: snapshot is post-rebase hollow -- reviewable "
+                "work aged out to mazemaker, nothing in-context to review"
+            )
+            return
 
         if review_memory and review_skills:
             prompt = self._COMBINED_REVIEW_PROMPT
@@ -2978,8 +3199,17 @@ class AIAgent:
                     # Its prompts ask for exactly two things: save to memory,
                     # save or update a skill. Those are the only toolsets it
                     # gets. It saves, it finishes, it goes back to idle.
+                    # base_url/api_key from the parent: without them the fork
+                    # resolved an empty base_url, skipped the local-server
+                    # branch of _build_api_kwargs and sent every request with
+                    # no id_slot. llama-server then picked a slot by LRU --
+                    # observed 2026-09-17 prefilling a 28k snapshot beside
+                    # main and dropping main's decode from 16 to 1.5 t/s, and
+                    # free to land on main's idle slot and wipe its prefix.
                     review_agent = AIAgent(
                         model=self.model,
+                        base_url=getattr(self, "base_url", "") or None,
+                        api_key=getattr(self, "api_key", None) or None,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
@@ -3000,6 +3230,38 @@ class AIAgent:
                     # Derived, not hardcoded: a hot-swap can flip which slot
                     # main holds, and this has to land on the other one.
                     review_agent._pinned_id_slot = self._sidekick_id_slot()
+                    # And through the sidekick queue, last in line: a
+                    # compaction or memory flush always goes before the next
+                    # review request (agent/sidekick_queue.py).
+                    from agent.sidekick_queue import BACKGROUND
+                    review_agent._sidekick_priority = BACKGROUND
+
+                    # Read-only mazemaker tools (recall/recall_multi/get/think/
+                    # graph/stats/help/list_by_label_prefix/...) are what turned
+                    # this housekeeping fork into a self-talk loop: handed a
+                    # rebased snapshot whose bulk is in the maze, it would spend
+                    # every iteration recalling and never reach a save (observed
+                    # 2026-09-17, session ...c76c24). The prompt asks only to
+                    # SAVE, so drop every mazemaker tool except the writer
+                    # (mazemaker_remember); the generic memory tool and the
+                    # skills tools -- which the reviewer legitimately needs to
+                    # find and update an existing skill -- are left untouched.
+                    _tools = getattr(review_agent, "tools", None)
+                    if isinstance(_tools, list):
+                        _dropped = set()
+                        _kept = []
+                        for _t in _tools:
+                            _name = (_t.get("function", {}).get("name", "")
+                                     if isinstance(_t, dict) else "")
+                            if (_name.startswith("mazemaker")
+                                    and _name != "mazemaker_remember"):
+                                _dropped.add(_name)
+                            else:
+                                _kept.append(_t)
+                        review_agent.tools = _kept
+                        _vtn = getattr(review_agent, "valid_tool_names", None)
+                        if isinstance(_vtn, set):
+                            _vtn -= _dropped
 
                     review_agent.run_conversation(
                         user_message=prompt,
@@ -4261,7 +4523,7 @@ class AIAgent:
 
     def _build_payload_messages(self, messages: list, current_turn_user_idx: int,
                                 user_message, turn_injections: list,
-                                bootstrap_messages: list) -> tuple:
+                                bootstrap_messages: list, use_tape: bool = True) -> tuple:
         """Render the request's messages (system prompt excluded).
 
         With the payload tape on, only the first call of an epoch runs the
@@ -4285,7 +4547,8 @@ class AIAgent:
             if 0 <= current_turn_user_idx < len(messages) else None
         )
 
-        tape = self._payload_tape if getattr(self, "_payload_tape_enabled", False) else None
+        tape = (self._payload_tape
+                if use_tape and getattr(self, "_payload_tape_enabled", False) else None)
         generation = getattr(self, "_compaction_generation", 0)
 
         if tape:
@@ -7527,7 +7790,16 @@ class AIAgent:
                     "temperature": 0.3,
                     **self._max_tokens_param(self._memory_flush_max_tokens),
                 }
-                response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(**api_kwargs, timeout=self._memory_flush_timeout)
+                if "127.0.0.1" in (self.base_url or "") or "localhost" in (self.base_url or ""):
+                    # The aux path pins slot 0; this fallback did not, so a
+                    # flush over the whole history went to whichever slot
+                    # llama-server picked by LRU -- including main's.
+                    api_kwargs["extra_body"] = {"id_slot": self._sidekick_id_slot()}
+                    self._flush_on_sidekick = True
+                from agent.sidekick_queue import MEMORY, sidekick_gate
+                with (sidekick_gate.hold(MEMORY) if getattr(self, "_flush_on_sidekick", False)
+                      else contextlib.nullcontext()):
+                    response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(**api_kwargs, timeout=self._memory_flush_timeout)
 
             tool_calls = []
             if self.api_mode == "codex_responses" and not _aux_available:
@@ -7774,6 +8046,9 @@ class AIAgent:
         # Any compaction invalidates hot-swap prep that is still running: the
         # prepared summary describes a history this call is about to replace.
         self._compaction_generation = getattr(self, "_compaction_generation", 0) + 1
+        if precomputed is None:
+            from agent.sidekick_queue import sidekick_gate
+            sidekick_gate.release_reservation()
 
         if precomputed is not None:
             # Summary already produced in the background by _run_hot_swap_prep;
@@ -7782,8 +8057,16 @@ class AIAgent:
             # session split, prompt rebuild) is cheap bookkeeping and still runs
             # exactly as it would have.
             compressed = precomputed
+        elif self._retrieval_engine():
+            compressed = self._build_retrieval_base(messages)
         else:
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+        if self._retrieval_engine():
+            # The retrieval base already carries the pointer, the state card
+            # and the recall; appending the archive note and todo list after
+            # the live tail again would be weight that pays no rent.
+            _mazemaker_archive_note = ""
 
         if _mazemaker_archive_note:
             compressed.append({
@@ -7794,12 +8077,18 @@ class AIAgent:
 
         _pre_compaction_session = self.session_id or ""
         todo_snapshot = self._todo_store.format_for_injection()
-        if todo_snapshot:
+        if todo_snapshot and not self._retrieval_engine():
             compressed.append({"role": "user", "content": todo_snapshot, "display_kind": "hidden"})
 
-        self._invalidate_system_prompt()
-        new_system_prompt = self._build_system_prompt(system_message)
-        self._cached_system_prompt = new_system_prompt
+        if self._retrieval_engine() and self._cached_system_prompt:
+            # Same bytes as before the rebase: the system prompt and tool
+            # schemas (~12k tokens) stay a cached prefix on both slots, and the
+            # prewarmed slot matches what main sends next.
+            new_system_prompt = self._cached_system_prompt
+        else:
+            self._invalidate_system_prompt()
+            new_system_prompt = self._build_system_prompt(system_message)
+            self._cached_system_prompt = new_system_prompt
 
         if self._session_db:
             try:
@@ -8875,6 +9164,7 @@ class AIAgent:
         # Auto-recall mazemaker context periodically
         _mazemaker_auto_recall_messages = []
         if (self._mazemaker_auto_recall_every > 0
+                and getattr(self, "_maze_router", None) is None
                 and "mazemaker" in self.valid_tool_names):
             self._turns_since_mazemaker_recall += 1
             if self._turns_since_mazemaker_recall >= self._mazemaker_auto_recall_every:
@@ -8904,7 +9194,18 @@ class AIAgent:
         # Inject auto-recall messages before user message so context is fresh
         for _recall_msg in _mazemaker_auto_recall_messages:
             messages.insert(len(messages), _recall_msg)
-        messages.append(user_msg)
+        _last = messages[-1] if messages else None
+        if (not _mazemaker_auto_recall_messages and isinstance(_last, dict)
+                and _last.get("role") == "user" and _last.get("content") == user_message
+                and not _last.get("display_kind")):
+            # A turn that died before any reply (server restarting, retries
+            # exhausted) left this exact message as the last one. Sending it
+            # again must not add a second copy: 2026-09-17 the retry carried
+            # the question, its ~7k of injections and the bootstrap recall
+            # twice, and broke the payload tape in the middle.
+            user_msg = _last
+        else:
+            messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
 
@@ -8975,9 +9276,10 @@ class AIAgent:
         # bookkeeping (mazemaker archive, session split, prompt rebuild) and
         # the turn skips the summarization call it would otherwise block on.
         if self.compression_enabled:
-            _hot_swapped = self._apply_pending_hot_swap_if_ready(
-                messages, self._real_payload_tokens(messages, active_system_prompt),
-            )
+            _turn_pool = self._kv_pool_tokens(
+                self._real_payload_tokens(messages, active_system_prompt))
+            self._kv_free_idle_sidekick(_turn_pool)
+            _hot_swapped = self._apply_pending_hot_swap_if_ready(messages, _turn_pool)
             if _hot_swapped is not None:
                 messages, active_system_prompt = self._compress_context(
                     messages, system_message, task_id=effective_task_id,
@@ -9085,23 +9387,24 @@ class AIAgent:
         
         self.clear_interrupt()
 
-        _mazemaker_bootstrap_messages: List[Dict[str, Any]] = []
-        try:
-            _query = original_user_message if isinstance(original_user_message, str) else ""
-            _mazemaker_bootstrap_messages = self._build_mazemaker_bootstrap_messages(_query)
-        except Exception as exc:
-            logger.debug("Mazemaker bootstrap recall failed (non-fatal): %s", exc)
-            _mazemaker_bootstrap_messages = []
-
         _pq = original_user_message if isinstance(original_user_message, str) else ""
         _parts = []
 
-        # Retrieval first, and unconditionally: the router runs whether or not
-        # pony is on. Whether this turn is worth a pod round-trip is the
-        # router's own question (HeuristicNeeds), not a pony setting.
+        # ONE recall inject per turn, and it is a guideline. The router's hints
+        # come first; the bootstrap tool exchange and the prefetch fallback only
+        # run when the router produced nothing. All three used to fire on the
+        # same turn (2026-09-17).
         _material = self._fetch_maze_material(_pq)
         if _material:
             _parts.append(_material)
+
+        _mazemaker_bootstrap_messages: List[Dict[str, Any]] = []
+        if not _material:
+            try:
+                _mazemaker_bootstrap_messages = self._build_mazemaker_bootstrap_messages(_pq)
+            except Exception as exc:
+                logger.debug("Mazemaker bootstrap recall failed (non-fatal): %s", exc)
+                _mazemaker_bootstrap_messages = []
 
         # Pony contributes only what is genuinely pony's: the environment
         # snapshot and the tool reminder. It no longer decides whether memory
@@ -9157,6 +9460,8 @@ class AIAgent:
         _turn_injections = self._build_turn_injections(
             _ext_prefetch_cache, _plugin_user_context
         )
+        self._current_turn_injections = _turn_injections
+        self._current_bootstrap = _mazemaker_bootstrap_messages
 
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             try:
@@ -9333,12 +9638,13 @@ class AIAgent:
                         if isinstance(getattr(self, "client", None), Mock):
                             _use_streaming = False
 
-                    if _use_streaming:
-                        response = self._interruptible_streaming_api_call(
-                            api_kwargs, on_first_delta=_stop_spinner
-                        )
-                    else:
-                        response = self._interruptible_api_call(api_kwargs)
+                    with self._sidekick_hold():
+                        if _use_streaming:
+                            response = self._interruptible_streaming_api_call(
+                                api_kwargs, on_first_delta=_stop_spinner
+                            )
+                        else:
+                            response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
                     
@@ -10687,6 +10993,8 @@ class AIAgent:
                     # anything. Not mid-generation: nothing is streaming at this
                     # point, so promoting a slot here is safe.
                     if self.compression_enabled:
+                        _real_tokens = self._kv_pool_tokens(_real_tokens)
+                        self._kv_free_idle_sidekick(_real_tokens)
                         _hot_swapped = self._apply_pending_hot_swap_if_ready(
                             messages, _real_tokens,
                         )
@@ -11003,6 +11311,22 @@ class AIAgent:
                 )
             except Exception:
                 pass
+
+        # Between turns is the one window where prewarming the next epoch's
+        # turn 0 stalls nothing: main is idle while the operator reads. Started
+        # before the review so the hygiene prime reserves the sidekick first.
+        if final_response and not interrupted and self.compression_enabled:
+            try:
+                _cc = self.context_compressor
+                _end_pool = self._kv_pool_tokens(
+                    (_cc.last_prompt_tokens + _cc.last_completion_tokens)
+                    if _cc.last_prompt_tokens > 0 else 0)
+                self._maybe_start_hot_swap_prep(
+                    messages, system_message, _end_pool, effective_task_id,
+                    between_turns=True,
+                )
+            except Exception as exc:
+                logger.debug("between-turn prep skipped: %s", exc)
 
         if final_response and not interrupted and (_should_review_memory or _should_review_skills):
             try:

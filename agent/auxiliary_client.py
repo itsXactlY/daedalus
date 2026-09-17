@@ -54,6 +54,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from agent.sidekick_queue import priority_for_task, sidekick_gate
 from daedalus_cli.config import get_daedalus_home
 from daedalus_constants import OPENROUTER_BASE_URL
 
@@ -1942,6 +1943,7 @@ def call_llm(
         except Exception:
             logger.debug("client has no with_options(max_retries)", exc_info=True)
 
+    _gate_priority = None
     try:
         _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
         _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
@@ -1970,6 +1972,7 @@ def call_llm(
                 task or "call", _aux_base, effective_timeout)
             extra_body = dict(extra_body or {})
             extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
+            _gate_priority = priority_for_task(task)
             extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
@@ -1986,15 +1989,21 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
+    def _create(**kw):
+        if _gate_priority is None:
+            return client.chat.completions.create(**kw)
+        with sidekick_gate.hold(_gate_priority):
+            return client.chat.completions.create(**kw)
+
     try:
-        return client.chat.completions.create(**kwargs)
+        return _create(**kwargs)
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:
-                return client.chat.completions.create(**kwargs)
+                return _create(**kwargs)
             except Exception as retry_err:
                 if not _is_payment_error(retry_err):
                     raise
@@ -2148,6 +2157,7 @@ async def async_call_llm(
         except Exception:
             logger.debug("client has no with_options(max_retries)", exc_info=True)
 
+    _gate_priority = None
     try:
         _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
         _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
@@ -2162,6 +2172,7 @@ async def async_call_llm(
                 task or "call", _aux_base, effective_timeout)
             extra_body = dict(extra_body or {})
             extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
+            _gate_priority = priority_for_task(task)
             extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
@@ -2172,12 +2183,18 @@ async def async_call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
+    async def _create(**kw):
+        if _gate_priority is None:
+            return await client.chat.completions.create(**kw)
+        async with sidekick_gate.ahold(_gate_priority):
+            return await client.chat.completions.create(**kw)
+
     try:
-        return await client.chat.completions.create(**kwargs)
+        return await _create(**kwargs)
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            return await _create(**kwargs)
         raise

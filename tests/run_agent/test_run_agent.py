@@ -319,6 +319,10 @@ class TestMazemakerBootstrap:
     def test_run_conversation_injects_mazemaker_bootstrap_without_persisting(self, agent):
         manager = _FakeMazemakerManager()
         agent._memory_manager = manager
+        # The bootstrap is the fallback for a turn the router returned nothing
+        # for; one recall inject per turn. Without this the router reaches the
+        # live pod and the bootstrap correctly stays out of the way.
+        agent._maze_router = None
         agent.valid_tool_names.add("mazemaker_recall")
         agent.tools.append({
             "type": "function",

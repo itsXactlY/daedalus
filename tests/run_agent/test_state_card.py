@@ -93,12 +93,11 @@ class TestBuildStateCard:
         assert "Active tasks" in card
         assert "just the summary" not in card
 
-    def test_fallback_pointer_only(self, agent):
-        # No summary body, no todo store -> fallback pointer line only.
-        card = agent._build_state_card()
-        assert "STATE CARD" in card
-        assert "auto:turn:" in card          # mazemaker label pointer
-        assert "STATE.md" in card            # crash-resistant pointer
+    def test_nothing_to_anchor_means_no_card(self, agent):
+        # No summary body, no todo store -> no card at all. The pointer-only
+        # fallback went out every other turn saying nothing survived, whether
+        # or not a compaction had happened (2026-09-17).
+        assert agent._build_state_card() == ""
 
     def test_truncates_to_max_chars(self, agent):
         agent._last_state_summary_body = "x" * 500

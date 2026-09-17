@@ -1144,6 +1144,10 @@ def _main_argv(conf: StackConf, model: str) -> list:
         # over. MAIN_CACHE_RAM caps it; 0 disables the cache entirely, -1 is
         # llama.cpp's "no limit".
         "--cache-ram", str(conf.int("MAIN_CACHE_RAM", 2048)),
+        # Needed for POST /slots/N?action=erase: the harness's KV watermarks
+        # (agent/kv_watermarks.py) free a slot's leftover KV before the fast
+        # layer overflows. Without it llama-server refuses every slot action.
+        "--slot-save-path", conf.str("MAIN_SLOT_SAVE_PATH", str(Path.home() / ".daedalus" / "slots")),
         # Exposes /metrics (Prometheus text) -- session tok/s, KV cache-hit
         # counters, and the DFlash2/spec-decode draft-acceptance counters
         # (spec_decode_num_{draft,accepted}_tokens_total) used nowhere else:

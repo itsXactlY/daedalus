@@ -2,7 +2,7 @@ from __future__ import annotations
 import sys
 sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent))
 
-from agent.maze_router import (Assembler, Budget, DISTILLED_BOOST, HeuristicPlanner, Hit,
+from agent.maze_router import (AFE_FRAGMENT_PENALTY, Assembler, Budget, DISTILLED_BOOST, HeuristicPlanner, Hit,
                                LlmPlanner, TRANSCRIPT_PENALTY, _kind_weight,
                                MAX_BATCH_GET, Material, MazeRouter, PodClient, PodError)
 
@@ -49,8 +49,19 @@ check("never expands more than recalled", len(pod.last_ids) <= len(m.hits))
 check("expanded ids reported", len(m.expanded_ids) == 6)
 check("full text preferred over snippet", "FULLTEXT" in m.text)
 
+print("  == the inject is a short guideline, not the maze read aloud ==")
+pod = FakePod(); m = MazeRouter(pod, HeuristicPlanner(), Budget()).fetch("where does the pulse pod live")
+check("starts with the guideline header", m.text.startswith("[maze hints]"))
+check("tells how to open more", "mazemaker_get" in m.text and "mazemaker_recall" in m.text)
+check(f"at most 3 hints (saw {m.text.count(chr(10)+'- [')})", m.text.count("\n- [") <= 3)
+check(f"no expansion by default (saw {pod.get_calls} gets)", pod.get_calls == 0)
+check(f"bounded to 1000 chars ({len(m.text)})", len(m.text) <= 1000)
+weak = [Hit(1, "fact:weak", "barely related", 0.2)]
+check("hits below the score floor are not shown",
+      MazeRouter(FakePod(hits=weak), HeuristicPlanner(), Budget()).fetch("a single topic question").empty)
+
 print("  == multi-topic uses recall_multi, still one get ==")
-pod = FakePod(); r = MazeRouter(pod, HeuristicPlanner(), Budget())
+pod = FakePod(); r = MazeRouter(pod, HeuristicPlanner(), Budget(expand_top_n=6))
 m = r.fetch("compare podman and docker, and tell me the quadlet units, and the rootless notes")
 check(f"planner found multiple angles ({len(m.angles)})", len(m.angles) > 1)
 check("used recall_multi", pod.multi_calls == 1 and pod.recall_calls == 0)
@@ -67,7 +78,7 @@ check("sorted by score desc", ids == sorted(ids, key=lambda i: -next(h.score for
 
 print("  == distilled facts outrank raw transcripts ==")
 check("fact: boosted", _kind_weight("fact:btquant-overview") == DISTILLED_BOOST)
-check("afe boosted", _kind_weight("session:x::afe-block0::afe::C3") == DISTILLED_BOOST)
+check("afe fragments demoted", _kind_weight("session:x::afe-block0::afe::C3") == AFE_FRAGMENT_PENALTY)
 check("auto:turn penalised", _kind_weight("auto:turn:abc") == TRANSCRIPT_PENALTY)
 check("unknown neutral", _kind_weight("skillsrc:local:x") == 1.0)
 _mix = [Hit(1,"auto:turn:echo","q",0.807), Hit(2,"fact:the-answer","a",0.609)]
