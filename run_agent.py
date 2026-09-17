@@ -735,6 +735,11 @@ class AIAgent:
             if len(text) < self._REASONING_SPILL_MIN_CHARS:
                 out[i] = text          # smaller than the handle would be
                 continue
+            if self._maze_reachable():
+                # Retrieval is the memory. The maze holds this thinking, so it
+                # leaves the payload with no disk copy and no handle.
+                self._soak_reasoning_once(msg)
+                continue
             handle = None
             try:
                 handle = self.context_compressor.spill_reasoning(text)
@@ -750,7 +755,9 @@ class AIAgent:
                 # reconstruct from the files. Fire-and-forget; the graph gets
                 # the text and a pointer to the full spill.
                 mm = getattr(self, "_memory_manager", None)
-                if mm is not None and hasattr(mm, "soak_reasoning_all"):
+                if (mm is not None and hasattr(mm, "soak_reasoning_all")
+                        and not msg.get("_reasoning_soaked")):
+                    msg["_reasoning_soaked"] = True
                     try:
                         mm.soak_reasoning_all(
                             text,
@@ -889,11 +896,16 @@ class AIAgent:
                             break
                     lines.append(f"{label} -> {path}" if path else label)
                 if lines:
+                    # Tool output never goes to mazemaker (soak policy), so the
+                    # line must not send the model there for it: a path when
+                    # one was spilled, otherwise run the call again.
+                    paths_note = (" Paths are readable with read_file(path)."
+                                  if any(" -> " in line for line in lines) else "")
                     out.append({
                         "role": "assistant",
                         "content": "[aged out of context] " + "; ".join(lines)
-                                   + ". Paths are readable with read_file(path);"
-                                     " the full exchange is in mazemaker.",
+                                   + "." + paths_note
+                                   + " Run a call again if its output is needed.",
                     })
                 i = end
                 continue
@@ -1617,9 +1629,13 @@ class AIAgent:
                                                       self._REASONING_WINDOW))
             self._tool_group_ttl = int(_ctx_cfg.get("tool_group_ttl",
                                                     self._TOOL_GROUP_TTL))
+            self._payload_tape_enabled = bool(_ctx_cfg.get("payload_tape", True))
         except Exception:
             self._reasoning_window = self._REASONING_WINDOW
             self._tool_group_ttl = self._TOOL_GROUP_TTL
+            self._payload_tape_enabled = True
+        from agent.payload_tape import PayloadTape
+        self._payload_tape = PayloadTape()
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -2817,6 +2833,15 @@ class AIAgent:
             logger.debug("hot-swap prefill of slot %s failed (non-fatal): %s", slot, e)
             return False
 
+    def _real_payload_tokens(self, messages: list, system_prompt: str) -> int:
+        """Prompt size as the server counted it last call, else a rough estimate."""
+        compressor = self.context_compressor
+        if compressor.last_prompt_tokens > 0:
+            return compressor.last_prompt_tokens + compressor.last_completion_tokens
+        return estimate_request_tokens_rough(
+            messages, system_prompt=system_prompt or "", tools=self.tools or None,
+        )
+
     def _defer_compaction_to_background(self, tokens: int, messages: list,
                                         system_message: str, task_id: str) -> bool:
         """True when a threshold crossing should NOT stop the turn.
@@ -2859,14 +2884,22 @@ class AIAgent:
             f"{ceiling:,}")
         return True
 
-    def _apply_pending_hot_swap_if_ready(self, messages: list):
+    def _apply_pending_hot_swap_if_ready(self, messages: list, tokens: int = None):
         """Adopt a background-prepared compaction at a turn boundary.
 
         Returns the new `messages` list, or None to leave the turn alone.
         Never called mid-generation.
+
+        With the payload tape on, a ready prep waits until the payload actually
+        reaches the budget. Every swap is a new epoch and a full prefill; one
+        applied the moment it was ready landed at 28-37k tokens, every 3-5
+        minutes (2026-09-17).
         """
         ready = self._hot_swap_ready
         if not ready:
+            return None
+        if (getattr(self, "_payload_tape_enabled", False) and tokens is not None
+                and tokens < self.context_compressor.threshold_tokens):
             return None
         self._hot_swap_ready = None
 
@@ -4154,6 +4187,195 @@ class AIAgent:
             current_turn_user_idx, len(messages) - 1,
         )
         return max(0, len(messages) - 1)
+
+    def _maze_reachable(self) -> bool:
+        """Whether mazemaker can give back what the payload drops, right now."""
+        mm = getattr(self, "_memory_manager", None)
+        check = getattr(mm, "retrieval_reachable", None)
+        try:
+            return bool(check()) if callable(check) else False
+        except Exception:
+            return False
+
+    def _render_payload_message(self, msg: dict, *, is_current: bool,
+                                reasoning_text, injections: list,
+                                bootstrap_messages: list) -> list:
+        """One source message as it goes on the wire, plus any bootstrap after it."""
+        api_msg = msg.copy()
+
+        if is_current and msg.get("role") == "user" and injections:
+            _base = api_msg.get("content", "")
+            if isinstance(_base, str):
+                api_msg["content"] = _base + "\n\n" + "\n\n".join(injections)
+
+        if msg.get("role") == "assistant":
+            if reasoning_text:
+                api_msg["reasoning_content"] = reasoning_text
+            elif "deepseek" in (self.model or "").lower():
+                api_msg["reasoning_content"] = ""
+
+        if "reasoning" in api_msg:
+            api_msg.pop("reasoning")
+        if "finish_reason" in api_msg:
+            api_msg.pop("finish_reason")
+        # Underscore keys are harness bookkeeping (_thinking_prefill,
+        # _reasoning_spill, _reasoning_soaked, ...). None of them belong on
+        # the wire.
+        for _key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+            api_msg.pop(_key)
+        if self._should_sanitize_tool_calls():
+            self._sanitize_tool_calls_for_strict_api(api_msg)
+        out = [api_msg]
+
+        if is_current and bootstrap_messages:
+            for _bootstrap_msg in copy.deepcopy(bootstrap_messages):
+                _bootstrap_msg.pop("_auto_memory_bootstrap", None)
+                if (_bootstrap_msg.get("role") == "assistant"
+                        and "deepseek" in (self.model or "").lower()
+                        and "reasoning_content" not in _bootstrap_msg):
+                    _bootstrap_msg["reasoning_content"] = ""
+                out.append(_bootstrap_msg)
+        return out
+
+    def _soak_reasoning_once(self, msg: dict) -> None:
+        """Hand an assistant message's reasoning to mazemaker the first time it is sent.
+
+        Retrieval is the memory: the maze gets the thinking while it is fresh,
+        not when a TTL finally spills it. When the pod is down the provider
+        spools the write to disk and replays it -- disk only when the maze is
+        dead.
+        """
+        if msg.get("role") != "assistant" or msg.get("_reasoning_soaked"):
+            return
+        text = msg.get("reasoning")
+        mm = getattr(self, "_memory_manager", None)
+        if not text or mm is None or not hasattr(mm, "soak_reasoning_all"):
+            return
+        msg["_reasoning_soaked"] = True
+        try:
+            mm.soak_reasoning_all(
+                text, session_id=getattr(self, "session_id", "") or "", spill_path="",
+            )
+        except Exception as exc:
+            logger.debug("reasoning soak failed (non-fatal): %s", exc)
+
+    def _build_payload_messages(self, messages: list, current_turn_user_idx: int,
+                                user_message, turn_injections: list,
+                                bootstrap_messages: list) -> tuple:
+        """Render the request's messages (system prompt excluded).
+
+        With the payload tape on, only the first call of an epoch runs the
+        hygiene layers (head window, tool-group collapse, reasoning TTL) over
+        the whole view. Every later call reuses the frozen rendering and
+        renders just the messages appended since, so the previous prompt stays
+        an exact prefix of the next one. See agent/payload_tape.py.
+
+        Returns (api_messages, current_turn_user_idx).
+        """
+        _window_turns = getattr(self, "_soak_window_turns", -1)
+        if isinstance(_window_turns, bool) or _window_turns is None:
+            _window_turns = -1
+        _window_turns = int(_window_turns)
+        if _window_turns >= 0:
+            current_turn_user_idx = self._remap_current_turn_index(
+                messages, current_turn_user_idx, user_message
+            )
+        current_user = (
+            messages[current_turn_user_idx]
+            if 0 <= current_turn_user_idx < len(messages) else None
+        )
+
+        tape = self._payload_tape if getattr(self, "_payload_tape_enabled", False) else None
+        generation = getattr(self, "_compaction_generation", 0)
+
+        if tape:
+            first = tape.first_source
+            start = next((i for i, m in enumerate(messages) if m is first), -1)
+            if start >= 0:
+                view = messages[start:]
+                blocks, covered = tape.matched_blocks(view, generation)
+                if blocks:
+                    tape.truncate(blocks)
+                    api_messages = tape.payload()
+                    storable = True
+                    for msg in view[covered:]:
+                        if msg.get("role") == "assistant":
+                            self._soak_reasoning_once(msg)
+                        rendered = self._render_payload_message(
+                            msg, is_current=msg is current_user,
+                            reasoning_text=msg.get("reasoning"),
+                            injections=turn_injections,
+                            bootstrap_messages=bootstrap_messages,
+                        )
+                        api_messages.extend(rendered)
+                        # A thinking prefill is popped again after the call;
+                        # nothing after it may be frozen onto the tape.
+                        if msg.get("_thinking_prefill"):
+                            storable = False
+                        if storable:
+                            tape.append(msg, rendered)
+                    return api_messages, current_turn_user_idx
+            logger.info("payload tape: new epoch (history under the tape was replaced)")
+            tape.reset()
+
+        if _window_turns >= 0:
+            _messages_view = self._window_messages_for_api(
+                messages,
+                current_turn_user_idx=current_turn_user_idx,
+                window_turns=_window_turns,
+            )
+            _view_cur = current_turn_user_idx
+            if current_user is not None:
+                for _vi, _m in enumerate(_messages_view):
+                    if _m is current_user:
+                        _view_cur = _vi
+                        break
+            else:
+                _view_cur = max(0, len(_messages_view) - 1)
+            _iter_messages, _iter_cur = _messages_view, _view_cur
+        else:
+            _iter_messages, _iter_cur = messages, current_turn_user_idx
+        sources = list(_iter_messages)
+
+        # Collapse finished tool exchanges before anything indexes into
+        # the list. _iter_cur is re-found by identity rather than
+        # arithmetic: collapsing removes messages ahead of it, so the
+        # stored index would otherwise point at the wrong message and the
+        # turn injections would land on a tool result.
+        _pre_collapse_anchor = (
+            _iter_messages[_iter_cur]
+            if 0 <= _iter_cur < len(_iter_messages) else None
+        )
+        _iter_messages = self._collapse_aged_tool_groups(_iter_messages)
+        if _pre_collapse_anchor is not None:
+            for _ci, _cm in enumerate(_iter_messages):
+                if _cm is _pre_collapse_anchor:
+                    _iter_cur = _ci
+                    break
+            else:
+                _iter_cur = max(0, len(_iter_messages) - 1)
+        else:
+            _iter_cur = max(0, len(_iter_messages) - 1)
+
+        _reasoning_keep = self._reasoning_payload(_iter_messages)
+
+        api_messages = []
+        for idx, msg in enumerate(_iter_messages):
+            # Only this turn's thinking is new at an epoch start. Older messages
+            # were soaked when first sent (or carry the flag through a
+            # compaction's copies); soaking them again would duplicate them.
+            if tape is not None and idx > _iter_cur and msg.get("role") == "assistant":
+                self._soak_reasoning_once(msg)
+            api_messages.extend(self._render_payload_message(
+                msg, is_current=idx == _iter_cur,
+                reasoning_text=_reasoning_keep.get(idx),
+                injections=turn_injections,
+                bootstrap_messages=bootstrap_messages,
+            ))
+
+        if tape is not None and not any(m.get("_thinking_prefill") for m in sources):
+            tape.start(sources, api_messages, generation)
+        return api_messages, current_turn_user_idx
 
     @staticmethod
     def _window_messages_for_api(
@@ -7245,6 +7467,7 @@ class AIAgent:
                 api_msg.pop("_flush_sentinel", None)
                 api_msg.pop("_thinking_prefill", None)
                 api_msg.pop("_reasoning_spill", None)
+                api_msg.pop("_reasoning_soaked", None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
@@ -7606,9 +7829,11 @@ class AIAgent:
         # continues rather than the one that just ended.
         self._write_state_snapshot(compressed, todo_snapshot,
                                    previous_session_id=_pre_compaction_session)
-        # Also save a human-readable summary for the spill directory so
-        # post-mortems and crash recovery have something useful to look at.
-        self._write_spill_summary(compressed, system_message, task_id)
+        # A human-readable summary on disk is for when the maze cannot hold
+        # the compaction; while it is reachable the archive note above is
+        # the record, and this file is decoration.
+        if not self._maze_reachable():
+            self._write_spill_summary(compressed, system_message, task_id)
 
         _compressed_est = (
             estimate_tokens_rough(new_system_prompt)
@@ -8750,7 +8975,9 @@ class AIAgent:
         # bookkeeping (mazemaker archive, session split, prompt rebuild) and
         # the turn skips the summarization call it would otherwise block on.
         if self.compression_enabled:
-            _hot_swapped = self._apply_pending_hot_swap_if_ready(messages)
+            _hot_swapped = self._apply_pending_hot_swap_if_ready(
+                messages, self._real_payload_tokens(messages, active_system_prompt),
+            )
             if _hot_swapped is not None:
                 messages, active_system_prompt = self._compress_context(
                     messages, system_message, task_id=effective_task_id,
@@ -8999,90 +9226,10 @@ class AIAgent:
                     and "skill_manage" in self.valid_tool_names):
                 self._iters_since_skill += 1
             
-            _window_turns = getattr(self, "_soak_window_turns", -1)
-            if isinstance(_window_turns, bool) or _window_turns is None:
-                _window_turns = -1
-            _window_turns = int(_window_turns)
-            if _window_turns >= 0:
-                current_turn_user_idx = self._remap_current_turn_index(
-                    messages, current_turn_user_idx, user_message
-                )
-                _messages_view = self._window_messages_for_api(
-                    messages,
-                    current_turn_user_idx=current_turn_user_idx,
-                    window_turns=_window_turns,
-                )
-                _view_cur = current_turn_user_idx
-                if 0 <= current_turn_user_idx < len(messages):
-                    _anchor = messages[current_turn_user_idx]
-                    for _vi, _m in enumerate(_messages_view):
-                        if _m is _anchor:
-                            _view_cur = _vi
-                            break
-                else:
-                    _view_cur = max(0, len(_messages_view) - 1)
-                _iter_messages, _iter_cur = _messages_view, _view_cur
-            else:
-                _iter_messages, _iter_cur = messages, current_turn_user_idx
-
-            # Collapse finished tool exchanges before anything indexes into
-            # the list. _iter_cur is re-found by identity rather than
-            # arithmetic: collapsing removes messages ahead of it, so the
-            # stored index would otherwise point at the wrong message and the
-            # turn injections would land on a tool result.
-            _pre_collapse_anchor = (
-                _iter_messages[_iter_cur]
-                if 0 <= _iter_cur < len(_iter_messages) else None
+            api_messages, current_turn_user_idx = self._build_payload_messages(
+                messages, current_turn_user_idx, user_message,
+                _turn_injections, _mazemaker_bootstrap_messages,
             )
-            _iter_messages = self._collapse_aged_tool_groups(_iter_messages)
-            if _pre_collapse_anchor is not None:
-                for _ci, _cm in enumerate(_iter_messages):
-                    if _cm is _pre_collapse_anchor:
-                        _iter_cur = _ci
-                        break
-                else:
-                    _iter_cur = max(0, len(_iter_messages) - 1)
-            else:
-                _iter_cur = max(0, len(_iter_messages) - 1)
-
-            _reasoning_keep = self._reasoning_payload(_iter_messages)
-
-            api_messages = []
-            for idx, msg in enumerate(_iter_messages):
-                api_msg = msg.copy()
-
-                if idx == _iter_cur and msg.get("role") == "user":
-                    if _turn_injections:
-                        _base = api_msg.get("content", "")
-                        if isinstance(_base, str):
-                            api_msg["content"] = (
-                                _base + "\n\n" + "\n\n".join(_turn_injections)
-                            )
-
-                if msg.get("role") == "assistant":
-                    reasoning_text = _reasoning_keep.get(idx)
-                    if reasoning_text:
-                        api_msg["reasoning_content"] = reasoning_text
-                    elif "deepseek" in (self.model or "").lower():
-                        api_msg["reasoning_content"] = ""
-
-                if "reasoning" in api_msg:
-                    api_msg.pop("reasoning")
-                if "finish_reason" in api_msg:
-                    api_msg.pop("finish_reason")
-                api_msg.pop("_thinking_prefill", None)
-                if self._should_sanitize_tool_calls():
-                    self._sanitize_tool_calls_for_strict_api(api_msg)
-                api_messages.append(api_msg)
-
-                if idx == _iter_cur and _mazemaker_bootstrap_messages:
-                    for _bootstrap_msg in copy.deepcopy(_mazemaker_bootstrap_messages):
-                        _bootstrap_msg.pop("_auto_memory_bootstrap", None)
-                        if (_bootstrap_msg.get("role") == "assistant"
-                                and "deepseek" in (self.model or "").lower()
-                                and "reasoning_content" not in _bootstrap_msg):
-                            _bootstrap_msg["reasoning_content"] = ""
-                        api_messages.append(_bootstrap_msg)
 
             effective_system = active_system_prompt or ""
             if self.ephemeral_system_prompt:
@@ -10514,7 +10661,9 @@ class AIAgent:
                             self._context_pressure_warned = True
                             self._emit_context_pressure(_compaction_progress, _compressor)
 
-                    if self.compression_enabled:
+                    # With the tape on, pruning waits for the next epoch:
+                    # rewriting an old result here breaks the prefix.
+                    if self.compression_enabled and not getattr(self, "_payload_tape_enabled", False):
                         _spill_before = len(_compressor.offloaded)
                         _bytes_before = _message_payload_chars(messages)
                         messages, _stale = _compressor.prune_stale_tool_results(
@@ -10538,7 +10687,9 @@ class AIAgent:
                     # anything. Not mid-generation: nothing is streaming at this
                     # point, so promoting a slot here is safe.
                     if self.compression_enabled:
-                        _hot_swapped = self._apply_pending_hot_swap_if_ready(messages)
+                        _hot_swapped = self._apply_pending_hot_swap_if_ready(
+                            messages, _real_tokens,
+                        )
                         if _hot_swapped is not None:
                             messages, active_system_prompt = self._compress_context(
                                 messages, system_message,

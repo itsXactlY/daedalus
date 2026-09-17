@@ -505,6 +505,23 @@ class MemoryManager:
         """
         return extract_user_instruction_from_skill_message(text)
 
+    def retrieval_reachable(self) -> bool:
+        """True when a provider that serves recall says it is reachable now.
+
+        Providers without the notion (builtin files) do not count: they cannot
+        give back what the payload would drop.
+        """
+        for provider in self._providers:
+            check = getattr(provider, "is_reachable", None)
+            if not callable(check):
+                continue
+            try:
+                if check():
+                    return True
+            except Exception:
+                continue
+        return False
+
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Collect prefetch context from all providers.
 

@@ -193,19 +193,32 @@ class TestWiredIntoThePayload:
         return open(inspect.getsourcefile(run_agent), encoding="utf-8").read().splitlines()
 
     def test_attach_site_is_gated_by_the_map(self):
+        # The attach site renders whatever reasoning its caller hands it. The
+        # epoch render must hand it the TTL map; the tape path renders only
+        # messages appended since the last call, which are the newest by
+        # construction and so inside any TTL.
         lines = self._source()
-        sites = [i for i, l in enumerate(lines)
-                 if 'api_msg["reasoning_content"] = reasoning_text' in l]
-        assert sites, "reasoning_content attach site not found"
-        for site in sites:
-            window = "\n".join(lines[max(0, site - 12): site + 1])
-            assert "_reasoning_keep" in window, (
-                f"line {site+1} attaches reasoning without consulting the TTL map"
-            )
+        calls = [i for i, l in enumerate(lines)
+                 if "self._render_payload_message(" in l and "def " not in l]
+        assert calls, "render call site not found"
+        gated = ungated = 0
+        for c in calls:
+            window = "\n".join(lines[c: c + 6])
+            if "reasoning_text=_reasoning_keep.get(idx)" in window:
+                gated += 1
+            elif "reasoning_text=msg.get(\"reasoning\")" in window:
+                assert any("view[covered:]" in l for l in lines[max(0, c - 8): c]), (
+                    f"line {c+1} attaches raw reasoning outside the tape's append path"
+                )
+                ungated += 1
+            else:
+                raise AssertionError(f"line {c+1} renders reasoning from an unknown source")
+        assert gated, "the epoch render no longer consults the TTL map"
 
     def test_the_transient_key_never_reaches_the_api(self):
         lines = self._source()
-        assert any('api_msg.pop("_reasoning_spill", None)' in l for l in lines), (
+        assert any('api_msg.pop("_reasoning_spill", None)' in l for l in lines) and any(
+            'k.startswith("_")' in l for l in lines), (
             "the cached handle is a transient bookkeeping key; sending it "
             "would put an unknown field on every assistant message"
         )

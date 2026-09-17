@@ -586,6 +586,10 @@ class _Breaker:
         self._level = 0
         self._suppressed = 0
 
+    def is_tripped(self) -> bool:
+        """Pure read of the breaker. is_open() advances the half-open probe."""
+        return self._open_since is not None
+
     def is_open(self) -> bool:
         if self._open_since is None:
             return False
@@ -961,6 +965,14 @@ class MazemakerMemoryProvider(MemoryProvider):
             self._brain_ready = False
         self._brain_checked_at = now
         return self._brain_ready
+
+    def is_reachable(self) -> bool:
+        """Whether recall can be counted on right now: not wedged, breaker closed.
+
+        The payload drops what the maze holds only while this is true; when it
+        is false, aged-out material goes to disk with a path instead.
+        """
+        return not _POD_HEALTH.is_wedged() and not _BREAKER.is_tripped()
 
     def is_available(self) -> bool:
         return self.brain_ready()
