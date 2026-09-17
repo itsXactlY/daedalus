@@ -62,6 +62,18 @@ DEFAULTS = {
     #   N=18   8965 MiB, 60.2 tok/s, same extraction output — ~2 GiB stays
     #         free beside the worker.
     "AFE_N_CPU_MOE": "18",
+    # Logical/physical batch for prompt evaluation. 0 keeps llama-server's own
+    # defaults. With experts in system RAM (AFE_N_CPU_MOE) a prompt longer than
+    # the ubatch has those experts evaluated on the CPU, one 512-token chunk at
+    # a time: MEASURED 2026-09-17, 430-500 tok/s prompt eval on 700-2000-token
+    # Stage C prompts that generate 2 tokens, so every call was ~all prompt and
+    # 16 queued callers ran into the 60 s client timeout. A ubatch that holds
+    # the whole prompt lets llama.cpp run those expert matmuls on the GPU.
+    "AFE_UBATCH": "0",
+    # Shared KV pool across slots. Only applied when AFE_SLOTS > 1, and always
+    # with --no-cache-idle-slots: under unified KV that option is on by default
+    # and clears the other slots' cache whenever one goes idle.
+    "AFE_KV_UNIFIED": "1",
     "AFE_VRAM_BLOCK_MIB": "10240",
     "AFE_READY_TIMEOUT": "420",
     "AFE_IDLE_SECONDS": "600",
@@ -247,6 +259,11 @@ def argv(conf: S.StackConf, gguf: str) -> List[str]:
     n_cpu_moe = _int(conf, "AFE_N_CPU_MOE")
     if n_cpu_moe > 0:
         cmd += ["--n-cpu-moe", str(n_cpu_moe)]
+    ubatch = _int(conf, "AFE_UBATCH")
+    if ubatch > 0:
+        cmd += ["-b", str(ubatch), "-ub", str(ubatch)]
+    if _int(conf, "AFE_SLOTS") > 1 and conf.flag("AFE_KV_UNIFIED", DEFAULTS["AFE_KV_UNIFIED"] == "1"):
+        cmd += ["-kvu", "--no-cache-idle-slots"]
     key = _api_key()
     if key:
         cmd += ["--api-key", key]
