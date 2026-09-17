@@ -825,6 +825,17 @@ def get_model_context_length(
 
     model = _strip_provider_prefix(model)
 
+    # A local server is the only authority on its own window. llama-server gets
+    # restarted with a different --ctx-size (0 = n_ctx_train) all the time, and
+    # a value persisted from an earlier run must not outlive it: a 131072 cached
+    # from an old launch capped a 262144 server for good. Ask it first; the
+    # cache is only for when it doesn't answer.
+    if base_url and is_local_endpoint(base_url):
+        live_ctx = _query_local_context_length(model, base_url, api_key)
+        if live_ctx and live_ctx > 0:
+            save_context_length(model, base_url, live_ctx)
+            return live_ctx
+
     if base_url:
         cached = get_cached_context_length(model, base_url)
         if cached is not None:

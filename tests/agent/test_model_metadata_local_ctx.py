@@ -459,16 +459,27 @@ class TestGetModelContextLengthLocalFallback:
 
         mock_query.assert_not_called()
 
-    def test_cached_result_skips_local_query(self):
-        """Cached context length is returned without querying the local server."""
+    def test_live_local_server_beats_stale_cache(self):
+        """A restarted llama-server's real window wins over a value cached from an earlier run."""
+        from agent.model_metadata import get_model_context_length
+
+        with patch("agent.model_metadata.get_cached_context_length", return_value=131072), \
+             patch("agent.model_metadata._query_local_context_length", return_value=262144), \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            result = get_model_context_length("Qwen3.8-27B", "http://127.0.0.1:8080/v1")
+
+        assert result == 262144
+        mock_save.assert_called_once_with("Qwen3.8-27B", "http://127.0.0.1:8080/v1", 262144)
+
+    def test_cache_used_when_local_server_does_not_answer(self):
+        """Cached context length is the fallback when the local server is down."""
         from agent.model_metadata import get_model_context_length
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=65536), \
-             patch("agent.model_metadata._query_local_context_length") as mock_query:
+             patch("agent.model_metadata._query_local_context_length", return_value=None):
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
         assert result == 65536
-        mock_query.assert_not_called()
 
     def test_no_base_url_does_not_query_local_server(self):
         """When base_url is empty, local server is not queried."""
