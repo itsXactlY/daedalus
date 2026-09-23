@@ -137,6 +137,7 @@ def atomic_json_write(
     data: Any,
     *,
     indent: int = 2,
+    mode: Optional[int] = None,
     **dump_kwargs: Any,
 ) -> None:
     """Write JSON data to a file atomically.
@@ -149,6 +150,9 @@ def atomic_json_write(
         path: Target file path (will be created or overwritten).
         data: JSON-serializable data to write.
         indent: JSON indentation (default 2).
+        mode: chmod applied to the temp file before os.replace. Must be a real
+            parameter: it used to fall into **dump_kwargs and reach
+            JSONEncoder.__init__(), so every caller passing it lost the write.
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
@@ -171,6 +175,8 @@ def atomic_json_write(
             )
             f.flush()
             os.fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp_path, mode)
         os.replace(tmp_path, path)
     except BaseException:
         try:
