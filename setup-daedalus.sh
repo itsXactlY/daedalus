@@ -273,6 +273,38 @@ else
 fi
 
 # ============================================================================
+# Reference config + audit
+# ============================================================================
+
+DAEDALUS_CFG_HOME="${DAEDALUS_HOME:-$HOME/.daedalus}"
+mkdir -p "$DAEDALUS_CFG_HOME"
+
+# The sample is generated from the typed schema, so it never drifts from what
+# the harness actually reads. Always refreshed: it is a reference, not state.
+if "$SCRIPT_DIR/venv/bin/python" -c "
+import sys; sys.path.insert(0, '$SCRIPT_DIR')
+from agent.harness_config import render_sample
+open('$DAEDALUS_CFG_HOME/config.sample.yaml', 'w').write(render_sample())
+" 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} Reference config at ~/.daedalus/config.sample.yaml"
+else
+    cp -f "$SCRIPT_DIR/config.sample.yaml" "$DAEDALUS_CFG_HOME/config.sample.yaml" 2>/dev/null \
+        && echo -e "${GREEN}✓${NC} Reference config copied" || true
+fi
+
+# Audit an existing config. Never fatal — a stale key must not block setup.
+if [ -f "$DAEDALUS_CFG_HOME/config.yaml" ]; then
+    _audit="$("$SCRIPT_DIR/venv/bin/python" -m agent.harness_config 2>/dev/null)" || true
+    if [ -n "$_audit" ] && ! printf '%s' "$_audit" | grep -q '^clean'; then
+        echo -e "${YELLOW}!${NC} config.yaml has keys the harness does not read:"
+        printf '%s\n' "$_audit" | sed 's/^/    /'
+        echo "    (delete them, or keep them — they do nothing)"
+    else
+        echo -e "${GREEN}✓${NC} config.yaml clean — every key is read"
+    fi
+fi
+
+# ============================================================================
 # Done
 # ============================================================================
 

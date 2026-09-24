@@ -144,3 +144,24 @@ def test_frozen():
     cfg = HarnessConfig.from_dict({})
     with pytest.raises(Exception):
         cfg.compression.engine = "compressor"
+
+
+def test_sample_is_generated_from_the_schema_and_audits_clean():
+    """The sample must never drift from what the harness reads."""
+    import yaml
+    from agent.harness_config import render_sample
+    cfg = HarnessConfig.from_dict(yaml.safe_load(render_sample()))
+    assert cfg.is_clean(), cfg.report()
+
+
+def test_install_defaults_audit_clean():
+    """DEFAULT_CONFIG seeds every fresh install; it must not ship dead keys."""
+    from daedalus_cli.config import DEFAULT_CONFIG
+    cfg = HarnessConfig.from_dict(DEFAULT_CONFIG)
+    assert cfg.is_clean(), cfg.report()
+
+
+def test_yaml_null_means_unset_not_a_type_error():
+    cfg = HarnessConfig.from_dict({"compression": {"summary_base_url": None}})
+    assert cfg.compression.summary_base_url == ""
+    assert cfg.is_clean()

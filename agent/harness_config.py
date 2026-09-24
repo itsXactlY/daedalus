@@ -93,6 +93,8 @@ class Section:
             if name not in raw:
                 continue
             value = raw[name]
+            if value is None:
+                continue          # yaml null == "not configured", use the default
             tp = hints.get(name, Any)
             if isinstance(tp, type) and issubclass(tp, Section):
                 kwargs[name] = tp.build(value, f"{path}.{name}", problems)
@@ -150,6 +152,9 @@ class Compression(Section):
     protect_first_n: int = 4
     target_ratio: float = 0.1
     tail_budget: int = 3200
+    summary_model: str = ""
+    summary_provider: str = ""
+    summary_base_url: str = ""
     watermarks: Watermarks = field(default_factory=Watermarks)
 
     def _validate(self, path, problems):
@@ -180,12 +185,19 @@ class Soak(Section):
 
 @dataclass(frozen=True)
 class Memory(Section):
-    provider: str = "mazemaker"        # mazemaker | mcp | builtin
+    provider: str = "mazemaker"        # mazemaker | mcp | builtin | "" (default)
     prefetch_timeout_s: float = 30.0
+    memory_enabled: bool = True
+    user_profile_enabled: bool = True
+    memory_char_limit: int = 0
+    user_char_limit: int = 0
+    flush_max_chars: int = 0
+    flush_max_tokens: int = 0
+    flush_timeout: float = 0.0
     soak: Soak = field(default_factory=Soak)
 
     def _validate(self, path, problems):
-        self._one_of(path, "provider", ("mazemaker", "mcp", "builtin"), problems)
+        self._one_of(path, "provider", ("mazemaker", "mcp", "builtin", ""), problems)
         if self.prefetch_timeout_s < 10.0:
             problems.append(ConfigProblem(
                 f"{path}.prefetch_timeout_s", "value",
@@ -207,7 +219,9 @@ class AuxTask(Section):
     download_timeout: float = 30.0
     api_mode: str = ""
     effort: str = ""
+    reasoning_effort: str = ""
     context_length: int = 0
+    extra_body: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -294,7 +308,7 @@ _PASSTHROUGH = frozenset({
     "timezone", "discord", "approvals", "command_allowlist", "security", "cron",
     "logging", "curator", "_config_version", "network", "session_reset", "pony",
     "routing", "tools", "fallback_providers", "honcho", "personalities",
-    "quick_commands", "whatsapp",
+    "quick_commands", "whatsapp", "file_read_max_chars",
 })
 
 
@@ -406,3 +420,68 @@ def _main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+
+# ── sample generation ───────────────────────────────────────────────────────
+
+_SAMPLE_NOTES: Dict[str, str] = {
+    "compression.engine": "retrieval = rebuild from mazemaker; compressor = LLM summary",
+    "compression.threshold": "fraction of the context window that triggers compaction",
+    "compression.watermarks": "low <= high <= hard, as fractions of the window",
+    "context": "NOTE: no `engine` key here — that is compression.engine",
+    "memory.provider": "mazemaker | mcp | builtin",
+    "memory.prefetch_timeout_s": "must exceed pod recall latency (5-19s under GPU load)",
+    "auxiliary": "one block per background task; each inherits the main model unless set",
+    "mcp_servers": "transport http needs url; stdio needs command",
+    "agent.tool_use_enforcement": "auto | required | off",
+}
+
+
+def _sample_tree() -> Dict[str, Any]:
+    """Defaults straight off the dataclasses — the schema IS the sample."""
+    def walk(sec: Type[Section]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for f in fields(sec):
+            hint = _hints(sec).get(f.name)
+            if isinstance(hint, type) and issubclass(hint, Section):
+                out[f.name] = walk(hint)
+            elif f.default is not MISSING:
+                out[f.name] = f.default
+            elif f.default_factory is not MISSING:  # type: ignore[misc]
+                out[f.name] = f.default_factory()   # type: ignore[misc]
+        return out
+
+    tree = {name: walk(tp) for name, tp in _SECTIONS.items()}
+    tree["auxiliary"] = {"curator": walk(AuxTask)}
+    tree["mcp_servers"] = {
+        "mazemaker": {"enabled": True, "transport": "http",
+                      "url": "http://127.0.0.1:8765/mcp",
+                      "description": "Local mazemaker pod"},
+    }
+    return tree
+
+
+def render_sample() -> str:
+    import yaml
+    lines = [
+        "# daedalus config — every key here is read by the harness.",
+        "# Audit yours with:  python3 -m agent.harness_config",
+        "# Anything it reports as [unknown] or [dead] can be deleted.",
+        "",
+    ]
+    tree = _sample_tree()
+    for section, body in tree.items():
+        note = _SAMPLE_NOTES.get(section)
+        if note:
+            lines.append(f"# {note}")
+        block = yaml.safe_dump({section: body}, sort_keys=False,
+                               allow_unicode=True, width=100).rstrip()
+        for ln in block.splitlines():
+            key = ln.strip().split(":")[0]
+            hint = _SAMPLE_NOTES.get(f"{section}.{key}")
+            if hint and not ln.startswith(" " * 4):
+                indent = len(ln) - len(ln.lstrip())
+                lines.append(" " * indent + f"# {hint}")
+            lines.append(ln)
+        lines.append("")
+    return "\n".join(lines)
