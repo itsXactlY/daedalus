@@ -45,6 +45,39 @@ class SidekickGate:
         self._waiting: list = []
         self._seq = itertools.count()
         self._reserved_until = 0.0
+        self._main_depth = 0
+
+    # -- main interlock -------------------------------------------------
+    # The gate above serialises background jobs against EACH OTHER, but never
+    # against the live conversation, so main could decode on slot 1 while a
+    # background job prompt-processed slot 0. This fork is not built for two
+    # slots on unrelated tasks: 2026-09-24 main.log shows slot 0 generating
+    # (task 12) while slot 1 processed 19,949 prompt tokens (task 209), then
+    # ggml-cuda.cu:109 "CUDA error: invalid argument". Slot 0 is housekeeping,
+    # and housekeeping waits for main to finish.
+    def main_begin(self) -> None:
+        with self._cond:
+            self._main_depth += 1
+
+    def main_end(self) -> None:
+        with self._cond:
+            if self._main_depth > 0:
+                self._main_depth -= 1
+            if self._main_depth == 0:
+                self._cond.notify_all()
+
+    def main_active(self) -> bool:
+        with self._cond:
+            return self._main_depth > 0
+
+    @contextlib.contextmanager
+    def main_turn(self):
+        """Main never waits; it only blocks background work while it runs."""
+        self.main_begin()
+        try:
+            yield
+        finally:
+            self.main_end()
 
     def reserve(self, seconds: float) -> None:
         """Hold the slot for hygiene only: it carries a prewarmed turn 0.
@@ -71,6 +104,7 @@ class SidekickGate:
         with self._cond:
             heapq.heappush(self._waiting, ticket)
             while (self._busy or self._waiting[0] != ticket
+                   or self._main_depth > 0
                    or (ticket[0] > HYGIENE and self.reserved())):
                 self._cond.wait(timeout=1.0)
             heapq.heappop(self._waiting)

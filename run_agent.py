@@ -6486,7 +6486,14 @@ class AIAgent:
 
             _max_stream_retries = int(os.getenv("DAEDALUS_STREAM_RETRIES", 2))
 
+            # Hold the main interlock for the whole request. Background jobs
+            # take the sidekick slot only when main is not on the card: this
+            # fork is not built for two slots on unrelated tasks, and doing it
+            # anyway crashed it (ggml-cuda.cu:109, 2026-09-24). Main itself
+            # never waits here — main_turn only blocks the background side.
+            from agent.sidekick_queue import sidekick_gate as _gate
             try:
+              with _gate.main_turn():
                 for _stream_attempt in range(_max_stream_retries + 1):
                     try:
                         if self.api_mode == "anthropic_messages":

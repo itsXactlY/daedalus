@@ -93,7 +93,7 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub"))
+_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".curator_backups"))
 _REMOTE_ENV_BACKENDS = frozenset({"singularity", "modal", "ssh", "daytona"})
 _secret_capture_callback = None
 
@@ -1442,7 +1442,12 @@ registry.register(
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
+        category=args.get("category"),
+        query=args.get("query"),
+        limit=args.get("limit", 20),
+        names_only=args.get("names_only", False),
+        include_unavailable=args.get("include_unavailable", False),
+        task_id=kw.get("task_id"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
