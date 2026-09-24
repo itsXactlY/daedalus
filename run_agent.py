@@ -2792,9 +2792,18 @@ class AIAgent:
         discarded. Those steps stay on the turn, where they are cheap.
         """
         try:
-            if self._retrieval_engine():
+            # Retrieval rebase evacuates the history and replaces it with the
+            # [rebased] anchor. That is only safe if the maze can hand it back:
+            # _build_retrieval_base skips its recall when the pod is wedged, so
+            # config alone would drop everything and inject nothing.
+            if self._retrieval_engine() and self._maze_reachable():
                 compressed = self._build_retrieval_base(snapshot)
             else:
+                if self._retrieval_engine():
+                    logger.warning(
+                        "hot-swap: maze unreachable — summarizing instead of "
+                        "rebasing, or this epoch would start from nothing"
+                    )
                 compressed = self.context_compressor.compress(
                     snapshot, current_tokens=approx_tokens,
                 )
@@ -2939,13 +2948,28 @@ class AIAgent:
         if card:
             blocks.append(card)
         mm = getattr(self, "_memory_manager", None)
+        recalled = ""
         if query and mm is not None and self._maze_reachable():
-            try:
-                recalled = (mm.prefetch_all(query, session_id=self.session_id or "") or "").strip()
-                if recalled:
-                    blocks.append(build_memory_context_block(recalled) or recalled)
-            except Exception as exc:
-                logger.debug("rebase recall failed (non-fatal): %s", exc)
+            for attempt in (1, 2):
+                try:
+                    recalled = (mm.prefetch_all(query, session_id=self.session_id or "") or "").strip()
+                    if recalled:
+                        break
+                except Exception as exc:
+                    logger.debug("rebase recall attempt %d failed: %s", attempt, exc)
+        if recalled:
+            blocks.append(build_memory_context_block(recalled) or recalled)
+        else:
+            # The anchor alone is an instruction, not content. Say so, or the
+            # model reads an empty epoch as "nothing happened yet" and redoes
+            # the work from scratch instead of calling recall.
+            logger.warning("rebase: no recall content — epoch starts on the anchor alone")
+            blocks.append(
+                "[recall required] The rebase returned no prefetched memories. "
+                "Do NOT assume this conversation started here. Call "
+                "mazemaker_recall on the question above BEFORE answering, "
+                "re-reading files, or redoing any prior work."
+            )
         base.append({"role": "user", "content": "\n\n".join(blocks),
                      "display_kind": "hidden"})
 
