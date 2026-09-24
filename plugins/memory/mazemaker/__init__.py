@@ -705,7 +705,7 @@ def _format_tool_result(result: dict, tool_name: str) -> str:
     return "\n".join(lines)
 
 
-def _tool(name: str, arguments: dict, timeout: float = 8.0) -> Any:
+def _tool(name: str, arguments: dict, timeout: float = 30.0) -> Any:
     """Call a wonderland tool and return its ``result``. Raises on failure.
 
     Also the single instrumentation point for :class:`_PodHealth` — see there

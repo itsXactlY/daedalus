@@ -41,7 +41,12 @@ from tools.registry import tool_error
 logger = logging.getLogger(__name__)
 
 _SYNC_DRAIN_TIMEOUT_S = 5.0
-_EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
+# The external provider's per-turn prefetch pipeline is recall_multi (30s)
+# + graph neighbours (30s) + AFE facts (30s). The join budget must cover the
+# realistic worst case of that pipeline — a pod under GPU-contention
+# embedding load answers recall in 5-19s, so an 8s join structurally
+# guaranteed a skipped turn (no memory context injected).
+_EXTERNAL_PREFETCH_TIMEOUT_S = 30.0
 
 
 def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
