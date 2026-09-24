@@ -87,6 +87,7 @@ from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
+    parse_prompt_tokens_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -4473,6 +4474,39 @@ class AIAgent:
             current_turn_user_idx, len(messages) - 1,
         )
         return max(0, len(messages) - 1)
+
+    @staticmethod
+    def _trim_largest_tool_results(messages: list, target_tokens: int,
+                                   keep_chars: int = 2000) -> int:
+        """Truncate oversized tool results in place. Returns how many.
+
+        One `ls ~` dump or a 50k-line file read is usually the whole overage.
+        Compaction summarises conversation; it does not touch a single huge
+        tool payload, which is why it can run three times and shrink nothing.
+        """
+        budget = max(1, target_tokens) * 3          # ~3 chars/token
+        sized = []
+        for i, m in enumerate(messages):
+            if m.get("role") != "tool":
+                continue
+            c = m.get("content")
+            if isinstance(c, str) and len(c) > keep_chars:
+                sized.append((len(c), i))
+        if not sized:
+            return 0
+        total = sum(len(str(m.get("content") or "")) for m in messages)
+        sized.sort(reverse=True)
+        trimmed = 0
+        for length, idx in sized:
+            if total <= budget:
+                break
+            m = messages[idx]
+            head = m["content"][:keep_chars]
+            m["content"] = (head + f"\n\n[trimmed {length - keep_chars:,} chars — "
+                            f"oversized tool result, re-run the tool if needed]")
+            total -= (length - len(m["content"]))
+            trimmed += 1
+        return trimmed
 
     def _maze_reachable(self) -> bool:
         """Whether mazemaker can give back what the payload drops, right now."""
@@ -10449,29 +10483,68 @@ class AIAgent:
                         self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
+                        # Ground truth from the server, not our estimator. The
+                        # 2026-09-24 failure: estimator said 55,384 while the
+                        # server counted 77,649 — a 40% undercount, so every
+                        # decision below was made on a number that was wrong.
+                        _server_tokens = parse_prompt_tokens_from_error(error_msg)
+                        _before = _server_tokens or approx_tokens
+
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
                             task_id=effective_task_id,
                         )
 
-                        if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
-                            if len(messages) < original_len:
-                                self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                        # Did it actually get SMALLER? Message count is not
+                        # size. That run went 7 -> 8 messages (compaction adds
+                        # an anchor) and 77,649 -> 79,199 -> 79,158 tokens,
+                        # yet retried all three times because the ctx tier had
+                        # stepped down — a condition that says nothing about
+                        # the payload we are about to resend.
+                        _after = self._estimate_tokens_for_messages(messages) \
+                            if hasattr(self, "_estimate_tokens_for_messages") else None
+                        if _after is None:
+                            _after = sum(len(str(m.get("content") or "")) for m in messages) // 3
+                        if _server_tokens and approx_tokens:
+                            _after = int(_after * max(1.0, _server_tokens / max(1, approx_tokens)))
+
+                        _shrank = _after < _before * 0.95
+                        if _shrank:
+                            self._emit_status(
+                                f"🗜️ Compressed {original_len} → {len(messages)} messages, "
+                                f"~{_before:,} → ~{_after:,} tokens, retrying...")
                             time.sleep(2)
                             restart_with_compressed_messages = True
                             break
-                        else:
-                            self._vprint(f"{self.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
-                            self._vprint(f"{self.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
-                            logging.error(f"{self.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
-                            self._persist_session(messages, conversation_history)
-                            return {
-                                "messages": messages,
-                                "completed": False,
-                                "api_calls": api_call_count,
-                                "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
-                                "partial": True
-                            }
+                        # Last resort before giving up: drop the largest tool
+                        # results, which is what actually blows a context up.
+                        # A 27k-token `ls` dump is not worth the session.
+                        _trimmed = self._trim_largest_tool_results(
+                            messages, target_tokens=int((new_ctx or old_ctx) * 0.6))
+                        if _trimmed:
+                            self._vprint(
+                                f"{self.log_prefix}✂️  Compaction did not shrink "
+                                f"(~{_before:,} → ~{_after:,}); trimmed {_trimmed} oversized "
+                                f"tool result(s) instead — retrying.", force=True)
+                            time.sleep(1)
+                            restart_with_compressed_messages = True
+                            break
+
+                        self._vprint(
+                            f"{self.log_prefix}❌ Compaction did not shrink the prompt "
+                            f"(~{_before:,} → ~{_after:,} tokens, {original_len} → "
+                            f"{len(messages)} msgs) and no oversized tool result was "
+                            f"left to trim.", force=True)
+                        self._vprint(f"{self.log_prefix}   💡 Try /new to start fresh, or /compress to manually trigger compression.", force=True)
+                        logging.error(f"{self.log_prefix}Context length exceeded: server counted {_before:,} tokens; compaction produced ~{_after:,}.")
+                        self._persist_session(messages, conversation_history)
+                        return {
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "error": f"Context length exceeded ({_before:,} tokens). Compaction did not reduce it.",
+                            "partial": True
+                        }
 
                     _RETRYABLE_STATUS_CODES = {413, 429, 529}
                     is_local_validation_error = (

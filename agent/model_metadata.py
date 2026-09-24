@@ -548,6 +548,12 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     """
     error_lower = error_msg.lower()
     patterns = [
+        # Parenthesised form. llama.cpp says "exceeds the available context
+        # size (77568 tokens)" and every pattern below misses it, so the
+        # caller fell back to guessing probe tiers (64k/32k/16k) while the
+        # server had already told it the answer.
+        r'context\s*size\s*\((\d{4,})\s*tokens?\)',
+        r'[\'"]?n_ctx[\'"]?\s*[:=]\s*(\d{4,})',
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
         r'(\d{4,})\s*(?:token)?\s*(?:context|limit)',
@@ -952,3 +958,26 @@ def estimate_request_tokens_rough(
     if tools:
         total_chars += len(str(tools))
     return total_chars // 4
+
+
+def parse_prompt_tokens_from_error(error_msg: str) -> Optional[int]:
+    """The size the SERVER counted for the request we just sent.
+
+    The limit alone cannot tell you whether a compaction helped. llama.cpp
+    reports both: "request (77649 tokens) exceeds the available context size
+    (77568 tokens)". The first number is ground truth for what our estimator
+    should have said, and the only way to know a retry is worth making.
+    """
+    patterns = [
+        r'request\s*\((\d{3,})\s*tokens?\)',
+        r'[\'"]?n_prompt_tokens[\'"]?\s*[:=]\s*(\d{3,})',
+        r'(?:your\s+)?(?:messages?|prompt|input)\s+resulted\s+in\s+(\d{3,})\s*tokens',
+        r'requested\s+(\d{3,})\s*tokens',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, error_msg.lower())
+        if m:
+            n = int(m.group(1))
+            if 100 <= n <= 10_000_000:
+                return n
+    return None
