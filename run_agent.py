@@ -9619,8 +9619,17 @@ class AIAgent:
 
             api_messages = self._sanitize_api_messages(api_messages)
 
+            # Tool schemas go on the wire with every request and were not
+            # counted here. Measured 2026-09-24: estimate 55,384 vs the
+            # server's 77,649 for 22 tools — 22,265 tokens, ~1,012 per tool,
+            # because MCP descriptions are long. Every compaction decision was
+            # made against a number 40% too low, so the threshold fired late
+            # and the retry loop could not tell that it was making things
+            # worse. estimate_request_tokens_rough() has counted all three
+            # buckets since it was written; this call site just never used it.
             total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4
+            approx_tokens = estimate_request_tokens_rough(
+                api_messages, tools=self.tools)
             
             thinking_spinner = None
             

@@ -78,3 +78,47 @@ class TestTrimLargestToolResults:
                 {"role": "tool", "content": "Y" * 9000}]
         trim(msgs, target_tokens=8000)
         assert msgs[1]["content"] == "Y" * 9000
+
+
+class TestRequestEstimateIncludesToolSchemas:
+    """The 40% undercount: 22 tool schemas (~1,002 tokens each) were not counted."""
+
+    def _tools(self, n=22, desc=3900):
+        return [{"name": f"t{i}", "description": "D" * desc,
+                 "parameters": {"type": "object",
+                                "properties": {"q": {"type": "string"}}}}
+                for i in range(n)]
+
+    def test_tools_are_counted(self):
+        from agent.model_metadata import estimate_request_tokens_rough
+        msgs = [{"role": "user", "content": "x" * 4000}]
+        without = estimate_request_tokens_rough(msgs)
+        with_tools = estimate_request_tokens_rough(msgs, tools=self._tools())
+        assert with_tools > without * 5
+
+    def test_reproduces_the_observed_gap(self):
+        """55,384 estimated vs 77,649 counted -> 22,265 of tool schema."""
+        from agent.model_metadata import estimate_request_tokens_rough
+        msgs = [{"role": "user", "content": "x" * (4 * 55000)}]
+        msgs_only = sum(len(str(m)) for m in msgs) // 4
+        full = estimate_request_tokens_rough(msgs, tools=self._tools())
+        assert 20000 < full - msgs_only < 25000
+
+    def test_system_prompt_counted(self):
+        from agent.model_metadata import estimate_request_tokens_rough
+        msgs = [{"role": "user", "content": "hi"}]
+        assert estimate_request_tokens_rough(msgs, system_prompt="S" * 8000) \
+            > estimate_request_tokens_rough(msgs) + 1500
+
+    def test_no_tools_is_not_an_error(self):
+        from agent.model_metadata import estimate_request_tokens_rough
+        assert estimate_request_tokens_rough([{"role": "user", "content": "hi"}],
+                                             tools=None) > 0
+
+    def test_request_path_uses_the_full_estimator(self):
+        """Guard the call site: messages-only there is the whole bug."""
+        import inspect, run_agent
+        src = inspect.getsource(run_agent)
+        i = src.index("approx_tokens = estimate_request_tokens_rough")
+        window = src[i:i + 200]
+        assert "tools=self.tools" in window
