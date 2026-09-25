@@ -23,6 +23,33 @@ TRANSCRIPT_PENALTY = 0.60
 # crowded real facts out of every turn's hints (2026-09-17).
 AFE_FRAGMENT_PENALTY = 0.50
 
+# Soaked rows open with `session:<id> @ <iso>` + `=== REASONING ===`; left in,
+# that header ate the whole hint before a word of content showed.
+SOAK_HEADER_RE = re.compile(r"^session:\S+ @ (\S+)\s*\n+=== [A-Z ]+ ===\n")
+MIN_BODY_CHARS = 60
+
+
+def strip_soak_header(text: str) -> tuple[str, str]:
+    """(body, yyyy-mm-dd) of a soaked row; the date is "" when there is none."""
+    text = str(text or "")
+    m = SOAK_HEADER_RE.match(text)
+    if not m:
+        return text, ""
+    return text[m.end():], m.group(1)[:10]
+
+
+def usable_row(label: str, content: str) -> bool:
+    """Superseded chains and compression archives are stale or duplicate; a
+    reasoning crumb ("Run the probe once more.") takes a slot and says nothing;
+    an `AES:` body is a vault row the pod failed to decrypt."""
+    c = str(content or "").lstrip()
+    if not c or c.startswith("[SUPERSEDED]") or str(label or "").startswith("auto:compression:"):
+        return False
+    body = strip_soak_header(c)[0].strip()
+    if body.startswith("AES:") or re.match(r"^[\w:.-]+: AES:", body):
+        return False
+    return len(body) >= MIN_BODY_CHARS
+
 
 def _kind_weight(label: str) -> float:
     l = (label or "").lower()
@@ -49,15 +76,17 @@ class Budget:
     hits_per_angle: int = 5
     overfetch: int = 4
     expand_top_n: int = 0
-    material_chars: int = 1000
+    material_chars: int = 2400
     snippet_chars: int = 320
     #: The inject is a guideline, not the context itself: a few pointers the
     #: model can open with mazemaker_get or widen with mazemaker_recall.
-    max_hints: int = 3
-    hint_chars: int = 240
+    max_hints: int = 5
+    hint_chars: int = 400
     min_score: float = 0.40
-    recall_timeout_s: float = 75.0
-    get_timeout_s: float = 45.0
+    #: The turn waits on this. It was 75s, and a multi-angle turn went to
+    #: recall_multi (~28s measured 2026-09-25) before the model saw anything.
+    recall_timeout_s: float = 20.0
+    get_timeout_s: float = 8.0
 
     def __post_init__(self) -> None:
         if self.max_angles < 1:
@@ -293,12 +322,16 @@ class Assembler:
         for h in hits:
             if h.score < self._b.min_score:
                 continue
-            body = " ".join(str(full.get(h.memory_id) or h.snippet or "").split())
-            if not body:
+            raw = str(full.get(h.memory_id) or h.snippet or "")
+            if not usable_row(h.label, raw):
                 continue
+            body, day = strip_soak_header(raw)
+            body = " ".join(body.split())
             if len(body) > self._b.hint_chars:
                 body = body[: self._b.hint_chars].rstrip() + "…"
-            line = f"- [{h.memory_id}]" + (f" {h.label}" if h.label else "") + f": {body}"
+            kind = h.label.split(":", 2)[1] if h.label.startswith("auto:") else h.label
+            meta = " ".join(x for x in (kind[:48], day) if x)
+            line = f"- [{h.memory_id}]" + (f" {meta}" if meta else "") + f": {body}"
             if used + 1 + len(line) > self._b.material_chars:
                 break
             lines.append(line)
@@ -357,10 +390,9 @@ class MazeRouter:
             if not angles:
                 return Material(text="", elapsed_s=time.perf_counter() - started)
             want = b.hits_per_angle * b.overfetch
-            if len(angles) == 1:
-                hits = self._pod.recall(angles[0], want, b.recall_timeout_s)
-            else:
-                hits = self._pod.recall_multi(angles, want, b.recall_timeout_s)
+            # One recall on the whole turn. recall_multi runs the pod's rerank
+            # pipeline once per angle; the turn cannot afford that.
+            hits = self._pod.recall(angles[0], want, b.recall_timeout_s)
             self._tel.bump("recall_calls")
             hits = self._dedupe(hits)[: b.hits_per_angle * 2]
             self._tel.bump("hits", len(hits))
@@ -465,10 +497,11 @@ def router_from_config(config: dict) -> MazeRouter:
         hits_per_angle=int(r.get("hits_per_angle", 5)),
         overfetch=int(r.get("overfetch", 4)),
         expand_top_n=int(r.get("expand_top_n", 0)),
-        material_chars=int(r.get("material_chars", 1000)),
-        max_hints=int(r.get("max_hints", 3)),
-        hint_chars=int(r.get("hint_chars", 240)),
+        material_chars=int(r.get("material_chars", 2400)),
+        max_hints=int(r.get("max_hints", 5)),
+        hint_chars=int(r.get("hint_chars", 400)),
         min_score=float(r.get("min_score", 0.40)),
+        recall_timeout_s=float(r.get("recall_timeout_s", 20.0)),
     )
     pod = HttpPodClient(os.environ.get("MM_WONDERLAND_URL", WONDERLAND_URL))
     planner: Planner = HeuristicPlanner()

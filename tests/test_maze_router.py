@@ -53,18 +53,18 @@ print("  == the inject is a short guideline, not the maze read aloud ==")
 pod = FakePod(); m = MazeRouter(pod, HeuristicPlanner(), Budget()).fetch("where does the pulse pod live")
 check("starts with the guideline header", m.text.startswith("[maze hints]"))
 check("tells how to open more", "mazemaker_get" in m.text and "mazemaker_recall" in m.text)
-check(f"at most 3 hints (saw {m.text.count(chr(10)+'- [')})", m.text.count("\n- [") <= 3)
+check(f"at most 5 hints (saw {m.text.count(chr(10)+'- [')})", m.text.count("\n- [") <= 5)
 check(f"no expansion by default (saw {pod.get_calls} gets)", pod.get_calls == 0)
-check(f"bounded to 1000 chars ({len(m.text)})", len(m.text) <= 1000)
+check(f"bounded to 2400 chars ({len(m.text)})", len(m.text) <= 2400)
 weak = [Hit(1, "fact:weak", "barely related", 0.2)]
 check("hits below the score floor are not shown",
       MazeRouter(FakePod(hits=weak), HeuristicPlanner(), Budget()).fetch("a single topic question").empty)
 
-print("  == multi-topic uses recall_multi, still one get ==")
+print("  == multi-topic is still ONE plain recall, one get ==")
 pod = FakePod(); r = MazeRouter(pod, HeuristicPlanner(), Budget(expand_top_n=6))
 m = r.fetch("compare podman and docker, and tell me the quadlet units, and the rootless notes")
 check(f"planner found multiple angles ({len(m.angles)})", len(m.angles) > 1)
-check("used recall_multi", pod.multi_calls == 1 and pod.recall_calls == 0)
+check("one recall, never recall_multi", pod.multi_calls == 0 and pod.recall_calls == 1)
 check(f"still ONE get (saw {pod.get_calls})", pod.get_calls == 1)
 
 print("  == dedupe across angles ==")
@@ -97,6 +97,17 @@ MazeRouter(_cp, HeuristicPlanner(), Budget(hits_per_angle=5, overfetch=4)).fetch
 check(f"recall asked for hits*overfetch (saw {_cp.asked})", _cp.asked == 20)
 try: Budget(overfetch=0); check("rejects overfetch=0", False)
 except ValueError: check("rejects overfetch=0", True)
+
+print("  == stale rows and soak headers never reach the hints ==")
+_soak = "session:20260924_131217_3fb5f8 @ 2026-09-24T11:16:19Z\n\n=== REASONING ===\n"
+_rows = [Hit(1, "auto:reasoning:s:1", _soak + "The join budget was 8s while recall took 5-19s, so turns lost memory.", 0.9),
+         Hit(2, "fact:old", "[SUPERSEDED] [SUPERSEDED] Q: weiter", 0.95),
+         Hit(3, "auto:compression:6ab5", "Compression archive " + "c" * 80, 0.95),
+         Hit(4, "auto:reasoning:s:2", _soak + "Run the probe once more.", 0.95),
+         Hit(5, "status:vault", "AES:pE01puBGI0/QCaKGvQxVLoyeadS5nSjEA2n4JESYGuAMTOCZPvkzS5nQZ27++7dB5", 0.95)]
+m = MazeRouter(FakePod(hits=_rows), HeuristicPlanner(), Budget()).fetch("why did the recall die")
+check("soak header stripped, date kept", "- [1] reasoning 2026-09-24: The join budget" in m.text, m.text)
+check("superseded/compression/crumb/ciphertext dropped", all(f"[{i}]" not in m.text for i in (2, 3, 4, 5)), m.text)
 
 print("  == material is bounded ==")
 big = {i: "Z"*100_000 for i in range(1, 13)}

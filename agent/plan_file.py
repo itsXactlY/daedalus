@@ -33,6 +33,24 @@ def plan_path(workdir: Optional[str] = None) -> Optional[Path]:
     return Path(wd) / PLAN_DIR / PLAN_NAME
 
 
+def plan_focus(workdir: Optional[str] = None) -> str:
+    """'<title> — <first unchecked step>' of an active plan, else ""."""
+    path = plan_path(workdir)
+    if path is None or not path.is_file():
+        return ""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if _CLOSED_RE.search(text):
+        return ""
+    title = next((l.lstrip("# ").strip() for l in text.splitlines()
+                  if l.startswith("# ")), "")
+    step = next((l.split("]", 1)[1].strip() for l in text.splitlines()
+                 if l.lstrip().startswith("- [ ]")), "")
+    return " — ".join(x for x in (title, step) if x)
+
+
 def render_plan_block(workdir: Optional[str] = None) -> str:
     """The <active-plan> block for this turn, or "" when there is no plan."""
     path = plan_path(workdir)
