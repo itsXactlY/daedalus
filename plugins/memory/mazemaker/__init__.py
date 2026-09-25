@@ -684,12 +684,35 @@ def _format_tool_result(result: dict, tool_name: str) -> str:
             lines.append(" -> ".join(path_labels or ["(empty path)"]))
             lines.append(f"Similarity: {similarity:.3f}")
     elif tool_name == "mazemaker_get":
-        mid = result.get("id", "")
+        # Pod contract: {"id", "found", "memory": {...}} when found; on a
+        # miss, {"id", "found": false, "nearest_below"/"nearest_above",
+        # "hint"} older flat shape ({id, content, label, score}) is
+        # accepted too, for payloads from cached or older pod builds.
+        payload = result.get("memory")
+        if not isinstance(payload, dict):
+            payload = result
+        mid = payload.get("id", result.get("id", ""))
         lines.append(f"**Memory #{mid}:**")
-        content = result.get("content", "")
-        label = result.get("label", "")
-        score = result.get("score", 0)
+        if result.get("found") is False:
+            lines.append("NOT FOUND.")
+            for side, key in (("below", "nearest_below"), ("above", "nearest_above")):
+                for n in (result.get(key) or [])[:2]:
+                    if not isinstance(n, dict):
+                        continue
+                    preview = str(n.get("content_preview") or "").replace("\n", " ")[:120]
+                    lines.append(
+                        f"  nearest {side}: id={n.get('id')} label={n.get('label', '')} "
+                        f"\"{preview}\""
+                    )
+            if result.get("hint"):
+                lines.append(f"  hint: {result['hint']}")
+            return "\n".join(lines)
+        label = payload.get("label", "")
+        score = payload.get("score", 0)
         lines.append(f"Label: {label} | Score: {score:.3f}")
+        if payload.get("created_at"):
+            lines.append(f"Created: {payload['created_at']}")
+        content = payload.get("content", "")
         if content:
             lines.append(f"\n{content}")
     else:
