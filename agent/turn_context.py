@@ -42,6 +42,7 @@ from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
+from agent.plan_file import render_plan_block
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -907,6 +908,19 @@ def build_turn_context(
                 if plugin_user_context
                 else _gateway_notes
             )
+
+    try:
+        _plan_block = render_plan_block() if not moa_active else ""
+    except Exception:
+        _plan_block = ""
+    # Sidecar only: on a multimodal turn it would become durable content and
+    # get soaked into mazemaker with every turn.
+    if _plan_block:
+        plugin_user_context = (
+            plugin_user_context + "\n\n" + _plan_block
+            if plugin_user_context
+            else _plan_block
+        )
 
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()

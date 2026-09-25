@@ -89,7 +89,7 @@ RESUME_TAIL_LIMIT = 3
 RESUME_GOALS_LIMIT = 3
 RESUME_GOAL_PREFIXES = ("decision:", "ops:")
 _DAEDALUS_SESSION_RE = re.compile(r"^\d{8}_\d{6}_")
-RESUME_BLOCK_CHARS = 900
+RESUME_BLOCK_CHARS = 1600
 RESUME_TIMEOUT = 1.8
 
 _FAILED_SPOOL_MAX = 200
@@ -1376,9 +1376,6 @@ class MazemakerMemoryProvider(MemoryProvider):
         if not tail_lines:
             return ""
 
-        parts.append("Previous session — last turns (recalled from mazemaker):")
-        parts.extend(tail_lines)
-
         goal_lines = []
         try:
             seen = set()
@@ -1404,17 +1401,30 @@ class MazemakerMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("session_resume goals failed: %s", e)
 
-        if goal_lines:
-            parts.append("Open work / ongoing goals (curated from mazemaker):")
-            parts.extend(goal_lines)
-
-        parts.append(
+        # Goals and footer are reserved first; a blind slice of the whole
+        # block used to cut the goals off mid-word every time.
+        tail_head = "Previous session — last turns (recalled from mazemaker):"
+        footer = (
             "[Prior-session context only — not new user input. Continue the work "
             "above; full history is recallable on demand via mazemaker_recall / "
             "mazemaker_get.]"
         )
-        block = "\n".join(parts)
-        return block[:RESUME_BLOCK_CHARS]
+        goal_part = []
+        if goal_lines:
+            goal_part = ["Open work / ongoing goals (curated from mazemaker):"] + goal_lines
+        budget = RESUME_BLOCK_CHARS - len("\n".join(goal_part + [footer, tail_head])) - 1
+        kept = []
+        for line in tail_lines:
+            if len(line) + 1 > budget:
+                break
+            kept.append(line)
+            budget -= len(line) + 1
+        if kept:
+            parts.append(tail_head)
+            parts.extend(kept)
+        parts.extend(goal_part)
+        parts.append(footer)
+        return "\n".join(parts)
 
     @staticmethod
     def _one_line(text: str, limit: int = _CATALOGUE_DESC_CLIP) -> str:

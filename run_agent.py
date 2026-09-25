@@ -80,6 +80,7 @@ from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, build_mazemaker_guidance, SKILLS_GUIDANCE,
+    PLAN_GUIDANCE,
     WORKSPACE_GUIDANCE,
     build_nous_subscription_prompt,
 )
@@ -4292,6 +4293,8 @@ class AIAgent:
             tool_guidance.append(
                 build_mazemaker_guidance(getattr(self, "_soak_window_turns", -1))
             )
+        if {"write_file", "patch"} & self.valid_tool_names:
+            tool_guidance.append(PLAN_GUIDANCE)
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
