@@ -76,10 +76,13 @@ from tools.browser_tool import cleanup_browser
 from daedalus_constants import OPENROUTER_BASE_URL
 
 from agent.memory_manager import build_memory_context_block
+from agent.plan_file import render_plan_block
+from agent.turn_context import anchored_recall_query
 from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, build_mazemaker_guidance, SKILLS_GUIDANCE,
+    PLAN_GUIDANCE,
     WORKSPACE_GUIDANCE,
     build_nous_subscription_prompt,
 )
@@ -931,6 +934,12 @@ class AIAgent:
         router = getattr(self, "_maze_router", None)
         if router is None or not (turn or "").strip():
             return ""
+        # A pod the plugin already knows is wedged would cost the full recall
+        # timeout for nothing; the history pointer says memory is down.
+        mm = getattr(self, "_memory_manager", None)
+        if mm is not None and callable(getattr(mm, "retrieval_reachable", None)) \
+                and not self._maze_reachable():
+            return ""
         needs = getattr(self, "_maze_needs", None)
         if needs is not None:
             try:
@@ -1037,6 +1046,14 @@ class AIAgent:
                 labels.append(("state card", card))
             self._state_card_pending = False
             self._turns_since_state_card = 0
+
+        try:
+            plan = render_plan_block()
+        except Exception:
+            plan = ""
+        if plan:
+            injections.append(plan)
+            labels.append(("active plan", plan))
 
         if ext_prefetch:
             fenced = build_memory_context_block(ext_prefetch)
@@ -2937,7 +2954,8 @@ class AIAgent:
         if cur is not None:
             base.append(messages[cur])
             content = messages[cur].get("content")
-            query = content if isinstance(content, str) else ""
+            query = anchored_recall_query(
+                content if isinstance(content, str) else "", messages, cur)
 
         blocks = [
             "[rebased] This conversation was rebuilt to keep the working context "
@@ -4292,6 +4310,8 @@ class AIAgent:
             tool_guidance.append(
                 build_mazemaker_guidance(getattr(self, "_soak_window_turns", -1))
             )
+        if {"write_file", "patch"} & self.valid_tool_names:
+            tool_guidance.append(PLAN_GUIDANCE)
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
@@ -9459,12 +9479,18 @@ class AIAgent:
         # come first; the bootstrap tool exchange and the prefetch fallback only
         # run when the router produced nothing. All three used to fire on the
         # same turn (2026-09-17).
-        _material = self._fetch_maze_material(_pq)
+        #
+        # A turn the router handled gets no second or third recall when it
+        # comes back empty: those repeat the same slow pod call and stacked
+        # 75s + 30s + 30s in front of the model (2026-09-25).
+        _routed = self._maze_router is not None
+        _material = self._fetch_maze_material(
+            anchored_recall_query(_pq, messages, current_turn_user_idx))
         if _material:
             _parts.append(_material)
 
         _mazemaker_bootstrap_messages: List[Dict[str, Any]] = []
-        if not _material:
+        if not _material and not _routed:
             try:
                 _mazemaker_bootstrap_messages = self._build_mazemaker_bootstrap_messages(_pq)
             except Exception as exc:
@@ -9495,7 +9521,7 @@ class AIAgent:
         # whether the blob is non-empty. Pony's environment block alone used
         # to make it non-empty, so this path could not run even on a turn
         # that had recalled nothing at all.
-        if (not _material and self._memory_manager
+        if (not _material and not _routed and self._memory_manager
                 and not _mazemaker_bootstrap_messages):
             try:
                 _fallback = self._memory_manager.prefetch_all(

@@ -32,6 +32,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.maze_router import strip_soak_header, usable_row
 from agent.memory_provider import MemoryProvider
 from plugins.memory.mazemaker.distiller import distill_stats, distill_turn
 from plugins.memory.mazemaker import mission_briefing
@@ -72,9 +73,14 @@ _SLOW_TOOLS = frozenset({
 })
 
 SIM_FLOOR = 0.40
-RECALL_LIMIT = 6
-RECALL_SHOW = 3
+RECALL_LIMIT = 10
+RECALL_SHOW = 4
 RECALL_CLIP = 230
+HIT_CLIP = 420
+# The whole prefetch must finish inside memory_manager's 30s join, or the turn
+# gets no recall at all and the next turns skip behind the stuck thread.
+PREFETCH_DEADLINE_S = 22.0
+PREFETCH_RECALL_TIMEOUT_S = 18.0
 THINK_DEPTH = 2
 THINK_SHOW = 5
 AFE_SHOW = 4
@@ -89,7 +95,7 @@ RESUME_TAIL_LIMIT = 3
 RESUME_GOALS_LIMIT = 3
 RESUME_GOAL_PREFIXES = ("decision:", "ops:")
 _DAEDALUS_SESSION_RE = re.compile(r"^\d{8}_\d{6}_")
-RESUME_BLOCK_CHARS = 900
+RESUME_BLOCK_CHARS = 1600
 RESUME_TIMEOUT = 1.8
 
 _FAILED_SPOOL_MAX = 200
@@ -638,93 +644,88 @@ def _sanitize_id_fields(obj: Any) -> Any:
     return obj
 
 
-def _format_tool_result(result: dict, tool_name: str) -> str:
-    """Format a tool result as human-readable text instead of JSON.
+TOOL_HIT_CLIP = 900
+TOOL_RECALL_SHOW = 6
+TOOL_THINK_SHOW = 8
 
-    Models read plain text much better than raw JSON with escaped newlines.
+
+def _day(value: Any) -> str:
+    """YYYY-MM-DD from an epoch number or an ISO string; "" otherwise."""
+    if isinstance(value, (int, float)) and value > 0:
+        return time.strftime("%Y-%m-%d", time.localtime(value))
+    return str(value or "")[:10]
+
+
+def _rows(result: Any, *keys: str) -> list:
+    """The row list of a pod result: a bare list, or the first list-valued key."""
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        for k in keys:
+            if isinstance(result.get(k), list):
+                return result[k]
+    return []
+
+
+def _format_tool_result(result: Any, tool_name: str, fetch=None) -> str:
+    """Plain text for the model: ids first, soak headers stripped, stale rows
+    dropped. Unknown tools pass through as JSON — nothing hidden behind
+    "[n items]". ``fetch(ids)`` fills think nodes, which come back contentless.
     """
+    P = MazemakerMemoryProvider
     lines = []
-    if tool_name == "mazemaker_recall":
-        count = result.get("count", 0)
-        lines.append(f"**{count} memories found:**")
-        results = result.get("results", [])
-        for i, item in enumerate(results[:5], 1):
-            content = item.get("content", "")
-            score = item.get("score", 0)
-            label = item.get("label", "")
-            truncated = item.get("truncated", False)
-            trunc_mark = " (truncated)" if truncated else ""
-            lines.append(f"\n--- Memory {i} (score={score:.3f}, label={label}){trunc_mark} ---")
-            # Extract a readable summary
-            if content:
-                # Show first meaningful chunk
-                preview = content[:2000] if len(content) > 2000 else content
-                lines.append(preview)
-        if len(results) > 5:
-            lines.append(f"\n... and {len(results) - 5} more results (use mazemaker_get to read full memories by ID)")
-    elif tool_name == "mazemaker_remember":
-        status = result.get("status", "")
-        if status == "ok":
-            lines.append("**Memory saved successfully.**")
-            mid = result.get("id", "unknown")
-            lines.append(f"New memory ID: {mid}")
-        else:
-            lines.append(f"Status: {status}")
-            content = result.get("content", "")
-            if content:
-                lines.append(f"Error: {content}")
+    if tool_name in ("mazemaker_recall", "mazemaker_recall_multi", "mazemaker_recall_advanced"):
+        rows = [r for r in _rows(result, "results", "result", "memories")
+                if isinstance(r, dict) and P._usable(r)]
+        if not rows:
+            return "No usable memories found (superseded/archived rows are hidden). Try other words."
+        lines.append(f"{len(rows)} memories (read full text: mazemaker_get(memory_ids=[...]); "
+                     "context around one: mazemaker_think(memory_id)):")
+        for r in rows[:TOOL_RECALL_SHOW]:
+            lines.append(P._hit_line(r, TOOL_HIT_CLIP))
     elif tool_name == "mazemaker_think":
-        depth = result.get("depth", 0)
-        lines.append(f"**Graph traversal from memory (depth={depth}):**")
-        paths = result.get("paths", [])
-        for i, path in enumerate(paths[:10], 1):
-            path_labels = [node.get("label", "") for node in path]
-            similarity = path[-1].get("similarity", 0) if path else 0
-            lines.append(f"\nPath {i}:")
-            lines.append(" -> ".join(path_labels or ["(empty path)"]))
-            lines.append(f"Similarity: {similarity:.3f}")
+        nodes = [n for n in _rows(result, "nodes", "result", "neighbours")
+                 if isinstance(n, dict) and n.get("id") is not None
+                 and not str(n.get("label") or "").startswith("auto:compression:")]
+        nodes = nodes[:TOOL_THINK_SHOW]
+        if fetch and nodes and not any(n.get("content") for n in nodes):
+            full = {m.get("id"): m for m in fetch([n["id"] for n in nodes])}
+            nodes = [full.get(n["id"], n) for n in nodes]
+        nodes = [n for n in nodes if P._usable(n)] or nodes
+        if not nodes:
+            return "No graph neighbours."
+        lines.append(f"{len(nodes)} graph neighbours:")
+        for n in nodes:
+            lines.append(P._hit_line(n, RECALL_CLIP * 2))
     elif tool_name == "mazemaker_get":
-        # Pod contract: {"id", "found", "memory": {...}} when found; on a
-        # miss, {"id", "found": false, "nearest_below"/"nearest_above",
-        # "hint"} older flat shape ({id, content, label, score}) is
-        # accepted too, for payloads from cached or older pod builds.
-        payload = result.get("memory")
-        if not isinstance(payload, dict):
-            payload = result
-        mid = payload.get("id", result.get("id", ""))
-        lines.append(f"**Memory #{mid}:**")
-        if result.get("found") is False:
-            lines.append("NOT FOUND.")
-            for side, key in (("below", "nearest_below"), ("above", "nearest_above")):
-                for n in (result.get(key) or [])[:2]:
-                    if not isinstance(n, dict):
-                        continue
-                    preview = str(n.get("content_preview") or "").replace("\n", " ")[:120]
-                    lines.append(
-                        f"  nearest {side}: id={n.get('id')} label={n.get('label', '')} "
-                        f"\"{preview}\""
-                    )
-            if result.get("hint"):
-                lines.append(f"  hint: {result['hint']}")
-            return "\n".join(lines)
-        label = payload.get("label", "")
-        score = payload.get("score", 0)
-        lines.append(f"Label: {label} | Score: {score:.3f}")
-        if payload.get("created_at"):
-            lines.append(f"Created: {payload['created_at']}")
-        content = payload.get("content", "")
-        if content:
-            lines.append(f"\n{content}")
+        rows = _rows(result, "results") if isinstance(result, dict) and "results" in result \
+            else [result]
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            mem = r.get("memory") if isinstance(r.get("memory"), dict) else r
+            mid = mem.get("id", r.get("id", ""))
+            if r.get("found") is False:
+                lines.append(f"#{mid}: NOT FOUND.")
+                for side in ("nearest_below", "nearest_above"):
+                    for n in (r.get(side) or [])[:2]:
+                        if isinstance(n, dict):
+                            preview = " ".join(str(n.get("content_preview") or "").split())[:120]
+                            lines.append(f"  {side.replace('_', ' ')}: id={n.get('id')} "
+                                         f"{n.get('label', '')} \"{preview}\"")
+                if r.get("hint"):
+                    lines.append(f"  hint: {r['hint']}")
+                continue
+            lines.append(f"=== #{mid} {mem.get('label', '')} {_day(mem.get('created_at'))} ===".rstrip())
+            lines.append(str(mem.get("content", "")))
+        if not lines:
+            return json.dumps(result, ensure_ascii=False)
+    elif tool_name == "mazemaker_remember" and isinstance(result, dict) and result.get("status"):
+        if result.get("status") == "ok":
+            return f"Memory saved. id={result.get('id', 'unknown')}"
+        return f"Status: {result.get('status')} {result.get('content', '')}".strip()
     else:
-        # Generic fallback: pretty-print key values
-        for k, v in result.items():
-            if isinstance(v, (list, dict)):
-                lines.append(f"{k}: [{len(v) if isinstance(v, list) else 'dict'} items]")
-            else:
-                val_str = str(v)[:500]
-                if len(str(v)) > 500:
-                    val_str += "..."
-                lines.append(f"{k}: {val_str}")
+        return json.dumps(result, ensure_ascii=False)
     return "\n".join(lines)
 
 
@@ -1185,8 +1186,10 @@ class MazemakerMemoryProvider(MemoryProvider):
         return []
 
     def queue_prefetch(self, query: str, *, session_id: str = "", **kwargs) -> None:
-        """Prefetch now; the cache makes the loop's later prefetch calls free."""
-        self.prefetch(query, session_id=session_id)
+        """No-op. It fired after each turn with the turn that just ended: a full
+        pod recall whose result expires in PREFETCH_TTL, still running when the
+        next message arrives and pushing that turn's prefetch past its timeout."""
+        return
 
     def history_pointer(self, session_id: str = "") -> str:
         """Return a compact pointer to this conversation's soaked history.
@@ -1399,9 +1402,6 @@ class MazemakerMemoryProvider(MemoryProvider):
         if not tail_lines:
             return ""
 
-        parts.append("Previous session — last turns (recalled from mazemaker):")
-        parts.extend(tail_lines)
-
         goal_lines = []
         try:
             seen = set()
@@ -1427,17 +1427,30 @@ class MazemakerMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("session_resume goals failed: %s", e)
 
-        if goal_lines:
-            parts.append("Open work / ongoing goals (curated from mazemaker):")
-            parts.extend(goal_lines)
-
-        parts.append(
+        # Goals and footer are reserved first; a blind slice of the whole
+        # block used to cut the goals off mid-word every time.
+        tail_head = "Previous session — last turns (recalled from mazemaker):"
+        footer = (
             "[Prior-session context only — not new user input. Continue the work "
             "above; full history is recallable on demand via mazemaker_recall / "
             "mazemaker_get.]"
         )
-        block = "\n".join(parts)
-        return block[:RESUME_BLOCK_CHARS]
+        goal_part = []
+        if goal_lines:
+            goal_part = ["Open work / ongoing goals (curated from mazemaker):"] + goal_lines
+        budget = RESUME_BLOCK_CHARS - len("\n".join(goal_part + [footer, tail_head])) - 1
+        kept = []
+        for line in tail_lines:
+            if len(line) + 1 > budget:
+                break
+            kept.append(line)
+            budget -= len(line) + 1
+        if kept:
+            parts.append(tail_head)
+            parts.extend(kept)
+        parts.extend(goal_part)
+        parts.append(footer)
+        return "\n".join(parts)
 
     @staticmethod
     def _one_line(text: str, limit: int = _CATALOGUE_DESC_CLIP) -> str:
@@ -1603,78 +1616,46 @@ class MazemakerMemoryProvider(MemoryProvider):
             return result
         if isinstance(result, dict):
             result = _sanitize_id_fields(result)
-            return _format_tool_result(result, tool_name)
-        return json.dumps(result, ensure_ascii=False)
+        return _format_tool_result(result, tool_name, fetch=self._get_many)
+
+    def _get_many(self, ids: List[int]) -> List[Dict[str, Any]]:
+        try:
+            got = _tool("mazemaker_get", {"memory_ids": list(ids)[:25]}, timeout=8.0)
+        except Exception:
+            return []
+        return [r["memory"] for r in _rows(got, "results")
+                if isinstance(r, dict) and r.get("found") and isinstance(r.get("memory"), dict)]
 
     def shutdown(self) -> None:
         pass
 
 
-    def _multi_angle_recall(self, query: str) -> List[Dict[str, Any]]:
-        """Recall with a couple of rephrasings and fuse the results.
+    def _recall_hits(self, query: str,
+                     timeout: float = PREFETCH_RECALL_TIMEOUT_S) -> List[Dict[str, Any]]:
+        """One pod recall. recall_multi ran the whole rerank pipeline once per
+        angle (~28s measured 2026-09-25) and timed the prefetch out 69 times.
 
-        The angles are built deterministically and go straight to the pod. A
-        router model used to sit in front of this; it was measured to add zero
-        retrieval value, return unparseable replies 88% of the time and cost
-        +27% latency, and when its service was down every call still paid a
-        connect-retry-sleep before failing open. Removed 2026-08-30.
-
-        Mission scoping (roadmap P0-2): when this provider holds a mission
-        key, recalls carry `scope=*<key>*` so one task's state cannot drown
-        out another's. Curated globals are topped up separately, and an
-        old-engine rejection of the unknown arg falls back to unscoped.
+        Mission scoping (roadmap P0-2): with a mission key the recall carries
+        `scope=*<key>*`; an old engine rejecting the arg falls back unscoped.
         """
-        angles = [
-            query,
-            self._angles(query),
-        ]
+        args = {"query": query, "limit": RECALL_LIMIT}
         scope = self._scoped_recall_args()
-
-        def _merge_curated(hits):
-            if not scope or len(hits) >= RECALL_LIMIT:
-                return hits
-            try:
-                res = _tool("mazemaker_recall",
-                            {"query": query, "limit": RECALL_LIMIT - len(hits),
-                             "scope": "curated"}, timeout=30.0)
-                got = res if isinstance(res, list) else (
-                    res.get("result") if isinstance(res, dict) else None) or []
-                ids = {h.get("id") for h in hits}
-                hits = hits + [g for g in got if g.get("id") not in ids]
-            except Exception:
-                pass
-            return hits
-
+        if scope:
+            args["scope"] = scope
         try:
-            args = {"angles": angles, "k": RECALL_LIMIT}
-            if scope:
-                args["scope"] = scope
-            res = _tool("mazemaker_recall_multi", args, timeout=30.0)
-            err_txt = "" if not isinstance(res, dict) else json.dumps(
-                res.get("error") or res.get("detail") or "")
-            if scope and self._looks_like_scope_rejection(err_txt):
+            res = _tool("mazemaker_recall", args, timeout=timeout)
+            if scope and isinstance(res, dict) and self._looks_like_scope_rejection(
+                    json.dumps(res.get("error") or res.get("detail") or "")):
                 logger.info("pod rejected recall scope — falling back to unscoped")
                 self._scope_unsupported = True
-                res = _tool("mazemaker_recall_multi",
-                            {"angles": angles, "k": RECALL_LIMIT}, timeout=30.0)
-            if isinstance(res, list):
-                return _merge_curated(res)
-            if isinstance(res, dict) and "result" in res:
-                r = res["result"]
-                if isinstance(r, list):
-                    return r
-        except Exception as e:
-            logger.debug("mazemaker_recall_multi failed: %s", e)
-        try:
-            args = {"query": query, "limit": RECALL_LIMIT}
-            if scope and not getattr(self, "_scope_unsupported", False):
-                args["scope"] = scope
-            res = _tool("mazemaker_recall", args, timeout=30.0)
-            if isinstance(res, list):
-                return _merge_curated(res)
+                args.pop("scope", None)
+                res = _tool("mazemaker_recall", args, timeout=timeout)
+            if isinstance(res, dict):
+                res = res.get("result") or res.get("results") or []
+            return res if isinstance(res, list) else []
         except Exception as e:
             logger.debug("mazemaker_recall failed: %s", e)
-        return []
+            return []
 
     def _scoped_recall_args(self) -> Optional[str]:
         """Label glob scoping this mission's recall, when a key exists."""
@@ -1689,31 +1670,26 @@ class MazemakerMemoryProvider(MemoryProvider):
         return "scope" in t and any(
             w in t for w in ("unexpected", "invalid", "unknown", "extra"))
 
-    def _angles(self, query: str) -> str:
-        """A mild rephrasing for the multi-angle recall."""
-        stripped = query.strip()
-        if not stripped:
-            return query
-        return f"{stripped} context history past decisions"
-
-    def _think_neighbours(self, memory_id: int) -> List[Dict[str, Any]]:
-        """Graph-connected neighbours around a memory id (spreading activation)."""
+    def _think_neighbours(self, memory_id: int, exclude: set,
+                          timeout: float = 5.0) -> List[Dict[str, Any]]:
+        """Graph neighbours of a hit, with content. think returns ids and
+        labels only (content is empty), so the text comes from one batch get."""
         try:
-            res = _tool(
-                "mazemaker_think",
-                {"memory_id": int(memory_id), "depth": THINK_DEPTH},
-                timeout=30.0,
-            )
-            if isinstance(res, list):
-                return res
+            res = _tool("mazemaker_think",
+                        {"memory_id": int(memory_id), "depth": THINK_DEPTH},
+                        timeout=timeout)
             if isinstance(res, dict):
-                for key in ("nodes", "result", "neighbours"):
-                    val = res.get(key)
-                    if isinstance(val, list):
-                        return val
+                res = next((res[k] for k in ("nodes", "result", "neighbours")
+                            if isinstance(res.get(k), list)), [])
+            ids = [n.get("id") for n in (res or [])
+                   if isinstance(n, dict) and n.get("id") is not None
+                   and n.get("id") not in exclude][:THINK_SHOW * 2]
+            if not ids:
+                return []
+            return self._get_many(ids)
         except Exception as e:
             logger.debug("mazemaker_think failed: %s", e)
-        return []
+            return []
 
     def _afe_facts(self, memory_id: int) -> List[Dict[str, Any]]:
         """Atomic facts extracted from the top hit."""
@@ -1732,52 +1708,57 @@ class MazemakerMemoryProvider(MemoryProvider):
             logger.debug("mazemaker_afe_facts failed: %s", e)
         return []
 
+    @staticmethod
+    def _usable(hit: Dict[str, Any]) -> bool:
+        return usable_row(hit.get("label"), hit.get("content"))
+
+    @classmethod
+    def _hit_line(cls, hit: Dict[str, Any], clip: int) -> str:
+        """`[id, kind, date, sim] body` with the soak header stripped, so the
+        clip is spent on content instead of `session:… === REASONING ===`."""
+        body, date = strip_soak_header(cls._clean(hit.get("content", "")))
+        date = date or _day(hit.get("created_at"))
+        body = " ".join(body.split())
+        label = str(hit.get("label") or "")
+        kind = label.split(":", 2)[1] if label.startswith("auto:") else label
+        meta = [f"id {hit.get('id')}", kind[:48]]
+        if date:
+            meta.append(date)
+        if "similarity" in hit:
+            meta.append(f"sim {float(hit.get('similarity') or 0):.2f}")
+        return f"[{', '.join(meta)}] {cls._clip(body, clip)}"
+
     def _build_enriched_context(self, query: str) -> str:
-        """Compose the recall block: hits + neighbours + AFE facts."""
-        parts = []
-        hits = self._multi_angle_recall(query)
+        """Compose the recall block: hits + graph neighbours + AFE facts,
+        all inside PREFETCH_DEADLINE_S."""
+        deadline = time.monotonic() + PREFETCH_DEADLINE_S
+        hits = [h for h in self._recall_hits(query) if self._usable(h)]
+        if not hits:
+            return ""
         strong = [h for h in hits if float(h.get("similarity", 0) or 0) >= SIM_FLOOR]
-        weak_fallback = not strong
-        shown = strong[:RECALL_SHOW] if strong else hits[:RECALL_SHOW]
+        shown = (strong or hits)[:RECALL_SHOW]
+        header = (
+            "RECALLED FROM MAZEMAKER:" if strong else
+            "WEAK MEMORY MATCHES (below relevance floor — treat as hints, "
+            "not established facts):"
+        )
+        parts = [header + "\n" + "\n".join(self._hit_line(h, HIT_CLIP) for h in shown)]
 
-        if shown:
-            header = (
-                "WEAK MEMORY MATCHES (below relevance floor — treat as hints, "
-                "not established facts):\n"
-                if weak_fallback
-                else "RECALLED FROM MAZEMAKER:\n"
-            )
-            hit_lines = []
-            for h in shown:
-                cid = h.get("id")
-                sim = h.get("similarity", 0)
-                body = self._clean(h.get("content", ""))
-                preview = self._clip(body, RECALL_CLIP)
-                hit_lines.append(
-                    f"[id {cid}, sim {sim:.2f}] {preview}"
-                )
-            parts.append(header + "\n".join(hit_lines))
-
-            top_id = shown[0].get("id")
-            if top_id is not None:
-                neighbours = self._think_neighbours(top_id)
-                if neighbours:
-                    nb_lines = []
-                    for n in neighbours[:THINK_SHOW]:
-                        nb_lines.append(
-                            self._clip(self._clean(n.get("content", "")), RECALL_CLIP)
-                        )
-                    parts.append("RELATED (graph neighbours):\n" + "\n".join(nb_lines))
-
+        top_id = shown[0].get("id")
+        left = deadline - time.monotonic()
+        if top_id is not None and left > 1.0:
+            seen = {h.get("id") for h in hits}
+            neighbours = [n for n in self._think_neighbours(top_id, seen, timeout=min(5.0, left))
+                          if self._usable(n)]
+            if neighbours:
+                parts.append("RELATED (graph neighbours of the top hit):\n" + "\n".join(
+                    self._hit_line(n, RECALL_CLIP) for n in neighbours[:THINK_SHOW]))
+            if deadline - time.monotonic() > 1.0:
                 facts = self._afe_facts(top_id)
                 if facts:
-                    fact_lines = []
-                    for f in facts[:AFE_SHOW]:
-                        fact_lines.append(self._clip(self._clean(str(f.get("fact", f))), RECALL_CLIP))
-                    parts.append("ATOMIC FACTS:\n" + "\n".join(fact_lines))
-
-        if not parts:
-            return ""
+                    parts.append("ATOMIC FACTS:\n" + "\n".join(
+                        self._clip(self._clean(str(f.get("fact", f))), RECALL_CLIP)
+                        for f in facts[:AFE_SHOW]))
         return "\n\n".join(parts)
 
     @staticmethod

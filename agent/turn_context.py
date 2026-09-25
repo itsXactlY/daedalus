@@ -42,12 +42,37 @@ from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.memory_provider import is_trivial_prompt
+from agent.plan_file import plan_focus, render_plan_block
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
 
 logger = logging.getLogger(__name__)
+
+
+_SHORT_QUERY_CHARS = 40
+
+
+def anchored_recall_query(query: str, messages: List[Any], current_idx: int) -> str:
+    """Give a short message ("weiter", "mach fertig") something to recall with.
+
+    Recalled literally it matches every other "weiter" in the graph. Anchor on
+    the active plan's title + current step, else the previous real user turn.
+    """
+    q = (query or "").strip()
+    if len(q) >= _SHORT_QUERY_CHARS:
+        return q
+    anchor = plan_focus()
+    if not anchor:
+        for m in reversed(messages[:max(0, current_idx)]):
+            if (isinstance(m, dict) and m.get("role") == "user"
+                    and not m.get("display_kind")
+                    and isinstance(m.get("content"), str)
+                    and len(m["content"].strip()) >= _SHORT_QUERY_CHARS):
+                anchor = m["content"].strip()[:300]
+                break
+    return f"{anchor}\n{q}" if anchor else q
 
 
 def compose_user_api_content(
@@ -908,6 +933,19 @@ def build_turn_context(
                 else _gateway_notes
             )
 
+    try:
+        _plan_block = render_plan_block() if not moa_active else ""
+    except Exception:
+        _plan_block = ""
+    # Sidecar only: on a multimodal turn it would become durable content and
+    # get soaked into mazemaker with every turn.
+    if _plan_block:
+        plugin_user_context = (
+            plugin_user_context + "\n\n" + _plan_block
+            if plugin_user_context
+            else _plan_block
+        )
+
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
     agent._verification_stop_nudges = 0
@@ -943,6 +981,7 @@ def build_turn_context(
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             if not is_trivial_prompt(_query):
+                _query = anchored_recall_query(_query, messages, current_turn_user_idx)
                 ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass

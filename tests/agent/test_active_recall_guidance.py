@@ -39,7 +39,7 @@ class TestRecallIsAReflexNotAnExcursion:
 
     def test_it_says_where_bulky_tool_output_lives(self):
         g = self._guidance().lower()
-        assert "tmpfs" in g
+        assert "spilled to a file" in g
         assert "not in mazemaker" in g
 
     def test_it_stays_small_enough_to_ship_every_turn(self):

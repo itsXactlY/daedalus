@@ -362,6 +362,9 @@ class TestMazemakerBootstrap:
     def test_run_conversation_skips_legacy_memory_context_when_mazemaker_bootstrap_active(self, agent):
         manager = _FakeMazemakerManager(prefetch_result="STALE INITIAL CONTEXT FROM OLD QUERY")
         agent._memory_manager = manager
+        # The bootstrap is the no-router path; without this the config's
+        # router reached the live pod and the test depended on its mood.
+        agent._maze_router = None
         agent.valid_tool_names.add("mazemaker_recall")
         agent.tools.append({
             "type": "function",
@@ -390,6 +393,49 @@ class TestMazemakerBootstrap:
         assert "STALE INITIAL CONTEXT" not in current_user_content
         assert manager.prefetch_queries == []
         assert manager.calls[0][0] == "mazemaker_recall"
+
+
+class TestOneRetrievalPerTurn:
+    class _EmptyRouter:
+        def __init__(self):
+            self.turns = []
+
+        def fetch(self, turn):
+            self.turns.append(turn)
+            return type("M", (), {"text": ""})()
+
+    def _run(self, agent, text):
+        captured = {}
+
+        def fake_api_call(api_kwargs):
+            captured["messages"] = api_kwargs["messages"]
+            return _mock_response(content="done")
+
+        with patch.object(agent, "_interruptible_api_call", side_effect=fake_api_call):
+            agent.run_conversation(text)
+        return [m for m in captured["messages"] if m.get("role") == "user"][-1]["content"]
+
+    def test_empty_router_turn_gets_no_second_recall(self, agent):
+        manager = _FakeMazemakerManager(prefetch_result="SHOULD NOT APPEAR")
+        agent._memory_manager = manager
+        agent._maze_router = self._EmptyRouter()
+        agent._maze_needs = None
+        agent.valid_tool_names.add("mazemaker_recall")
+        content = self._run(agent, "fix the recall pipeline in the harness please")
+        assert agent._maze_router.turns
+        assert manager.calls == [] and manager.prefetch_queries == []
+        assert "SHOULD NOT APPEAR" not in content
+
+    def test_active_plan_rides_on_the_live_turn(self, agent, tmp_path, monkeypatch):
+        plan = tmp_path / ".daedalus" / "PLAN.md"
+        plan.parent.mkdir()
+        plan.write_text("# fix recall\nStatus: active\n- [ ] 1. patch the router\n")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        agent._maze_router = self._EmptyRouter()
+        agent._maze_needs = None
+        content = self._run(agent, "weiter")
+        assert "<active-plan" in content and "patch the router" in content
+        assert agent._maze_router.turns[0].startswith("fix recall — 1. patch the router")
 
 
 class TestHasContentAfterThinkBlock:
