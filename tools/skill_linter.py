@@ -111,7 +111,7 @@ class LintFinding:
     skill: str = ""
 
     def format(self) -> str:
-        badge = "✗" if self.severity == ERROR else "⚠"
+        badge = {"error": "✗", "warning": "⚠"}.get(self.severity, "·")
         where = f" {self.skill}:" if self.skill else ""
         return f"{badge} [{self.rule}]{where} {self.message}"
 

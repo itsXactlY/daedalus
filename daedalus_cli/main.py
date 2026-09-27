@@ -4866,6 +4866,15 @@ For more help on a command:
         help="Also run the per-skill advisory linter (noisy: ~2000 convention warnings)",
     )
     skills_selfaudit.add_argument("--json", action="store_true", help="Machine-readable output")
+    skills_selfaudit.add_argument(
+        "--manifest", default=None,
+        help="Manifest to diff against (default: <root>/.bundled_manifest; "
+             "pass 'none' to skip the drift check)",
+    )
+    skills_selfaudit.add_argument(
+        "--no-tool-check", action="store_true",
+        help="Skip the tool-reference check (the slowest one)",
+    )
 
     skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")
@@ -4911,6 +4920,11 @@ For more help on a command:
                 argv.append('--lint')
             if getattr(args, 'json', False):
                 argv.append('--json')
+            if getattr(args, 'no_tool_check', False):
+                argv.append('--no-tool-check')
+            manifest = getattr(args, 'manifest', None)
+            if manifest:
+                argv += ['--manifest', manifest]
             # The dispatcher below ignores return values, so exit here to keep
             # the exit code meaningful for scripts.
             raise SystemExit(selfaudit_main(argv))

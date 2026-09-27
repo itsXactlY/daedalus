@@ -229,7 +229,7 @@ def test_parse_manifest_names_reads_report_format(tmp_path):
     assert parse_manifest_names(manifest) == {"alpha", "beta", "gamma"}
 
 
-def test_manifest_drift_reports_added_and_removed(tmp_path):
+def test_manifest_drift_reports_removed(tmp_path):
     _skill(tmp_path, "cat/alpha", "alpha")
     _write(
         tmp_path / ".audit/manifest.txt",
@@ -244,6 +244,55 @@ def test_manifest_drift_reports_added_and_removed(tmp_path):
 
     removed = [f for f in report.findings if f.rule == "manifest-drift-removed"]
     assert len(removed) == 1 and "ghost" in removed[0].message
+
+
+def test_parse_manifest_names_reads_sync_format(tmp_path):
+    """.bundled_manifest is `name:hash` per line, or a bare name in v1."""
+    manifest = _write(
+        tmp_path / ".bundled_manifest",
+        """\
+        alpha:07ea23208c3bc6105012224d3bda915e
+        beta:729ccaaaf5d98e68b61723f8d02732c9
+        gamma
+        """,
+    )
+    assert parse_manifest_names(manifest) == {"alpha", "beta", "gamma"}
+
+
+def test_skill_absent_from_bundled_manifest_is_not_drift(tmp_path):
+    """A bundled manifest covers a subset; hub skills are absent by design.
+
+    Flagging that direction reported 309 healthy skills, so it is INFO and the
+    manifest-drift-added rule is gone.
+    """
+    _skill(tmp_path, "cat/alpha", "alpha")
+    _skill(tmp_path, "cat/hub-only", "hub-only")
+    _write(tmp_path / ".bundled_manifest", "alpha:abc123\n")
+
+    report = audit_collection(tmp_path, manifest=tmp_path / ".bundled_manifest")
+
+    assert not [f for f in report.findings if f.rule == "manifest-drift-added"]
+    assert not [f for f in report.findings if f.rule == "manifest-drift-removed"]
+    untracked = [f for f in report.findings if f.rule == "manifest-untracked"]
+    assert len(untracked) == 1
+    assert untracked[0].severity not in (ERROR, WARNING)
+    assert "1" in untracked[0].message
+
+
+def test_bundled_skill_missing_from_tree_is_reported(tmp_path):
+    _skill(tmp_path, "cat/alpha", "alpha")
+    _write(
+        tmp_path / ".bundled_manifest",
+        "alpha:abc123\nghost:def456\n",
+    )
+
+    report = audit_collection(tmp_path, manifest=tmp_path / ".bundled_manifest")
+
+    removed = [f for f in report.findings if f.rule == "manifest-drift-removed"]
+    assert len(removed) == 1
+    assert "ghost" in removed[0].message
+    # The message must not claim a bug: sync_skills respects user deletions.
+    assert "sync_skills()" in removed[0].message
 
 
 def test_unreadable_manifest_is_not_thousands_of_phantoms(tmp_path):
@@ -276,6 +325,26 @@ def test_json_output_is_machine_readable(tmp_path):
 
     assert payload["errors"] == 1
     assert payload["by_rule"]["hub-member-missing"] == 1
+
+
+def test_main_defaults_to_the_bundled_manifest(tmp_path, capsys):
+    """.audit/manifest.txt is a 2026-09-12 census report nothing regenerates.
+
+    Defaulting to it made both reported findings artifacts (hackathon,
+    obsidian). The default has to be the file tools/skills_sync.py maintains.
+    """
+    from tools.skills_selfaudit import main
+
+    _skill(tmp_path, "cat/alpha", "alpha")
+    _write(tmp_path / ".bundled_manifest", "alpha:abc123\nghost:def456\n")
+
+    assert main([str(tmp_path), "--no-tool-check"]) == 0
+    out = capsys.readouterr().out
+    assert "ghost" in out
+    assert ".bundled_manifest" in out
+
+    assert main([str(tmp_path), "--no-tool-check", "--manifest", "none"]) == 0
+    assert "ghost" not in capsys.readouterr().out
 
 
 def test_audit_is_deterministic(tmp_path):
