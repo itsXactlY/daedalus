@@ -1,54 +1,62 @@
-# Toter Schalter-Müll raus, Pod-Druck raus, Retry-Druck raus
-Status: done — committed als 5c7fc75 (6 Dateien, +254/-13)
-Asked: "raus mit dem toten schalter müll, und den pod druck raus, retry druck raus, usw!"
-Done when: (1) kein Config-Key mehr ohne Leser, (2) der Turn-Pfad erzeugt höchstens einen
-       Pod-Write pro Pace-Fenster und wartet nicht auf Retry, (3) Tests grün + Voll-Lauf grün.
+# `daedalus --yolo` braucht >1 Minute zum Start
+Status: active
+Asked: "jetzt noch immer das problem, das: daedalus --yolo braucht >minute zum starten"
+Done when: der Startpfad ist gemessen und die Ursache benannt — NICHT geraten.
 
-Abandoned: "Warum sind daedalus-Tools langsamer als hermes" — Messung war abgeschlossen,
-nur der Feedback-Loop (d6c0afe) blieb. Nicht mehr aktiv.
+Abandoned: "toter Schalter / pod druck / retry druck" — committed 5c7fc75 + 04ddc57.
+
+## KORREKTUR der Diagnose (2026-09-27, wichtig)
+Die frühere Zuordnung "Probe bremst den Start" war FALSCH. Gemessen:
+- pty, Prompt interaktiv: **2,2s**, konstant über 9 Läufe, alt wie neu.
+- `initialize()` läuft NICHT auf dem Startpfad. `cli.py:7034` ruft
+  `_init_agent()` aus dem Message-Pfad, danach druckt es "Initializing agent...".
+  Im pty-Kind mit 6s langsamem Pod wird `initialize()` nachweislich gar nicht
+  aufgerufen (Trace-Marker erscheinen nicht), der Prompt ist trotzdem bei 2,2s live.
+- Die Probe bremst also die ERSTE ANTWORT, nicht den Prompt.
+
+## Messregel
+KEIN `daedalus -q <prompt>` (belegt den einzigen llama-Slot).
+Gemessen wird in-process bzw. unter pty, jeweils mit und ohne Fix auf derselben
+Binary, im Wechsel, damit der Pod-Zustand nicht die Differenz erklärt.
 
 ## Schritte
-- [x] 1. Tote Schalter raus: `prefetch_on_turn`, `soak_ttl_seconds`, `memory_soak` —
-       verifiziert: repo-weites grep findet sie nur noch in diesem PLAN, YAMLs parsen,
-       `Soak()` liefert genau 3 Felder
-- [x] 2. Pod-Druck raus: `_PodPacer` im mazemaker-Plugin. Takt = 3x letzte Write-Dauer,
-       Boden 1.0s. `sync_turn` verschiebt den Soak statt ihn zu stapeln; Destillat nur
-       bei gesundem Pod. 12 Tests in tests/plugins/memory/test_mazemaker_pacer.py, grün.
-- [x] 3. Retry-Druck raus: `_replay_allowed()` — kein Replay bei kaltem Pod (Pop +
-       Spool-Rewrite + Requeue pro Turn, ohne Zustand zu gewinnen) und kein Replay vor
-       dem Taktfenster. Bewusst KEIN Dauerverbot bei langsamem Pod: das füllte den
-       200er-Spool und liefe die ältesten Turns raus.
-- [x] 4. Tests + Volllauf — Volllauf (tests/agent + tests/run_agent + 2 gateway):
-       mit Patch 17 failed / 2085 passed, Baseline (git stash, identischer Kommando)
-       17 failed / 2085 passed — **identische Fehlerliste**, also kein Regressionsschaden.
-       Die 14 nicht-mazemaker-Fehler sind Reihenfolge-Verschmutzung (bestehen isoliert).
-       61 memory-Tests + 81 config-Tests grün, 12 davon neu.
+- [x] 1. Startpfad unter pty vermessen — Prompt interaktiv nach 2,2s.
+- [x] 2. Täter eingrenzen: `brain_ready()` = echter stats-Call, 4s Budget.
+      Nutzer-Log 96 Starts: 42x `mazemaker_stats failed ... TimeoutError`.
+- [x] 3. Fix: Probe aus `initialize()` in einen Daemon-Thread, main thread frei.
+- [x] 4. Nachgemessen — erster Turn (`.daedalus/measure_first_turn.py`, n=3 je):
+        Pod schnell : ALT median 4,28s  ->  NEU 0,80s
+        Pod +6s     : ALT median 10,28s ->  NEU 0,79s
+      Promptzeit unveraendert 2,2s (siehe Korrektur).
+- [x] 5. Nebenwirkung gefunden und behoben: `is_available()` ist ein Schema-Gate
+      (filtert 37 mazemaker-Tools). `bool(None)` = False haette Memory im ersten
+      Turn stillschweigend abgeschaltet. UNKNOWN ist jetzt != DOWN.
+      Zweiter Fehler darin: `is_available()` loeste selbst eine Probe aus und
+      raeumte damit einen echten Wedge weg ("MEMORY RECOVERED ... after 0s wedged").
+      Jetzt副作用-frei: kein Pod-Traffic, nur Join einer laufenden Probe.
+- [ ] 6. OFFEN: die ">1 Minute" ist damit NICHT erklaert. Prompt = 2,2s gemessen.
+      Naechster Schritt: der Nutzer beobachtet entweder die Zeit bis zur ersten
+      ANTWORT (nicht bis zum Prompt) oder ein anderer Pfad ist lang.
 
-## Live-Messung gegen das echte Pod (write_latenz 16,71 / 10,42 s, 1x 502)
-  pacer.interval() 40,7 s statt _SOAK_MIN_INTERVAL 0,1 s → 3 statt ~0,03 Writes pro Minute
-  is_slow=True → Destillation fällt aus, Replay wartet aufs Taktfenster
-  Kalibrierzeilen (ops:pacer-probe-*) wieder gelöscht, verifiziert leer.
-
-## Befund Schritt 1 (verifiziert per grep, nicht geraten)
-  TOT   `_soak_prefetch_on_turn`  run_agent.py:1667 gesetzt, NIRGENDS gelesen
-  TOT   `soak_ttl_seconds`         run_agent.py:1668 → initialize-kwarg; mazemaker-Plugin
-                                  ignoriert alle kwargs außer session_id (id 1335030)
-  TOT   `_soak_cfg_for_provider`   run_agent.py:1669 → `memory_soak` → ebenfalls ignoriert;
-                                  repo-weit kein zweiter Leser
-  TOT   `prefetch_on_turn`         harness_config.py:181, config_defaults.py:645,
-                                  config.sample.yaml:48
-  TOT   `ttl_seconds`              harness_config.py:182 + defaults
-  LEBEND `_soak_window_turns`      run_agent.py:1064 (Gate), :4335 (build_mazemaker_guidance),
-                                  :4639 — plus 6 Testdateien setzen es. BLEIBT.
+## Messfallen, die schon Zeit gekostet haben
+- pty-Echo: mit angeschaltetem Terminal-ECHO misst man den Kernel, nicht die App
+  (konstantes 2,28s, egal ob blockiert). ECHO ist jetzt aus.
+- Echo per Zeichen zaehlen ist wertlos: "x" steht in "e[x]ecute_code", "e[x]plore".
+  Jetzt Zufalls-Token mit Exakt-Match.
+- grep/find finden `plugins/memory/mazemaker/__init__.py` nicht: es ist ein Paket,
+  kein Modul. `grep` ist hier ugrep und liefert bei Dateipfaden leer.
 
 ## Entscheidungen
-- `_soak_window_turns` bleibt: es ist kein toter Schalter, es giert den Memory-Zweig
-  (run_agent.py:1064). Vorherige Annahme war falsch.
-- Kein Hintergrund-Thread: der Turn-Pfad bleibt synchron, wird aber gepocht. Thread wäre
-  die eigentliche Reparatur, verlangt aber eine eigene Queue — zu groß für diesen Schritt.
-- Verlorene Turns sind der Preis: bei langsamem Pod werden Soak-Turns übersprungen, nicht
-  gepuffert. Wird geloggt (debug) und in PLAN.md notiert.
+- Timeout-Konstante `_BRAIN_PROBE_TIMEOUT_S = 4.0` bleibt: aus echter Messung
+  (1,5s erklärte einen nur beschäftigten Pod für tot). Kürzer = häufiger
+  Timeout, nicht schnellerer Start.
+- Fix ist Umlagerung, nicht Rausdrehen: Aufrufer-Pfad bleibt unangetastet.
+- Kein Neustart von Diensten, kein Eingriff in den Pod.
 
 ## Notizen
-- Doppel-Schreiben möglich: bricht der HTTP-Call nach dem Commit des Pods ab, landet der
-  Turn im Spool UND im Pod. Spool ist auf 200 gedeckelt (`_FAILED_SPOOL_MAX`), ok.
+- Ausreißer: bei 6s-Pod war EINER von drei NEU-Läufen 7,19s statt 0,79s. Der
+  Fix raeumt die Probe weg, aber andere Pod-Calls im ersten Turn (Resume-Block,
+  Mission-Key) koennen weiter blockieren. Nicht beziffert.
+- 18/96 Starts zeigen gar kein stats-Ereignis (abgebrochen). Nicht verfolgt.
+- `.daedalus/probe_*.py`, `pty_startup.py`, `measure_first_turn.py`,
+  `child_yolo.py` sind Messskripte, kein Produktivcode.

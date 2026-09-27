@@ -1695,11 +1695,15 @@ class AIAgent:
                     self._memory_manager = _MemoryManager()
                     _mp = _load_mem(_mem_provider_name)
                     if _mp:
+                        # is_available() is non-blocking: the provider's readiness
+                        # probe is a real pod call (3-25 s) and this runs in front
+                        # of the prompt. A False here means "not known to be up
+                        # yet", not "down", so it must not be logged as a failure.
                         if not _mp.is_available():
-                            logger.warning(
-                                "Memory provider '%s' boot probe failed — "
-                                "registering anyway; it wakes up when the pod "
-                                "answers", _mem_provider_name,
+                            logger.debug(
+                                "Memory provider '%s' not yet confirmed up "
+                                "(probe deferred off the startup path); "
+                                "registering anyway", _mem_provider_name,
                             )
                         self._memory_manager.add_provider(_mp)
                     if self._memory_manager.providers:

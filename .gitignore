@@ -213,3 +213,15 @@ skills/.bundled_manifest
 .daedalus/lint-baseline.txt
 .daedalus/selfaudit_lint*.json
 .daedalus/commit_msg*.txt
+
+# Startup-Messskripte (pty_startup/measure_first_turn/child_yolo/probe_*)
+.daedalus/probe_*.py
+.daedalus/pty_startup*.py
+.daedalus/child_yolo.py
+.daedalus/measure_first_turn.py
+.daedalus/_*.py
+.daedalus/_*.txt
+.daedalus/*_out*.txt
+.daedalus/stack*.txt
+.daedalus/tty_raw.txt
+.daedalus/yolo_tty_trace.txt

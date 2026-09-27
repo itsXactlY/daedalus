@@ -116,10 +116,12 @@ _BRAIN_POSITIVE_TTL_S = 60.0
 # flapping inside 500ms. A refused connection still fails instantly, so a
 # longer budget costs nothing on a pod that is actually down.
 _BRAIN_PROBE_TIMEOUT_S = 4.0
+# Grace window for is_available(). A down pod refuses the connection and
+# resolves in milliseconds, so the real verdict arrives fast; the grace only
+# matters for a slow-but-alive pod, and for that pod "available" is the truth.
+_BRAIN_AVAIL_GRACE_S = 0.5
 # Consecutive failed pod calls before the data path is declared wedged.
 _WEDGE_FAIL_THRESHOLD = 3
-_BRAIN_BOOT_ATTEMPTS = 1
-_BRAIN_BOOT_BACKOFF_S = 0.5
 MISSION_TTL_S = 72 * 3600
 _THINK_RE = re.compile(
     r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE
@@ -956,6 +958,8 @@ class MazemakerMemoryProvider(MemoryProvider):
         self._resume_block = ""
         self._brain_ready: Optional[bool] = None
         self._brain_checked_at: float = 0.0
+        self._probe_lock = threading.Lock()
+        self._probe_thread: Optional[threading.Thread] = None
         self._mission_key: Optional[str] = None
         self._dcfg_cache: Optional[dict] = None
         self._dcfg_ts: float = 0.0
@@ -1031,29 +1035,33 @@ class MazemakerMemoryProvider(MemoryProvider):
         self._session_id = session_id or ""
         self._turn_count = 0
         self._resume_block = ""
-        for attempt in range(_BRAIN_BOOT_ATTEMPTS):
-            self._brain_ready = self.brain_ready(refresh=True)
-            if self._brain_ready:
-                break
-            if attempt < _BRAIN_BOOT_ATTEMPTS - 1:
-                time.sleep(_BRAIN_BOOT_BACKOFF_S * (attempt + 1))
+        # Probe off the main thread. initialize() sits directly in front of the
+        # interactive prompt, and a synchronous stats call there held the start
+        # for the full pod round trip (3-25 s, 4 s budget, 42/96 recorded
+        # starts hit the budget). The boot loop and its backoff are gone with
+        # it: _BRAIN_BOOT_ATTEMPTS was 1, so the loop could not retry anything.
+        self._probe_in_background()
         logger.info(
-            "mazemaker provider: brain %s (session=%s)",
-            "READY" if self._brain_ready else "OFFLINE", self._session_id,
+            "mazemaker provider: brain %s (session=%s), probe deferred off the "
+            "startup path",
+            "READY" if self._brain_ready else ("UNKNOWN" if self._brain_ready is None
+                                               else "OFFLINE"),
+            self._session_id,
         )
-        if not self._brain_ready:
-            logger.warning(
-                "mazemaker pod unreachable at init — soak/prefetch degrade to "
-                "no-ops until it answers (auto re-probe every %.0fs)",
-                _BRAIN_NEGATIVE_TTL_S,
-            )
         if _FAILED_WRITE_SPOOL:
-            try:
-                _replay_failed_writes()
-            except Exception:
-                pass
+            threading.Thread(
+                target=self._replay_spool_worker,
+                name="mazemaker-spool-replay",
+                daemon=True,
+            ).start()
 
-    def brain_ready(self, refresh: bool = False) -> bool:
+    def _replay_spool_worker(self) -> None:
+        try:
+            _replay_failed_writes()
+        except Exception:
+            logger.debug("failed-write replay raised", exc_info=True)
+
+    def brain_ready(self, refresh: bool = False, blocking: bool = True) -> bool:
         """Readiness probe for the mazemaker brain.
 
         Probes ``mazemaker_stats``, which runs through the front to the engine
@@ -1070,6 +1078,16 @@ class MazemakerMemoryProvider(MemoryProvider):
 
         A live wedge on the data path outranks any cached verdict, but is still
         re-probed on the negative TTL so an outage can end on its own.
+
+        ``blocking=False`` is for the STARTUP path only. The probe is a real
+        pod call that costs 3-25 s, and 42 of 96 recorded CLI starts hit the
+        4 s budget, so calling it synchronously before the prompt held the
+        main thread for the whole probe on nearly half of all starts. Nothing
+        on the startup path needs the verdict — an unknown brain must behave
+        like a cold one, which the code already handles (the provider registers
+        anyway and soaks/recall degrade to no-ops). With ``blocking=False`` the
+        verdict is None when unknown, no call is made, and a probe is left
+        running so the first real turn usually has a real answer.
         """
         now = time.monotonic()
         if not refresh and self._brain_ready is not None:
@@ -1085,6 +1103,9 @@ class MazemakerMemoryProvider(MemoryProvider):
                 )
                 if age < ttl:
                     return self._brain_ready
+        if not blocking:
+            self._probe_in_background()
+            return bool(self._brain_ready)
         try:
             res = _tool("mazemaker_stats", {}, timeout=_BRAIN_PROBE_TIMEOUT_S)
             # A wedged engine can still return a shaped-but-empty payload;
@@ -1097,6 +1118,32 @@ class MazemakerMemoryProvider(MemoryProvider):
         self._brain_checked_at = now
         return self._brain_ready
 
+    def _probe_in_background(self) -> None:
+        """Run one readiness probe off the main thread, at most one in flight."""
+        with self._probe_lock:
+            if self._probe_thread is not None and self._probe_thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._probe_worker,
+                name="mazemaker-brain-probe",
+                daemon=True,
+            )
+            self._probe_thread = thread
+        thread.start()
+
+    def _probe_worker(self) -> None:
+        try:
+            self.brain_ready(refresh=True, blocking=True)
+        except Exception:
+            logger.debug("background brain probe failed", exc_info=True)
+
+    def wait_for_brain_probe(self, timeout: Optional[float] = None) -> Optional[bool]:
+        """Join a pending background probe. Returns the verdict, None if unknown."""
+        thread = self._probe_thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+        return self._brain_ready
+
     def is_reachable(self) -> bool:
         """Whether recall can be counted on right now: not wedged, breaker closed.
 
@@ -1106,7 +1153,36 @@ class MazemakerMemoryProvider(MemoryProvider):
         return not _POD_HEALTH.is_wedged() and not _BREAKER.is_tripped()
 
     def is_available(self) -> bool:
-        return self.brain_ready()
+        """Whether mazemaker should be offered at all — this is a tool-schema gate.
+
+        A pod that is merely SLOW is up; only a pod that answers "no" is down.
+        The probe is a real 3-25 s round trip and now runs off the main thread,
+        so the verdict can legitimately still be unknown here. Collapsing that
+        unknown to False hides working memory for the whole first turn, so an
+        unknown verdict counts as up.
+
+        Side-effect free on purpose. An earlier version kicked off a probe here
+        to fill the gap, which was wrong twice over: a schema question must not
+        generate pod traffic, and a probe that answers stats will clear a live
+        data-path wedge ("MEMORY RECOVERED ... after 0s wedged") — so asking
+        "are you available?" was healing the very wedge it should report. The
+        probe that belongs here is already running: initialize() leaves exactly
+        one in flight, and this only joins it briefly.
+
+        The grace is cheap because a down pod refuses the connection and resolves
+        in milliseconds — the slow pod is the one that needs the window, and
+        reporting a slow pod as down is the failure mode that costs real work.
+        """
+        thread = self._probe_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=_BRAIN_AVAIL_GRACE_S)
+        if not self.is_reachable():
+            # a wedged data path outranks any cached verdict, same precedence
+            # brain_ready() gives it
+            return False
+        if self._brain_ready is not None:
+            return self._brain_ready
+        return True
 
     def memory_status(self) -> Dict[str, Any]:
         """Current memory health, for callers that need to report it."""
