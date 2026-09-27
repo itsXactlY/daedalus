@@ -98,15 +98,22 @@ WARNING = "warning"
 
 @dataclass
 class LintFinding:
-    """A single lint result. ``severity`` is advisory metadata for the caller."""
+    """A single lint result. ``severity`` is advisory metadata for the caller.
+
+    ``skill`` is filled in by whoever batch-lints a collection; ``lint_skill``
+    itself only knows the one directory it was handed, so a bare single-skill
+    call leaves it empty.
+    """
 
     severity: str
     rule: str
     message: str
+    skill: str = ""
 
     def format(self) -> str:
         badge = "✗" if self.severity == ERROR else "⚠"
-        return f"{badge} [{self.rule}] {self.message}"
+        where = f" {self.skill}:" if self.skill else ""
+        return f"{badge} [{self.rule}]{where} {self.message}"
 
 
 
@@ -122,10 +129,13 @@ def _check_name_matches_dir(
     if name != skill_dir.name:
         return [
             LintFinding(
-                ERROR,
+                WARNING,
                 "name-dir-mismatch",
                 f"frontmatter name '{name}' does not match directory "
-                f"'{skill_dir.name}'; they must be identical.",
+                f"'{skill_dir.name}'. skill_view resolves both (it falls back "
+                f"to the frontmatter name), but the system-prompt index keys on "
+                f"the directory while skills_list shows '{name}', and disabling "
+                f"'{skill_dir.name}' does not hide it from skills_list.",
             )
         ]
     return []

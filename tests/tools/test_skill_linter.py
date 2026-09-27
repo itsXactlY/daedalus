@@ -106,12 +106,16 @@ def test_bad_name_format_is_error():
     assert has_errors(findings)
 
 
-def test_name_dir_mismatch_is_error(tmp_path):
+def test_name_dir_mismatch_is_warning(tmp_path):
+    """Advisory, not a hard reject: skill_view resolves both names, so a
+    mismatch no longer makes the skill unreachable (see the frontmatter-name
+    fallback in tools/skills_tool.py). It still splits the index from
+    skills_list, which is worth surfacing but must not fail a lint gate."""
     skill_dir = tmp_path / "actual-dir"
     skill_dir.mkdir()
     findings = lint_content(CLEAN, skill_dir=skill_dir)
     assert "name-dir-mismatch" in _rules(findings)
-    assert has_errors(findings)
+    assert not has_errors(findings)
 
 
 def test_dangling_reference_link_flagged(tmp_path):

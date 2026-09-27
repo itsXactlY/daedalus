@@ -88,6 +88,10 @@ _DYNAMIC_TOOL_PREFIXES = ("mcp__", "mazemaker_", "memory_")
 # Where harness tool names live, relative to the harness root.
 _TOOL_SOURCE_DIRS = ("tools", "plugins", "agent", "daedalus_cli")
 
+# This module sits in <harness>/tools/, so the checkout is two levels up.
+# Deriving it keeps the tool portable instead of hardcoding one operator's home.
+_HARNESS_ROOT = Path(__file__).resolve().parents[1]
+
 
 @dataclass
 class Report:
@@ -98,9 +102,16 @@ class Report:
     hub_count: int = 0
     by_rule: Dict[str, int] = field(default_factory=dict)
 
-    def add(self, severity: str, rule: str, message: str, where: str = "") -> None:
+    def add(
+        self,
+        severity: str,
+        rule: str,
+        message: str,
+        where: str = "",
+        skill: str = "",
+    ) -> None:
         prefix = f"{where}: " if where else ""
-        self.findings.append(LintFinding(severity, rule, prefix + message))
+        self.findings.append(LintFinding(severity, rule, prefix + message, skill))
 
     def finalize(self) -> "Report":
         counts: Dict[str, int] = defaultdict(int)
@@ -122,7 +133,12 @@ class Report:
                 "errors": sum(1 for f in self.findings if f.severity == ERROR),
                 "by_rule": dict(sorted(self.by_rule.items(), key=lambda kv: -kv[1])),
                 "findings": [
-                    {"severity": f.severity, "rule": f.rule, "message": f.message}
+                    {
+                        "severity": f.severity,
+                        "rule": f.rule,
+                        "skill": f.skill,
+                        "message": f.message,
+                    }
                     for f in self.findings
                 ],
             },
@@ -436,8 +452,12 @@ def audit_collection(
 
     if run_lint:
         for skill_md in skill_paths:
+            meta, _ = _read(skill_md)
+            who = str(meta.get("name") or skill_md.parent.name)
             for f in lint_skill(skill_md):
-                report.findings.append(f)
+                report.findings.append(
+                    LintFinding(f.severity, f.rule, f.message, who)
+                )
 
     return report.finalize()
 
@@ -474,8 +494,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("root", help="skills root, e.g. ~/.daedalus/skills")
     parser.add_argument(
         "--harness",
-        default="/home/alca/.daedalus/daedalus-agent",
-        help="harness root used to harvest the real tool surface",
+        default=str(_HARNESS_ROOT),
+        help="harness root used to harvest the real tool surface "
+             "(default: the checkout this module lives in)",
     )
     parser.add_argument(
         "--manifest",

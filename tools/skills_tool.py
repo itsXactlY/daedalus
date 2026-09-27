@@ -936,6 +936,29 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 if skill_md:
                     break
 
+        # Last resort: match the frontmatter ``name:``. skills_list advertises
+        # that name (see _find_all_skills), so a skill whose name: differs from
+        # its directory is unreachable by the name we just showed the model.
+        # Runs after every directory-based lookup so a real directory always wins.
+        if not skill_md:
+            for search_dir in all_dirs:
+                for found_skill_md in search_dir.rglob("SKILL.md"):
+                    if any(
+                        part in _EXCLUDED_SKILL_DIRS for part in found_skill_md.parts
+                    ):
+                        continue
+                    try:
+                        raw = found_skill_md.read_text(encoding="utf-8")[:2000]
+                    except OSError:
+                        continue
+                    fm, _ = _parse_frontmatter(raw)
+                    if str(fm.get("name", "")).strip() == name:
+                        skill_dir = found_skill_md.parent
+                        skill_md = found_skill_md
+                        break
+                if skill_md:
+                    break
+
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _find_all_skills()[:20]]
             return json.dumps(

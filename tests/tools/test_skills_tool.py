@@ -24,9 +24,18 @@ from tools.skills_tool import (
 
 
 def _make_skill(
-    skills_dir, name, frontmatter_extra="", body="Step 1: Do the thing.", category=None
+    skills_dir,
+    name,
+    frontmatter_extra="",
+    body="Step 1: Do the thing.",
+    category=None,
+    frontmatter_name=None,
 ):
-    """Helper to create a minimal skill directory."""
+    """Helper to create a minimal skill directory.
+
+    ``frontmatter_name`` overrides the ``name:`` key independently of the
+    directory name, which is how the nine name/dir mismatches look on disk.
+    """
     if category:
         skill_dir = skills_dir / category / name
     else:
@@ -34,7 +43,7 @@ def _make_skill(
     skill_dir.mkdir(parents=True, exist_ok=True)
     content = f"""\
 ---
-name: {name}
+name: {frontmatter_name or name}
 description: Description for {name}.
 {frontmatter_extra}---
 
@@ -304,6 +313,34 @@ class TestSkillView:
         assert result["success"] is False
         assert "not found" in result["error"].lower()
         assert "available_skills" in result
+
+    def test_view_by_frontmatter_name_when_dir_differs(self, tmp_path):
+        """skills_list advertises the frontmatter name, so skill_view must accept it.
+
+        Nine installed skills ship name: != <dir> (mazemaker-core, pulse-core,
+        cloudflare-core, ...). If only the directory name resolves, the model
+        copies the name it was shown into skill_view and gets "not found".
+        """
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "mazemaker", frontmatter_name="mazemaker-core")
+            by_dir = json.loads(skill_view("mazemaker"))
+            by_frontmatter = json.loads(skill_view("mazemaker-core"))
+        assert by_dir["success"] is True
+        assert by_frontmatter["success"] is True
+        assert "Step 1" in by_frontmatter["content"]
+
+    def test_view_frontmatter_name_does_not_shadow_a_real_directory(self, tmp_path):
+        """A frontmatter name must not win over an actual directory of that name."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "real-skill")
+            _make_skill(
+                tmp_path, "decoy", frontmatter_name="real-skill",
+                body="Step 1: the decoy.",
+            )
+            raw = skill_view("real-skill")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "the decoy" not in result["content"]
 
     def test_view_reference_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
