@@ -1,0 +1,39 @@
+     36 FAILED tests/tools/test_mcp_tool.py
+     30 FAILED tests/tools/test_web_tools_config.py
+     20 ERROR tests/tools/test_web_tools_config.py
+     18 ERROR tests/tools/test_image_source.py
+     15 FAILED tests/tools/test_web_tools_tavily.py
+      9 FAILED tests/tools/test_send_message_tool.py
+      7 FAILED tests/tools/test_write_approval.py
+      5 FAILED tests/tools/test_transcription_tools.py
+      5 FAILED tests/tools/test_read_extract.py
+      4 FAILED tests/tools/test_website_policy.py
+      4 FAILED tests/tools/test_mcp_structured_content.py
+      4 FAILED tests/tools/test_mcp_probe.py
+      3 FAILED tests/tools/test_transcription.py
+      3 FAILED tests/tools/test_tool_output_limits.py
+      3 ERROR    tools.mcp_tool:mcp_tool.py:4260 MCP tool test-server/my-tool call failed: An asyncio.Future, a coroutine or an awaitable is required
+      2 FAILED tests/tools/test_search_hidden_dirs.py
+      2 FAILED tests/tools/test_mcp_stability.py
+      2 FAILED tests/tools/test_mcp_dynamic_discovery.py
+      2 FAILED tests/tools/test_managed_media_gateways.py
+      2 FAILED tests/tools/test_daemon_pool.py
+      2 FAILED tests/tools/test_config_null_guard.py
+      2 FAILED tests/tools/test_browser_secret_exfil.py
+      2 ERROR    tools.mcp_tool:mcp_tool.py:4499 MCP srv/get_prompt failed: An asyncio.Future, a coroutine or an awaitable is required
+      2 ERROR    tools.mcp_tool:mcp_tool.py:4435 MCP srv/list_prompts failed: An asyncio.Future, a coroutine or an awaitable is required
+      2 ERROR    tools.mcp_tool:mcp_tool.py:4317 MCP srv/list_resources failed: An asyncio.Future, a coroutine or an awaitable is required
+      1 FAILED tests/tools/test_skill_linter.py
+      1 FAILED tests/tools/test_send_message_missing_platforms.py
+      1 FAILED tests/tools/test_modal_sandbox_fixes.py
+      1 FAILED tests/tools/test_mcp_tool_issue_948.py
+      1 FAILED tests/tools/test_discord_tool.py
+      1 FAILED tests/tools/test_credential_files.py
+      1 FAILED tests/tools/test_code_execution.py
+      1 FAILED tests/tools/test_browser_console.py
+      1 FAILED tests/tools/test_blueprints.py
+      1 ERROR    tools.mcp_tool:mcp_tool.py:4374 MCP srv/read_resource failed: An asyncio.Future, a coroutine or an awaitable is required
+      1 ERROR    tools.mcp_tool:mcp_tool.py:4260 MCP tool test_srv/greet call failed: An asyncio.Future, a coroutine or an awaitable is required
+      1 ERROR    tools.mcp_tool:mcp_tool.py:4260 MCP tool test_srv/fail_tool call failed: An asyncio.Future, a coroutine or an awaitable is required
+      1 ERROR    tools.mcp_tool:mcp_tool.py:4260 MCP tool test_srv/broken_tool call failed: An asyncio.Future, a coroutine or an awaitable is required
+      1 ERROR tests/tools/test_discord_tool.py

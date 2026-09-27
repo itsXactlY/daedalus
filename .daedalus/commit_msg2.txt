@@ -1,0 +1,11 @@
+chore: .daedalus Arbeitsnotizen und Messbelege mit versionieren
+
+Die Scratch-Dir des Harness lag bisher untracked neben dem Repo, obwohl
+sie die Belege fuer die letzten Aenderungen enthaelt: den Baseline-Voll-
+lauf, ohne den sich nicht belegen laesst, dass der Write-Pacer keine
+Regression ist (17 failed / 2085 passed, vorher wie nachher), und die
+Lint-Baseline, gegen die der Selbstaudit laeuft.
+
+Kein Secret-Scan-Treffer (sk-*, Bearer, api_key=, password=).
+Die *.log-Dateien bleiben draussen — .gitignore:92 (*.log) filtert sie;
+sie sind pytest-Mitschnitte ohne erklaerenden Mehrwert.

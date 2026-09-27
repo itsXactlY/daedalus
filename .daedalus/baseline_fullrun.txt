@@ -1,0 +1,571 @@
+........................................................................ [  3%]
+........................................................................ [  6%]
+........................................................................ [ 10%]
+.......................F................................................ [ 13%]
+........................................................................ [ 17%]
+........................................................................ [ 20%]
+........................................................................ [ 23%]
+........................................................................ [ 27%]
+..............................................F......................... [ 30%]
+........................................................................ [ 34%]
+........................................................................ [ 37%]
+........................................................................ [ 41%]
+........................................................................ [ 44%]
+........................................................................ [ 47%]
+........................................................................ [ 51%]
+........................................................................ [ 54%]
+........................................................................ [ 58%]
+........................................................................ [ 61%]
+.......................sssss............................................ [ 64%]
+........................................................................ [ 68%]
+........................................................................ [ 71%]
+........................................................................ [ 75%]
+...............................................F........................ [ 78%]
+.........................F.............................................. [ 82%]
+.........FFF.FFFFF.FFF..F.F............................................. [ 85%]
+........................................................................ [ 88%]
+........................................................................ [ 92%]
+........................................................................ [ 95%]
+........................................................................ [ 99%]
+...................                                                      [100%]
+=================================== FAILURES ===================================
+________ TestNormalizeVisionProvider.test_main_resolves_to_named_custom ________
+
+self = <tests.agent.test_auxiliary_named_custom_providers.TestNormalizeVisionProvider object at 0x7ff5cd799090>
+tmp_path = PosixPath('/home/alca/.daedalus-spill/tmp/pytest-of-alca/pytest-54/test_main_resolves_to_named_cu0')
+
+    def test_main_resolves_to_named_custom(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "my-model", "provider": "custom:beans"},
+            "custom_providers": [{"name": "beans", "base_url": "http://localhost/v1"}],
+        })
+        from agent.auxiliary_client import _normalize_vision_provider
+>       assert _normalize_vision_provider("main") == "custom:beans"
+E       AssertionError: assert 'beans' == 'custom:beans'
+E         
+E         - custom:beans
+E         + beans
+
+tests/agent/test_auxiliary_named_custom_providers.py:34: AssertionError
+__________________ TestSQLiteMemoryPlugin.test_full_lifecycle __________________
+
+self = <tests.agent.test_memory_plugin_e2e.TestSQLiteMemoryPlugin object at 0x7ff5cc2ee490>
+
+    def test_full_lifecycle(self):
+        """Exercise init → store → recall → sync → prefetch → shutdown."""
+        mgr = MemoryManager()
+        builtin = BuiltinMemoryProvider()
+        sqlite_mem = SQLiteMemoryProvider()
+    
+        mgr.add_provider(builtin)
+        mgr.add_provider(sqlite_mem)
+    
+        mgr.initialize_all(session_id="test-session-1", platform="cli")
+        assert sqlite_mem._conn is not None
+    
+        prompt = mgr.build_system_prompt()
+        assert "SQLite Memory Plugin" not in prompt
+    
+        result = json.loads(mgr.handle_tool_call(
+            "sqlite_retain", {"content": "User prefers dark mode", "context": "preference"}
+        ))
+        assert result["result"] == "Stored."
+    
+        prompt = mgr.build_system_prompt()
+        assert "1 memories stored" in prompt
+    
+        result = json.loads(mgr.handle_tool_call(
+            "sqlite_recall", {"query": "dark mode"}
+        ))
+        assert len(result["results"]) == 1
+        assert "dark mode" in result["results"][0]["content"]
+    
+        mgr.sync_all("What's my theme?", "You prefer dark mode.")
+        count = sqlite_mem._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+>       assert count == 2
+E       assert 1 == 2
+
+tests/agent/test_memory_plugin_e2e.py:193: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.memory_manager:memory_manager.py:445 Memory provider 'builtin' registered (0 tools)
+INFO     agent.memory_manager:memory_manager.py:445 Memory provider 'sqlite_memory' registered (2 tools)
+WARNING  agent.memory_manager:memory_manager.py:693 Memory provider 'sqlite_memory' sync_turn failed: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 140693795011520 and this is thread id 140693610772160.
+________ TestRealSubagentInterrupt.test_interrupt_child_during_api_call ________
+
+self = <tests.run_agent.test_real_interrupt_subagent.TestRealSubagentInterrupt testMethod=test_interrupt_child_during_api_call>
+
+    def test_interrupt_child_during_api_call(self):
+        """Real AIAgent child interrupted while making API call."""
+        from run_agent import AIAgent, IterationBudget
+    
+        parent = AIAgent.__new__(AIAgent)
+        parent._interrupt_requested = False
+        parent._interrupt_message = None
+        parent._active_children = []
+        parent._active_children_lock = threading.Lock()
+        parent.quiet_mode = True
+        parent.model = "test/model"
+        parent.base_url = "http://localhost:1"
+        parent.api_key = "test"
+        parent.provider = "test"
+        parent.api_mode = "chat_completions"
+        parent.platform = "cli"
+        parent.enabled_toolsets = ["terminal", "file"]
+        parent.providers_allowed = None
+        parent.providers_ignored = None
+        parent.providers_order = None
+        parent.provider_sort = None
+        parent.max_tokens = None
+        parent.reasoning_config = None
+        parent.prefill_messages = None
+        parent._session_db = None
+        parent._delegate_depth = 0
+        parent._delegate_spinner = None
+        parent.tool_progress_callback = None
+        parent.iteration_budget = IterationBudget(max_total=100)
+        parent._client_kwargs = {"api_key": "test", "base_url": "http://localhost:1"}
+    
+        from tools.delegate_tool import _run_single_child
+    
+        child_started = threading.Event()
+        result_holder = [None]
+        error_holder = [None]
+    
+        def run_delegate():
+            try:
+                with patch('run_agent.OpenAI') as MockOpenAI:
+                    mock_client = MagicMock()
+                    mock_client.chat.completions.create = _make_slow_api_response(delay=5.0)
+                    mock_client.close = MagicMock()
+                    MockOpenAI.return_value = mock_client
+    
+                    with patch.object(AIAgent, '_build_system_prompt', return_value="You are a test agent"):
+                        original_run = AIAgent.run_conversation
+    
+                        def patched_run(self_agent, *args, **kwargs):
+                            child_started.set()
+                            return original_run(self_agent, *args, **kwargs)
+    
+                        with patch.object(AIAgent, 'run_conversation', patched_run):
+                            child = AIAgent(
+                                base_url="http://localhost:1",
+                                api_key="test-key",
+                                model="test/model",
+                                provider="test",
+                                api_mode="chat_completions",
+                                max_iterations=5,
+                                enabled_toolsets=["terminal"],
+                                quiet_mode=True,
+                                skip_context_files=True,
+                                skip_memory=True,
+                                platform="cli",
+                            )
+                            child._delegate_depth = 1
+                            parent._active_children.append(child)
+                            result = _run_single_child(
+                                task_index=0,
+                                goal="Test task",
+                                child=child,
+                                parent_agent=parent,
+                            )
+                            result_holder[0] = result
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                error_holder[0] = e
+    
+        agent_thread = threading.Thread(target=run_delegate, daemon=True)
+        agent_thread.start()
+    
+        started = child_started.wait(timeout=10)
+        if not started:
+            agent_thread.join(timeout=1)
+            if error_holder[0]:
+                raise error_holder[0]
+            self.fail("Child never started run_conversation")
+    
+        time.sleep(0.5)
+    
+        print(f"Active children: {len(parent._active_children)}")
+        self.assertGreaterEqual(len(parent._active_children), 1,
+                                "Child not registered in _active_children")
+    
+        start = time.monotonic()
+        parent.interrupt("User typed a new message")
+    
+        child = parent._active_children[0] if parent._active_children else None
+        if child:
+            print(f"Child._interrupt_requested after parent.interrupt(): {child._interrupt_requested}")
+            self.assertTrue(child._interrupt_requested,
+                           "Interrupt did not propagate to child!")
+    
+        agent_thread.join(timeout=5)
+        elapsed = time.monotonic() - start
+    
+        if error_holder[0]:
+            raise error_holder[0]
+    
+        result = result_holder[0]
+>       self.assertIsNotNone(result, "Delegate returned no result")
+E       AssertionError: unexpectedly None : Delegate returned no result
+
+tests/run_agent/test_real_interrupt_subagent.py:159: AssertionError
+----------------------------- Captured stdout call -----------------------------
+Active children: 1
+Child._interrupt_requested after parent.interrupt(): True
+------------------------------ Captured log call -------------------------------
+INFO     agent.model_metadata:model_metadata.py:875 Could not detect context length for model 'test/model' at http://localhost:1 — defaulting to 128,000 tokens (probe-down). Set model.context_length in config.yaml to override.
+____ TestMazemakerBootstrap.test_system_prompt_includes_mazemaker_guidance _____
+
+self = <tests.run_agent.test_run_agent.TestMazemakerBootstrap object at 0x7ff5cb750190>
+agent = <run_agent.AIAgent object at 0x7ff5ca519be0>
+
+    def test_system_prompt_includes_mazemaker_guidance(self, agent):
+        agent.valid_tool_names.add("mazemaker_recall")
+    
+        prompt = agent._build_system_prompt()
+    
+        # Assert the contract the guidance has to carry, not its exact prose:
+        # the heading, the tools by name, the retrieve-before-you-work rule,
+        # and the ban on claiming no memory without having asked. The wording
+        # was rewritten (the tmpfs-spill line arrived with 18f89e5) and this
+        # test kept asserting the old headline, so it sat red and hid others.
+>       assert "# Mazemaker — persistent memory (MANDATORY)" in prompt
+E       AssertionError: assert '# Mazemaker — persistent memory (MANDATORY)' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:245: AssertionError
+------------------------------ Captured log setup ------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+________________ TestBuildSystemPrompt.test_always_has_identity ________________
+
+self = <tests.run_agent.test_run_agent.TestBuildSystemPrompt object at 0x7ff5cb752e90>
+agent = <run_agent.AIAgent object at 0x7ff5bbacc830>
+
+    def test_always_has_identity(self, agent):
+        prompt = agent._build_system_prompt()
+>       assert DEFAULT_AGENT_IDENTITY in prompt
+E       AssertionError: assert 'You are Daedalus Agent, an intelligent AI assistant created by Nous Research. You are helpful, knowledgeable, and dir... over being verbose unless otherwise directed below. Be targeted and efficient in your exploration and investigations.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:825: AssertionError
+------------------------------ Captured log setup ------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+______________ TestBuildSystemPrompt.test_includes_system_message ______________
+
+self = <tests.run_agent.test_run_agent.TestBuildSystemPrompt object at 0x7ff5cb752fd0>
+agent = <run_agent.AIAgent object at 0x7ff5bbacf770>
+
+    def test_includes_system_message(self, agent):
+        prompt = agent._build_system_prompt(system_message="Custom instruction")
+>       assert "Custom instruction" in prompt
+E       AssertionError: assert 'Custom instruction' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:829: AssertionError
+------------------------------ Captured log setup ------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+______ TestBuildSystemPrompt.test_memory_guidance_when_memory_tool_loaded ______
+
+self = <tests.run_agent.test_run_agent.TestBuildSystemPrompt object at 0x7ff5cb7a1f30>
+agent_with_memory_tool = <run_agent.AIAgent object at 0x7ff5bb936900>
+
+    def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
+        from agent.prompt_builder import MEMORY_GUIDANCE
+    
+        prompt = agent_with_memory_tool._build_system_prompt()
+>       assert MEMORY_GUIDANCE in prompt
+E       AssertionError: assert 'You have persistent memory across sessions. Save durable facts using the memory tool: user preferences, environment d...red a new way to do something, solved a problem that could be necessary later, save it as a skill with the skill tool.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:835: AssertionError
+------------------------------ Captured log setup ------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+_________________ TestBuildSystemPrompt.test_includes_datetime _________________
+
+self = <tests.run_agent.test_run_agent.TestBuildSystemPrompt object at 0x7ff5cb72db50>
+agent = <run_agent.AIAgent object at 0x7ff5ca3e7770>
+
+    def test_includes_datetime(self, agent):
+        prompt = agent._build_system_prompt()
+>       assert "Conversation started:" in prompt
+E       AssertionError: assert 'Conversation started:' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:845: AssertionError
+------------------------------ Captured log setup ------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+_________ TestBuildSystemPrompt.test_includes_nous_subscription_prompt _________
+
+self = <tests.run_agent.test_run_agent.TestBuildSystemPrompt object at 0x7ff5cb84b680>
+agent = <run_agent.AIAgent object at 0x7ff5bbacd6a0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ff5bb835550>
+
+    def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
+        monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
+        prompt = agent._build_system_prompt()
+>       assert "NOUS SUBSCRIPTION BLOCK" in prompt
+E       AssertionError: assert 'NOUS SUBSCRIPTION BLOCK' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:850: AssertionError
+------------------------------ Captured log setup ------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+_ TestBuildSystemPrompt.test_skills_prompt_derives_available_toolsets_from_loaded_tools _
+
+self = <tests.run_agent.test_run_agent.TestBuildSystemPrompt object at 0x7ff5cb84bce0>
+
+    def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
+        tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
+        toolset_map = {
+            "web_search": "web",
+            "skills_list": "skills",
+            "skill_view": "skills",
+            "skill_manage": "skills",
+        }
+    
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch(
+                "run_agent.check_toolset_requirements",
+                side_effect=AssertionError("should not re-check toolset requirements"),
+            ),
+            patch("run_agent.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
+            patch("run_agent.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+    
+            prompt = agent._build_system_prompt()
+    
+>       assert "SKILLS_PROMPT" in prompt
+E       AssertionError: assert 'SKILLS_PROMPT' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:880: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+____________ TestToolUseEnforcementConfig.test_auto_injects_for_gpt ____________
+
+self = <tests.run_agent.test_run_agent.TestToolUseEnforcementConfig object at 0x7ff5cb753110>
+
+    def test_auto_injects_for_gpt(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/gpt-4.1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+>       assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+E       AssertionError: assert '# Tool-use enforcement\nYou MUST use your tools to take action — do not describe what you would do or plan to do with... or (b) deliver a final result to the user. Responses that only describe intentions without acting are not acceptable.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:916: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+___________ TestToolUseEnforcementConfig.test_auto_injects_for_codex ___________
+
+self = <tests.run_agent.test_run_agent.TestToolUseEnforcementConfig object at 0x7ff5cb753250>
+
+    def test_auto_injects_for_codex(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="openai/codex-mini", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+>       assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+E       AssertionError: assert '# Tool-use enforcement\nYou MUST use your tools to take action — do not describe what you would do or plan to do with... or (b) deliver a final result to the user. Responses that only describe intentions without acting are not acceptable.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:922: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+_________ TestToolUseEnforcementConfig.test_true_forces_for_all_models _________
+
+self = <tests.run_agent.test_run_agent.TestToolUseEnforcementConfig object at 0x7ff5cb7a22c0>
+
+    def test_true_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement=True)
+        prompt = agent._build_system_prompt()
+>       assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+E       AssertionError: assert '# Tool-use enforcement\nYou MUST use your tools to take action — do not describe what you would do or plan to do with... or (b) deliver a final result to the user. Responses that only describe intentions without acting are not acceptable.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:934: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+_____ TestToolUseEnforcementConfig.test_string_true_forces_for_all_models ______
+
+self = <tests.run_agent.test_run_agent.TestToolUseEnforcementConfig object at 0x7ff5cb72eb10>
+
+    def test_string_true_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement="true")
+        prompt = agent._build_system_prompt()
+>       assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+E       AssertionError: assert '# Tool-use enforcement\nYou MUST use your tools to take action — do not describe what you would do or plan to do with... or (b) deliver a final result to the user. Responses that only describe intentions without acting are not acceptable.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:940: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+________ TestToolUseEnforcementConfig.test_always_forces_for_all_models ________
+
+self = <tests.run_agent.test_run_agent.TestToolUseEnforcementConfig object at 0x7ff5cb84bf00>
+
+    def test_always_forces_for_all_models(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-r1", tool_use_enforcement="always")
+        prompt = agent._build_system_prompt()
+>       assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+E       AssertionError: assert '# Tool-use enforcement\nYou MUST use your tools to take action — do not describe what you would do or plan to do with... or (b) deliver a final result to the user. Responses that only describe intentions without acting are not acceptable.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:946: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+____________ TestToolUseEnforcementConfig.test_custom_list_matches _____________
+
+self = <tests.run_agent.test_run_agent.TestToolUseEnforcementConfig object at 0x7ff5cb7f7150>
+
+    def test_custom_list_matches(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="deepseek/deepseek-r1",
+            tool_use_enforcement=["deepseek", "gemini"],
+        )
+        prompt = agent._build_system_prompt()
+>       assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+E       AssertionError: assert '# Tool-use enforcement\nYou MUST use your tools to take action — do not describe what you would do or plan to do with... or (b) deliver a final result to the user. Responses that only describe intentions without acting are not acceptable.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:967: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+________ TestToolUseEnforcementConfig.test_custom_list_case_insensitive ________
+
+self = <tests.run_agent.test_run_agent.TestToolUseEnforcementConfig object at 0x7ff5cb9c2f30>
+
+    def test_custom_list_case_insensitive(self):
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(
+            model="openai/GPT-4.1",
+            tool_use_enforcement=["GPT", "Codex"],
+        )
+        prompt = agent._build_system_prompt()
+>       assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+E       AssertionError: assert '# Tool-use enforcement\nYou MUST use your tools to take action — do not describe what you would do or plan to do with... or (b) deliver a final result to the user. Responses that only describe intentions without acting are not acceptable.' in 'You are a test agent'
+
+tests/run_agent/test_run_agent.py:985: AssertionError
+------------------------------ Captured log call -------------------------------
+INFO     agent.auxiliary_client:auxiliary_client.py:1109 Auxiliary auto-detect: using api-key (default) — skipped: openrouter, nous, local/custom, openai-codex
+=============================== warnings summary ===============================
+tests/agent/test_active_recall_guidance.py: 10 warnings
+tests/agent/test_anthropic_adapter.py: 116 warnings
+tests/agent/test_auxiliary_client.py: 92 warnings
+tests/agent/test_auxiliary_config_bridge.py: 21 warnings
+tests/agent/test_auxiliary_named_custom_providers.py: 19 warnings
+tests/agent/test_context_compressor.py: 72 warnings
+tests/agent/test_context_overflow_recovery.py: 17 warnings
+tests/agent/test_context_references.py: 9 warnings
+tests/agent/test_credential_pool.py: 26 warnings
+tests/agent/test_credential_pool_routing.py: 14 warnings
+tests/agent/test_crossloop_client_cache.py: 5 warnings
+tests/agent/test_curator.py: 31 warnings
+tests/agent/test_curator_activity.py: 1 warning
+tests/agent/test_curator_backup.py: 10 warnings
+tests/agent/test_curator_classification.py: 13 warnings
+tests/agent/test_curator_reports.py: 3 warnings
+tests/agent/test_display.py: 24 warnings
+tests/agent/test_display_emoji.py: 10 warnings
+tests/agent/test_external_skills.py: 11 warnings
+tests/agent/test_guidance_assembly.py: 16 warnings
+tests/agent/test_harness_config.py: 25 warnings
+tests/agent/test_insights.py: 60 warnings
+tests/agent/test_local_ceiling_scope.py: 15 warnings
+tests/agent/test_memory_plugin_e2e.py: 5 warnings
+tests/agent/test_memory_provider.py: 63 warnings
+tests/agent/test_memory_providers_instantiate.py: 9 warnings
+tests/agent/test_minimax_auxiliary_url.py: 9 warnings
+tests/agent/test_minimax_provider.py: 11 warnings
+tests/agent/test_model_metadata.py: 75 warnings
+tests/agent/test_model_metadata_local_ctx.py: 20 warnings
+tests/agent/test_models_dev.py: 19 warnings
+tests/agent/test_plan_file.py: 7 warnings
+tests/agent/test_prompt_builder.py: 124 warnings
+tests/agent/test_prompt_caching.py: 14 warnings
+tests/agent/test_prune_floor.py: 8 warnings
+tests/agent/test_redact.py: 43 warnings
+tests/agent/test_sidekick_queue.py: 7 warnings
+tests/agent/test_skill_bundles.py: 9 warnings
+tests/agent/test_skill_commands.py: 26 warnings
+tests/agent/test_skill_preprocessing.py: 15 warnings
+tests/agent/test_skill_router.py: 13 warnings
+tests/agent/test_smart_model_routing.py: 6 warnings
+tests/agent/test_soak_continuity.py: 4 warnings
+tests/agent/test_soak_policy.py: 26 warnings
+tests/agent/test_soak_windowing.py: 12 warnings
+tests/agent/test_subagent_progress.py: 21 warnings
+tests/agent/test_subdirectory_hints.py: 15 warnings
+tests/agent/test_title_generator.py: 15 warnings
+tests/agent/test_turn_context.py: 7 warnings
+tests/agent/test_usage_pricing.py: 9 warnings
+tests/agent/test_workspace_scratch.py: 13 warnings
+tests/run_agent/test_1630_context_overflow_loop.py: 14 warnings
+tests/run_agent/test_413_compression.py: 18 warnings
+tests/run_agent/test_860_dedup.py: 9 warnings
+tests/run_agent/test_agent_guardrails.py: 29 warnings
+tests/run_agent/test_agent_loop.py: 9 warnings
+tests/run_agent/test_anthropic_error_handling.py: 11 warnings
+tests/run_agent/test_async_httpx_del_neuter.py: 6 warnings
+tests/run_agent/test_background_review_slot_pin.py: 3 warnings
+tests/run_agent/test_compression_boundary.py: 6 warnings
+tests/run_agent/test_compression_persistence.py: 6 warnings
+tests/run_agent/test_compressor_fallback_update.py: 2 warnings
+tests/run_agent/test_context_pressure.py: 23 warnings
+tests/run_agent/test_context_token_tracking.py: 17 warnings
+tests/run_agent/test_dict_tool_call_args.py: 1 warning
+tests/run_agent/test_exit_cleanup_interrupt.py: 2 warnings
+tests/run_agent/test_fallback_model.py: 27 warnings
+tests/run_agent/test_fast_layer_watermarks.py: 5 warnings
+tests/run_agent/test_flush_memories_codex.py: 5 warnings
+tests/run_agent/test_flush_payload_trim.py: 8 warnings
+tests/run_agent/test_hot_swap.py: 27 warnings
+tests/run_agent/test_interrupt_propagation.py: 4 warnings
+tests/run_agent/test_long_context_tier_429.py: 15 warnings
+tests/run_agent/test_openai_client_lifecycle.py: 4 warnings
+tests/run_agent/test_payload_tape.py: 12 warnings
+tests/run_agent/test_percentage_clamp.py: 15 warnings
+tests/run_agent/test_primary_runtime_restore.py: 25 warnings
+tests/run_agent/test_provider_fallback.py: 12 warnings
+tests/run_agent/test_provider_parity.py: 71 warnings
+tests/run_agent/test_real_interrupt_subagent.py: 1 warning
+tests/run_agent/test_reasoning_window.py: 18 warnings
+tests/run_agent/test_redirect_stdout_issue.py: 1 warning
+tests/run_agent/test_retrieval_rebase.py: 16 warnings
+tests/run_agent/test_router_independent_of_pony.py: 13 warnings
+tests/run_agent/test_run_agent.py: 251 warnings
+tests/run_agent/test_run_agent_codex_responses.py: 35 warnings
+tests/run_agent/test_session_meta_filtering.py: 5 warnings
+tests/run_agent/test_session_reset_fix.py: 4 warnings
+tests/run_agent/test_state_card.py: 10 warnings
+tests/run_agent/test_streaming.py: 20 warnings
+tests/run_agent/test_strict_api_validation.py: 4 warnings
+tests/run_agent/test_token_persistence_non_cli.py: 2 warnings
+tests/run_agent/test_tool_arg_coercion.py: 42 warnings
+tests/run_agent/test_tool_group_collapse.py: 25 warnings
+tests/run_agent/test_turn_injections.py: 8 warnings
+tests/gateway/test_async_memory_flush.py: 12 warnings
+tests/gateway/test_flush_memory_stale_guard.py: 9 warnings
+  /home/alca/.daedalus/daedalus-agent/tests/conftest.py:141: DeprecationWarning: 'asyncio.get_event_loop_policy' is deprecated and slated for removal in Python 3.16
+    loop = asyncio.get_event_loop_policy().get_event_loop()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/agent/test_auxiliary_named_custom_providers.py::TestNormalizeVisionProvider::test_main_resolves_to_named_custom
+FAILED tests/agent/test_memory_plugin_e2e.py::TestSQLiteMemoryPlugin::test_full_lifecycle
+FAILED tests/run_agent/test_real_interrupt_subagent.py::TestRealSubagentInterrupt::test_interrupt_child_during_api_call
+FAILED tests/run_agent/test_run_agent.py::TestMazemakerBootstrap::test_system_prompt_includes_mazemaker_guidance
+FAILED tests/run_agent/test_run_agent.py::TestBuildSystemPrompt::test_always_has_identity
+FAILED tests/run_agent/test_run_agent.py::TestBuildSystemPrompt::test_includes_system_message
+FAILED tests/run_agent/test_run_agent.py::TestBuildSystemPrompt::test_memory_guidance_when_memory_tool_loaded
+FAILED tests/run_agent/test_run_agent.py::TestBuildSystemPrompt::test_includes_datetime
+FAILED tests/run_agent/test_run_agent.py::TestBuildSystemPrompt::test_includes_nous_subscription_prompt
+FAILED tests/run_agent/test_run_agent.py::TestBuildSystemPrompt::test_skills_prompt_derives_available_toolsets_from_loaded_tools
+FAILED tests/run_agent/test_run_agent.py::TestToolUseEnforcementConfig::test_auto_injects_for_gpt
+FAILED tests/run_agent/test_run_agent.py::TestToolUseEnforcementConfig::test_auto_injects_for_codex
+FAILED tests/run_agent/test_run_agent.py::TestToolUseEnforcementConfig::test_true_forces_for_all_models
+FAILED tests/run_agent/test_run_agent.py::TestToolUseEnforcementConfig::test_string_true_forces_for_all_models
+FAILED tests/run_agent/test_run_agent.py::TestToolUseEnforcementConfig::test_always_forces_for_all_models
+FAILED tests/run_agent/test_run_agent.py::TestToolUseEnforcementConfig::test_custom_list_matches
+FAILED tests/run_agent/test_run_agent.py::TestToolUseEnforcementConfig::test_custom_list_case_insensitive
+17 failed, 2085 passed, 6 skipped, 2087 warnings in 728.47s (0:12:08)
+DONE rc=1
