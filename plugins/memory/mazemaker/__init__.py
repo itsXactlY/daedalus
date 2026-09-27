@@ -212,8 +212,17 @@ def _spool_write(label: str, content: str) -> None:
         _persist_spool_locked()
 
 
-def _replay_failed_writes() -> int:
-    """Retry spooled writes oldest-first while the pod accepts them.
+# How many spooled writes one replay pass may push. The pod answers a write in
+# 8-25s on this corpus (measured 2026-09-27), and sync_turn runs on the path
+# that follows every assistant response -- so an unbounded drain made each turn
+# pay (spool length x ~15s) before the soak rate-limit was even consulted, and
+# the extra pod load slowed the next write, which spooled again. Bounded passes
+# keep the queue draining and the turn fast; nothing is lost, just spread out.
+_REPLAY_BATCH = 3
+
+
+def _replay_failed_writes(limit: int = _REPLAY_BATCH) -> int:
+    """Retry up to ``limit`` spooled writes, oldest-first, while the pod accepts.
 
     Claim-pop discipline: an entry is popped UNDER the lock before its HTTP
     round-trip and requeued at the tail only on failure, so concurrent
@@ -223,9 +232,13 @@ def _replay_failed_writes() -> int:
     on-disk mirror is rewritten at the same moment an entry is claimed, so a
     crash mid-replay can duplicate at most the one in-flight item, never the
     whole remaining queue.
+
+    Stops on the first failure instead of pushing the rest at a pod that is
+    already refusing writes -- that is the loop that turned a slow pod into a
+    wedged one.
     """
     replayed = 0
-    while True:
+    while replayed < limit:
         with _SPOOL_LOCK:
             if not _FAILED_WRITE_SPOOL:
                 return replayed
@@ -237,6 +250,7 @@ def _replay_failed_writes() -> int:
             _spool_write(label, content)
             return replayed
         replayed += 1
+    return replayed
 
 
 _mc_flags_cache = {"ts": 0.0, "vals": (False, False, 1200)}
@@ -1082,7 +1096,10 @@ class MazemakerMemoryProvider(MemoryProvider):
         now = time.time()
         if _FAILED_WRITE_SPOOL:
             try:
-                _replay_failed_writes()
+                # One per turn, not a batch: sync_turn sits directly behind the
+                # assistant response, so even three writes at ~15s each would be
+                # 45s of turn latency. The queue still drains, one turn at a time.
+                _replay_failed_writes(limit=1)
             except Exception:
                 pass
         if now - self._last_soak_ts < _SOAK_MIN_INTERVAL:
