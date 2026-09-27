@@ -50,6 +50,17 @@ try:
 except ImportError:
     _GUARD_AVAILABLE = False
 
+try:
+    from tools.skill_linter import ERROR as _LINT_ERROR, lint_skill
+    _LINTER_AVAILABLE = True
+except ImportError:
+    _LINTER_AVAILABLE = False
+
+# How many findings ride along in a skill_manage result. The full set is one
+# `daedalus skills selfaudit --lint <name>` away; the tool result is a nudge,
+# not a report.
+_LINT_FINDINGS_IN_RESULT = 8
+
 
 def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     """Scan a skill directory after write. Returns error string if blocked, else None."""
@@ -68,6 +79,51 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
     except Exception as e:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
+
+
+def _lint_advisory(skill_dir: Path) -> Optional[Dict[str, Any]]:
+    """Lint a just-written skill and return the findings as tool-result data.
+
+    Advisory by construction, and that is the whole point. The security scan is
+    the hard gate; this must never reject a write, or a skill with no
+    '## When to Use' heading becomes uncreatable and the agent works around the
+    tool instead of using it. Findings ride back in the result so the author
+    sees them in the same turn that produced them.
+
+    Returns None when the linter is unavailable or fails. A broken advisory path
+    must not be able to break the write path.
+    """
+    if not _LINTER_AVAILABLE:
+        return None
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        return None
+    try:
+        findings = lint_skill(skill_md)
+    except Exception as e:
+        logger.warning("Skill lint failed for %s: %s", skill_dir, e, exc_info=True)
+        return None
+    if not findings:
+        return {"errors": 0, "warnings": 0, "findings": [],
+                "summary": "Lint clean."}
+    errors = [f for f in findings if f.severity == _LINT_ERROR]
+    warnings = [f for f in findings if f.severity != _LINT_ERROR]
+    shown = findings[:_LINT_FINDINGS_IN_RESULT]
+    summary = (
+        f"{len(errors)} lint error(s), {len(warnings)} warning(s) — advisory, "
+        f"not a rejection. Full list: daedalus skills selfaudit --lint "
+        f"{skill_dir.name}"
+    )
+    return {
+        "errors": len(errors),
+        "warnings": len(warnings),
+        "findings": [
+            {"severity": f.severity, "rule": f.rule, "message": f.message}
+            for f in shown
+        ],
+        "truncated": len(findings) > len(shown),
+        "summary": summary,
+    }
 
 import yaml
 
@@ -303,6 +359,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     }
     if category:
         result["category"] = category
+    lint = _lint_advisory(skill_dir)
+    if lint and (lint["errors"] or lint["warnings"]):
+        result["lint"] = lint
     result["hint"] = (
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
@@ -334,11 +393,15 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated.",
         "path": str(existing["path"]),
     }
+    lint = _lint_advisory(existing["path"])
+    if lint and (lint["errors"] or lint["warnings"]):
+        result["lint"] = lint
+    return result
 
 
 def _patch_skill(
@@ -411,10 +474,14 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
     }
+    lint = _lint_advisory(skill_dir)
+    if lint and (lint["errors"] or lint["warnings"]):
+        result["lint"] = lint
+    return result
 
 
 def _delete_skill(name: str) -> Dict[str, Any]:
@@ -476,11 +543,17 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
     }
+    # A supporting file can complete a dangling references/ link or trip the
+    # forbidden-files rule, so re-lint the whole skill, not just the new file.
+    lint = _lint_advisory(existing["path"])
+    if lint and (lint["errors"] or lint["warnings"]):
+        result["lint"] = lint
+    return result
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
@@ -597,7 +670,11 @@ SKILL_MANAGE_SCHEMA = {
         "Update when: instructions stale/wrong, missing steps/pitfalls — patch immediately. "
         "Confirm with user before create/delete.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls, verification steps. See skill_view() for format examples."
+        "pitfalls, verification steps. See skill_view() for format examples.\n\n"
+        "create/edit/patch/write_file return a 'lint' block with advisory "
+        "convention findings (never a rejection — the write already succeeded). "
+        "Fix what it flags before moving on; it is the same checker "
+        "`daedalus skills selfaudit` runs over the whole collection."
     ),
     "parameters": {
         "type": "object",

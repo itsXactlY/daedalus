@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+from tools.skill_linter import ERROR, LintFinding
 from tools.skill_manager_tool import (
     _validate_name,
     _validate_category,
@@ -55,6 +56,37 @@ description: Updated description.
 
 Step 1: Do the new thing.
 """
+
+# Frontmatter and sections complete enough that the linter is silent, so a
+# test can assert the *absence* of a lint block.
+LINT_CLEAN_CONTENT = """\
+---
+name: lint-clean
+description: A skill that satisfies the advisory linter.
+version: 1.0.0
+author: Daedalus Agent
+license: MIT
+metadata:
+  daedalus:
+    tags: [testing]
+    related_skills: []
+---
+
+# Lint Clean
+
+## When to Use
+
+When a test needs a skill the linter has nothing to say about.
+
+## Steps
+
+1. Do the thing.
+"""
+
+
+def _lint_clean(name: str = "lint-clean") -> str:
+    """LINT_CLEAN_CONTENT with a matching frontmatter name (the linter checks)."""
+    return LINT_CLEAN_CONTENT.replace("name: lint-clean", f"name: {name}")
 
 
 
@@ -230,6 +262,142 @@ class TestCreateSkill:
         assert result["success"] is False
         assert f"Invalid category '{outside}'" in result["error"]
         assert not (outside / "my-skill" / "SKILL.md").exists()
+
+
+class TestAdvisoryLintOnWrite:
+    """skill_manage must surface lint findings without ever blocking a write.
+
+    The security scan is the hard gate and rolls back on failure. The linter is
+    guidance: if it could reject, a skill with no '## When to Use' heading
+    would be uncreatable and the agent would route around the tool instead of
+    using it. These tests pin both halves — findings arrive, rejection never
+    does.
+    """
+
+    def test_create_returns_lint_findings(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is True
+        assert result["lint"]["warnings"] > 0
+        rules = {f["rule"] for f in result["lint"]["findings"]}
+        assert "missing-section" in rules
+        assert "selfaudit" in result["lint"]["summary"]
+
+    def test_create_is_silent_when_the_linter_has_nothing_to_say(self, tmp_path):
+        with _skill_dir(tmp_path):
+            result = _create_skill("lint-clean", LINT_CLEAN_CONTENT)
+
+        assert result["success"] is True
+        assert "lint" not in result
+
+    def test_error_severity_finding_does_not_reject_the_write(self, tmp_path):
+        """The invariant, tested directly: even ERROR never fails the create."""
+        boom = [LintFinding(ERROR, "name-format", "name must be lowercase")]
+
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool.lint_skill", return_value=boom):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is True
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+        assert result["lint"]["errors"] == 1
+
+    def test_linter_crash_does_not_break_the_write(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool.lint_skill",
+                   side_effect=RuntimeError("linter exploded")):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is True
+        assert "lint" not in result
+
+    def test_linter_unavailable_is_silent(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._LINTER_AVAILABLE", False):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is True
+        assert "lint" not in result
+
+    def test_edit_returns_lint_findings(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", _lint_clean("my-skill"))
+            result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
+
+        assert result["success"] is True
+        assert "missing-section" in {f["rule"] for f in result["lint"]["findings"]}
+
+    def test_patch_returns_lint_findings(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", _lint_clean("my-skill"))
+            result = _patch_skill("my-skill", "1. Do the thing.",
+                                  "1. Do the thing. Then the other thing.")
+
+        assert result["success"] is True
+        # Patching prose that adds no sections stays clean; the point is that
+        # the key is only present when there is something to say.
+        assert "lint" not in result
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", _lint_clean("my-skill"))
+            result = _patch_skill(
+                "my-skill", "1. Do the thing.",
+                "1. Do the thing. See [guide](references/guide.md).",
+            )
+
+        assert result["success"] is True
+        assert "dangling-reference" in {
+            f["rule"] for f in result["lint"]["findings"]
+        }
+
+    def test_write_file_returns_lint_findings(self, tmp_path):
+        """A supporting file can complete a dangling references/ link."""
+        content = _lint_clean().replace(
+            "## Steps", "See [the guide](references/guide.md).\n\n## Steps"
+        )
+        with _skill_dir(tmp_path):
+            _create_skill("lint-clean", content)
+            dangling = _write_file("lint-clean", "references/unrelated.md", "x")
+            assert "dangling-reference" in {
+                f["rule"] for f in dangling["lint"]["findings"]
+            }
+            fixed = _write_file("lint-clean", "references/guide.md", "# Guide\n")
+
+        # Creating the missing file clears the finding, so the block disappears
+        # entirely rather than reporting an empty result.
+        assert "lint" not in fixed
+
+    def test_findings_are_capped(self, tmp_path):
+        many = [
+            LintFinding("warning", f"rule-{i}", f"finding {i}")
+            for i in range(40)
+        ]
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool.lint_skill", return_value=many):
+            result = _create_skill("my-skill", VALID_SKILL_CONTENT)
+
+        assert len(result["lint"]["findings"]) == 8
+        assert result["lint"]["truncated"] is True
+        assert result["lint"]["warnings"] == 40
+
+    def test_dispatcher_serialises_the_lint_block(self, tmp_path):
+        with _skill_dir(tmp_path):
+            payload = json.loads(skill_manage(
+                action="create", name="my-skill", content=VALID_SKILL_CONTENT,
+            ))
+
+        assert payload["success"] is True
+        assert payload["lint"]["warnings"] > 0
+        assert "rule" in payload["lint"]["findings"][0]
+
+    def test_delete_does_not_lint(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+
+        assert result["success"] is True
+        assert "lint" not in result
 
 
 class TestEditSkill:

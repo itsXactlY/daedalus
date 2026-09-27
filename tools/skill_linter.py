@@ -372,8 +372,12 @@ def lint_content(
 
     Pass ``skill_dir`` to enable on-disk checks (name/dir match, dangling
     reference links, POSIX-primitive gating, forbidden files). Without it,
-    only content-only checks run — useful for the create path, where the file
-    is not yet written.
+    only content-only checks run.
+
+    Both entry points are live: ``skill_manage`` create/edit/patch/write_file
+    lint through ``_lint_advisory`` after the write lands (so the on-disk
+    checks see the real directory), and ``daedalus skills selfaudit --lint``
+    runs this over the whole collection.
     """
     frontmatter, body = parse_frontmatter(content)
     findings: List[LintFinding] = []
