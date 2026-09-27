@@ -178,8 +178,6 @@ class Context(Section):
 class Soak(Section):
     enabled: bool = True
     window_turns: int = 8
-    prefetch_on_turn: bool = True
-    ttl_seconds: int = 3600
     state_reinject_every: int = 2
 
 

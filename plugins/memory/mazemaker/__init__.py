@@ -88,6 +88,14 @@ PREFETCH_TTL = 5.0
 MIN_QUERY_LEN = 2
 
 _SOAK_MIN_INTERVAL = 0.1
+# Write pacing. A pod write costs the pod an embed plus a connect pass; if that
+# takes 15s, a second write 0.1s later is a queue it cannot drain. The gap is
+# therefore _PACE_FACTOR x the last measured write, floored at _PACE_MIN_S so a
+# healthy pod keeps its old cadence. _SLOW_CALL_S is when the pod counts as busy
+# and the optional work (failed-write replay, distillation) is dropped.
+_PACE_FACTOR = 3.0
+_PACE_MIN_S = 1.0
+_SLOW_CALL_S = 4.0
 
 RESUME_QUERY = "current task ongoing work open goals status"
 RESUME_TAIL_FETCH = 24
@@ -251,6 +259,20 @@ def _replay_failed_writes(limit: int = _REPLAY_BATCH) -> int:
             return replayed
         replayed += 1
     return replayed
+
+
+def _replay_allowed() -> bool:
+    """Whether a retry is worth attempting at all right now.
+
+    A cold pod is not: the breaker would refuse the call without a round-trip,
+    and the entry would be popped, rewritten to the spool file and requeued
+    every single turn — churn that moves it no closer to being delivered. A
+    busy pod gets no veto, only the pacer's cadence, so the queue keeps
+    draining (a permanent veto on a slow pod would fill the spool and drop the
+    oldest turns instead). Both states already carry their own timer, so
+    waiting costs nothing.
+    """
+    return not _BREAKER.is_open() and _PACER.ready()
 
 
 _mc_flags_cache = {"ts": 0.0, "vals": (False, False, 1200)}
@@ -635,6 +657,72 @@ class _Breaker:
 _BREAKER = _Breaker()
 
 
+class _PodPacer:
+    """How fast we are allowed to feed the pod, measured from the pod itself.
+
+    Every write costs the pod an embed plus a connect pass, and at 8-25 s per
+    write the queue it drains is one it never finishes: we were the load
+    generator. So the gap before our next write is derived from how long the
+    last write actually took, and the optional work (replay, distillation) is
+    dropped entirely while the pod is slow. A fast pod keeps the old cadence —
+    ``_PACE_MIN_S`` is below the time between two turns.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._last_write_ts = 0.0
+        self._last_write_s = 0.0
+        self._last_call_s = 0.0
+        self._deferred = 0
+
+    def note(self, name: str, seconds: float) -> None:
+        """Record a landed pod call. Writes set the write cadence."""
+        with self._lock:
+            self._last_call_s = max(0.0, float(seconds))
+            if name == "mazemaker_remember":
+                self._last_write_s = self._last_call_s
+                self._last_write_ts = time.monotonic()
+
+    def forget(self) -> None:
+        """A write never landed — there is no pending write to wait out, and a
+        timeout is not a duration to pace against."""
+        with self._lock:
+            self._last_write_s = 0.0
+            self._last_write_ts = 0.0
+
+    def interval(self) -> float:
+        with self._lock:
+            return max(_PACE_MIN_S, self._last_write_s * _PACE_FACTOR)
+
+    def ready(self) -> bool:
+        with self._lock:
+            return (time.monotonic() - self._last_write_ts) >= max(
+                _PACE_MIN_S, self._last_write_s * _PACE_FACTOR
+            )
+
+    def is_slow(self) -> bool:
+        """Is the *write* path slow? Reads are not a load signal — recall costs
+        10s+ on this corpus in normal operation and must not disable retries."""
+        with self._lock:
+            return self._last_write_s >= _SLOW_CALL_S
+
+    def defer(self) -> None:
+        with self._lock:
+            self._deferred += 1
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "last_write_s": round(self._last_write_s, 2),
+                "last_call_s": round(self._last_call_s, 2),
+                "interval_s": round(max(_PACE_MIN_S, self._last_write_s * _PACE_FACTOR), 1),
+                "deferred": self._deferred,
+            }
+
+
+_PACER = _PodPacer()
+
+
 class PodOffline(RuntimeError):
     pass
 
@@ -758,6 +846,7 @@ def _tool(name: str, arguments: dict, timeout: float = 30.0) -> Any:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
@@ -776,6 +865,7 @@ def _tool(name: str, arguments: dict, timeout: float = 30.0) -> Any:
         raise
     _POD_HEALTH.record_ok(name)
     _BREAKER.reset()
+    _PACER.note(name, time.monotonic() - t0)
     result = data.get("result") if isinstance(data, dict) else None
     return result
 
@@ -796,6 +886,9 @@ def _remember(label: str, content: str) -> Optional[int]:
         )
         return None
     except Exception as e:
+        # No write landed, so no duration to pace against — drop it rather than
+        # let a timeout set the cadence for the rest of the session.
+        _PACER.forget()
         logger.warning("mazemaker_remember failed (%s) — spooled for retry", e)
         _spool_write(label, str(content))
         return None
@@ -1019,6 +1112,8 @@ class MazemakerMemoryProvider(MemoryProvider):
         """Current memory health, for callers that need to report it."""
         status = _POD_HEALTH.snapshot()
         status["brain_ready"] = bool(self._brain_ready)
+        status["pacer"] = _PACER.stats()
+        status["spool"] = len(_FAILED_WRITE_SPOOL)
         return status
 
     def _degraded_banner(self) -> str:
@@ -1094,7 +1189,7 @@ class MazemakerMemoryProvider(MemoryProvider):
         """
         self._turn_count += 1
         now = time.time()
-        if _FAILED_WRITE_SPOOL:
+        if _FAILED_WRITE_SPOOL and _replay_allowed():
             try:
                 # One per turn, not a batch: sync_turn sits directly behind the
                 # assistant response, so even three writes at ~15s each would be
@@ -1104,6 +1199,15 @@ class MazemakerMemoryProvider(MemoryProvider):
                 pass
         if now - self._last_soak_ts < _SOAK_MIN_INTERVAL:
             logger.debug("soak rate-limited this turn — turn skipped")
+            return
+        if not _PACER.ready():
+            # The pod is still chewing the last write. Feeding it again is what
+            # built the backlog in the first place; the turn is dropped instead.
+            _PACER.defer()
+            logger.debug(
+                "soak deferred — pod cadence %.0fs, last write %.1fs",
+                _PACER.interval(), _PACER.stats()["last_write_s"],
+            )
             return
         self._last_soak_ts = now
 
@@ -1132,7 +1236,9 @@ class MazemakerMemoryProvider(MemoryProvider):
         _remember(label, content)
 
         distill_on, _, _ = _mission_control_flags()
-        if distill_on and user and asst:
+        # Distillation is enrichment, not the record: on a slow pod it is the
+        # first thing to go, and unlike the soak nothing is lost by dropping it.
+        if distill_on and user and asst and _PACER.ready() and not _PACER.is_slow():
             try:
                 d = self._delegation_cached()
                 base_url = str(d.get("base_url") or "").strip()

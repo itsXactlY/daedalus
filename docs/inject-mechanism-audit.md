@@ -270,8 +270,6 @@ The fix also updated `config_defaults.py` to set sensible defaults:
 "soak": {
     "enabled": True,
     "window_turns": 8,
-    "prefetch_on_turn": True,
-    "ttl_seconds": 3600,
     "state_reinject_every": 2,  # Re-inject every 2 turns
     "state_card_max_chars": 4000,
 },

@@ -1664,9 +1664,6 @@ class AIAgent:
                 _soak_cfg = mem_config.get("soak", {}) if isinstance(mem_config.get("soak"), dict) else {}
                 _soak_configured = bool(_soak_cfg)
                 self._soak_window_turns = int(_soak_cfg.get("window_turns", 0) or 0) if _soak_configured else -1
-                self._soak_prefetch_on_turn = bool(_soak_cfg.get("prefetch_on_turn", True)) if _soak_configured else True
-                self._soak_ttl_seconds = int(_soak_cfg.get("ttl_seconds", 0) or 0) if _soak_configured else 0
-                self._soak_cfg_for_provider = _soak_cfg if _soak_configured else {}
                 # State-card re-injection: after a compaction the model's view is
                 # a rolling window over fresh history, so the anchors (goals,
                 # open work, where-things-stand) it had before the compaction
@@ -1712,8 +1709,6 @@ class AIAgent:
                             "platform": platform or "cli",
                             "daedalus_home": str(_ghh()),
                             "agent_context": "primary",
-                            "soak_ttl_seconds": getattr(self, "_soak_ttl_seconds", 0),
-                            "memory_soak": getattr(self, "_soak_cfg_for_provider", {}),
                         }
                         if self._user_id:
                             _init_kwargs["user_id"] = self._user_id
