@@ -4852,6 +4852,21 @@ For more help on a command:
     skills_audit = skills_subparsers.add_parser("audit", help="Re-scan installed hub skills")
     skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
 
+    skills_selfaudit = skills_subparsers.add_parser(
+        "selfaudit",
+        help="Deterministic, LLM-free audit of the whole installed skill collection "
+             "(hub index, duplicate names, tool drift, manifest staleness)",
+    )
+    skills_selfaudit.add_argument(
+        "root", nargs="?", default=None,
+        help="Skills root to audit (default: the installed collection)",
+    )
+    skills_selfaudit.add_argument(
+        "--lint", action="store_true",
+        help="Also run the per-skill advisory linter (noisy: ~2000 convention warnings)",
+    )
+    skills_selfaudit.add_argument("--json", action="store_true", help="Machine-readable output")
+
     skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
     skills_uninstall.add_argument("name", help="Skill name to remove")
 
@@ -4883,6 +4898,22 @@ For more help on a command:
             _require_tty("skills config")
             from daedalus_cli.skills_config import skills_command as skills_config_command
             skills_config_command(args)
+        elif getattr(args, 'skills_action', None) == 'selfaudit':
+            # Deterministic collection audit. Exits non-zero on ERROR-severity
+            # findings so it can gate CI, and needs no model: the whole point is
+            # that the collection can be checked without spending a session on it.
+            from daedalus_constants import get_skills_dir
+            from tools.skills_selfaudit import main as selfaudit_main
+
+            root = getattr(args, 'root', None) or str(get_skills_dir())
+            argv = [root]
+            if getattr(args, 'lint', False):
+                argv.append('--lint')
+            if getattr(args, 'json', False):
+                argv.append('--json')
+            # The dispatcher below ignores return values, so exit here to keep
+            # the exit code meaningful for scripts.
+            raise SystemExit(selfaudit_main(argv))
         else:
             from daedalus_cli.skills_hub import skills_command
             skills_command(args)

@@ -7,14 +7,22 @@ import / dynamic attribute access patterns operators may want to eyeball when
 reviewing third-party skill code. Every pattern flagged here has legitimate
 uses; findings are hints for human review, not verdicts.
 
-CLI: ``daedalus skills audit --deep``
+CLI::
+
+    python3 -m tools.skills_ast_audit <skill-dir> [more-dirs ...]
+
+    # or, over the whole installed collection:
+    daedalus skills selfaudit            # collection-level checks
+
+Exit code 1 when any finding is reported.
 """
 
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 Finding = Tuple[str, int, str, str]
 
@@ -125,3 +133,20 @@ def format_ast_report(findings: List[Finding], skill_name: str = "") -> str:
     lines.append("")
     lines.append("  Note: diagnostic hints for human review, not security verdicts.")
     return "\n".join(lines)
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        print("usage: python3 -m tools.skills_ast_audit <skill-dir|file.py> [...]",
+              file=sys.stderr)
+        return 2
+    findings: List[Finding] = []
+    for raw in args:
+        findings.extend(ast_scan_path(Path(raw)))
+    print(format_ast_report(findings, ", ".join(args)))
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -24,6 +24,14 @@ destroy the feature" posture):
 * Reuses ``agent.skill_utils`` helpers rather than re-parsing frontmatter, so
   BOM handling / platform matching / the 60-char prompt budget stay in one
   place.
+
+.. warning::
+   As of 2026-09-27 nothing in the harness imports this module — the
+   ``skill_manage`` create path does **not** call it, contrary to the paragraph
+   above, and no CLI verb runs it. The 409 installed skills had therefore never
+   been machine-linted. ``daedalus skills selfaudit --lint`` (see
+   ``tools/skills_selfaudit.py``) is the way in. Treat the claims above as the
+   intent, not the wiring.
 """
 
 from __future__ import annotations
