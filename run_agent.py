@@ -1920,25 +1920,7 @@ class AIAgent:
         _comp_cfg = (_agent_cfg.get("compression") or {}) if isinstance(_agent_cfg, dict) else {}
         self._compaction_engine = str(_comp_cfg.get("engine", "retrieval") or "retrieval")
         self._watermarks = None
-        try:
-            _fast = int(_comp_cfg.get("fast_layer_tokens", 0) or 0)
-            if _fast > 0:
-                from agent.kv_watermarks import Watermarks
-                _wm = _comp_cfg.get("watermarks") or {}
-                self._watermarks = Watermarks(
-                    fast_layer_tokens=_fast,
-                    low=float(_wm.get("low", 0.60)),
-                    high=float(_wm.get("high", 0.80)),
-                    hard=float(_wm.get("hard", 0.90)),
-                )
-                # The rebase point and the prewarm point follow the fast layer,
-                # so harness and server count the same budget.
-                _cc = self.context_compressor
-                _cc.max_tokens = self._watermarks.hard_tokens
-                _cc.threshold_tokens = _cc._effective_threshold(_cc.context_length)
-                self._hot_swap_prep_ratio = self._watermarks.high_ratio_of_hard
-        except Exception as _wm_exc:
-            logger.warning("watermarks disabled: %s", _wm_exc)
+        self._setup_fast_layer_watermarks(_comp_cfg)
         # Crossing the compaction threshold is a SOFT event: the summary is
         # produced on the sidekick slot and swapped in at the next boundary,
         # and the turn keeps going meanwhile. The window is far larger than the
@@ -2032,6 +2014,46 @@ class AIAgent:
                 "anthropic_base_url": self._anthropic_base_url,
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
+
+    def _setup_fast_layer_watermarks(self, comp_cfg: dict) -> None:
+        """Arm the local fast-layer watermarks, or leave them off for a remote provider.
+
+        fast_layer_tokens is this box's KV pool, so it is a real ceiling only
+        when the turn is served by daedalus doctor. Against a remote provider it
+        would truncate a real context window that is still mostly empty, and it
+        would also make the harness count the wrong budget against the server.
+        """
+        try:
+            _fast = int((comp_cfg or {}).get("fast_layer_tokens", 0) or 0)
+            if _fast <= 0:
+                return
+            # The compressor owns the local/remote verdict (it also knows the
+            # provider name, not just the URL), so ask it instead of re-deciding
+            # here. Unset base_url keeps the ceiling: local run, no info either way.
+            if not self.context_compressor._ceiling_applies():
+                logger.info(
+                    "fast-layer watermarks off for %s: %d-token ceiling is a local "
+                    "KV limit, compression follows %.0f%% of the real window instead",
+                    self.base_url, _fast,
+                    self.context_compressor.threshold_percent * 100,
+                )
+                return
+            from agent.kv_watermarks import Watermarks
+            _wm = (comp_cfg or {}).get("watermarks") or {}
+            self._watermarks = Watermarks(
+                fast_layer_tokens=_fast,
+                low=float(_wm.get("low", 0.60)),
+                high=float(_wm.get("high", 0.80)),
+                hard=float(_wm.get("hard", 0.90)),
+            )
+            # The rebase point and the prewarm point follow the fast layer, so
+            # harness and server count the same budget.
+            _cc = self.context_compressor
+            _cc.max_tokens = self._watermarks.hard_tokens
+            _cc.threshold_tokens = _cc._effective_threshold(_cc.context_length)
+            self._hot_swap_prep_ratio = self._watermarks.high_ratio_of_hard
+        except Exception as _wm_exc:
+            logger.warning("watermarks disabled: %s", _wm_exc)
 
     _LEDGER_MAX_CALLS = 200
 
@@ -2327,8 +2349,10 @@ class AIAgent:
             self.context_compressor.api_key = self.api_key
             self.context_compressor.provider = self.provider
             self.context_compressor.context_length = new_context_length
-            self.context_compressor.threshold_tokens = int(
-                new_context_length * self.context_compressor.threshold_percent
+            # _effective_threshold, not raw percent: the local fast-layer ceiling
+            # must still apply, off-box it must not.
+            self.context_compressor.threshold_tokens = (
+                self.context_compressor._effective_threshold(new_context_length)
             )
 
         self._cached_system_prompt = None
@@ -6849,8 +6873,8 @@ class AIAgent:
                 self.context_compressor.api_key = self.api_key
                 self.context_compressor.provider = self.provider
                 self.context_compressor.context_length = fb_context_length
-                self.context_compressor.threshold_tokens = int(
-                    fb_context_length * self.context_compressor.threshold_percent
+                self.context_compressor.threshold_tokens = (
+                    self.context_compressor._effective_threshold(fb_context_length)
                 )
 
             self._emit_status(
@@ -10347,9 +10371,7 @@ class AIAgent:
                         old_ctx = compressor.context_length
                         if old_ctx > _reduced_ctx:
                             compressor.context_length = _reduced_ctx
-                            compressor.threshold_tokens = int(
-                                _reduced_ctx * compressor.threshold_percent
-                            )
+                            compressor.threshold_tokens = compressor._effective_threshold(_reduced_ctx)
                             compressor._context_probed = True
                             compressor._context_probe_persistable = False
                             self._vprint(
@@ -10493,7 +10515,7 @@ class AIAgent:
 
                         if new_ctx and new_ctx < old_ctx:
                             compressor.context_length = new_ctx
-                            compressor.threshold_tokens = int(new_ctx * compressor.threshold_percent)
+                            compressor.threshold_tokens = compressor._effective_threshold(new_ctx)
                             compressor._context_probed = True
                             compressor._context_probe_persistable = bool(
                                 parsed_limit and parsed_limit == new_ctx

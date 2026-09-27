@@ -65,6 +65,20 @@ _SUBJECT_KEYS = ("file_path", "path", "command", "query", "url", "name")
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# How far past the local line a remote payload must be before compacting early
+# can be the cheaper move, and how much the compaction has to shrink it. Both
+# must hold -- the first keeps the provider's real window in use, the second
+# rejects the case where a summary buys almost nothing. See _sparing_trigger.
+_SPARE_PAST_LOCAL_FACTOR = 1.5
+_SPARE_MIN_SHRINK_FACTOR = 2.0
+
+# Provider names that always mean "on this box", even when base_url points
+# somewhere the is_local_endpoint() heuristics miss (unix socket, Tailscale
+# name, a LAN address for the same machine).
+_LOCAL_PROVIDERS = frozenset({
+    "local", "llamacpp", "llama.cpp", "llama_cpp", "llama-cpp", "daedalus-doctor",
+})
+
 
 class ContextCompressor:
     """Compresses conversation context when approaching the model's context limit.
@@ -197,18 +211,95 @@ class ContextCompressor:
         )
         return True
 
-    def _effective_threshold(self, context_length: int) -> int:
-        """Compression trigger, capped by max_tokens when one is configured.
+    def _ceiling_applies(self) -> bool:
+        """Whether ``max_tokens`` is a real limit for this session.
 
-        A declared window the hardware cannot hold in KV cache makes the
-        percentage alone useless: the box swaps long before 95% of a 256K
-        window is reached. max_tokens is that hardware ceiling.
+        The ceiling exists because the local llama-server's KV pool is sized for
+        ~40K tokens and starts swapping long before 95% of the 256K window it
+        advertises is reached. Off-box that number is not a limit at all: the
+        provider re-sends and re-prices whatever we send, so capping the trigger
+        there just throws away real context that the window can still hold.
+        A remote session therefore ignores the ceiling, except for the
+        spare-tokens case in ``_sparing_trigger``.
+
+        An unset base_url is treated as local so a run with no endpoint
+        configured never loses its fast-layer protection.
         """
-        by_percent = int(context_length * self.threshold_percent)
+        url = (self.base_url or "").strip()
+        cached = getattr(self, "_ceiling_is_local", None)
+        if cached is not None and cached[0] == url:
+            return cached[1]
+        if not url:
+            is_local = True
+        elif is_local_endpoint(url):
+            is_local = True
+        else:
+            is_local = str(self.provider or "").strip().lower() in _LOCAL_PROVIDERS
+        self._ceiling_is_local = (url, is_local)
+        return is_local
+
+    def _local_ceiling_trigger(self) -> int:
+        """The trigger a served-by-daedalus-doctor session would have used.
+
+        ``_effective_threshold`` returns the uncapped percentage off-box, so the
+        local number has to be recomputed here to know which payload size the
+        local KV budget would already have given up on.
+        """
+        by_percent = int(self.context_length * self.threshold_percent)
         if self.max_tokens:
             return max(1, min(by_percent, self.max_tokens))
         return by_percent
 
+    def _sparing_trigger(self, tokens: int) -> int:
+        """Early-compaction line for a remote session, or 0 when it must not fire.
+
+        The ceiling stops applying off-box, but compacting is still the cheaper
+        move once it removes clearly more than the summary costs -- and that
+        saving repeats on every following turn, because those middle turns
+        would be summarized at the real overflow point anyway. Two conditions
+        keep that exception narrow, so the provider's window is actually used:
+
+          * the payload is at least 1.5x the trigger a local session would have
+            drawn, and
+          * the compaction at least halves it.
+
+        Without the first, a remote session on a big window would compact at
+        roughly the local line and the ceiling would still be ruling the run.
+        Without the second, a big tail budget makes the summary nearly free to
+        write and nearly useless to have written.
+
+        The saving is estimated against what ``compress()`` actually leaves
+        behind -- the protected tail (``threshold_tokens * summary_target_ratio``)
+        plus a full-size summary. The estimate is deliberately generous, so the
+        trigger fires only when the win is unambiguous.
+
+        Returns the trigger that fired, 0 when it must not.
+        """
+        if not self.max_tokens or self._ceiling_applies():
+            return 0
+        local_trigger = self._local_ceiling_trigger()
+        if local_trigger >= self.threshold_tokens:
+            return 0  # the real trigger already fires first; nothing to spare
+        if tokens < int(local_trigger * _SPARE_PAST_LOCAL_FACTOR):
+            return 0  # still inside the real window for a useful stretch
+        post = (int(self.threshold_tokens * self.summary_target_ratio)
+                + max(0, self.max_summary_tokens))
+        if tokens < int(post * _SPARE_MIN_SHRINK_FACTOR):
+            return 0  # a compaction now would not even halve the payload
+        return tokens - post
+
+    def _effective_threshold(self, context_length: int) -> int:
+        """Compression trigger: percentage of the window, capped by a local ceiling.
+
+        A declared window the hardware cannot hold in KV cache makes the
+        percentage alone useless locally: the box swaps long before 95% of a
+        256K window is reached. max_tokens is that hardware ceiling, and it
+        only counts while we are served by that box -- see ``_ceiling_applies``.
+        """
+        by_percent = int(context_length * self.threshold_percent)
+        if self.max_tokens and self._ceiling_applies():
+            return max(1, min(by_percent, self.max_tokens))
+        return by_percent
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response.
@@ -235,14 +326,23 @@ class ContextCompressor:
             self.last_total_tokens = new_total_tokens
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Check if context exceeds the compression threshold."""
+        """Check if context exceeds the compression threshold.
+
+        Off-box the trigger is the provider's real window, not the local
+        ceiling -- unless the payload is already so far past that ceiling that
+        compacting now spares tokens either way.
+        """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
-        return tokens >= self.threshold_tokens
+        if tokens >= self.threshold_tokens:
+            return True
+        return self._sparing_trigger(tokens) > 0
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
         """Quick pre-flight check using rough estimate (before API call)."""
         rough_estimate = estimate_messages_tokens_rough(messages)
-        return rough_estimate >= self.threshold_tokens
+        if rough_estimate >= self.threshold_tokens:
+            return True
+        return self._sparing_trigger(rough_estimate) > 0
 
     def get_status(self) -> Dict[str, Any]:
         """Get current compression status for display/logging."""
