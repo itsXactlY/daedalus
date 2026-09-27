@@ -206,3 +206,10 @@ cron/jobs.json
 # Generated at runtime by tools/skills_sync.py into $DAEDALUS_HOME/skills/
 skills/.bundled_manifest
 .claude/
+
+# .daedalus/ is versioned for its notes and evidence, but the bulk audit
+# output is a 1 MB machine dump that regenerates on the next lint run and
+# drowns the diff. Commit messages are consumed by `git commit -F`.
+.daedalus/lint-baseline.txt
+.daedalus/selfaudit_lint*.json
+.daedalus/commit_msg*.txt
