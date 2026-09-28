@@ -1,5 +1,5 @@
 # Plan-Datei pro Task statt ein PLAN.md pro Ordner
-Status: active
+Status: done
 Asked: "2 agents arbeiten an einem ordner, agent B hat agent A den PLAN.md überschrieben, wir
         brauchen PLAN-TASK.MD"
 Done when: `pytest tests/agent/test_plan_file.py` grün UND `.daedalus/probe_plan_clobber.py`
@@ -14,7 +14,8 @@ Done when: `pytest tests/agent/test_plan_file.py` grün UND `.daedalus/probe_pla
       anchored_recall_query in 4 Aufrufern).
 - [x] 5. PLAN_GUIDANCE + default_soul + 4 Skills auf die neue Regel umgestellt.
 - [x] 6. Tests: 24 grün, 2-Prozess-Probe grün.
-- [ ] 7. Regressionsvergleich vorher/nachher (Zahlen, nicht Bauchgefühl).
+- [x] 7. Regressionsvergleich vorher/nachher: 0 neue Fehler, 15 behoben
+      (Baseline via `git stash` belegt). Commit 015a59c.
 
 ## Entscheidungen
 - Besitz wird pro PLAN-DATEI in `.daedalus/.owners/<plan>.json` geführt, eine Datei pro
