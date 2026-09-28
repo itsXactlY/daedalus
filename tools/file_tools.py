@@ -74,6 +74,31 @@ _SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
+def _check_plan_clobber(paths) -> Optional[str]:
+    """Refuse a write that would overwrite another live agent's plan.
+
+    Plans are per task (``.daedalus/PLAN-<task>.md``). Two agents in one folder
+    each own one; the ownership record carries the writer's pid, so a plan held
+    by a live session is refused and a plan from a dead one is silently
+    adopted. Returns an error string, or None when the write may proceed.
+    """
+    try:
+        from agent.plan_file import plan_write_conflict
+    except Exception:
+        return None
+    for p in paths:
+        if not p:
+            continue
+        try:
+            err = plan_write_conflict(p)
+        except Exception:
+            logger.debug("plan clobber check failed for %s", p, exc_info=True)
+            continue
+        if err:
+            return err
+    return None
+
+
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
@@ -497,6 +522,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return tool_error(sensitive_err)
+    plan_err = _check_plan_clobber([path])
+    if plan_err:
+        return tool_error(plan_err)
     try:
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
@@ -529,6 +557,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
             return tool_error(sensitive_err)
+    plan_err = _check_plan_clobber(_paths_to_check)
+    if plan_err:
+        return tool_error(plan_err)
     try:
         stale_warnings = []
         for _p in _paths_to_check:

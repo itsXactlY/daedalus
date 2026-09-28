@@ -15,7 +15,7 @@ Use when implementing a large spec (8+ phases, 20+ files) across an existing cod
 ## Setup
 
 1. **Audit the codebase FIRST** — read key files to understand what exists vs what the spec assumes
-2. **Write a plan file** (`PLAN.md`) with phase status, file lists, known conflicts
+2. **Write a plan file per task** (`.daedalus/PLAN-<task-slug>.md`) with phase status, file lists, known conflicts. One file per agent — a shared `PLAN.md` is how parallel agents destroy each other's state, and the harness refuses writes to a plan another live agent holds.
 3. **Group phases by dependency** — independent phases go to separate agents
 4. **Spawn agents in waves** if hard dependencies exist (Phase 1 depends on Phase 0)
 
@@ -44,7 +44,7 @@ Use when implementing a large spec (8+ phases, 20+ files) across an existing cod
 
 ```bash
 # Check new files exist
-find . -name "*.hpp" -newer PLAN.md
+find . -name "*.hpp" -newer .daedalus/PLAN-<task-slug>.md
 # Check for expected symbols
 grep -rn "new_symbol" include/ src/
 # Syntax check modified files

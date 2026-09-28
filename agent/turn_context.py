@@ -54,7 +54,8 @@ logger = logging.getLogger(__name__)
 _SHORT_QUERY_CHARS = 40
 
 
-def anchored_recall_query(query: str, messages: List[Any], current_idx: int) -> str:
+def anchored_recall_query(query: str, messages: List[Any], current_idx: int,
+                           session_id: str = "") -> str:
     """Give a short message ("weiter", "mach fertig") something to recall with.
 
     Recalled literally it matches every other "weiter" in the graph. Anchor on
@@ -63,7 +64,10 @@ def anchored_recall_query(query: str, messages: List[Any], current_idx: int) -> 
     q = (query or "").strip()
     if len(q) >= _SHORT_QUERY_CHARS:
         return q
-    anchor = plan_focus()
+    try:
+        anchor = plan_focus(session_id=session_id)
+    except Exception:
+        anchor = ""
     if not anchor:
         for m in reversed(messages[:max(0, current_idx)]):
             if (isinstance(m, dict) and m.get("role") == "user"
@@ -934,7 +938,7 @@ def build_turn_context(
             )
 
     try:
-        _plan_block = render_plan_block() if not moa_active else ""
+        _plan_block = render_plan_block(session_id=agent.session_id) if not moa_active else ""
     except Exception:
         _plan_block = ""
     # Sidecar only: on a multimodal turn it would become durable content and
@@ -981,7 +985,8 @@ def build_turn_context(
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
             if not is_trivial_prompt(_query):
-                _query = anchored_recall_query(_query, messages, current_turn_user_idx)
+                _query = anchored_recall_query(_query, messages, current_turn_user_idx,
+                                              session_id=agent.session_id or "")
                 ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass

@@ -1048,7 +1048,7 @@ class AIAgent:
             self._turns_since_state_card = 0
 
         try:
-            plan = render_plan_block()
+            plan = render_plan_block(session_id=self.session_id)
         except Exception:
             plan = ""
         if plan:
@@ -2978,7 +2978,8 @@ class AIAgent:
             base.append(messages[cur])
             content = messages[cur].get("content")
             query = anchored_recall_query(
-                content if isinstance(content, str) else "", messages, cur)
+                content if isinstance(content, str) else "", messages, cur,
+                session_id=self.session_id or "")
 
         blocks = [
             "[rebased] This conversation was rebuilt to keep the working context "
@@ -9508,7 +9509,8 @@ class AIAgent:
         # 75s + 30s + 30s in front of the model (2026-09-25).
         _routed = self._maze_router is not None
         _material = self._fetch_maze_material(
-            anchored_recall_query(_pq, messages, current_turn_user_idx))
+            anchored_recall_query(_pq, messages, current_turn_user_idx,
+                                   session_id=self.session_id or ""))
         if _material:
             _parts.append(_material)
 
