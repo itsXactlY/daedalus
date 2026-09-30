@@ -3461,6 +3461,9 @@ def _update_preflight() -> None:
     except Exception:
         return
 
+    if not install_health.can_verify(PROJECT_ROOT):
+        return  # nothing on disk to judge against -- not a verdict
+
     findings = install_health.static_findings(PROJECT_ROOT) + install_health.runtime_findings(PROJECT_ROOT)
     if not findings:
         return
@@ -3491,6 +3494,10 @@ def _update_postflight(backup_ref: Optional[str], git_cmd, original_branch: str,
     succeeded.
     """
     from daedalus_cli import install_health
+
+    if not install_health.can_verify(PROJECT_ROOT):
+        print("→ Skipping install verification (no pyproject.toml at the project root).")
+        return
 
     print("→ Verifying the updated installation...")
     health = install_health.check(PROJECT_ROOT, smoke=True)
@@ -3763,27 +3770,38 @@ def cmd_update(args):
 
             print("→ Updating Python dependencies...")
             uv_bin = shutil.which("uv")
-            if uv_bin:
-                # Install into the environment this daedalus is running from.
-                # It used to be hard-coded to PROJECT_ROOT/venv, which does not
-                # exist once the code lives in DAEDALUS_HOME/daedalus-agent and
-                # the venv beside it in DAEDALUS_HOME/venv — so dependency
-                # updates never reached the interpreter that runs the agent.
-                running_venv = sys.prefix if sys.prefix != sys.base_prefix else None
-                target_venv = running_venv or str(PROJECT_ROOT / "venv")
-                uv_env = {**os.environ, "VIRTUAL_ENV": target_venv}
-                _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-            else:
-                pip_cmd = [sys.executable, "-m", "pip"]
-                try:
-                    subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
-                except subprocess.CalledProcessError:
-                    subprocess.run(
-                        [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                        cwd=PROJECT_ROOT,
-                        check=True,
-                    )
-                _install_python_dependencies_with_optional_fallback(pip_cmd)
+            # A failed dependency install used to abort the whole update with
+            # "Update failed" -- leaving new code on disk behind an install
+            # that was never completed. That is the most likely way an update
+            # bricks a harness, so it now falls through to the postflight
+            # instead: the postflight decides, not the exception.
+            deps_ok = True
+            try:
+                if uv_bin:
+                    # Install into the environment this daedalus is running from.
+                    # It used to be hard-coded to PROJECT_ROOT/venv, which does not
+                    # exist once the code lives in DAEDALUS_HOME/daedalus-agent and
+                    # the venv beside it in DAEDALUS_HOME/venv — so dependency
+                    # updates never reached the interpreter that runs the agent.
+                    running_venv = sys.prefix if sys.prefix != sys.base_prefix else None
+                    target_venv = running_venv or str(PROJECT_ROOT / "venv")
+                    uv_env = {**os.environ, "VIRTUAL_ENV": target_venv}
+                    _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+                else:
+                    pip_cmd = [sys.executable, "-m", "pip"]
+                    try:
+                        subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
+                    except subprocess.CalledProcessError:
+                        subprocess.run(
+                            [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                            cwd=PROJECT_ROOT,
+                            check=True,
+                        )
+                    _install_python_dependencies_with_optional_fallback(pip_cmd)
+            except Exception as e:
+                deps_ok = False
+                print(f"  ⚠ Dependency install failed: {e}")
+                print("  → Checking whether the installation still works...")
 
             if (PROJECT_ROOT / "package.json").exists():
                 import shutil
@@ -3793,6 +3811,9 @@ def cmd_update(args):
 
             print()
             _update_postflight(pre_update_ref, git_cmd, current_branch, branch)
+            if not deps_ok:
+                print("  ⚠ Dependencies were not fully installed, but the harness imports.")
+                print("    Fix with: pip install -e '.[all]'")
             print("✓ Code updated!")
 
             _restore_original_branch(git_cmd, PROJECT_ROOT, current_branch, branch)

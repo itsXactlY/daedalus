@@ -83,6 +83,17 @@ def project_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def can_verify(root: Path | None = None) -> bool:
+    """Is there enough on disk to judge this install at all?
+
+    Without a ``pyproject.toml`` there is nothing to compare the imports
+    against, so the answer is "unknown", not "broken". Callers that act on a
+    verdict (the update postflight) must not roll back on an unknown.
+    """
+    root = root or project_root()
+    return (root / "pyproject.toml").is_file()
+
+
 def _local_module_path(root: Path, dotted: str) -> Path | None:
     """Resolve a dotted name inside the repo, or None if it is not local."""
     parts = dotted.split(".")
