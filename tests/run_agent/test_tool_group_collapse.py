@@ -226,5 +226,5 @@ class TestSpillPathExtraction:
         """Spills moved off /dev/shm into <project>/.daedalus; an extractor
         hardcoded to /dev/shm/ would silently stop finding them."""
         got = _RealAIAgent._spill_path_in(
-            'spilled to /home/alca/projects/mc-clone/.daedalus/sess/0003-terminal.txt.')
-        assert got == "/home/alca/projects/mc-clone/.daedalus/sess/0003-terminal.txt"
+            'spilled to /home/user/projects/mc-clone/.daedalus/sess/0003-terminal.txt.')
+        assert got == "/home/user/projects/mc-clone/.daedalus/sess/0003-terminal.txt"

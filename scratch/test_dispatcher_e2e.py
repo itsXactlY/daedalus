@@ -10,9 +10,11 @@ assert:
      name at top level still works because we no longer require 'args'.
 """
 import json
+import os
 import sys
+from pathlib import Path
 
-ROOT = "/home/alca/.daedalus/daedalus-agent"
+ROOT = os.environ.get("DAEDALUS_ROOT", str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, ROOT)
 
 import plugins.memory.mazemaker as mm

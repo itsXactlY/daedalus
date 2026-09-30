@@ -215,7 +215,12 @@ skills/.bundled_manifest
 .daedalus/commit_msg*.txt
 
 # Startup-Messskripte (pty_startup/measure_first_turn/child_yolo/probe_*)
-.daedalus/
+# Die ganze Scratch-Dir ist Betriebsabfall (Baseline-Logs, Lint-Belege,
+# Messskripte) und gehoert nicht ins Repo. PLAN-Dateien sind die Ausnahme:
+# eine Plan-Datei pro Task ist Teil des Ablage-Systems, keine Messnotiz.
+.daedalus/*
+!.daedalus/PLAN.md
+!.daedalus/PLAN-*.md
 .daedalus/probe_*.py
 .daedalus/pty_startup*.py
 .daedalus/child_yolo.py
