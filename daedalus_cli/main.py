@@ -3420,6 +3420,123 @@ def _finalize_update_output(state):
             pass
 
 
+def _create_pre_update_ref(git_cmd, cwd) -> Optional[str]:
+    """Park the pre-update HEAD under ``refs/daedalus/pre-update/<ts>``.
+
+    Made unconditional on purpose. The postflight rollback (and the user, by
+    hand) needs a ref that points at the last state known to work, and that has
+    to exist *before* the pull -- not only on the diverged-history path, which
+    is the one path where nobody needs it.
+    """
+    from datetime import timezone as _tz
+
+    ref = datetime.now(_tz.utc).strftime("refs/daedalus/pre-update/%Y%m%d-%H%M%S")
+    try:
+        result = subprocess.run(
+            git_cmd + ["update-ref", ref, "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    return ref if result.returncode == 0 else None
+
+
+def _print_install_findings(findings, indent: str = "    ") -> None:
+    for finding in findings:
+        print(f"{indent}✗ {finding}")
+
+
+def _update_preflight() -> None:
+    """Report (and repair) a broken install BEFORE new code lands on top.
+
+    An update run on an already-broken install cannot be trusted: the pull
+    succeeds, pip succeeds, "Update complete!" prints, and the harness is still
+    broken. Worse, the new code is now what people debug. Regenerating the
+    editable mapping first costs seconds and makes the postflight meaningful.
+    """
+    try:
+        from daedalus_cli import install_health
+    except Exception:
+        return
+
+    findings = install_health.static_findings(PROJECT_ROOT) + install_health.runtime_findings(PROJECT_ROOT)
+    if not findings:
+        return
+
+    print("→ Checking installation before updating...")
+    _print_install_findings(findings)
+    if not all(f.repairable for f in findings):
+        print("  ⚠ This cannot be repaired by reinstalling; continuing anyway.")
+        print("    The postflight check below will roll the update back if it stays broken.")
+        return
+
+    print("  → Reinstalling the editable package to repair it...")
+    ok, msg = install_health.repair(PROJECT_ROOT, quiet=True)
+    if ok:
+        print(f"  ✓ {msg}")
+    else:
+        print(f"  ⚠ Repair failed: {msg.splitlines()[-1] if msg else 'unknown error'}")
+
+
+def _update_postflight(backup_ref: Optional[str], git_cmd, original_branch: str, update_branch: str) -> None:
+    """Prove the updated harness starts. Roll back if it does not.
+
+    Everything before this point can succeed while leaving an installation that
+    cannot be imported -- that is exactly how a wheel shipped with
+    ``daedalus_state.py`` and none of the modules it imports. "✓ Code updated!"
+    is a statement about git, not about the install. This is the statement
+    about the install, and it is the one that decides whether the update
+    succeeded.
+    """
+    from daedalus_cli import install_health
+
+    print("→ Verifying the updated installation...")
+    health = install_health.check(PROJECT_ROOT, smoke=True)
+    if health.ok:
+        print("  ✓ Harness imports cleanly outside the checkout")
+        return
+
+    _print_install_findings(health.findings)
+    print("  ⚠ The updated code does not import. Trying to repair the install...")
+    ok, msg = install_health.repair(PROJECT_ROOT, quiet=True)
+    if ok and install_health.check(PROJECT_ROOT, smoke=True).ok:
+        print(f"  ✓ {msg} — the install is fine after all")
+        return
+
+    if not backup_ref:
+        print("✗ Update left a broken installation and there is no pre-update ref to roll back to.")
+        print(f"  Repair by hand: {install_health.project_root()} && pip install -e .")
+        sys.exit(1)
+
+    print(f"  → Rolling back to {backup_ref}...")
+    _clear_bytecode_cache(PROJECT_ROOT)
+    rollback = subprocess.run(
+        git_cmd + ["reset", "--hard", backup_ref],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if rollback.returncode != 0:
+        print(f"✗ Rollback failed: {rollback.stderr.strip()}")
+        print(f"  Your previous state is still at {backup_ref}. Restore by hand:")
+        print(f"    git -C {PROJECT_ROOT} reset --hard {backup_ref}")
+        sys.exit(1)
+
+    install_health.repair(PROJECT_ROOT, quiet=True)
+    restored = install_health.check(PROJECT_ROOT, smoke=True)
+    _restore_original_branch(git_cmd, PROJECT_ROOT, original_branch, update_branch)
+    print(f"✓ Rolled back to {backup_ref} — the update was NOT applied.")
+    if restored.ok:
+        print("  ✓ Your previous working installation is back in place.")
+    else:
+        print("  ⚠ The previous commit is restored but the install still fails:")
+        _print_install_findings(restored.findings)
+    print(f"  Your work is safe. Report what broke: {backup_ref} vs the new origin/{update_branch}")
+    sys.exit(1)
+
+
 def cmd_update(args):
     """Update Daedalus Agent to the latest version."""
     import shutil
@@ -3466,9 +3583,18 @@ def cmd_update(args):
             print(f"  {origin_url}")
             print()
 
+        _update_preflight()
+
         if use_zip_update:
             _update_via_zip(args)
             return
+
+        # Before anything moves HEAD. The postflight rollback needs a ref that
+        # points at the last state known to work, and this is the last moment
+        # where that state can be recorded for free.
+        pre_update_ref = _create_pre_update_ref(git_cmd, PROJECT_ROOT)
+        if pre_update_ref:
+            print(f"  → Pre-update state saved at {pre_update_ref}")
 
         try:
 
@@ -3566,7 +3692,7 @@ def cmd_update(args):
                     # pointing back at where it was.
                     from datetime import timezone as _tz
 
-                    backup_ref = datetime.now(_tz.utc).strftime(
+                    backup_ref = pre_update_ref or datetime.now(_tz.utc).strftime(
                         "refs/daedalus/pre-update/%Y%m%d-%H%M%S"
                     )
                     subprocess.run(
@@ -3666,6 +3792,7 @@ def cmd_update(args):
                     subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
 
             print()
+            _update_postflight(pre_update_ref, git_cmd, current_branch, branch)
             print("✓ Code updated!")
 
             _restore_original_branch(git_cmd, PROJECT_ROOT, current_branch, branch)

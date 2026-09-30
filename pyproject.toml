@@ -113,7 +113,14 @@ daedalus-acp = "acp_adapter.entry:main"
 # was invisible to a pip/uvx install while working fine from a source checkout.
 include-package-data = true
 
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "daedalus_constants", "daedalus_state", "daedalus_time", "daedalus_logging", "rl_cli", "utils"]
+# Every top-level module the shipped entry points can reach has to be listed
+# here. daedalus_state.py was split into daedalus_state_common/_schema/_search/
+# _portability without touching this list, and a wheel built from that state
+# ships daedalus_state.py without the four modules it imports on line 49 --
+# every `pip install daedalus` / `uvx daedalus` died on first import.
+# tests/test_packaging_integrity.py computes the reachable set from the source
+# and fails (exit 1) when this list drifts again.
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "daedalus_constants", "daedalus_state", "daedalus_state_common", "daedalus_state_schema", "daedalus_state_search", "daedalus_state_portability", "daedalus_time", "daedalus_logging", "mcp_serve", "rl_cli", "utils"]
 
 [tool.setuptools.package-data]
 "*" = ["plugin.yaml", "*.yaml", "*.yml"]

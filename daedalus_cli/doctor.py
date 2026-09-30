@@ -280,6 +280,65 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _check_install_integrity(should_fix: bool = False, issues: list = None) -> None:
+    """Does this installation import the harness, or only the checkout?
+
+    Every other check in doctor runs inside a process that already has the
+    repository root on ``sys.path``, so a stale editable mapping -- or a wheel
+    that shipped an importer without its imports -- looks perfectly healthy
+    right up until the user starts Daedalus from their home directory. This
+    section is the one that answers the question a real start would ask.
+    """
+    try:
+        from daedalus_cli import install_health
+    except Exception as exc:  # install_health itself is broken -- say so, do not crash
+        check_warn("Installation integrity check unavailable", str(exc))
+        return
+
+    try:
+        health = install_health.check(PROJECT_ROOT, smoke=True)
+    except Exception as exc:
+        check_warn("Installation integrity check failed to run", str(exc))
+        return
+
+    if health.ok:
+        check_ok("Harness imports cleanly outside the checkout")
+        return
+
+    check_fail(
+        "Installation does not match the code",
+        f"{len(health.findings)} problem(s); imports fail unless the working directory "
+        "happens to be the checkout",
+    )
+    for finding in health.findings[:8]:
+        check_info(f"{finding.subject}: {finding.detail}")
+    if len(health.findings) > 8:
+        check_info(f"... and {len(health.findings) - 8} more")
+
+    if issues is not None:
+        if health.repairable:
+            issues.append("Repair the installation: run `daedalus doctor --fix`")
+        else:
+            issues.append(
+                "The checkout itself is not installable (undeclared modules) -- "
+                "see tests/test_packaging_integrity.py"
+            )
+
+    if should_fix and health.repairable:
+        ok, msg = install_health.repair(PROJECT_ROOT, quiet=True)
+        if ok and install_health.check(PROJECT_ROOT, smoke=True).ok:
+            check_ok(f"{msg} — installation now matches the code")
+            if issues is not None:
+                while "Repair the installation: run `daedalus doctor --fix`" in issues:
+                    issues.remove("Repair the installation: run `daedalus doctor --fix`")
+            return
+        check_fail("Repair failed", (msg.splitlines() or [""])[-1][:200])
+    elif should_fix:
+        check_warn("Not auto-fixable", "the checkout declares fewer modules than it imports")
+    else:
+        check_info("Run 'daedalus doctor --fix' to repair")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -376,6 +435,10 @@ def run_doctor(args):
             check_ok(name, "(optional)")
         except ImportError:
             check_warn(name, "(optional, not installed)")
+
+    print()
+    print(color("◆ Installation Integrity", Colors.CYAN, Colors.BOLD))
+    _check_install_integrity(should_fix, issues)
     
     print()
     print(color("◆ Configuration Files", Colors.CYAN, Colors.BOLD))
