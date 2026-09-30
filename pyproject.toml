@@ -132,6 +132,7 @@ include = ["agent", "tools", "tools.*", "daedalus_cli", "gateway", "gateway.*", 
 testpaths = ["tests"]
 markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
+    "slow: builds a wheel or spawns an interpreter; skipped by `-m 'not slow'`",
     "linux_only: only runs on Linux (sys.platform.startswith('linux'))",
     "macos_only: only runs on macOS (sys.platform == 'darwin')",
     "windows_only: only runs on native Windows (sys.platform == 'win32')",

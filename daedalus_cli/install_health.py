@@ -149,11 +149,46 @@ def reachable_modules(root: Path | None = None, entries=ENTRY_MODULES) -> set[st
                 continue
             if _local_module_path(root, imported) is not None:
                 queue.append(imported)
-            else:
-                # `from pkg import name` where name is a submodule
-                if _local_module_path(root, f"{imported}") is not None:
-                    queue.append(imported)
     return seen
+
+
+def missing_modules(root: Path | None = None, entries=ENTRY_MODULES) -> set[str]:
+    """Local-looking imports whose file does not exist in the checkout.
+
+    ``reachable_modules`` skips them silently -- a name with no file cannot be
+    queued -- which is how "daedalus_state.py imports daedalus_state_broken_probe,
+    and no such file exists" reaches a running harness and crashes it there.
+    Third-party imports (openai, httpx, ...) are indistinguishable from missing
+    ones by path alone, so only two unambiguous groups are reported: the
+    project's own ``daedalus*`` namespace, and anything pyproject still
+    declares but no longer ships.
+    """
+    root = root or project_root()
+    declared = set(_declared(root / "pyproject.toml", "py-modules"))
+    missing: set[str] = set()
+    queue: list[str] = list(entries)
+    seen: set[str] = set()
+    while queue:
+        dotted = queue.pop()
+        path = _local_module_path(root, dotted)
+        if path is None or dotted in seen:
+            continue
+        seen.add(dotted)
+        for imported in _iter_imports(path):
+            head = imported.split(".")[0]
+            if head in _SKIP_DIRS or head in missing:
+                continue
+            if _local_module_path(root, imported) is None:
+                # `from pkg import name` resolves to an ATTRIBUTE when there is
+                # no submodule of that name. Only a head that does not exist on
+                # its own is a genuinely missing module.
+                if _local_module_path(root, head) is not None:
+                    continue
+                if head.startswith("daedalus") or head in declared:
+                    missing.add(head)
+                continue
+            queue.append(imported)
+    return missing
 
 
 def _declared(pyproject: Path, key: str) -> list[str]:
@@ -176,6 +211,13 @@ def static_findings(root: Path | None = None) -> list[Finding]:
     packages = set(_declared(pyproject, "include"))
 
     findings: list[Finding] = []
+    for name in sorted(missing_modules(root)):
+        findings.append(Finding(
+            "missing-module", name,
+            "imported by the shipped entry points, but no such file exists in the "
+            "checkout — the harness will raise ModuleNotFoundError on first use",
+            repairable=False,
+        ))
     for dotted in sorted(reachable_modules(root)):
         top = dotted.split(".")[0]
         if (root / top).is_dir():
@@ -267,7 +309,24 @@ class SmokeResult:
         return "install smoke test FAILED: " + ", ".join(self.failed)
 
 
-def smoke_modules(modules=ENTRY_MODULES, python: str | None = None, timeout: float = 180.0) -> SmokeResult:
+def probe_modules(root: Path | None = None) -> list[str]:
+    """The names an install has to be able to import: entry points + everything
+    they pull in at module level.
+
+    Probing only the console entry points is not enough: ``daedalus_cli.main``
+    imports ``daedalus_state`` lazily, from inside functions. A broken
+    ``daedulas_state`` therefore passes an entry-point-only probe and still
+    crashes on first use. This list is derived from the same AST walk the
+    packaging gate uses, so the probe and the gate judge the same set.
+    """
+    root = root or project_root()
+    names = set(ENTRY_MODULES)
+    for dotted in reachable_modules(root):
+        names.add(dotted.split(".")[0])
+    return sorted(names)
+
+
+def smoke_modules(modules=None, python: str | None = None, timeout: float = 300.0) -> SmokeResult:
     """Import the given modules in a subprocess whose cwd is NOT the repo.
 
     This is the check the existing code never ran: an update could report
@@ -276,6 +335,7 @@ def smoke_modules(modules=ENTRY_MODULES, python: str | None = None, timeout: flo
     working directory masks the very breakage it is looking for.
     """
     python = python or sys.executable
+    modules = list(modules) if modules is not None else probe_modules()
     probe = "import sys\n" + "".join(f"import {m}\n" for m in modules)
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
     with tempfile.TemporaryDirectory(prefix="daedalus-smoke-") as neutral_cwd:
@@ -299,8 +359,17 @@ def smoke_modules(modules=ENTRY_MODULES, python: str | None = None, timeout: flo
 
 
 def _failed_imports(stderr: str) -> list[str]:
-    names = re.findall(r"No module named ['\"]([\w.]+)['\"]", stderr or "")
-    return sorted(set(names))
+    """Names from the FIRST ImportError in a traceback, not all of them.
+
+    Importing 40 modules stops at the first failure, so the names after it were
+    never tried; reporting them all would invent breakage that isn't there.
+    """
+    for line in (stderr or "").splitlines():
+        if line.startswith("ModuleNotFoundError") or ": No module named" in line:
+            names = re.findall(r"No module named ['\"]([\w.]+)['\"]", line)
+            if names:
+                return sorted({n.split(".")[0] for n in names})
+    return []
 
 
 def check(root: Path | None = None, *, smoke: bool = True, python: str | None = None) -> Health:

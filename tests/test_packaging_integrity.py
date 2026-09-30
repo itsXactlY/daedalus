@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from daedalus_cli.install_health import (  # noqa: E402
     ENTRY_MODULES,
+    _local_module_path,
     editable_mapping,
     project_root,
     reachable_modules,
@@ -45,6 +46,21 @@ from daedalus_cli.install_health import (  # noqa: E402
 )
 
 ROOT = project_root()
+
+
+def _top_level_files() -> list[str]:
+    """Reachable top-level names that are a module FILE (foo.py), not a dir."""
+    return [
+        m for m in reachable_modules(ROOT)
+        if (ROOT / f"{m}.py").is_file()
+    ]
+
+
+def _top_level_packages() -> list[str]:
+    return [
+        m for m in reachable_modules(ROOT)
+        if (ROOT / m).is_dir() and (ROOT / m / "__init__.py").is_file()
+    ]
 
 
 def _declared(key: str) -> list[str]:
@@ -59,14 +75,14 @@ def test_reachable_set_is_not_empty():
     reachable = reachable_modules(ROOT)
     assert {"daedalus_cli.main", "run_agent", "acp_adapter.entry"} <= reachable
     assert any(m.startswith("daedalus_cli.") for m in reachable)
+    # A vacuous filter here silently disables every check below.
+    assert "daedalus_state" in _top_level_files()
+    assert "daedalus_cli" in _top_level_packages()
 
 
 def test_declared_py_modules_cover_reachable_top_level_modules():
     declared = set(_declared("py-modules"))
-    missing = [
-        m for m in reachable_modules(ROOT)
-        if (ROOT / m).is_file() and m not in declared
-    ]
+    missing = [m for m in _top_level_files() if m not in declared]
     assert not missing, (
         "These modules are imported by code that ships, but are not in "
         "[tool.setuptools] py-modules. A wheel built now will contain the "
@@ -77,10 +93,7 @@ def test_declared_py_modules_cover_reachable_top_level_modules():
 
 def test_declared_packages_cover_reachable_packages():
     declared = set(_declared("include"))
-    missing = [
-        m for m in reachable_modules(ROOT)
-        if (ROOT / m).is_dir() and m not in declared
-    ]
+    missing = [m for m in _top_level_packages() if m not in declared]
     assert not missing, (
         "These packages are imported by code that ships, but are not in "
         "[tool.setuptools.packages.find] include:\n  " + "\n  ".join(missing)
@@ -129,10 +142,10 @@ def test_built_wheel_contains_every_reachable_module(tmp_path_factory):
     with zipfile.ZipFile(wheels[0]) as zf:
         names = set(zf.namelist())
 
-    required = {f"{m}.py" for m in reachable_modules(ROOT) if (ROOT / m).is_file()}
+    required = {f"{m}.py" for m in _top_level_files()}
     # submodules of top-level packages land as <pkg>/<mod>.py
     for dotted in reachable_modules(ROOT):
-        if dotted == dotted.split(".")[0] or (ROOT / dotted.split(".")[0]).is_dir():
+        if _local_module_path(ROOT, dotted) is not None:
             required.add(dotted.replace(".", "/") + ".py")
 
     missing = sorted(n for n in required if n not in names)
