@@ -215,6 +215,7 @@ skills/.bundled_manifest
 .daedalus/commit_msg*.txt
 
 # Startup-Messskripte (pty_startup/measure_first_turn/child_yolo/probe_*)
+.daedalus/
 .daedalus/probe_*.py
 .daedalus/pty_startup*.py
 .daedalus/child_yolo.py

@@ -36,7 +36,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from daedalus_cli.install_health import (  # noqa: E402
     ENTRY_MODULES,
-    _local_module_path,
     editable_mapping,
     project_root,
     reachable_modules,
@@ -129,11 +128,14 @@ def test_installed_harness_imports_outside_the_repository():
 @pytest.mark.slow
 def test_built_wheel_contains_every_reachable_module(tmp_path_factory):
     """Build the real wheel and look inside it. Slower, but conclusive."""
+    import shutil
+
     out = tmp_path_factory.mktemp("wheel")
-    proc = subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(out)],
-        cwd=ROOT, capture_output=True, text=True,
-    )
+    if shutil.which("uv"):
+        cmd = ["uv", "build", "--wheel", "--out-dir", str(out)]
+    else:
+        cmd = [sys.executable, "-m", "build", "--wheel", "--outdir", str(out)]
+    proc = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
     if proc.returncode != 0:
         pytest.skip(f"wheel build unavailable: {proc.stderr.strip()[-300:]}")
 
@@ -143,10 +145,15 @@ def test_built_wheel_contains_every_reachable_module(tmp_path_factory):
         names = set(zf.namelist())
 
     required = {f"{m}.py" for m in _top_level_files()}
-    # submodules of top-level packages land as <pkg>/<mod>.py
+    # Sub-modules: a package lands in the wheel as <pkg>/..., never as <pkg>.py
     for dotted in reachable_modules(ROOT):
-        if _local_module_path(ROOT, dotted) is not None:
+        head = dotted.split(".")[0]
+        if dotted == head:
+            continue  # the package root itself ships as <pkg>/__init__.py
+        if (ROOT / f"{dotted}.py").is_file():
             required.add(dotted.replace(".", "/") + ".py")
+        elif (ROOT / dotted / "__init__.py").is_file():
+            required.add(dotted.replace(".", "/") + "/__init__.py")
 
     missing = sorted(n for n in required if n not in names)
     assert not missing, (
