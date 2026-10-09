@@ -918,6 +918,120 @@ class AIAgent:
             i += 1
         return out
 
+    #: A tool result at or above this many characters is moved to disk and
+    #: replaced by a read_file() pointer. Matches context_compressor's
+    #: _SPILL_VALUE_MIN_CHARS so both sides of the payload agree on what
+    #: "large" means.
+    _RESULT_SPILL_MIN_CHARS = 800
+
+    def _spill_tool_results(self, messages: list, keep_recent: int = 2) -> list:
+        """Move big tool RESULTS to disk, leaving a pointer the model can read back.
+
+        Why this exists, measured on a 2h28m session that never finished a task:
+        a read_file result is 3-5 KB and the payload grew ~650 tokens per tool
+        call, so the 32k window filled with read output, compaction fired, the
+        session restarted, and the next run re-read the same files -- 5 sessions,
+        26 re-reads, 1 write.
+
+        The spill machinery was already built for exactly this and wired to the
+        wrong side: context_compressor spills call ARGUMENTS ("Once results are
+        spilled the model's own arguments dominate"), and its own docstring
+        presumes result-spilling already happens. It does not. A read_file call's
+        arguments are {path, offset, limit} -- a few dozen bytes -- while its
+        RESULT is the payload.
+
+        So results were never spilled, _collapse_aged_tool_groups (TTL 8) is the
+        only hygiene that touched them, and it cannot touch the 8 newest ones --
+        which are exactly the re-reads. Collapsing them discarded the bytes with
+        no way back ("Run a call again if its output is needed"), which is what
+        produced the re-read loop.
+
+        Payload only, same as the collapse: `messages` keeps every result for the
+        session log, /resume and mazemaker. `keep_recent` leaves the newest
+        exchanges whole so the model can still see what it just asked for.
+        """
+        if not messages:
+            return messages
+        # Walk back over whole exchanges (assistant+tool) and keep the newest
+        # `keep_recent` of them whole; everything older is a spill candidate.
+        # Counting tool messages and then slicing at that index is off by the
+        # assistant line that announced them, which silently protected one more
+        # exchange than asked and left the oldest result unspilled.
+        first_kept = 0
+        if keep_recent > 0:
+            kept = 0
+            i = len(messages)
+            while i > 0 and kept < keep_recent:
+                # step back over the tool results answering one assistant turn
+                j = i
+                while j > 0 and messages[j - 1].get("role") == "tool":
+                    j -= 1
+                if j > 0 and messages[j - 1].get("role") == "assistant" \
+                        and messages[j - 1].get("tool_calls"):
+                    j -= 1          # include the assistant line: one exchange
+                if j == i:        # no tool block found; stop rather than loop
+                    break
+                i = j
+                kept += 1
+            first_kept = i
+        if first_kept >= len(messages):
+            return messages
+
+        compressor = getattr(self, "context_compressor", None)
+        if compressor is None:
+            return messages
+        write_spill = getattr(compressor, "_write_spill", None)
+        if not callable(write_spill):
+            return messages
+
+        out = list(messages)
+        spilled = 0
+        for i in range(first_kept):
+            msg = out[i]
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue
+            if len(content) < self._RESULT_SPILL_MIN_CHARS:
+                continue
+            if "[SPILLED RESULT" in content:
+                continue          # already moved out on an earlier turn
+            call_id = msg.get("tool_call_id", "")
+            tool_name = self._tool_name_for_call_id(messages, call_id)
+            try:
+                path = write_spill(tool_name or "tool-result", content)
+            except Exception:
+                path = None
+            if not path:
+                continue
+            spilled += 1
+            out[i] = dict(msg)
+            out[i]["content"] = (
+                f"[[SPILLED RESULT - NOT REAL CONTENT, do not copy this marker. "
+                f"{tool_name or 'tool'} returned {len(content)} chars, which was "
+                f"moved out of context; read it back with read_file(\"{path}\") if "
+                f"you actually need it again - do not reconstruct it.]]"
+            )
+        if spilled and getattr(compressor, "quiet_mode", False) is False:
+            self._vprint(
+                f"{self.log_prefix}  \U0001f4be Spilled {spilled} tool result(s) to disk "
+                f"(> {self._RESULT_SPILL_MIN_CHARS} chars) - read_file the path if needed",
+                force=False,
+            )
+        return out
+
+    def _tool_name_for_call_id(self, messages: list, call_id: str) -> str:
+        """The tool name that produced this tool_call_id, for the spill marker."""
+        if not call_id:
+            return ""
+        for msg in messages:
+            for call in (msg.get("tool_calls") or []) if isinstance(msg, dict) else []:
+                if self._get_tool_call_id_static(call) == call_id:
+                    fn = call.get("function") or {}
+                    return str(fn.get("name") or "")
+        return ""
+
     def _fetch_maze_material(self, turn: str) -> str:
         """Recall the context this turn needs, or "" if it needs none.
 
@@ -1124,9 +1238,23 @@ class AIAgent:
             pass
         try:
             os.makedirs(directory, exist_ok=True)
-            path = os.path.join(directory, f"{seq:04d}-{safe_tool}.txt")
-            with open(path, "w", encoding="utf-8", errors="replace") as fh:
-                fh.write(content)
+            # Content-addressed, not sequence-addressed. The seq form minted a
+            # fresh path for every spill of the same bytes, and spilling is
+            # payload-only: the master transcript keeps the originals, so every
+            # compaction re-spilled them all to a new seq. Each fresh path is a
+            # fresh pointer, the read_file dedup cache is keyed on the path, and
+            # offload_notice advertises every entry -- so the model walked the
+            # same content down an ever-lengthening chain of files.
+            # Same bytes now always name the same file: the pointer stops
+            # moving, the dedup key stops rotating, and the file count stops
+            # growing. An older seq-named file is left in place, so pointers
+            # already in a live context still resolve.
+            digest = hashlib.sha256(
+                content.encode("utf-8", errors="replace")).hexdigest()[:16]
+            path = os.path.join(directory, f"{digest}-{safe_tool}.txt")
+            if not os.path.exists(path):
+                with open(path, "w", encoding="utf-8", errors="replace") as fh:
+                    fh.write(content)
             return path
         except Exception as exc:
             logger.debug("Context spill failed: %s", exc)
@@ -1839,9 +1967,17 @@ class AIAgent:
             archiver=self._archive_context_chunk,
         )
         self.context_compressor.session_label = getattr(self, "session_id", "") or "session"
+        # Keep the purge from deleting the directory this compressor is
+        # actually writing into. session_label is bound once here, but
+        # session_id rotates on every compaction -- so from the second epoch
+        # onward keep_sessions names an id that has no directory, while the
+        # live one sits unprotected and rmtree'd after 24h of quiet. Every
+        # pointer in the context then dangles, the model's read_file fails, and
+        # it re-reads or re-runs the tool to get the bytes back.
+        _spill_live = self.context_compressor.session_label
         try:
-            self.purge_stale_spills(
-                keep_sessions=(getattr(self, "session_id", "") or "",))
+            _extra = (getattr(self, "session_id", "") or "", _spill_live)
+            self.purge_stale_spills(keep_sessions=_extra)
         except Exception as _spill_exc:
             logger.debug("spill purge skipped: %s", _spill_exc)
         # Children of this process get a TMPDIR of their own, so a build that
@@ -2058,7 +2194,7 @@ class AIAgent:
 
     def _record_call_ledger(self, *, model, provider, input_tokens, output_tokens,
                             cache_read=0, cache_write=0, reasoning=0,
-                            cost_usd=0.0, duration_s=0.0) -> None:
+                            cost_usd=0.0, duration_s=0.0, composition=None) -> None:
         """Record one API call so /tokens can show where the spend went.
 
         The session totals answer "how much"; they cannot answer "on which
@@ -2066,6 +2202,21 @@ class AIAgent:
         Those are the questions asked when a bill or a context window surprises
         someone, so the per-call rows are kept alongside the totals.
         """
+        if composition is not None:
+            try:
+                self._append_prompt_trace(
+                    model=str(model or "unknown"),
+                    session_id=str(getattr(self, "session_id", "") or ""),
+                    call=int(getattr(self, "session_api_calls", 0) or 0),
+                    turn=int(getattr(self, "_user_turn_count", 0) or 0),
+                    input_tokens=int(input_tokens or 0),
+                    cache_read=int(cache_read or 0),
+                    output_tokens=int(output_tokens or 0),
+                    duration_s=float(duration_s or 0.0),
+                    composition=composition,
+                )
+            except Exception:
+                logger.debug("prompt trace append failed", exc_info=True)
         try:
             entry = {
                 "call": int(getattr(self, "session_api_calls", 0) or 0),
@@ -2103,6 +2254,58 @@ class AIAgent:
             row["duration_s"] += entry["duration_s"]
         except Exception:
             logger.debug("call ledger write failed", exc_info=True)
+
+    def _prompt_trace_path(self) -> Optional[str]:
+        """Where the per-call prompt sizes are appended.
+
+        ``DAEDALUS_PROMPT_TRACE=0`` turns it off, a path redirects it. The default sits next to
+        the other logs: the in-memory ledger is capped and dies with the process, so without a
+        file the window's growth curve cannot be audited after the fact.
+        """
+        env = os.environ.get("DAEDALUS_PROMPT_TRACE")
+        if env is not None and env.strip() in ("0", "off", "false", "no"):
+            return None
+        if env and env.strip():
+            return env.strip()
+        try:
+            return str(Path(_daedalus_home) / "logs" / "prompt-trace.jsonl")
+        except Exception:
+            return None
+
+    def _append_prompt_trace(self, *, model, session_id, call, turn, input_tokens, cache_read,
+                             output_tokens, duration_s, composition) -> None:
+        """Append one row: how big the prompt was, and what filled it.
+
+        ``input_tokens`` here is the billed fresh count and ``cache_read`` the reused prefix, so
+        ``input + cache_read`` is the whole prompt the endpoint saw. The composition splits that
+        prompt into the system prompt, the tool schemas and the conversation -- the three levers an
+        operator can actually pull, which the session totals cannot separate.
+        """
+        path = self._prompt_trace_path()
+        if not path:
+            return
+        row = {
+            "at": round(time.time(), 3),
+            "session": session_id,
+            "turn": turn,
+            "call": call,
+            "model": model,
+            "prompt": int(input_tokens or 0) + int(cache_read or 0),
+            "fresh": int(input_tokens or 0),
+            "reused": int(cache_read or 0),
+            "output": int(output_tokens or 0),
+            "duration_s": round(float(duration_s or 0.0), 3),
+            "sys": int(composition.get("system_prompt") or 0),
+            "tools": int(composition.get("tools") or 0),
+            "history": int(composition.get("history") or 0),
+            "messages": int(composition.get("message_count") or 0),
+            "window": int(composition.get("window") or 0),
+            "compressions": int(getattr(self.context_compressor, "compression_count", 0) or 0),
+        }
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     def context_composition(self, messages=None) -> Dict[str, Any]:
         """Break the live context down into where its tokens actually sit.
@@ -4711,6 +4914,7 @@ class AIAgent:
             _iter_messages[_iter_cur]
             if 0 <= _iter_cur < len(_iter_messages) else None
         )
+        _iter_messages = self._spill_tool_results(_iter_messages)
         _iter_messages = self._collapse_aged_tool_groups(_iter_messages)
         if _pre_collapse_anchor is not None:
             for _ci, _cm in enumerate(_iter_messages):
@@ -10142,6 +10346,7 @@ class AIAgent:
                             reasoning=canonical_usage.reasoning_tokens or 0,
                             cost_usd=float(cost_result.amount_usd or 0.0),
                             duration_s=api_duration,
+                            composition=self.context_composition(api_messages),
                         )
 
                         if self._session_db and self.session_id:
@@ -10153,6 +10358,7 @@ class AIAgent:
                                     cache_read_tokens=canonical_usage.cache_read_tokens,
                                     cache_write_tokens=canonical_usage.cache_write_tokens,
                                     reasoning_tokens=canonical_usage.reasoning_tokens,
+                                    api_call_count=1,
                                     estimated_cost_usd=float(cost_result.amount_usd)
                                     if cost_result.amount_usd is not None else None,
                                     cost_status=cost_result.status,

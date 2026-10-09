@@ -79,12 +79,22 @@ RECALL_CLIP = 230
 HIT_CLIP = 420
 # The whole prefetch must finish inside memory_manager's 30s join, or the turn
 # gets no recall at all and the next turns skip behind the stuck thread.
-PREFETCH_DEADLINE_S = 22.0
-PREFETCH_RECALL_TIMEOUT_S = 18.0
+# The prefetch runs on the user-message path, before the model call, so its
+# budget IS the wait the user already pays for that turn. It was 22/18 s against
+# a pod that answers a recall in 7-18 s on CPU (bge-m3 has no GPU to ride on),
+# so roughly every second turn hit the deadline, returned "", and attached no
+# <memory-context> at all. Measured 7.6 s for a successful enriched recall.
+PREFETCH_DEADLINE_S = 60.0
+PREFETCH_RECALL_TIMEOUT_S = 45.0
 THINK_DEPTH = 2
 THINK_SHOW = 5
 AFE_SHOW = 4
-PREFETCH_TTL = 5.0
+# Must outlast the pod call it caches. A CPU pod answers a recall in 7-18 s
+# (bge-m3 embedding on CPU); at 5 s the entry expired before the next turn
+# could hit it, so the cache never did anything and every turn paid full price.
+# Generous on purpose: the key includes the query, so a stale hit only happens
+# when the same question is asked twice.
+PREFETCH_TTL = 120.0
 MIN_QUERY_LEN = 2
 
 _SOAK_MIN_INTERVAL = 0.1
@@ -1371,7 +1381,13 @@ class MazemakerMemoryProvider(MemoryProvider):
                 block = f"{brief}\n\n{block}" if block else brief
 
         with self._cache_lock:
-            self._prefetch_cache[cache_key] = (now, block)
+            # Only a block that actually carries context. A timeout inside
+            # _build_enriched_context returns "" and caching that turned one slow
+            # pod into a dead prefetch for the whole TTL: no <memory-context> was
+            # attached, the agent never learned the history was retrievable, and it
+            # went looking with read_file instead.
+            if block and block.strip():
+                self._prefetch_cache[cache_key] = (now, block)
         return block
 
     def _browse_rows(self, label_prefix: str, limit: int):

@@ -485,8 +485,8 @@ class ContextCompressor:
             path = self._write_spill(f"{tool_name}-args", raw)
             if not path:
                 return None
-            self.offloaded.append({"path": str(path), "chars": len(raw),
-                                   "tool": f"{tool_name} (arguments)"})
+            self._note_offload({"path": str(path), "chars": len(raw),
+                                "tool": f"{tool_name} (arguments)"})
             return json.dumps(
                 f"[[SPILLED ARGUMENTS — NOT REAL DATA, do not copy this marker "
                 f"into a new tool call. {tool_name}'s original arguments "
@@ -502,8 +502,8 @@ class ContextCompressor:
                 if not path:
                     slim[key] = value
                     continue
-                self.offloaded.append({"path": str(path), "chars": len(value),
-                                       "tool": f"{tool_name}.{key}"})
+                self._note_offload({"path": str(path), "chars": len(value),
+                                    "tool": f"{tool_name}.{key}"})
                 # A plain sentinel string, not a clean {"_spilled_to": ...}
                 # object: the latter reads as reusable data and a model deep
                 # in a long session can end up copying it verbatim into a new
@@ -524,6 +524,22 @@ class ContextCompressor:
         if not moved:
             return None
         return json.dumps(slim)
+
+    def _note_offload(self, entry: Dict[str, Any]) -> None:
+        """Record one spill for offload_notice, once per unique file.
+
+        Paths are content-addressed (see _archive_context_chunk), so the same
+        bytes always resolve to the same file. Re-spilling them -- which
+        happens on every compaction, because the master transcript keeps the
+        originals -- must therefore not append a second row, or the per-turn
+        notice keeps growing and re-advertising a longer list of paths for the
+        model to walk.
+        """
+        path = entry.get("path")
+        for existing in self.offloaded:
+            if existing.get("path") == path:
+                return
+        self.offloaded.append(entry)
 
     def _write_spill(self, tool_name: str, content: str) -> Optional[str]:
         try:
@@ -646,8 +662,8 @@ class ContextCompressor:
         path = self._write_spill(tool_name, content)
         if not path:
             return None
-        self.offloaded.append({"path": str(path), "tool": tool_name,
-                               "chars": len(content), "subject": subject})
+        self._note_offload({"path": str(path), "tool": tool_name,
+                            "chars": len(content), "subject": subject})
         about = f" for {subject}" if subject else ""
         return (f"{_OFFLOAD_PREFIX}{tool_name}{about} — result ({len(content)} chars) "
                 f"spilled to {path}. Retrieve it verbatim with read_file(\"{path}\").]")
@@ -670,8 +686,8 @@ class ContextCompressor:
         path = self._write_spill("reasoning", content)
         if not path:
             return None
-        self.offloaded.append({"path": str(path), "tool": "reasoning",
-                               "chars": len(content), "subject": label or ""})
+        self._note_offload({"path": str(path), "tool": "reasoning",
+                            "chars": len(content), "subject": label or ""})
         return (f"{_OFFLOAD_PREFIX}reasoning ({len(content)} chars) aged out of the "
                 f"window and was spilled to {path}. Read it back with "
                 f"read_file(\"{path}\") if this step needs revisiting.]")
