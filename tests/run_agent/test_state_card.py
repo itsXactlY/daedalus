@@ -171,3 +171,42 @@ class TestWiredIntoTheLoop:
         injections = agent._build_turn_injections(
             ext_prefetch="", plugin_context="")
         assert "STATE CARD" not in "\n".join(injections)
+
+
+class TestRebaseRecall:
+    """Mazemaker is the history: a rebase recalls into the epoch head itself."""
+
+    def test_card_carries_the_recalled_material(self, agent):
+        agent._last_state_summary_body = "where things stand"
+        agent._rebase_material = "- decided: frames are 2900 B plaintext"
+        card = agent._build_state_card()
+        assert "Recalled from mazemaker" in card
+        assert "frames are 2900 B plaintext" in card
+
+    def test_summary_gives_way_so_the_recall_is_never_cut(self, agent):
+        agent._state_card_max_chars = 1000
+        agent._last_state_summary_body = "S" * 5000
+        agent._rebase_material = "RECALLED-FACT " * 20
+        card = agent._build_state_card()
+        assert card.count("RECALLED-FACT") == 20
+        assert "[summary truncated]" in card
+
+    def test_no_material_leaves_the_card_unchanged(self, agent):
+        agent._last_state_summary_body = "plain summary"
+        assert "Recalled from mazemaker" not in agent._build_state_card()
+
+    def test_recall_query_is_plan_focus_plus_summary_head(self, agent, monkeypatch):
+        seen = []
+        monkeypatch.setattr("run_agent.plan_focus", lambda **kw: "tor plan - frame cap")
+        monkeypatch.setattr(agent, "_fetch_maze_material", lambda q: seen.append(q) or "hit")
+        agent._last_state_summary_body = "summary head " + "x" * 400
+        assert agent._recall_for_rebase() == "hit"
+        assert seen[0].startswith("tor plan - frame cap\nsummary head ")
+        assert len(seen[0]) <= len("tor plan - frame cap\n") + 300
+
+    def test_recall_failure_never_costs_the_rebase(self, agent, monkeypatch):
+        def boom(q):
+            raise RuntimeError("pod down")
+        monkeypatch.setattr(agent, "_fetch_maze_material", boom)
+        agent._last_state_summary_body = "something"
+        assert agent._recall_for_rebase() == ""

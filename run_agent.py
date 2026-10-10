@@ -76,7 +76,7 @@ from tools.browser_tool import cleanup_browser
 from daedalus_constants import OPENROUTER_BASE_URL
 
 from agent.memory_manager import build_memory_context_block
-from agent.plan_file import hand_over_plans, render_plan_block
+from agent.plan_file import hand_over_plans, plan_focus, render_plan_block
 from agent.turn_context import anchored_recall_query
 from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
@@ -1067,6 +1067,24 @@ class AIAgent:
             logger.debug("maze router fetch failed (non-fatal): %s", exc)
             return ""
 
+    def _recall_for_rebase(self) -> str:
+        """Mazemaker IS the history: pull what the new epoch needs at the boundary.
+
+        The turn-start recall fires once per user turn, and a long autonomous run
+        is ONE turn, so across rebases nothing was ever recalled and the model was
+        only told to do it itself. This runs at the rebase, anchored on the plan's
+        current step plus the head of the fresh summary, and the result is rendered
+        once into the state card at the epoch head, so it is a stable tape prefix.
+        """
+        try:
+            focus = plan_focus(session_id=self.session_id or "")
+            head = (getattr(self, "_last_state_summary_body", "") or "").strip()[:300]
+            query = "\n".join(p for p in (focus, head) if p).strip()
+            return self._fetch_maze_material(query) if query else ""
+        except Exception as exc:
+            logger.debug("rebase recall skipped: %s", exc)
+            return ""
+
     def _build_state_card(self) -> str:
         """Assemble the compact state card for periodic re-injection.
 
@@ -1097,8 +1115,19 @@ class AIAgent:
                 # rent: it said "no state survived" every other turn, whether
                 # or not a compaction had even happened.
                 return ""
-            card = "\n".join(lines).strip()
+            material = (getattr(self, "_rebase_material", "") or "").strip()
             max_chars = int(getattr(self, "_state_card_max_chars", 4000) or 4000)
+            if material:
+                # The recall is the point of the boundary; the summary gives way for it.
+                if summary and max_chars > 0:
+                    room = max(800, max_chars - len(material) - 120)
+                    if len(summary) > room:
+                        lines[lines.index(summary)] = summary[:room].rstrip() + "\n...[summary truncated]"
+                lines.append("## Recalled from mazemaker for this epoch")
+                lines.append(material)
+            card = "\n".join(lines).strip()
+            if material and max_chars > 0:
+                max_chars += len(material) + 60
             if max_chars > 0 and len(card) > max_chars:
                 card = card[:max_chars].rstrip() + "\n...[state card truncated]"
             return card
@@ -8449,6 +8478,7 @@ class AIAgent:
         # continues rather than the one that just ended.
         self._write_state_snapshot(compressed, todo_snapshot,
                                    previous_session_id=_pre_compaction_session)
+        self._rebase_material = self._recall_for_rebase()
         # A human-readable summary on disk is for when the maze cannot hold
         # the compaction; while it is reachable the archive note above is
         # the record, and this file is decoration.
