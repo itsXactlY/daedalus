@@ -8849,6 +8849,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # all resolve through these, so the active skin repaints the whole
             # scrollback region like any other part of the TUI.
             'transcript-text': '#FFF8DC',
+            # Fenced tool output: a shade off the body text so a code block
+            # reads as quoted output rather than as prose.
+            'transcript-code': '#D8D0C0',
             'transcript-label': '#DAA520',
             'transcript-dim': '#8B8682',
             'transcript-error': '#ef5350',

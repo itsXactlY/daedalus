@@ -28,10 +28,12 @@ from __future__ import annotations
 
 from typing import Dict, Optional
 
+from daedalus_cli.tool_result import ResultKind, classify_result
 from daedalus_cli.transcript import (
     DiffBlock,
     MarkdownBlock,
     NoticeBlock,
+    ResultBlock,
     ToolCallBlock,
     Transcript,
     TranscriptTheme,
@@ -55,6 +57,8 @@ class TranscriptBridge:
         *,
         theme: Optional[TranscriptTheme] = None,
         result_max_chars: int = DEFAULT_RESULT_MAX_CHARS,
+        result_max_lines: int = 0,
+        result_indent: int = 2,
         max_diff_files: int = 6,
         max_diff_lines: int = 80,
     ) -> None:
@@ -62,6 +66,11 @@ class TranscriptBridge:
         if theme is not None:
             transcript.set_theme(theme)
         self._result_max_chars = result_max_chars
+        #: 0 = show every line. A cap belongs here rather than being implied by
+        #: a character budget, because a result of many short lines can be
+        #: small in characters and still taller than the screen.
+        self._result_max_lines = result_max_lines
+        self._result_indent = result_indent
         self._max_diff_files = max_diff_files
         self._max_diff_lines = max_diff_lines
         #: tool_call_id -> the call block being built, so its duration can be
@@ -142,12 +151,7 @@ class TranscriptBridge:
 
         result = (result or "").strip()
         if result:
-            self.transcript.append(MarkdownBlock(
-                result,
-                indent=2,
-                style="class:transcript-text",
-                max_chars=self._result_max_chars,
-            ))
+            self.transcript.append(self._result_block(name, result))
         if diff and diff.strip():
             self.transcript.append(DiffBlock(
                 diff,
@@ -155,6 +159,27 @@ class TranscriptBridge:
                 max_lines=self._max_diff_lines,
             ))
         self.invalidate()
+
+    def _result_block(self, name: str, result: str) -> ResultBlock:
+        """Classify a result and build the block that shows it.
+
+        Classification is not cosmetic. Handing a shell listing to the Markdown
+        renderer reflowed it into an unreadable paragraph and printed the ``\\n``
+        escapes inside a JSON result as literal characters; the same was true of
+        every stack trace and diff. Fencing code and data preserves their line
+        structure, and keeps prose on the Markdown path where it belongs.
+        """
+        classified = classify_result(result, tool_name=name)
+        if classified.kind is ResultKind.EMPTY:
+            return ResultBlock("", kind="code")
+        return ResultBlock(
+            classified.text,
+            language=classified.language,
+            kind=classified.kind.value,
+            indent=self._result_indent,
+            max_chars=self._result_max_chars,
+            max_lines=self._result_max_lines,
+        )
 
     # -- status lines ------------------------------------------------------
 

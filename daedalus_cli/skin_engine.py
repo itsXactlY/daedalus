@@ -689,11 +689,13 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     tr_label = skin.get_color("session_label", None) or "#DAA520"
     tr_dim = skin.get_color("banner_dim", None) or "#8B8682"
     tr_diff_meta = skin.get_color("ui_label", None) or "#4dd0e1"
+    tr_code = skin.get_color("code_text", None) or "#D8D0C0"
 
     return {
         "reasoning-border": reasoning_border,
         "reasoning-text": reasoning_text,
         "transcript-text": tr_text,
+        "transcript-code": tr_code,
         "transcript-label": tr_label,
         "transcript-dim": tr_dim,
         "transcript-error": error,

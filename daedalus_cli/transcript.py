@@ -274,6 +274,93 @@ class MarkdownBlock(Block):
         return out
 
 
+class ResultBlock(Block):
+    """A tool result, rendered according to what kind of thing it is.
+
+    This exists because running every tool result through the Markdown parser
+    is wrong for almost all of them. A Markdown renderer reflows prose: it
+    joins what it considers a soft-wrapped line and re-wraps at the viewport
+    width. Given a shell listing or a stack trace that produces the unreadable
+    wall the TUI showed -- a source file squeezed into a single paragraph, and
+    the ``\\n`` sequences inside a JSON result printed as literal characters.
+
+    So the result is classified first (:mod:`daedalus_cli.tool_result`) and
+    fenced accordingly. Prose still goes through Markdown; code and data are
+    fenced, which preserves their line structure exactly and lets the theme
+    colour them.
+    """
+
+    __slots__ = ("text", "language", "kind", "indent", "max_chars", "max_lines")
+
+    def __init__(
+        self,
+        text: str = "",
+        *,
+        language: str = "",
+        kind: str = "code",
+        indent: int = 2,
+        max_chars: int = 0,
+        max_lines: int = 0,
+    ) -> None:
+        super().__init__()
+        self.text = text or ""
+        self.language = language
+        self.kind = kind
+        self.indent = indent
+        #: 0 = unlimited. Applied to the raw text before rendering so a
+        #: truncated result is still valid rather than half a fence.
+        self.max_chars = max_chars
+        #: 0 = unlimited. Rows shown before an explicit truncation note.
+        self.max_lines = max_lines
+
+    def set_text(self, text: str) -> None:
+        self.text = text or ""
+
+    def _prepared(self) -> str:
+        body = self.text
+        if self.max_chars and len(body) > self.max_chars:
+            body = body[: self.max_chars]
+            body += "\n… truncated"
+        if self.max_lines:
+            lines = body.split("\n")
+            if len(lines) > self.max_lines:
+                lines = lines[: self.max_lines]
+                lines.append(f"… {len(body.split(chr(10))) - self.max_lines} "
+                             f"more line(s)")
+                body = "\n".join(lines)
+        return body
+
+    def _cache_key_for(self, width: int, theme: TranscriptTheme) -> object:
+        return ("result", self.text, self.language, self.kind, self.indent,
+                self.max_chars, self.max_lines, width)
+
+    def _render(self, width: int, theme: TranscriptTheme) -> List[Tuple[str, str]]:
+        body = self._prepared()
+        if not body.strip():
+            return []
+
+        pad = " " * self.indent
+        style = "class:transcript-code"
+        lines = body.rstrip("\n").split("\n")
+
+        # Prose is the one case that benefits from the Markdown renderer.
+        if self.kind == "markdown":
+            rendered = render_markdown(body, width=max(width - self.indent, 20))
+            return [(style, f"{pad}{ln}".rstrip() if ln.strip() else "")
+                    for ln in rendered.split("\n")]
+
+        out: List[Tuple[str, str]] = []
+        if self.language:
+            out.append((f"{style} dim", f"{pad}```{self.language}"))
+        else:
+            out.append((f"{style} dim", f"{pad}```"))
+        for ln in lines:
+            # Code is never re-wrapped: its line structure is the content.
+            out.append((style, f"{pad}{ln}" if ln.strip() else pad))
+        out.append((f"{style} dim", f"{pad}```"))
+        return out
+
+
 class ToolCallBlock(Block):
     """The header line for a tool call: emoji, name, preview, duration.
 
