@@ -26,25 +26,82 @@ mid-read.
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Callable, List, Optional, Tuple
 
 from prompt_toolkit.application import get_app
-from prompt_toolkit.layout import Window
-from prompt_toolkit.layout.controls import FormattedTextControl
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.controls import UIContent, UIControl
+from prompt_toolkit.mouse_events import MouseEvent
 
 from daedalus_cli.transcript import Transcript, TranscriptTheme
 
-__all__ = ["TranscriptWidget", "build_transcript_widgets"]
+__all__ = ["TranscriptWidget", "TranscriptControl", "build_transcript_widgets"]
+
+
+def _make_content(controller: "TranscriptWidget", width: int, height: int) -> UIContent:
+    """Build the ``UIContent`` for one paint.
+
+    Not a subclass: ``UIContent`` is a plain container in prompt_toolkit 3.x
+    (a list of lines plus a cursor), and composing it directly keeps us on the
+    supported surface rather than on internals like ``line_count`` that moved
+    between releases.
+    """
+    fragments = controller.fragments(width, visible_rows=height)
+
+    def get_line(i: int):
+        return [fragments[i]] if i < len(fragments) else []
+
+    return UIContent(
+        get_line=get_line,
+        line_count=len(fragments),
+        cursor_position=Point(x=0, y=0),
+        show_cursor=False,
+    )
+
+
+class TranscriptControl(UIControl):
+    """A prompt_toolkit control that owns the transcript's scroll position."""
+
+    def __init__(self, controller: "TranscriptWidget") -> None:
+        self.controller = controller
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        return _make_content(self.controller, width, height)
+
+    def preferred_height(self, width: int, max_available_height: int,
+                          wrap_lines: bool, get_line_prefix=None) -> int:
+        # Claim every row the layout will give us. As the only flexible child
+        # of the HSplit this is what makes it the scrollback region rather than
+        # a one-line strip. The scroll offset handles anything longer.
+        return max_available_height
+
+    def preferred_width(self, max_width: int) -> int:
+        return max_width
+
+    def is_focusable(self) -> bool:
+        return False
+
+    def get_key_bindings(self) -> KeyBindings:
+        return KeyBindings()
+
+    def _mouse_scroll(self, event: MouseEvent) -> None:
+        delta = getattr(event, "scroll_up", None), getattr(event, "scroll_down", None)
+        up, down = delta
+        rows = max(int(getattr(event, "count", 1) or 1), 1)
+        if up:
+            self.controller.scroll_up(self.controller.visible_rows, rows)
+        elif down:
+            self.controller.scroll_down(self.controller.visible_rows, rows)
+
+    def mouse_handler(self, mouse_event) -> None:
+        self._mouse_scroll(mouse_event)
 
 
 class TranscriptWidget:
-    """Owns the transcript's scroll state and builds the layout controls.
-
-    This is a controller, not a container: it does not subclass anything
-    prompt_toolkit-specific, so it can be unit-tested with no running
-    application, and the layout just asks it for two ``Window``s.
-    """
+    """Owns the transcript's scroll state and builds the layout control."""
 
     def __init__(self, transcript: Transcript, *, scrollbar: bool = True) -> None:
         self.transcript = transcript
@@ -53,6 +110,8 @@ class TranscriptWidget:
         self._offset = 0
         #: total display height of the content, for scrollbar maths
         self._content_height = 0
+        #: rows the control was last drawn at, so scroll keys match the view
+        self.visible_rows = 20
 
     # -- scrolling ---------------------------------------------------------
 
@@ -71,24 +130,23 @@ class TranscriptWidget:
     def _measure(self, width: int) -> int:
         """Total display height of the transcript at *width*.
 
-        Computed from the block fragment counts without touching the widget's
-        own scroll state, so the scroll clamps work before the first paint.
-        The transcript caches per-block rendering, so this is cheap after the
-        first call.
+        Computed from the model alone, not from a prior paint, so the scroll
+        clamps work before the first render. The transcript caches per-block
+        rendering, so this is cheap after the first call.
         """
         return len(self.transcript.fragments(width))
 
     def scroll_up(self, visible_rows: int, rows: int = 1, *, width: int = 80) -> None:
         """Move the view toward older content, leaving follow mode."""
         self._content_height = self._measure(width)
-        new = self._offset + max(rows, 1)
-        self._offset = min(new, self._max_offset(visible_rows))
+        self.visible_rows = visible_rows
+        self._offset = min(self._offset + max(rows, 1), self._max_offset(visible_rows))
         self.refresh()
 
     def scroll_down(self, visible_rows: int, rows: int = 1) -> None:
         """Move toward newer content; reaching the bottom re-enters follow."""
-        new = self._offset - max(rows, 1)
-        self._offset = max(new, 0)
+        self.visible_rows = visible_rows
+        self._offset = max(self._offset - max(rows, 1), 0)
         self.refresh()
 
     def scroll_to_bottom(self) -> None:
@@ -97,6 +155,7 @@ class TranscriptWidget:
 
     def scroll_to_top(self, visible_rows: int, *, width: int = 80) -> None:
         self._content_height = self._measure(width)
+        self.visible_rows = visible_rows
         self._offset = self._max_offset(visible_rows)
         self.refresh()
 
@@ -121,22 +180,18 @@ class TranscriptWidget:
 
         ``_offset`` is "how many rows below the viewport's bottom edge the
         newest content sits". At offset 0 the newest row is flush with the
-        bottom (follow mode). The visible slice therefore runs from
-        ``len - visible_rows - offset`` to ``len - offset``: the newest rows
-        below the edge are withheld, and older rows above the top edge are cut
-        by the caller via ``visible_rows``.
+        bottom (follow mode).
         """
         all_frags = self.transcript.fragments(width)
         self._content_height = len(all_frags)
+        if visible_rows:
+            self.visible_rows = visible_rows
         if self._offset <= 0:
             if visible_rows and len(all_frags) > visible_rows:
                 return all_frags[-visible_rows:]
             return all_frags
         end = max(len(all_frags) - self._offset, 0)
-        if visible_rows:
-            start = max(end - visible_rows, 0)
-        else:
-            start = 0
+        start = max(end - visible_rows, 0) if visible_rows else 0
         return all_frags[start:end]
 
     def content_height(self, width: int) -> int:
@@ -144,66 +199,13 @@ class TranscriptWidget:
 
     # -- layout ------------------------------------------------------------
 
-    def build(self, cli_ref) -> Tuple[Window, Window]:
-        """Return ``(transcript_window, scrollbar_window)`` for the layout."""
-        widget = self
-
-        def get_frags():
-            try:
-                app = get_app()
-                cols = app.output.get_size().columns
-                rows = app.output.get_size().rows
-            except Exception:
-                cols, rows = 80, 24
-            # Reserve rows for the other layout children so the transcript's
-            # scroll maths matches the space it is actually given.
-            visible = max(rows - 10, 3)
-            return widget.fragments(max(cols - 2, 20), visible_rows=visible)
-
-        transcript_window = Window(
-            content=FormattedTextControl(get_frags),
-            wrap_lines=False,
-            always_hide_cursor=True,
-            # The transcript fills whatever vertical space the layout gives it
-            # and scrolls internally; the other widgets keep their own heights.
-            height=Dimension(min=3, weight=1),
-        )
-
-        def get_scrollbar_chars():
-            # One character per display row, from the bottom up, matching how
-            # fragments() slices. A '#' marks the visible band.
-            total = widget._content_height
-            visible = max(total - widget._offset, 1)
-            # We do not know the exact window height here, so approximate the
-            # band with a fixed recent slice; prompt_toolkit re-renders often
-            # enough that a rough marker is honest and never misleading about
-            # direction.
-            window_rows = 12
-            if total <= window_rows or widget._offset == 0:
-                return [("class:transcript-scrollbar", " ")] * min(total, window_rows)
-            chars = []
-            top_hidden = widget._offset
-            for i in range(window_rows):
-                row_from_bottom = i
-                row_from_top = total - 1 - row_from_bottom
-                if row_from_top < top_hidden:
-                    chars.append(("class:transcript-scrollbar-thumb", "█"))
-                else:
-                    chars.append(("class:transcript-scrollbar", "│"))
-            return list(reversed(chars))
-
-        scrollbar_window = Window(
-            content=FormattedTextControl(get_scrollbar_chars),
-            width=1,
-            char=" ",
-            height=Dimension(min=1),
-            always_hide_cursor=True,
-        )
-
-        return transcript_window, scrollbar_window
+    def build(self, cli_ref=None) -> Window:
+        """Return the transcript control wrapped in a ``Window`` for the layout."""
+        from prompt_toolkit.layout import Window
+        return Window(content=TranscriptControl(self), height=Dimension(min=1, weight=1))
 
 
 def build_transcript_widgets(cli_ref, transcript: Transcript):
-    """Convenience: build the controller and return its two windows."""
+    """Convenience: build the controller and return its window."""
     controller = TranscriptWidget(transcript)
-    return controller, *controller.build(cli_ref)
+    return controller, controller.build(cli_ref)

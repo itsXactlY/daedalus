@@ -1916,6 +1916,14 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._reasoning_stream_started = False
         self._reasoning_preview_buf = ""
         self._pending_edit_snapshots = {}
+        # The conversation transcript: tool calls, tool results, assistant text
+        # and diffs all become blocks in this, and the transcript widget paints
+        # it as part of the layout. Nothing here is printed, so none of it
+        # tears the skin-painted UI down. See daedalus_cli/transcript.py.
+        self._transcript = None
+        self._transcript_bridge = None
+        self._transcript_widget = None
+        self._transcript_windows = None
         
         _model_config = CLI_CONFIG.get("model", {})
         _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
@@ -3010,8 +3018,74 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._stream_prefilt = self._stream_prefilt[-max_tag_len:]
             return
 
+    def _get_transcript(self):
+        """The conversation transcript, created on first use.
+
+        The empty-transcript case matters here: ``Transcript`` implements
+        ``__len__``, so an empty one is falsy and ``self._transcript or None``
+        would silently return None for a freshly built transcript. Every check
+        here is therefore an explicit ``is False`` / ``is not None`` test.
+        """
+        if self._transcript is None:
+            try:
+                from daedalus_cli.transcript import Transcript, TranscriptTheme
+                self._transcript = Transcript()
+                self._transcript.set_theme(TranscriptTheme.from_skin())
+            except Exception:
+                logger.debug("Transcript unavailable", exc_info=True)
+                self._transcript = False
+        return None if self._transcript is False else self._transcript
+
+    def _get_transcript_bridge(self):
+        """The callback->block bridge, created on first use."""
+        if self._transcript_bridge is None:
+            transcript = self._get_transcript()
+            if transcript is None:
+                return None
+            try:
+                from daedalus_cli.transcript_bridge import TranscriptBridge
+                self._transcript_bridge = TranscriptBridge(transcript)
+            except Exception:
+                logger.debug("Transcript bridge unavailable", exc_info=True)
+                self._transcript_bridge = False
+        return None if self._transcript_bridge is False else self._transcript_bridge
+
+    def _transcript_print(self, text: str) -> None:
+        """The agent's print function: land the line in the transcript.
+
+        Wired into ``agent._print_fn``. This is the single funnel for all the
+        agent's internal status output -- "running 3 commands", tool chatter,
+        warnings -- and it used to be ``_cprint``, i.e. a full UI teardown per
+        line.
+        """
+        bridge = self._get_transcript_bridge()
+        if bridge is None:
+            _cprint(text)
+            return
+        try:
+            bridge.print_line(text)
+        except Exception:
+            logger.debug("Transcript print failed", exc_info=True)
+
+    def _transcript_notice(self, text: str, *, emoji: str = "", level: str = "info"):
+        """Add a one-line status entry to the transcript."""
+        bridge = self._get_transcript_bridge()
+        if bridge is None:
+            return
+        label = f"{emoji} {text}".strip() if emoji else text
+        try:
+            bridge.notice(label, level=level)
+        except Exception:
+            logger.debug("Transcript notice failed", exc_info=True)
+
     def _emit_stream_text(self, text: str) -> None:
-        """Emit filtered text to the streaming display."""
+        """Stream assistant text into the transcript as a Markdown block.
+
+        The text is not printed. It accumulates in the transcript's current
+        assistant block, which re-renders as Markdown when the widget next
+        paints -- so headings, lists, code fences and tables appear live
+        instead of arriving as raw source, and the skin is never torn down.
+        """
         if not text:
             return
 
@@ -3030,43 +3104,31 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if not text:
                 return
             self._stream_box_opened = True
-            try:
-                from daedalus_cli.skin_engine import get_active_skin
-                _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "⚕ Daedalus")
-                _text_hex = _skin.get_color("banner_text", "#FFF8DC")
-                _resp_hex = _skin.get_color("response_border", "#FFD700")
-            except Exception:
-                label = "⚕ Daedalus"
-                _text_hex = "#FFF8DC"
-                _resp_hex = "#FFD700"
-            try:
-                _r = int(_text_hex[1:3], 16)
-                _g = int(_text_hex[3:5], 16)
-                _b = int(_text_hex[5:7], 16)
-                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
-            except (ValueError, IndexError):
-                self._stream_text_ansi = ""
-            # The border follows the skin's response_border, not the module-level
-            # _GOLD constant. Streaming drew a gold frame on every skin: on the
-            # mazemaker skin that is #BF00FF purple elsewhere on screen, so the
-            # streamed answer and the non-streamed one for the same message came
-            # out different colours.
-            self._stream_border_ansi = _hex_to_ansi(_resp_hex, bold=True)
-            w = shutil.get_terminal_size().columns
-            fill = w - 2 - len(label)
-            _cprint(f"\n{self._stream_border_ansi}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
+        bridge = self._get_transcript_bridge()
+        if bridge is not None:
+            bridge.append_assistant(text)
+            self._stream_buf = ""
+            return
+
+        # No transcript available (e.g. a wrapper that disabled it): fall back
+        # to the old print path so text is still shown.
         self._stream_buf += text
-
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
             _cprint(f"{_tc}{line}{_RST}" if _tc else line)
 
     def _flush_stream(self) -> None:
-        """Emit any remaining partial line from the stream buffer and close the box."""
+        """Finish the assistant block and clear any buffered partial line."""
         self._close_reasoning_box()
+
+        bridge = self._get_transcript_bridge()
+        if bridge is not None:
+            bridge.flush_line()
+            bridge.end_assistant()
+            self._stream_buf = ""
+            return
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
@@ -3289,7 +3351,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             )
             global _active_agent_ref
             _active_agent_ref = self.agent
-            self.agent._print_fn = _cprint
+            # Route the agent's own status lines into the transcript rather
+            # than through _cprint. Every one of those calls used to tear the
+            # skin-painted UI down and rebuild it; the transcript widget paints
+            # them as part of the layout instead.
+            self.agent._print_fn = self._transcript_print
             self.agent.stream_verbose_mode = self.tool_progress_mode == "verbose"
             self._active_agent_route_signature = (
                 effective_model,
@@ -6345,23 +6411,19 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
 
     def _on_tool_gen_start(self, tool_name: str, *, chars: int = None) -> None:
-        """Called when the model begins generating tool-call arguments, and
-        (in verbose mode) again periodically as that argument payload grows.
+        """Called when the model begins generating tool-call arguments.
 
-        Initial call (chars=None): closes any open streaming boxes
-        (reasoning / response) exactly once, then prints a short status
-        line so the user sees activity instead of a frozen screen while a
-        large payload (e.g. 45 KB write_file) streams.
+        Progress call (chars set): the payload is raw JSON, not prose. It only
+        updates the live spinner -- new lines for each SSE delta produced a
+        flurry of near-empty panels when it was printed.
 
-        Progress call (chars set): argument text is raw JSON/code, not
-        readable prose — it does NOT belong in the bordered response box
-        (that produced a flurry of near-empty panels, one per SSE delta,
-        when tried). Update the live spinner status line in place instead,
-        the same mechanism _on_tool_progress already uses — no new lines,
-        no box.
+        Initial call (chars=None): closes any open streaming boxes and notes
+        the upcoming call in the transcript, so the user sees activity instead
+        of a frozen screen while a large payload streams.
         """
+        from agent.display import get_tool_emoji
+
         if chars is not None:
-            from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚡")
             size = f"{chars / 1024:.1f} KB" if chars >= 1024 else f"{chars} chars"
             self._spinner_text = f"{emoji} generating {tool_name}… ({size})"
@@ -6373,30 +6435,36 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._stream_box_opened = False
         self._close_reasoning_box()
 
-        from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚡")
-        _cprint(f"  ┊ {emoji} preparing {tool_name}…")
+        self._transcript_notice(f"preparing {tool_name}…", emoji=emoji)
 
+    def _on_tool_progress(self, event_type: str, function_name: str = None,
+                          preview: str = None, function_args: dict = None, **kwargs):
+        """Called on tool lifecycle events (tool.started, tool.completed, ...).
 
-    def _on_tool_progress(self, event_type: str, function_name: str = None, preview: str = None, function_args: dict = None, **kwargs):
-        """Called on tool lifecycle events (tool.started, tool.completed, reasoning.available, etc.).
-
-        Updates the TUI spinner widget so the user can see what the agent
-        is doing during tool execution (fills the gap between thinking
-        spinner and next response).  Also plays audio cue in voice mode.
+        ``tool.started`` opens a call block in the transcript; the result
+        arrives later via :meth:`_on_tool_complete`, which fills in the
+        duration. The spinner still gets the label, because a tool can run for
+        a while and the user wants to see progress without a new scrollback row
+        for every event.
         """
-        if event_type != "tool.started":
-            return
-        if function_name and not function_name.startswith("_"):
-            from agent.display import get_tool_emoji
+        if event_type == "tool.started" and function_name \
+                and not function_name.startswith("_"):
+            from agent.display import get_tool_emoji, get_tool_preview_max_len
+
             emoji = get_tool_emoji(function_name)
             label = preview or function_name
-            from agent.display import get_tool_preview_max_len
             _pl = get_tool_preview_max_len()
             if _pl > 0 and len(label) > _pl:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._invalidate()
+
+            bridge = self._get_transcript_bridge()
+            if bridge is not None:
+                bridge.tool_started(
+                    str(kwargs.get("tool_call_id") or function_name),
+                    function_name, label)
 
         if not self._voice_mode:
             return
@@ -6423,21 +6491,43 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         except Exception:
             logger.debug("Edit snapshot capture failed for %s", function_name, exc_info=True)
 
-    def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
-        """Render file edits with inline diff after write-capable tools complete."""
-        snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
-        try:
-            from agent.display import render_edit_diff_with_delta
+    def _on_tool_complete(self, tool_call_id: str, function_name: str,
+                          function_args: dict, function_result: str):
+        """Attach a finished tool's result, and its diff if it wrote files.
 
-            render_edit_diff_with_delta(
-                function_name,
-                function_result,
-                function_args=function_args,
-                snapshot=snapshot,
-                print_fn=_cprint,
+        The result is rendered as Markdown rather than through the per-tool
+        ANSI formatter: tool output is already Markdown in the general case
+        (JSON, code, lists), and a Markdown renderer needs no per-tool branch.
+        """
+        snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
+        diff = ""
+        try:
+            from agent.display import extract_edit_diff
+
+            diff = extract_edit_diff(
+                function_name, function_result,
+                function_args=function_args, snapshot=snapshot) or ""
+        except Exception:
+            logger.debug("Edit diff extraction failed for %s", function_name, exc_info=True)
+
+        from agent.display import _detect_tool_failure
+
+        try:
+            failed, _suffix = _detect_tool_failure(function_name, function_result)
+        except Exception:
+            failed = False
+        bridge = self._get_transcript_bridge()
+        if bridge is None:
+            return
+        try:
+            bridge.tool_completed(
+                tool_call_id, function_name, function_result,
+                failed=bool(failed),
+                diff=diff,
             )
         except Exception:
-            logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+            logger.debug("Transcript tool completion failed for %s",
+                         function_name, exc_info=True)
 
 
     def _voice_start_recording(self):
@@ -7563,6 +7653,53 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         return []
 
+    def _register_transcript_keybindings(self, kb) -> None:
+        """Page the transcript without leaving the input line.
+
+        The transcript is a real scrollable region now, so it needs real
+        navigation. Focus stays in the input throughout -- these are
+        prefix-free global bindings rather than a modal pager, because
+        interrupting an agent mid-turn and reading back through its work is the
+        normal case, not an exceptional one.
+        """
+        @kb.add("pageup")
+        @kb.add("c-p")
+        def _transcript_page_up(event):
+            ctl = self._transcript_widget
+            if ctl is None:
+                return
+            ctl.page_up(self._transcript_visible_rows())
+
+        @kb.add("pagedown")
+        @kb.add("c-n")
+        def _transcript_page_down(event):
+            ctl = self._transcript_widget
+            if ctl is None:
+                return
+            ctl.page_down(self._transcript_visible_rows())
+
+        @kb.add("home")
+        def _transcript_top(event):
+            ctl = self._transcript_widget
+            if ctl is not None:
+                ctl.scroll_to_top(self._transcript_visible_rows())
+
+        @kb.add("end")
+        def _transcript_bottom(event):
+            ctl = self._transcript_widget
+            if ctl is not None:
+                ctl.scroll_to_bottom()
+
+    def _transcript_visible_rows(self) -> int:
+        """Rows the transcript actually occupies, for its scroll maths."""
+        try:
+            from prompt_toolkit.application import get_app
+            total = get_app().output.get_size().rows
+        except Exception:
+            total = 24
+        # the layout spends rows on the prompt, rules, status and spinner
+        return max(total - 10, 3)
+
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Register extra keybindings on the TUI ``KeyBindings`` object.
 
@@ -7616,6 +7753,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 spinner_widget,
                 spacer,
                 reasoning_widget,
+                *([w for w in (getattr(self, "_transcript_windows", None) or ())
+                   if w is not None]),
                 *self._get_extra_tui_widgets(),
                 getattr(self, "_pet_widget", None),
                 getattr(self, "_stash_panel_widget", None),
@@ -8354,6 +8493,26 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             wrap_lines=False,
         )
 
+        # The transcript: tool calls, tool results, assistant text and diffs.
+        # It is a layout child rather than printed output, which is what keeps
+        # the skin intact across a turn. Built once; the widgets read live
+        # state from the controller on every paint.
+        transcript_window = None
+        controller = getattr(cli_ref, "_transcript_widget", None)
+        if controller is None:
+            try:
+                from daedalus_cli.transcript_widget import TranscriptWidget
+                transcript = cli_ref._get_transcript()
+                if transcript is not None:
+                    controller = TranscriptWidget(transcript)
+                    cli_ref._transcript_widget = controller
+            except Exception:
+                controller = None
+        if controller is not None:
+            transcript_window = controller.build(cli_ref)
+        cli_ref._transcript_windows = (
+            (transcript_window,) if transcript_window is not None else ())
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
@@ -8585,6 +8744,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
+        self._register_transcript_keybindings(kb)
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
         completions_menu = CompletionsMenu(max_height=12, scroll_offset=1)
@@ -8634,6 +8794,20 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # _apply_tui_skin_style so /skin repaints it live like the rest.
             'reasoning-text': '#8B8682',
             'reasoning-border': '#8B8682',
+            # Transcript tokens. Tool calls, results, diffs and the scrollbar
+            # all resolve through these, so the active skin repaints the whole
+            # scrollback region like any other part of the TUI.
+            'transcript-text': '#FFF8DC',
+            'transcript-label': '#DAA520',
+            'transcript-dim': '#8B8682',
+            'transcript-error': '#ef5350',
+            'transcript-warn': '#ffa726',
+            'transcript-ok': '#4caf50',
+            'transcript-diff-add': '#4caf50',
+            'transcript-diff-del': '#ef5350',
+            'transcript-diff-meta': '#4dd0e1',
+            'transcript-scrollbar': '#8B8682',
+            'transcript-scrollbar-thumb': '#DAA520',
             'clarify-border': '#CD7F32',
             'clarify-title': '#FFD700 bold',
             'clarify-question': '#FFF8DC bold',

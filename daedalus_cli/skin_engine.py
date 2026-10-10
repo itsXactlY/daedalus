@@ -682,10 +682,28 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     reasoning_border = (skin.get_color("reasoning_border", None)
                         or skin.get_color("session_border", None) or "#8B8682")
     reasoning_text = skin.get_color("reasoning_text", None) or reasoning_border
+    # Transcript tokens. The transcript is the main scrollback region now, so
+    # its body text has to follow the skin's prompt colour rather than the
+    # hardcoded greys the old ANSI formatter used.
+    tr_text = skin.get_color("prompt", None) or "#FFF8DC"
+    tr_label = skin.get_color("session_label", None) or "#DAA520"
+    tr_dim = skin.get_color("banner_dim", None) or "#8B8682"
+    tr_diff_meta = skin.get_color("ui_label", None) or "#4dd0e1"
 
     return {
         "reasoning-border": reasoning_border,
         "reasoning-text": reasoning_text,
+        "transcript-text": tr_text,
+        "transcript-label": tr_label,
+        "transcript-dim": tr_dim,
+        "transcript-error": error,
+        "transcript-warn": warn,
+        "transcript-ok": skin.get_color("ui_ok", "#4caf50"),
+        "transcript-diff-add": skin.get_color("ui_ok", "#4caf50"),
+        "transcript-diff-del": error,
+        "transcript-diff-meta": tr_diff_meta,
+        "transcript-scrollbar": f"{tr_dim}",
+        "transcript-scrollbar-thumb": tr_label,
         "input-area": prompt,
         "placeholder": f"{dim} italic",
         "prompt": prompt,

@@ -112,7 +112,7 @@ class TestRendering:
         from prompt_toolkit.layout import HSplit, Layout
         from prompt_toolkit.output.vt100 import Vt100_Output
 
-        tw, sb = widget.build(None)
+        tw = widget.build(None)
         buf = io.StringIO()
 
         class Sink(io.TextIOBase):
@@ -132,7 +132,7 @@ class TestRendering:
         out = Vt100_Output(Sink(), lambda: Size(rows=rows, columns=cols),
                            term="xterm-256color")
         with create_pipe_input() as pipe:
-            app = Application(layout=Layout(HSplit([tw, sb])), input=pipe, output=out)
+            app = Application(layout=Layout(HSplit([tw])), input=pipe, output=out)
             t = threading.Thread(target=lambda: app.run(), daemon=True)
             t.start()
             time.sleep(0.5)
@@ -183,7 +183,7 @@ class TestRendering:
         from prompt_toolkit.layout import HSplit, Layout
         from prompt_toolkit.output.vt100 import Vt100_Output
 
-        tw, sb = w.build(None)
+        tw = w.build(None)
 
         class Sink(io.TextIOBase):
             def write(self, s):
@@ -202,7 +202,7 @@ class TestRendering:
         out = Vt100_Output(Sink(), lambda: Size(rows=24, columns=80),
                            term="xterm-256color")
         with create_pipe_input() as pipe:
-            app = Application(layout=Layout(HSplit([tw, sb])), input=pipe, output=out)
+            app = Application(layout=Layout(HSplit([tw])), input=pipe, output=out)
             t = threading.Thread(target=lambda: app.run(), daemon=True)
             t.start()
             time.sleep(0.4)
