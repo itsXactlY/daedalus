@@ -2057,6 +2057,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""
+        # Reasoning is rendered as a layout widget, not printed. These hold the
+        # wrapped lines the widget shows and the raw text behind them.
+        self._reasoning_fragments: list = []
+        self._reasoning_lines_seen: int = 0
+        #: Most lines the reasoning pane may occupy. Bounds the layout so a long
+        #: think cannot scroll the input area off the top of the screen.
+        self._REASONING_PANE_MAX_LINES = 8
         self._command_running = False
         self._command_status = ""
         self._attached_images: list[Path] = []
@@ -2830,51 +2837,57 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if flush_text:
             self._emit_reasoning_preview(flush_text)
 
-    def _reasoning_style(self):
-        """(border_ansi, text_ansi) for the reasoning box, from the active skin.
+    def _reasoning_width(self):
+        """Usable text columns for the reasoning pane.
 
-        The reasoning box used to be drawn with the module-level _DIM and literal
-        box glyphs, which meant a skin had no say in it at all: the mazemaker skin
-        paints the TUI violet and the thinking block came out terminal-default
-        grey. Worse, the body was printed at column 0 with no rail and no wrap, so
-        a long paragraph ran straight past the corner of the frame the same function
-        had just drawn.
+        Prefers prompt_toolkit's own width, like the status bar does, because the
+        layout is rendered against that size and shutil can disagree with it.
         """
         try:
-            from daedalus_cli.skin_engine import get_active_skin
-            skin = get_active_skin()
-            border_hex = skin.get_color("reasoning_border", None) or \
-                skin.get_color("session_border", None) or "#8B8682"
-            text_hex = skin.get_color("reasoning_text", None) or border_hex
+            from prompt_toolkit.application import get_app
+            app = get_app()
+            if app is not None:
+                cols = app.output.get_size().columns
+                return max(cols - 4, 24)
         except Exception:
-            border_hex = text_hex = "#8B8682"
-        return _hex_to_ansi(border_hex, bold=False), _hex_to_ansi(text_hex, bold=False)
+            pass
+        return max(shutil.get_terminal_size((80, 24)).columns - 4, 24)
 
-    def _reasoning_width(self):
-        """Usable text columns inside the reasoning box, leaving room for the rail."""
-        return max(shutil.get_terminal_size().columns - 6, 24)
+    def _refresh_reasoning_pane(self, added: list) -> None:
+        """Recompute the pane's fragments and ask for ONE repaint.
 
-    def _emit_reasoning_line(self, line: str, text_ansi: str, reset: str = _RST) -> None:
-        """Print one reasoning line wrapped and railed inside the box.
+        This is the whole point of the change. The pane used to print each line
+        with _cprint, and every _cprint is a print_formatted_text, which
+        prompt_toolkit routes through run_in_terminal: renderer.erase(),
+        renderer.reset(), a cursor-position request, and a full redraw of the
+        skin-painted TUI. A 4k-token thinking block with no newlines therefore
+        cost roughly one teardown-and-rebuild of the whole UI per wrapped line.
 
-        textwrap matters here: reasoning arrives as a few long paragraphs with
-        almost no newlines, so without it a single line overruns the frame.
+        Mutating a list and calling invalidate is what the spinner already does
+        (cli.py:2734), and it costs one throttled repaint for the entire turn.
         """
-        import textwrap
-        width = self._reasoning_width()
-        for chunk in (textwrap.wrap(line, width) or [""]):
-            _cprint(f"{text_ansi}│{_RST} {text_ansi}{chunk}{reset}")
+        if not added:
+            return
+        if getattr(self, "_reasoning_fragments", None) is None:
+            self._reasoning_fragments = []
+        self._reasoning_fragments.extend(added)
+        # Keep the pane bounded: a long think must not grow the layout without
+        # limit and scroll the input area off the top of the screen.
+        cap = getattr(self, "_REASONING_PANE_MAX_LINES", 8)
+        if len(self._reasoning_fragments) > cap:
+            self._reasoning_fragments = self._reasoning_fragments[-cap:]
+        self._invalidate(min_interval=0.0)
 
     def _stream_reasoning_delta(self, text: str) -> None:
-        """Stream reasoning/thinking tokens into a dim box above the response.
+        """Buffer reasoning into the layout's reasoning pane.
 
-        Opens a dim reasoning box on first token, streams line-by-line.
-        The box is closed automatically when content tokens start arriving
-        (via _stream_delta → _emit_stream_text).
+        Nothing is printed. The pane is a FormattedTextControl whose callable
+        returns these fragments, so the text becomes part of the layout and is
+        repainted with the rest of the skin rather than on top of it.
 
-        Once the response box is open, suppress any further reasoning
-        rendering — a late thinking block (e.g. after an interrupt) would
-        otherwise draw a reasoning box inside the response box.
+        Once the response box is open, suppress further reasoning: a late thinking
+        block (e.g. after an interrupt) would otherwise appear above an answer
+        that has already started streaming.
         """
         if not text:
             return
@@ -2883,38 +2896,40 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if getattr(self, "_stream_box_opened", False):
             return
 
-        border_ansi, text_ansi = self._reasoning_style()
-
-        if not getattr(self, "_reasoning_box_opened", False):
-            self._reasoning_box_opened = True
-            w = shutil.get_terminal_size().columns
-            r_label = " Reasoning "
-            r_fill = w - 2 - len(r_label)
-            _cprint(f"\n{border_ansi}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
-
+        import textwrap
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
+        added: list = []
 
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            self._emit_reasoning_line(line, text_ansi)
-        # Flush on width rather than a fixed 80 chars: the old 80 triggered a full
-        # TUI erase+repaint far more often than the terminal was wide, and the box
-        # was left half-drawn when it did.
+            width = self._reasoning_width()
+            for chunk in (textwrap.wrap(line, width) or [""]):
+                added.append(('class:reasoning-text', f"│ {chunk}"))
+        # Reasoning arrives as long paragraphs with almost no newlines, so flush
+        # on width rather than waiting for a line break that may never come.
         if len(self._reasoning_buf) >= self._reasoning_width():
-            self._emit_reasoning_line(self._reasoning_buf, text_ansi)
+            for chunk in (textwrap.wrap(self._reasoning_buf, self._reasoning_width()) or [""]):
+                added.append(('class:reasoning-text', f"│ {chunk}"))
             self._reasoning_buf = ""
 
+        self._reasoning_box_opened = True
+        self._reasoning_lines_seen = getattr(self, "_reasoning_lines_seen", 0) + len(added)
+        self._refresh_reasoning_pane(added)
+
     def _close_reasoning_box(self) -> None:
-        """Close the live reasoning box if it's open."""
-        if getattr(self, "_reasoning_box_opened", False):
-            border_ansi, text_ansi = self._reasoning_style()
-            buf = getattr(self, "_reasoning_buf", "")
-            if buf:
-                self._emit_reasoning_line(buf, text_ansi)
-                self._reasoning_buf = ""
-            w = shutil.get_terminal_size().columns
-            _cprint(f"{border_ansi}└{'─' * (w - 2)}┘{_RST}")
+        """Empty the reasoning pane and let the deferred response through.
+
+        The pane collapses to zero height in the same repaint that the response
+        box opens, so the handoff is not visible as a jump.
+        """
+        if getattr(self, "_reasoning_box_opened", False) or \
+                getattr(self, "_reasoning_fragments", None):
+            if getattr(self, "_reasoning_buf", ""):
+                self._stream_reasoning_delta("\n")
+            self._reasoning_fragments = []
             self._reasoning_box_opened = False
+            self._reasoning_lines_seen = 0
+            self._invalidate(min_interval=0.0)
 
             deferred = getattr(self, "_deferred_content", "")
             if deferred:
@@ -3073,6 +3088,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._reasoning_box_opened = False
+        self._reasoning_fragments = []
+        self._reasoning_lines_seen = 0
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
         self._deferred_content = ""
@@ -7571,6 +7588,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         clarify_widget,
         model_picker_widget=None,
         spinner_widget=None,
+        reasoning_widget=None,
         spacer,
         status_bar,
         input_rule_top,
@@ -7597,6 +7615,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 model_picker_widget,
                 spinner_widget,
                 spacer,
+                reasoning_widget,
                 *self._get_extra_tui_widgets(),
                 getattr(self, "_pet_widget", None),
                 getattr(self, "_stash_panel_widget", None),
@@ -8316,6 +8335,25 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             height=get_spinner_height,
         )
 
+        def get_reasoning_fragments():
+            # A callable, so prompt_toolkit re-reads it on every repaint: the
+            # reasoning stream mutates the list from the agent thread and this
+            # picks the change up on the next invalidate, with no printing and so
+            # no run_in_terminal teardown.
+            return list(cli_ref._reasoning_fragments or [])
+
+        def get_reasoning_height():
+            n = len(cli_ref._reasoning_fragments)
+            if not n:
+                return 0
+            return min(n, cli_ref._REASONING_PANE_MAX_LINES)
+
+        reasoning_widget = Window(
+            content=FormattedTextControl(get_reasoning_fragments),
+            height=get_reasoning_height,
+            wrap_lines=False,
+        )
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
@@ -8559,6 +8597,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     approval_widget=approval_widget,
                     clarify_widget=clarify_widget,
                     spinner_widget=spinner_widget,
+                    reasoning_widget=reasoning_widget,
                     spacer=spacer,
                     status_bar=status_bar,
                     input_rule_top=input_rule_top,
@@ -8591,6 +8630,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'completion-menu.completion.current': 'bg:#333355 #FFD700',
             'completion-menu.meta.completion': 'bg:#1a1a2e #888888',
             'completion-menu.meta.completion.current': 'bg:#333355 #FFBF00',
+            # Reasoning pane: the skin's reasoning_border/text, re-resolved by
+            # _apply_tui_skin_style so /skin repaints it live like the rest.
+            'reasoning-text': '#8B8682',
+            'reasoning-border': '#8B8682',
             'clarify-border': '#CD7F32',
             'clarify-title': '#FFD700 bold',
             'clarify-question': '#FFF8DC bold',

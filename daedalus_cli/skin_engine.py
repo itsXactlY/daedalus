@@ -675,8 +675,17 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     label = skin.get_color("ui_label", title)
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
+    # The reasoning pane is a layout widget, so its colour has to come through
+    # the style layer like every other widget. Without these two entries the
+    # pane would keep the CLI's hardcoded grey and a skin would have no say in
+    # the thinking block at all.
+    reasoning_border = (skin.get_color("reasoning_border", None)
+                        or skin.get_color("session_border", None) or "#8B8682")
+    reasoning_text = skin.get_color("reasoning_text", None) or reasoning_border
 
     return {
+        "reasoning-border": reasoning_border,
+        "reasoning-text": reasoning_text,
         "input-area": prompt,
         "placeholder": f"{dim} italic",
         "prompt": prompt,
