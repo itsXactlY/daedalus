@@ -75,6 +75,10 @@ def body(f) -> str:
     return strip_ansi("\n".join(t for _, t in f._transcript.fragments(100)))
 
 
+def body_of(f) -> str:
+    return body(f)
+
+
 class TestToolProgressGoesToTheTranscript:
     def test_started_opens_a_call(self, fake):
         fake._on_tool_progress("tool.started", "read_file", preview="notes.md")
@@ -145,6 +149,57 @@ class TestPrintFunnel:
         # the fence markers must be gone: the result went through Markdown
         assert "```" not in body(fake)
         assert '"ok": true' in body(fake)
+
+
+class TestSpinnerFramesDoNotFloodTheTranscript:
+    """A minute of spinner animation must not become a screenful of blocks.
+
+    The KawaiiSpinner is constructed with the agent's print_fn, which is this
+    transcript. It animates with a carriage return and no newline at roughly
+    8 Hz. Before this was filtered, each frame became its own block: after a
+    minute of thinking the transcript was hundreds of frames tall, and the
+    conversation itself was scrolled out of view. That is the whole screen of
+    nothing the TUI showed.
+    """
+
+    def _frames(self, fake, count: int):
+        for i in range(count):
+            # exactly what KawaiiSpinner._animate emits: \r, content, padding
+            fake._transcript_print(f"\r  . thinking... ({i}.0s){' ' * 8}")
+
+    def test_a_minute_of_spinner_adds_nothing(self, fake):
+        self._frames(fake, 8 * 60)
+        # Without the filter each frame buffered separately, so this was 480
+        # blocks. Assert on both the block count and the buffer, because the
+        # failure mode was an ever-growing backlog rather than a wrong line.
+        assert len(fake._transcript) == 0, \
+            f"a minute of spinner produced {len(fake._transcript)} blocks"
+        assert fake._get_transcript_bridge()._line_buffer == "", \
+            "spinner frames were buffered instead of discarded"
+
+    def test_spinner_frames_are_dropped_but_real_text_is_not(self, fake):
+        self._frames(fake, 20)
+        fake._transcript_print("running 3 commands\n")
+        body = body_of(fake)
+        assert "running 3 commands" in body
+        assert "thinking..." not in body
+        assert len(fake._transcript) == 1
+
+    def test_carriage_return_lines_never_become_blocks(self, fake):
+        fake._transcript_print("progress 50%\rprogress 99%\n")
+        assert "progress" not in body_of(fake)
+
+    def test_plain_multiline_status_still_lands(self, fake):
+        fake._transcript_print("first line\nsecond line\n")
+        text = body_of(fake)
+        assert "first line" in text and "second line" in text
+
+    def test_each_plain_line_is_its_own_block(self, fake):
+        # Two lines in one write must not collapse into a single block, and
+        # must not leave a stray partial line behind either.
+        fake._transcript_print("first line\nsecond line\n")
+        assert len(fake._transcript) == 2
+        assert fake._get_transcript_bridge()._line_buffer == ""
 
 
 class TestGracefulDegradation:

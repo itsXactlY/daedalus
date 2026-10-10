@@ -3050,6 +3050,20 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._transcript_bridge = False
         return None if self._transcript_bridge is False else self._transcript_bridge
 
+    def _spinner_status(self, text: str) -> None:
+        """Sink for spinner frames: live status only, never scrollback.
+
+        The KawaiiSpinner repaints a line several times a second. That belongs
+        on the spinner widget, where it is overwritten in place, and nowhere
+        else -- appending it to the transcript produced one block per frame
+        until the screen was animation noise and the actual conversation had
+        been pushed out of view.
+        """
+        cleaned = (text or "").split("\r")[-1].strip()
+        if cleaned:
+            self._spinner_text = cleaned
+            self._invalidate()
+
     def _transcript_print(self, text: str) -> None:
         """The agent's print function: land the line in the transcript.
 
@@ -3057,15 +3071,33 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         agent's internal status output -- "running 3 commands", tool chatter,
         warnings -- and it used to be ``_cprint``, i.e. a full UI teardown per
         line.
+
+        Spinner frames are dropped entirely. The KawaiiSpinner is constructed
+        with this same print_fn and animates with ``\\r`` at ~8 Hz, emitting a
+        fresh frame every time. Those frames are not conversation: the TUI
+        drives its own live spinner widget, so every frame that reached the
+        transcript appended another block, and after a minute of thinking the
+        transcript was hundreds of spinner frames tall -- a screenful of noise
+        with the actual conversation pushed out of view. Only the spinner's
+        completion message (``spinner.stop()``) carries real text, and that
+        arrives as a normal newline-terminated line.
         """
         bridge = self._get_transcript_bridge()
         if bridge is None:
             _cprint(text)
             return
-        try:
-            bridge.print_line(text)
-        except Exception:
-            logger.debug("Transcript print failed", exc_info=True)
+        for raw_line in (text or "").split("\n"):
+            if "\r" in raw_line:
+                # A carriage return here is the spinner repainting one line in
+                # place. Dropping it is deliberate: the frames carry no
+                # information the spinner widget does not already show, and
+                # keeping them filled the transcript with animation noise.
+                continue
+            if raw_line.strip():
+                try:
+                    bridge.print_line(raw_line + "\n")
+                except Exception:
+                    logger.debug("Transcript print failed", exc_info=True)
 
     def _transcript_notice(self, text: str, *, emoji: str = "", level: str = "info"):
         """Add a one-line status entry to the transcript."""
@@ -3356,6 +3388,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # skin-painted UI down and rebuild it; the transcript widget paints
             # them as part of the layout instead.
             self.agent._print_fn = self._transcript_print
+            # The KawaiiSpinner is constructed with the agent's print_fn. Its
+            # frames are live animation, not conversation, and the layout
+            # already has a spinner widget for them. Letting them through the
+            # transcript put one block per frame into the scrollback, which
+            # filled the screen with animation noise. It gets a sink of its
+            # own that only refreshes the widget.
+            self.agent._spinner_print_fn = self._spinner_status
             self.agent.stream_verbose_mode = self.tool_progress_mode == "verbose"
             self._active_agent_route_signature = (
                 effective_model,

@@ -1374,6 +1374,10 @@ class AIAgent:
         self.platform = platform
         self._user_id = user_id
         self._print_fn = None
+        #: Optional dedicated sink for live animation (the CLI's spinner
+        #: widget). Left None by every host that does not provide one, in
+        #: which case spinners fall back to _print_fn.
+        self._spinner_print_fn = None
         self.background_review_callback = None
         self.skip_context_files = skip_context_files
         self.skip_project_context = skip_project_context
@@ -2589,6 +2593,16 @@ class AIAgent:
             "Model switched in-place: %s (%s) -> %s (%s)",
             old_model, old_provider, new_model, new_provider,
         )
+
+    def _spinner_or_print_fn(self):
+        """Print function for the KawaiiSpinner instances.
+
+        A spinner is live animation, not conversation. When the host offers a
+        dedicated sink (the CLI's spinner widget), use it: routing frames
+        through the transcript appends one block per repaint and buries the
+        actual conversation. Fall back to the plain print function elsewhere.
+        """
+        return getattr(self, "_spinner_print_fn", None) or self._print_fn
 
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
@@ -8698,7 +8712,7 @@ class AIAgent:
         spinner = None
         if self.quiet_mode and not self.tool_progress_callback and self._should_start_quiet_spinner():
             face = random.choice(KawaiiSpinner.get_waiting_faces())
-            spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._print_fn)
+            spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._spinner_or_print_fn())
             spinner.start()
 
         try:
@@ -8941,7 +8955,7 @@ class AIAgent:
                 spinner = None
                 if self.quiet_mode and not self.tool_progress_callback and self._should_start_quiet_spinner():
                     face = random.choice(KawaiiSpinner.get_waiting_faces())
-                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._spinner_or_print_fn())
                     spinner.start()
                 self._delegate_spinner = spinner
                 _delegate_result = None
@@ -8969,7 +8983,7 @@ class AIAgent:
                     face = random.choice(KawaiiSpinner.get_waiting_faces())
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._spinner_or_print_fn())
                     spinner.start()
                 _mem_result = None
                 try:
@@ -8991,7 +9005,7 @@ class AIAgent:
                     face = random.choice(KawaiiSpinner.get_waiting_faces())
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
-                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._spinner_or_print_fn())
                     spinner.start()
                 _spinner_result = None
                 try:
@@ -9913,7 +9927,7 @@ class AIAgent:
                     self.thinking_callback(f"{face} {verb}...")
                 elif not self._has_stream_consumers() and self._should_start_quiet_spinner():
                     spinner_type = random.choice(['brain', 'sparkle', 'pulse', 'moon', 'star'])
-                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=self._print_fn)
+                    thinking_spinner = KawaiiSpinner(f"{face} {verb}...", spinner_type=spinner_type, print_fn=self._spinner_or_print_fn())
                     thinking_spinner.start()
             
             if self.verbose_logging:
