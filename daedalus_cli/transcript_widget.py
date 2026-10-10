@@ -73,10 +73,18 @@ class TranscriptControl(UIControl):
 
     def preferred_height(self, width: int, max_available_height: int,
                           wrap_lines: bool, get_line_prefix=None) -> int:
-        # Claim every row the layout will give us. As the only flexible child
-        # of the HSplit this is what makes it the scrollback region rather than
-        # a one-line strip. The scroll offset handles anything longer.
-        return max_available_height
+        # Claim a share of the available height, not all of it.
+        #
+        # prompt_toolkit resolves a weighted Window's height before the other
+        # fixed-height children of the HSplit, so returning max_available_height
+        # makes the transcript take the whole screen: at startup the transcript
+        # is empty, and the user gets a blank terminal with no prompt, no
+        # status bar and no input line. Reserve the rows the rest of the layout
+        # needs (rules, status, spinner, input, completion menu) and take the
+        # remainder, which is what makes the transcript the scrollback region
+        # without evicting the controls.
+        chrome = self.controller.chrome_rows
+        return max(max_available_height - chrome, 1)
 
     def preferred_width(self, max_width: int) -> int:
         return max_width
@@ -112,6 +120,11 @@ class TranscriptWidget:
         self._content_height = 0
         #: rows the control was last drawn at, so scroll keys match the view
         self.visible_rows = 20
+        #: Rows the rest of the layout needs: two input rules, the status bar,
+        #: the spinner/hint line, the input area and the completion menu. The
+        #: transcript leaves these alone so it can never push the controls off
+        #: the screen -- which is exactly what a full-height request does.
+        self.chrome_rows = 8
 
     # -- scrolling ---------------------------------------------------------
 

@@ -224,6 +224,93 @@ class TestRendering:
             "live transcript updates are stacking full-screen clears"
 
 
+class TestTheTranscriptMustNotEvictTheControls:
+    """The transcript may not take the whole screen.
+
+    This is a real bug that shipped once: the control returned
+    ``max_available_height`` from ``preferred_height``, and prompt_toolkit
+    resolves a weighted Window before the other HSplit children. The transcript
+    therefore claimed every row, and because it is empty at startup the user
+    got a blank terminal with no prompt, no status bar and no input line.
+    """
+
+    def _layout_output(self, transcript_rows: int, rows: int = 24):
+        import io
+        import re
+        import threading
+        import time
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.data_structures import Size
+        from prompt_toolkit.input.defaults import create_pipe_input
+        from prompt_toolkit.layout import HSplit, Layout, Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.layout.dimension import Dimension
+        from prompt_toolkit.output.vt100 import Vt100_Output
+        from daedalus_cli.transcript_widget import TranscriptControl
+
+        tr = make_transcript(transcript_rows)
+        w = TranscriptWidget(tr)
+        tw = Window(content=TranscriptControl(w), height=Dimension(min=1, weight=1))
+        status = Window(
+            content=FormattedTextControl(lambda: [("", "STATUS-BAR")]), height=1)
+        inp = Window(
+            content=FormattedTextControl(lambda: [("", "INPUT-LINE")]), height=3)
+
+        buf = io.StringIO()
+
+        class Sink(io.TextIOBase):
+            def write(self, s):
+                buf.write(s)
+                return len(s)
+
+            def flush(self):
+                pass
+
+            def isatty(self):
+                return False
+
+            def fileno(self):
+                return 2
+
+        out = Vt100_Output(Sink(), lambda: Size(rows=rows, columns=80),
+                           term="xterm-256color")
+        with create_pipe_input() as pipe:
+            app = Application(layout=Layout(HSplit([Window(height=0), tw, status, inp])),
+                              input=pipe, output=out)
+            t = threading.Thread(target=lambda: app.run(), daemon=True)
+            t.start()
+            time.sleep(0.6)
+            try:
+                app.exit()
+            except Exception:
+                pass
+            t.join(timeout=3)
+        return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf.getvalue())
+
+    def test_controls_survive_an_empty_transcript(self):
+        plain = self._layout_output(0)
+        assert "STATUS-BAR" in plain, "the transcript pushed the status bar off"
+        assert "INPUT-LINE" in plain, "the transcript pushed the input off"
+
+    def test_controls_survive_a_long_transcript(self):
+        plain = self._layout_output(200)
+        assert "STATUS-BAR" in plain
+        assert "INPUT-LINE" in plain
+
+    def test_controls_survive_on_a_short_terminal(self):
+        plain = self._layout_output(20, rows=12)
+        assert "STATUS-BAR" in plain
+        assert "INPUT-LINE" in plain
+
+    def test_transcript_still_gets_usable_space(self):
+        # The fix must not over-correct: reserving chrome should leave the
+        # transcript real room, not collapse it to a single row.
+        plain = self._layout_output(40)
+        body = [l for l in plain.split("\n") if "line" in l]
+        assert len(body) >= 5, \
+            f"transcript only got {len(body)} rows; chrome reservation is too greedy"
+
+
 class TestControllerIsHeadless:
     def test_can_be_constructed_without_an_application(self):
         # Scroll math and fragments must work with no prompt_toolkit app

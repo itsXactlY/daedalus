@@ -8509,6 +8509,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             except Exception:
                 controller = None
         if controller is not None:
+            # Reserve exactly the rows the fixed-height chrome occupies. The
+            # transcript control is weighted and prompt_toolkit resolves it
+            # before the other children, so it must subtract these itself or it
+            # takes the whole screen and the prompt disappears.
+            controller.chrome_rows = (
+                1  # spinner / hint line
+                + 1  # status bar
+                + 2  # the two input rules
+                + (input_area.content.preferred_height(80, 20)
+                   if hasattr(input_area, "content") else 3)
+                + 2  # completion menu + breathing room
+            )
             transcript_window = controller.build(cli_ref)
         cli_ref._transcript_windows = (
             (transcript_window,) if transcript_window is not None else ())
