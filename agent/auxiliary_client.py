@@ -54,6 +54,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from agent.credential_pool import load_pool
+from agent.backend_kind import is_single_sequence
 from agent.sidekick_queue import priority_for_task, sidekick_gate
 from daedalus_cli.config import get_daedalus_home
 from daedalus_constants import OPENROUTER_BASE_URL
@@ -1971,9 +1972,13 @@ def call_llm(
                 "started with -np 2 --kv-unified).",
                 task or "call", _aux_base, effective_timeout)
             extra_body = dict(extra_body or {})
-            extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
             _gate_priority = priority_for_task(task)
-            extra_body.setdefault("n_cache_reuse", 256)
+            # Strata holds one conversation: no slots to pin, and a foreign request
+            # parks the main tape first, so the gate defers work nobody waits for.
+            sidekick_gate.single_sequence = is_single_sequence(_aux_base)
+            if not sidekick_gate.single_sequence:
+                extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
+                extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
 
@@ -2171,9 +2176,13 @@ async def async_call_llm(
                 "started with -np 2 --kv-unified).",
                 task or "call", _aux_base, effective_timeout)
             extra_body = dict(extra_body or {})
-            extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
             _gate_priority = priority_for_task(task)
-            extra_body.setdefault("n_cache_reuse", 256)
+            # Strata holds one conversation: no slots to pin, and a foreign request
+            # parks the main tape first, so the gate defers work nobody waits for.
+            sidekick_gate.single_sequence = is_single_sequence(_aux_base)
+            if not sidekick_gate.single_sequence:
+                extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
+                extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
         pass
 

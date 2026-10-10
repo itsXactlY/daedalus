@@ -3546,8 +3546,12 @@ class AIAgent:
                     # And through the sidekick queue, last in line: a
                     # compaction or memory flush always goes before the next
                     # review request (agent/sidekick_queue.py).
-                    from agent.sidekick_queue import BACKGROUND
-                    review_agent._sidekick_priority = BACKGROUND
+                    from agent.backend_kind import is_single_sequence
+                    from agent.sidekick_queue import DEFERRED, sidekick_gate as _review_gate
+                    # Nobody waits for the review: on a one-conversation engine it
+                    # runs only once main has been quiet (agent/sidekick_queue.py).
+                    _review_gate.single_sequence = is_single_sequence(self.base_url)
+                    review_agent._sidekick_priority = DEFERRED
 
                     # Read-only mazemaker tools (recall/recall_multi/get/think/
                     # graph/stats/help/list_by_label_prefix/...) are what turned

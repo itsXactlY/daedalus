@@ -26,12 +26,22 @@ from typing import Optional
 HYGIENE = 0     # compaction summaries, hot-swap prefill
 MEMORY = 1      # memory flush
 BACKGROUND = 2  # skill/memory review and anything else
+DEFERRED = 3    # fire-and-forget: titles, curator, skill review. Waits for a quiet engine.
 
 _TASK_PRIORITY = {
     "compression": HYGIENE,
     "hot_swap_prefill": HYGIENE,
     "flush_memories": MEMORY,
+    "title_generation": DEFERRED,
+    "curator": DEFERRED,
+    "skills_hub": DEFERRED,
 }
+
+# On a one-conversation engine every foreign request parks the main tape first
+# (32-38 s at ~30k tokens), so work nobody waits for runs only once main has
+# been quiet this long, and never waits longer than the cap.
+DEFER_IDLE_S = 90.0
+DEFER_MAX_S = 3600.0
 
 
 def priority_for_task(task: Optional[str]) -> int:
@@ -46,6 +56,8 @@ class SidekickGate:
         self._seq = itertools.count()
         self._reserved_until = 0.0
         self._main_depth = 0
+        self._main_last_end = 0.0
+        self.single_sequence = False
 
     # -- main interlock -------------------------------------------------
     # The gate above serialises background jobs against EACH OTHER, but never
@@ -64,6 +76,7 @@ class SidekickGate:
             if self._main_depth > 0:
                 self._main_depth -= 1
             if self._main_depth == 0:
+                self._main_last_end = time.monotonic()
                 self._cond.notify_all()
 
     def main_active(self) -> bool:
@@ -99,12 +112,23 @@ class SidekickGate:
     def reserved(self) -> bool:
         return time.monotonic() < self._reserved_until
 
+    def _must_defer(self, priority: int, since: float) -> bool:
+        """Work nobody waits for stays off a one-conversation engine while main is warm."""
+        if priority < DEFERRED or not self.single_sequence:
+            return False
+        now = time.monotonic()
+        if now - since >= DEFER_MAX_S:
+            return False
+        return now - self._main_last_end < DEFER_IDLE_S
+
     def acquire(self, priority: int) -> None:
         ticket = (int(priority), next(self._seq))
+        since = time.monotonic()
         with self._cond:
             heapq.heappush(self._waiting, ticket)
             while (self._busy or self._waiting[0] != ticket
                    or self._main_depth > 0
+                   or self._must_defer(ticket[0], since)
                    or (ticket[0] > HYGIENE and self.reserved())):
                 self._cond.wait(timeout=1.0)
             heapq.heappop(self._waiting)
