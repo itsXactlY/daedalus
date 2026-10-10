@@ -287,6 +287,34 @@ class TestTheTranscriptMustNotEvictTheControls:
             t.join(timeout=3)
         return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buf.getvalue())
 
+    def test_transcript_does_not_leave_a_gap_above_the_controls(self):
+        # The real symptom, measured the way it actually shows up: a run of
+        # empty rows between the last piece of transcript content and the
+        # status bar. Blank rows *inside* the transcript are fine -- rich puts
+        # blank lines between markdown blocks -- so the check is the gap, not
+        # the total blank count.
+        #
+        # This is deliberately measured on rendered rows rather than on the
+        # byte stream. prompt_toolkit positions the cursor with Device Status
+        # Reports, so a substring search over raw output cannot distinguish
+        # "painted at the bottom of the region" from "written once and then
+        # covered".
+        plain = self._layout_output(6, rows=24)
+        lines = plain.split("\n")
+
+        status = next((i for i, l in enumerate(lines) if "STATUS-BAR" in l), None)
+        assert status is not None, "the status bar vanished"
+        above = lines[:status]
+        # everything between the last non-blank content row and the status bar
+        gap = 0
+        for line in reversed(above):
+            if line.strip():
+                break
+            gap += 1
+        assert gap <= 1, (
+            f"{gap} empty rows between the transcript and the status bar: "
+            "the transcript is padded, not filling its region")
+
     def test_controls_survive_an_empty_transcript(self):
         plain = self._layout_output(0)
         assert "STATUS-BAR" in plain, "the transcript pushed the status bar off"

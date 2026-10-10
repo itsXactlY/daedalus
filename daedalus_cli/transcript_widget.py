@@ -73,18 +73,20 @@ class TranscriptControl(UIControl):
 
     def preferred_height(self, width: int, max_available_height: int,
                           wrap_lines: bool, get_line_prefix=None) -> int:
-        # Claim a share of the available height, not all of it.
+        # Ask for the room we need, capped at what is on offer.
         #
-        # prompt_toolkit resolves a weighted Window's height before the other
-        # fixed-height children of the HSplit, so returning max_available_height
-        # makes the transcript take the whole screen: at startup the transcript
-        # is empty, and the user gets a blank terminal with no prompt, no
-        # status bar and no input line. Reserve the rows the rest of the layout
-        # needs (rules, status, spinner, input, completion menu) and take the
-        # remainder, which is what makes the transcript the scrollback region
-        # without evicting the controls.
-        chrome = self.controller.chrome_rows
-        return max(max_available_height - chrome, 1)
+        # The Window around this control carries Dimension(weight=1), and that
+        # is what gives the transcript the leftover space -- the HSplit gives
+        # every other child its fixed height first and hands the remainder to
+        # the weighted one. Overriding preferred_height to return less than
+        # max_available_height capped the Window's height and left the rows
+        # below it blank: the transcript rendered its content at the top and
+        # the rest of the region stayed empty.
+        #
+        # So: report the content height, never more than the screen, and let
+        # the weight do the sizing.
+        needed = self.controller.content_height(width)
+        return max(min(needed, max_available_height), 1)
 
     def preferred_width(self, max_width: int) -> int:
         return max_width
