@@ -8460,6 +8460,20 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
+        # The epoch under the KV cache is the one that just ended. Tell the engine so the dropped
+        # prefix leaves its residency map and the host allocator, and give our own heap back, rather
+        # than leaving the discarded messages mapped and therefore a swap candidate. The engine
+        # validates the cut against its live write position and refuses one that is ahead of it, so
+        # passing the pre-compression payload length here is safe even when it overshoots.
+        try:
+            from agent.history_ejector import HistoryEjector
+            _ejector = getattr(self, "_history_ejector", None)
+            if _ejector is None:
+                _ejector = HistoryEjector(self.base_url)
+                self._history_ejector = _ejector
+            _ejector.on_rebase(compressed, cut_cells=int(approx_tokens or 0))
+        except Exception as _eject_exc:
+            logger.debug("history eject skipped at rebase: %s", _eject_exc)
         return compressed, new_system_prompt
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
