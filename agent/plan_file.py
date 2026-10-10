@@ -172,6 +172,29 @@ def bind_plan(plan: Path, session_id: str) -> bool:
     return True
 
 
+def hand_over_plans(old_session_id: str, new_session_id: str,
+                    workdir: Optional[str] = None) -> int:
+    """Move every plan held by ``old_session_id`` to ``new_session_id``.
+
+    A rebase mints a new session id inside the SAME process. Without this the
+    old record names a live pid under a different session, so the agent reads
+    its own plan as "worked by another live agent" and owns none.
+    """
+    if not old_session_id or not new_session_id or old_session_id == new_session_id:
+        return 0
+    d = plan_dir(workdir)
+    if d is None or not d.is_dir():
+        return 0
+    moved = 0
+    for p in sorted(d.iterdir()):
+        if not p.is_file() or not PLAN_ANY_RE.match(p.name):
+            continue
+        if _read_owner(p).get("session_id") == old_session_id:
+            _write_owner(p, new_session_id)
+            moved += 1
+    return moved
+
+
 def _read_text(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace")

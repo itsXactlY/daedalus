@@ -12,6 +12,7 @@ from agent.plan_file import (
     PLAN_MAX_CHARS,
     PlanInfo,
     bind_plan,
+    hand_over_plans,
     list_plans,
     new_plan_path,
     plan_focus,
@@ -262,3 +263,31 @@ def test_no_session_id_claims_nothing(tmp_path):
     # ...and it stays free for the next real session.
     res = resolve_plan(str(tmp_path), session_id="session-real")
     assert res.owned == p
+
+
+def test_rebase_hands_the_plan_to_the_new_session(tmp_path):
+    # A rebase mints a new session id in the SAME live process; the plan must follow.
+    p = _write(tmp_path, "# tor\nStatus: active\n- [ ] 1. frame cap", name="PLAN-tor.md")
+    _write(tmp_path, "# other\nStatus: active\n- [ ] 1. x", name="PLAN-other.md")
+    assert bind_plan(p, "old")
+    assert hand_over_plans("old", "new", str(tmp_path)) == 1
+    res = resolve_plan(str(tmp_path), "new")
+    assert res.owned == p and not res.foreign
+
+
+def test_without_hand_over_the_agent_adopts_a_different_plan(tmp_path):
+    # What the missing hand-over did: the held plan reads as foreign, so the
+    # resolver binds the only other open plan instead.
+    p = _write(tmp_path, "# tor\nStatus: active\n- [ ] 1. a", name="PLAN-tor.md")
+    q = _write(tmp_path, "# other\nStatus: active\n- [ ] 1. b", name="PLAN-other.md")
+    bind_plan(p, "old")
+    assert resolve_plan(str(tmp_path), "new").owned == q
+
+
+def test_hand_over_leaves_other_sessions_plans_alone(tmp_path):
+    a = _write(tmp_path, "# a\nStatus: active\n- [ ] 1. x", name="PLAN-a.md")
+    b = _write(tmp_path, "# b\nStatus: active\n- [ ] 1. x", name="PLAN-b.md")
+    bind_plan(a, "old"); bind_plan(b, "someone-else")
+    assert hand_over_plans("old", "new", str(tmp_path)) == 1
+    assert json.loads((tmp_path / ".daedalus/.owners/PLAN-b.md.json").read_text())["session_id"] == "someone-else"
+    assert hand_over_plans("", "new", str(tmp_path)) == 0

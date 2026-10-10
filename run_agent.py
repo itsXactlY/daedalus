@@ -76,7 +76,7 @@ from tools.browser_tool import cleanup_browser
 from daedalus_constants import OPENROUTER_BASE_URL
 
 from agent.memory_manager import build_memory_context_block
-from agent.plan_file import render_plan_block
+from agent.plan_file import hand_over_plans, render_plan_block
 from agent.turn_context import anchored_recall_query
 from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
@@ -8430,6 +8430,10 @@ class AIAgent:
                     model=self.model,
                     parent_session_id=old_session_id,
                 )
+                try:
+                    hand_over_plans(old_session_id, self.session_id)
+                except Exception:
+                    logger.debug("plan hand-over after rebase failed", exc_info=True)
                 if old_title:
                     try:
                         new_title = self._session_db.get_next_title_in_lineage(old_title)
