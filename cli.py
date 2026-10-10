@@ -2830,6 +2830,41 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if flush_text:
             self._emit_reasoning_preview(flush_text)
 
+    def _reasoning_style(self):
+        """(border_ansi, text_ansi) for the reasoning box, from the active skin.
+
+        The reasoning box used to be drawn with the module-level _DIM and literal
+        box glyphs, which meant a skin had no say in it at all: the mazemaker skin
+        paints the TUI violet and the thinking block came out terminal-default
+        grey. Worse, the body was printed at column 0 with no rail and no wrap, so
+        a long paragraph ran straight past the corner of the frame the same function
+        had just drawn.
+        """
+        try:
+            from daedalus_cli.skin_engine import get_active_skin
+            skin = get_active_skin()
+            border_hex = skin.get_color("reasoning_border", None) or \
+                skin.get_color("session_border", None) or "#8B8682"
+            text_hex = skin.get_color("reasoning_text", None) or border_hex
+        except Exception:
+            border_hex = text_hex = "#8B8682"
+        return _hex_to_ansi(border_hex, bold=False), _hex_to_ansi(text_hex, bold=False)
+
+    def _reasoning_width(self):
+        """Usable text columns inside the reasoning box, leaving room for the rail."""
+        return max(shutil.get_terminal_size().columns - 6, 24)
+
+    def _emit_reasoning_line(self, line: str, text_ansi: str, reset: str = _RST) -> None:
+        """Print one reasoning line wrapped and railed inside the box.
+
+        textwrap matters here: reasoning arrives as a few long paragraphs with
+        almost no newlines, so without it a single line overruns the frame.
+        """
+        import textwrap
+        width = self._reasoning_width()
+        for chunk in (textwrap.wrap(line, width) or [""]):
+            _cprint(f"{text_ansi}│{_RST} {text_ansi}{chunk}{reset}")
+
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
 
@@ -2848,31 +2883,37 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if getattr(self, "_stream_box_opened", False):
             return
 
+        border_ansi, text_ansi = self._reasoning_style()
+
         if not getattr(self, "_reasoning_box_opened", False):
             self._reasoning_box_opened = True
             w = shutil.get_terminal_size().columns
             r_label = " Reasoning "
             r_fill = w - 2 - len(r_label)
-            _cprint(f"\n{_DIM}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
+            _cprint(f"\n{border_ansi}┌─{r_label}{'─' * max(r_fill - 1, 0)}┐{_RST}")
 
         self._reasoning_buf = getattr(self, "_reasoning_buf", "") + text
 
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
-        if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            self._emit_reasoning_line(line, text_ansi)
+        # Flush on width rather than a fixed 80 chars: the old 80 triggered a full
+        # TUI erase+repaint far more often than the terminal was wide, and the box
+        # was left half-drawn when it did.
+        if len(self._reasoning_buf) >= self._reasoning_width():
+            self._emit_reasoning_line(self._reasoning_buf, text_ansi)
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
         """Close the live reasoning box if it's open."""
         if getattr(self, "_reasoning_box_opened", False):
+            border_ansi, text_ansi = self._reasoning_style()
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
+                self._emit_reasoning_line(buf, text_ansi)
                 self._reasoning_buf = ""
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
+            _cprint(f"{border_ansi}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
 
             deferred = getattr(self, "_deferred_content", "")
@@ -2979,9 +3020,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Daedalus")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
+                _resp_hex = _skin.get_color("response_border", "#FFD700")
             except Exception:
                 label = "⚕ Daedalus"
                 _text_hex = "#FFF8DC"
+                _resp_hex = "#FFD700"
             try:
                 _r = int(_text_hex[1:3], 16)
                 _g = int(_text_hex[3:5], 16)
@@ -2989,9 +3032,15 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
             except (ValueError, IndexError):
                 self._stream_text_ansi = ""
+            # The border follows the skin's response_border, not the module-level
+            # _GOLD constant. Streaming drew a gold frame on every skin: on the
+            # mazemaker skin that is #BF00FF purple elsewhere on screen, so the
+            # streamed answer and the non-streamed one for the same message came
+            # out different colours.
+            self._stream_border_ansi = _hex_to_ansi(_resp_hex, bold=True)
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
-            _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
+            _cprint(f"\n{self._stream_border_ansi}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -3011,7 +3060,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
-            _cprint(f"{_GOLD}╰{'─' * (w - 2)}╯{_RST}")
+            _sb = getattr(self, "_stream_border_ansi", "") or _GOLD
+            _cprint(f"{_sb}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""

@@ -23,6 +23,11 @@ colors:
   # Response box
   response_border: "#BF00FF"
 
+  # Reasoning box: the violet of the banner, dimmed so a long thinking block
+  # reads as background instead of competing with the answer it precedes.
+  reasoning_border: "#8B008B"
+  reasoning_text: "#9370DB"
+
   # Session display
   session_label: "#DA70D6"
   session_border: "#8B008B"

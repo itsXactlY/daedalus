@@ -30,6 +30,10 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       prompt: "#FFF8DC"                  # Prompt text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)
+      reasoning_border: "#8B8682"        # Reasoning box border: deliberately dimmer than
+                                         # the response, so a long thinking block reads as
+                                         # background rather than competing with the answer
+      reasoning_text: "#8B8682"          # Reasoning body text
       session_label: "#DAA520"           # Session label color
       session_border: "#8B8682"          # Session ID dim color
 
@@ -159,7 +163,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#ffa726",
             "prompt": "#FFF8DC",
             "input_rule": "#CD7F32",
-            "response_border": "#FFD700",
+            "response_border": "#FFD700", "reasoning_border": "#8B8682", "reasoning_text": "#8B8682",
             "session_label": "#DAA520",
             "session_border": "#8B8682",
         },
@@ -191,7 +195,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#ffa726",
             "prompt": "#F1E6CF",
             "input_rule": "#9F1C1C",
-            "response_border": "#C7A96B",
+            "response_border": "#C7A96B", "reasoning_border": "#7A6F5C", "reasoning_text": "#7A6F5C",
             "session_label": "#C7A96B",
             "session_border": "#6E584B",
         },
@@ -255,7 +259,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#999999",
             "prompt": "#c9d1d9",
             "input_rule": "#444444",
-            "response_border": "#aaaaaa",
+            "response_border": "#aaaaaa", "reasoning_border": "#6f6f6f", "reasoning_text": "#6f6f6f",
             "session_label": "#888888",
             "session_border": "#555555",
         },
@@ -286,7 +290,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#e6a855",
             "prompt": "#c9d1d9",
             "input_rule": "#4169e1",
-            "response_border": "#7eb8f6",
+            "response_border": "#7eb8f6", "reasoning_border": "#5d7a94", "reasoning_text": "#5d7a94",
             "session_label": "#7eb8f6",
             "session_border": "#4b5563",
         },
@@ -317,7 +321,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#ffa726",
             "prompt": "#EAF7FF",
             "input_rule": "#2A6FB9",
-            "response_border": "#5DB8F5",
+            "response_border": "#5DB8F5", "reasoning_border": "#4a7f9e", "reasoning_text": "#4a7f9e",
             "session_label": "#A9DFFF",
             "session_border": "#496884",
         },
@@ -381,7 +385,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#B7B7B7",
             "prompt": "#F5F5F5",
             "input_rule": "#656565",
-            "response_border": "#B7B7B7",
+            "response_border": "#B7B7B7", "reasoning_border": "#6e6e6e", "reasoning_text": "#6e6e6e",
             "session_label": "#919191",
             "session_border": "#656565",
         },
@@ -446,7 +450,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_warn": "#ffa726",
             "prompt": "#FFF0D4",
             "input_rule": "#C75B1D",
-            "response_border": "#F29C38",
+            "response_border": "#F29C38", "reasoning_border": "#8a5a22", "reasoning_text": "#8a5a22",
             "session_label": "#FFD39A",
             "session_border": "#6C4724",
         },
