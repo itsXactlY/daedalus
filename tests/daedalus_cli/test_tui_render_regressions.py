@@ -75,3 +75,22 @@ def test_a_failing_envelope_is_not_hidden():
     raw = json.dumps({"status": "error", "output": "boom", "error": "Traceback", "exit_code": 1})
     res = classify_result(raw, tool_name="execute_code")
     assert "exit_code" in res.text and "error" in res.text      # real bookkeeping stays visible
+
+
+def test_read_file_envelope_is_unwrapped_to_the_file():
+    raw = json.dumps({"content": "     1|# Kermit\n     2|Status: active", "total_lines": 66,
+                      "file_size": 5644, "truncated": False, "is_binary": False, "is_image": False})
+    res = classify_result(raw, tool_name="read_file")
+    assert res.kind != ResultKind.DATA
+    assert "# Kermit\n" in res.text and "file_size" not in res.text
+
+
+def test_a_truncated_read_says_so():
+    raw = json.dumps({"content": "1|a\n2|b", "total_lines": 9000, "truncated": True})
+    assert classify_result(raw, tool_name="read_file").text.endswith("… truncated")
+
+
+def test_error_fields_are_never_bookkeeping():
+    raw = json.dumps({"content": "partial", "error": "permission denied", "total_lines": 3})
+    res = classify_result(raw, tool_name="read_file")
+    assert "permission denied" in res.text

@@ -118,8 +118,8 @@ class TestToolLifecycle:
         # "started" header and again as an unpaired "completed" one.
         bridge.tool_started("read_file", "read_file", "a.md")
         bridge.tool_completed("call_abc123", "read_file", "body")
-        assert len(bridge.transcript) == 2, \
-            "expected one call block plus one result block"
+        assert len(bridge.transcript) == 1, \
+            "a call and its result are ONE block"
         headers = [t for _, t in bridge.transcript.fragments(100)
                    if "read_file" in t]
         assert len(headers) == 1, f"tool header rendered {len(headers)} times"
@@ -132,7 +132,8 @@ class TestToolLifecycle:
         bodies = [t for _, t in bridge.transcript.fragments(100)
                   if "body" in t]
         assert len(bodies) == 2, "a concurrent result was dropped"
-        assert not bridge._open_by_name, "an open call was left behind"
+        assert not any(bridge._open_by_name.values()), "an open call was left behind"
+        assert not bridge._open_calls, "an open call was left behind"
 
     def test_no_dangling_open_calls_after_completion(self, bridge):
         bridge.tool_started("a", "read")
@@ -205,3 +206,36 @@ class TestLifecycle:
         theme = TranscriptTheme(text="#abcdef")
         TranscriptBridge(tr, theme=theme)
         assert tr.theme == theme
+
+class TestOneBlockPerCall:
+    """Parallel calls used to render [call A][call B][result A][result B]."""
+
+    def test_each_result_sits_under_its_own_call(self, bridge):
+        bridge.tool_started("a", "mazemaker_recall", "stealth plan")
+        bridge.tool_started("b", "read_file", "PLAN.md")
+        bridge.tool_completed("b", "read_file", "BODY-OF-B")
+        bridge.tool_completed("a", "mazemaker_recall", "BODY-OF-A")
+        lines = [t for _, t in bridge.transcript.fragments(100)]
+        order = [next(i for i, t in enumerate(lines) if m in t)
+                 for m in ("mazemaker_recall", "BODY-OF-A", "read_file", "BODY-OF-B")]
+        assert order == sorted(order), f"results detached from their calls: {lines}"
+
+    def test_preparing_is_upgraded_in_place_not_repeated(self, bridge):
+        prep = bridge.tool_preparing("read_file")
+        assert prep.state == "preparing"
+        started = bridge.tool_started("x", "read_file", "a.md")
+        assert started is prep and prep.state == "running"
+        bridge.tool_completed("x", "read_file", "body")
+        headers = [t for _, t in bridge.transcript.fragments(100) if "read_file" in t]
+        assert len(headers) == 1 and len(bridge.transcript) == 1
+
+    def test_duration_is_measured_when_the_caller_has_none(self, bridge):
+        block = bridge.tool_started("x", "terminal", "ls")
+        bridge.tool_completed("x", "terminal", "out")
+        assert block.duration is not None and block.duration >= 0.0
+        assert "s" in "".join(t for _, t in block.fragments(100, bridge.transcript.theme))
+
+    def test_clear_forgets_preparing_calls(self, bridge):
+        bridge.tool_preparing("read_file")
+        bridge.clear()
+        assert not any(bridge._preparing.values())

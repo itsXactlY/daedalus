@@ -3101,6 +3101,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             _cprint(text)
             return
         for raw_line in (text or "").split("\n"):
+            if raw_line.lstrip().startswith("┊"):
+                # The agent's own "┊ emoji tool detail 3.8s" completion line. The
+                # call block already shows exactly that, with a measured duration.
+                continue
             if "\r" in raw_line:
                 # A carriage return here is the spinner repainting one line in
                 # place. Dropping it is deliberate: the frames carry no
@@ -6488,8 +6492,12 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._stream_box_opened = False
         self._close_reasoning_box()
 
-        emoji = get_tool_emoji(tool_name, default="⚡")
-        self._transcript_notice(f"preparing {tool_name}…", emoji=emoji)
+        bridge = self._get_transcript_bridge()
+        if bridge is not None:
+            bridge.tool_preparing(tool_name)
+        else:
+            emoji = get_tool_emoji(tool_name, default="⚡")
+            self._transcript_notice(f"preparing {tool_name}…", emoji=emoji)
 
     def _on_tool_progress(self, event_type: str, function_name: str = None,
                           preview: str = None, function_args: dict = None, **kwargs):

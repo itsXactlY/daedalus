@@ -26,7 +26,8 @@ re-printed; the block just re-renders.
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+import time
+from typing import Dict, List, Optional
 
 from daedalus_cli.tool_result import ResultKind, classify_result
 from daedalus_cli.transcript import (
@@ -79,7 +80,10 @@ class TranscriptBridge:
         self._open_calls: Dict[str, ToolCallBlock] = {}
         #: tool name -> the block currently running, because tool.started does
         #: not carry a call id while tool_complete does
-        self._open_by_name: Dict[str, ToolCallBlock] = {}
+        #: (a queue, so two parallel calls to the same tool cannot collide)
+        self._open_by_name: Dict[str, List[ToolCallBlock]] = {}
+        #: tool name -> calls whose arguments are still being written
+        self._preparing: Dict[str, List[ToolCallBlock]] = {}
         #: the assistant block currently receiving streamed tokens
         self._assistant_block: Optional[MarkdownBlock] = None
         #: buffers for the pretty-printed status line the agent prints
@@ -108,18 +112,51 @@ class TranscriptBridge:
 
     # -- tool lifecycle ----------------------------------------------------
 
-    def tool_started(self, tool_call_id: str, name: str, preview: str = "") -> ToolCallBlock:
-        """Open a call block. The duration stays unset until the tool returns."""
-        block = ToolCallBlock(name, emoji=_emoji(name), preview=preview)
+    def tool_preparing(self, name: str) -> ToolCallBlock:
+        """The model has started writing a call's arguments: show it, dimmed."""
+        block = ToolCallBlock(name, emoji=_emoji(name), state="preparing")
         self.transcript.append(block)
-        # The agent's tool.started event carries no id -- only the tool name --
-        # while tool_complete carries tool_call.id. Keying the open calls by
-        # name as well as by id is what lets the completion find the header it
-        # belongs to; otherwise every tool renders twice, once as a dangling
-        # "started" line and again as an unpaired "completed" line.
-        self._open_calls[tool_call_id or name] = block
-        self._open_by_name[name] = block
+        self._preparing.setdefault(name, []).append(block)
         self.invalidate()
+        return block
+
+    def tool_started(self, tool_call_id: str, name: str, preview: str = "") -> ToolCallBlock:
+        """The tool is executing. Upgrades the block that was preparing, if any.
+
+        One call is one block from first mention to result; nothing is appended
+        a second time.
+        """
+        queue = self._preparing.get(name)
+        if queue:
+            block = queue.pop(0)
+            block.preview = preview
+            block.state = "running"
+            block.invalidate()
+        else:
+            block = ToolCallBlock(name, emoji=_emoji(name), preview=preview)
+            self.transcript.append(block)
+        block.started_at = time.monotonic()
+        # The agent's tool.started event carries no id -- only the tool name --
+        # while tool_complete carries tool_call.id, so open calls are findable
+        # by either.
+        self._open_calls[tool_call_id or name] = block
+        self._open_by_name.setdefault(name, []).append(block)
+        self.invalidate()
+        return block
+
+    def _take_open(self, tool_call_id: str, name: str) -> Optional[ToolCallBlock]:
+        block = self._open_calls.pop(tool_call_id, None)
+        queue = self._open_by_name.get(name) or []
+        if block is None:
+            block = queue.pop(0) if queue else None
+        else:
+            for i, candidate in enumerate(queue):
+                if candidate is block:
+                    del queue[i]
+                    break
+        if block is not None:
+            for key in [k for k, v in self._open_calls.items() if v is block]:
+                del self._open_calls[key]
         return block
 
     def tool_completed(
@@ -132,33 +169,32 @@ class TranscriptBridge:
         duration: Optional[float] = None,
         diff: str = "",
     ) -> None:
-        """Close a call block and attach its result, and any diff it produced.
+        """Close a call and attach its result and diff to it.
 
-        The call block is mutated in place rather than replaced, so a reader
-        watching a running tool sees the duration appear without the header
-        moving or being reprinted.
+        The result lives INSIDE the call block, so it renders under its own
+        header however many tools ran in parallel and in whatever order they
+        finished. The duration is measured here when the caller has none.
         """
-        block = self._open_calls.pop(tool_call_id, None)
-        if block is None:
-            # tool.started carries no call id, so fall back to the name.
-            block = self._open_by_name.pop(name, None)
-        else:
-            self._open_by_name.pop(name, None)
+        block = self._take_open(tool_call_id, name)
         if block is None:
             block = ToolCallBlock(name, emoji=_emoji(name))
             self.transcript.append(block)
+        if duration is None and block.started_at is not None:
+            duration = time.monotonic() - block.started_at
         block.duration = duration
         block.failed = failed
+        block.state = "done"
 
         result = (result or "").strip()
         if result:
-            self.transcript.append(self._result_block(name, result))
+            block.add_child(self._result_block(name, result))
         if diff and diff.strip():
-            self.transcript.append(DiffBlock(
+            block.add_child(DiffBlock(
                 diff,
                 max_files=self._max_diff_files,
                 max_lines=self._max_diff_lines,
             ))
+        block.invalidate()
         self.invalidate()
 
     def _result_block(self, name: str, result: str) -> ResultBlock:
@@ -224,6 +260,7 @@ class TranscriptBridge:
     def clear(self) -> None:
         self._open_calls.clear()
         self._open_by_name.clear()
+        self._preparing.clear()
         self._assistant_block = None
         self._line_buffer = ""
 

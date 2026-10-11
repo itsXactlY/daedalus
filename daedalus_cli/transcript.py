@@ -359,15 +359,21 @@ class ResultBlock(Block):
 
 
 class ToolCallBlock(Block):
-    """The header line for a tool call: emoji, name, preview, duration.
+    """One tool call, start to finish: header, state, and everything it produced.
 
-    Kept separate from the result so the call stays visible as a one-line
-    summary even when the result below it is long and elided. The duration is
-    mutable because it is only known once the tool returns; before that the
-    block renders without it.
+    The call owns its result and diff as children, so they render directly
+    under their own header whatever order tools finish in. They used to be
+    appended to the transcript as they arrived, which with parallel calls gave
+    [call A][call B][result A][result B] and left every result detached from
+    the call it answered.
+
+    ``state`` is "preparing" while the model is still writing the arguments,
+    "running" once the tool is executing and "done" when it has returned. The
+    duration is mutable because it is only known at the end.
     """
 
-    __slots__ = ("emoji", "name", "preview", "duration", "failed", "elided")
+    __slots__ = ("emoji", "name", "preview", "duration", "failed", "elided",
+                 "state", "children", "started_at")
 
     def __init__(
         self,
@@ -378,6 +384,7 @@ class ToolCallBlock(Block):
         duration: Optional[float] = None,
         failed: bool = False,
         elided: bool = False,
+        state: str = "running",
     ) -> None:
         super().__init__()
         self.name = name or ""
@@ -387,27 +394,44 @@ class ToolCallBlock(Block):
         self.failed = failed
         #: True when the preview was cut short; drives the trailing ellipsis
         self.elided = elided
+        self.state = state
+        self.children: List[Block] = []
+        self.started_at: Optional[float] = None
+
+    def add_child(self, block: "Block") -> None:
+        self.children.append(block)
 
     def _cache_key_for(self, width: int, theme: TranscriptTheme) -> object:
         return ("call", self.name, self.emoji, self.preview, self.duration,
-                self.failed, self.elided, width, theme)
+                self.failed, self.elided, self.state, width, theme,
+                tuple(c._cache_key_for(width, theme) for c in self.children))
 
-    def _render(self, width: int, theme: TranscriptTheme) -> List[Tuple[str, str]]:
-        style = "class:transcript-error" if self.failed else "class:transcript-label"
-        marker = "✗ " if self.failed else ""
+    def _header(self, width: int) -> Tuple[str, str]:
+        if self.failed:
+            style, marker = "class:transcript-error", "✗ "
+        elif self.state == "preparing":
+            style, marker = "class:transcript-dim", ""
+        else:
+            style, marker = "class:transcript-label", ""
         head = f"{marker}{self.emoji} {self.name}".strip()
         if self.preview:
             head += f" {self.preview}{'…' if self.elided else ''}"
-        tail = ""
-        if self.duration is not None:
-            tail = f"  {self.duration:.1f}s"
+        elif self.state == "preparing":
+            head += " …"
+        tail = f"  {self.duration:.1f}s" if self.duration is not None else ""
         # The duration is right-aligned so a column of calls lines up, but the
         # budget is shared: if the header plus the duration would not fit, the
         # header is elided rather than wrapping the line.
         budget = max(width - len(tail) - 1, 12)
         if len(head) > budget:
             head = head[: max(budget - 1, 4)] + "…"
-        return [(style, head + tail)]
+        return style, head + tail
+
+    def _render(self, width: int, theme: TranscriptTheme) -> List[Tuple[str, str]]:
+        out: List[Tuple[str, str]] = [self._header(width)]
+        for child in self.children:
+            out.extend(child.fragments(width, theme))
+        return out
 
 
 class DiffBlock(Block):

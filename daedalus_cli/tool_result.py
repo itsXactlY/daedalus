@@ -274,6 +274,15 @@ def _is_bookkeeping(key: str, value) -> bool:
     """Envelope fields that say nothing about the result when they are benign."""
     if key in _BOOKKEEPING_ALWAYS:
         return True
+    low = key.lower()
+    if any(w in low for w in ("error", "exception", "stderr", "fail", "warn")):
+        return False
+    if key == "truncated":
+        return value is not True          # a truncation is stated, see _unwrap_envelope
+    # Plain numbers and flags (total_lines, file_size, is_binary, is_image) describe
+    # the payload; they are not a second result.
+    if isinstance(value, (bool, int, float)) and key not in ("exit_code", "returncode"):
+        return True
     if key == "status":
         return str(value).lower() in ("success", "ok", "completed")
     if key in ("exit_code", "returncode"):
@@ -299,7 +308,12 @@ def _unwrap_envelope(parsed) -> str | None:
             others = [k for k in parsed
                       if k != key and parsed[k] not in (None, "", [], {})
                       and not _is_bookkeeping(k, parsed[k])]
+            if any(any(w in k.lower() for w in ("error", "exception", "stderr", "fail", "warn"))
+                   or k in ("exit_code", "returncode") for k in others):
+                return None               # never hide a failure behind the payload
             if len(others) <= 1:
+                if parsed.get("truncated") is True:
+                    value = value.rstrip("\n") + "\n… truncated"
                 return value
     return None
 
