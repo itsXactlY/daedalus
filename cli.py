@@ -875,6 +875,27 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+_MD_NOISE_RE = re.compile(r"(\*\*|__|`+|^#{1,6}\s+|^\s*>\s?)", re.MULTILINE)
+
+
+def recap_preview(text: str, limit: int) -> str:
+    """A resumed-history entry as plain text: no Markdown markers, cut at a word.
+
+    The recap box prints through rich Text, which does not parse Markdown, so
+    '**Wo wir ging:**' showed its asterisks and a hard cut left 'Desi...'.
+    """
+    plain = _MD_NOISE_RE.sub("", text or "")
+    plain = re.sub(r"[ \t]+", " ", plain)
+    plain = re.sub(r"\n\s*\n+", "\n", plain).strip()
+    if len(plain) <= limit:
+        return plain
+    cut = plain[:limit]
+    space = cut.rfind(" ")
+    if space >= limit * 0.6:
+        cut = cut[:space]
+    return cut.rstrip(" ,;:-") + "…"
+
+
 def reasoning_pane_fragments(fragments) -> list:
     """The reasoning pane's lines as one fragment list, newline-separated.
 
@@ -3640,21 +3661,15 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
-                if len(text) > MAX_USER_LEN:
-                    text = text[:MAX_USER_LEN] + "..."
-                entries.append(("user", text))
+                entries.append(("user", recap_preview(text, MAX_USER_LEN)))
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
                 text = _strip_reasoning(text)
                 parts = []
                 if text:
-                    lines = text.splitlines()
-                    if len(lines) > MAX_ASST_LINES:
-                        text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
-                    if len(text) > MAX_ASST_LEN:
-                        text = text[:MAX_ASST_LEN] + "..."
-                    parts.append(text)
+                    text = "\n".join(recap_preview(text, 10 ** 6).splitlines()[:MAX_ASST_LINES])
+                    parts.append(recap_preview(text, MAX_ASST_LEN))
                 if tool_calls:
                     tc_count = len(tool_calls)
                     names = []
