@@ -162,6 +162,19 @@ class _SafeWriter:
         return getattr(self._inner, name)
 
 
+def hot_swap_hard_ratio_from(comp_cfg: dict) -> float:
+    """Fraction of the real window past which a turn stops and compacts INLINE (default 0.85).
+
+    It has to sit above the compaction threshold, or every threshold crossing is already "past the ceiling" and
+    the hot-swap never gets to prepare anything. compression.hot_swap_hard_ratio sets it; a value outside
+    (0.5, 0.99] is ignored."""
+    try:
+        v = float((comp_cfg or {}).get("hot_swap_hard_ratio") or 0)
+    except (TypeError, ValueError):
+        return 0.85
+    return v if 0.5 < v <= 0.99 else 0.85
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -2095,7 +2108,7 @@ class AIAgent:
         # threshold (262k vs 66k here), so there is room to wait. Only past this
         # fraction of the real context window does the turn stop and compact
         # inline, because continuing risks overflowing the server context.
-        self._hot_swap_hard_ratio = 0.85
+        self._hot_swap_hard_ratio = hot_swap_hard_ratio_from(_comp_cfg)
         # A failing summarizer must not be re-fired on every iteration.
         self._hot_swap_failed_at = 0.0
         self._hot_swap_retry_after_s = 60.0
