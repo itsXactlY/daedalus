@@ -3248,6 +3248,27 @@ class AIAgent:
 
         threading.Thread(target=_go, daemon=True, name="drop-parked").start()
 
+    def _local_reasoning_effort(self) -> Optional[str]:
+        """The reasoning_effort to send a LOCAL endpoint, or None to send nothing.
+
+        "none" in the config means OFF at the endpoint. It used to mean "send nothing", which hands the
+        decision to whatever default the endpoint carries; when that default was removed (Strata commit
+        35095d3) reasoning came back on although the user had set none. So an explicit OFF is sent as
+        reasoning_effort="none", which Strata honors (a request that carries an effort is never overridden by
+        its shared settings). Other local servers keep "send nothing": the llama.cpp fork's chat template knows
+        only xhigh/medium/low and answers an effort it does not know with a 500.
+
+        The task-intensity auto mode never raises a disabled config (agent/task_intensity.py), and this is the
+        single place both request builders take the value from."""
+        cfg = self.reasoning_config if isinstance(self.reasoning_config, dict) else None
+        if cfg is not None and cfg.get("enabled") is False:
+            from agent.backend_kind import is_single_sequence
+            return "none" if is_single_sequence(self.base_url) else None
+        effort = str((cfg or {}).get("effort") or "medium")
+        # this model's chat template implements 3 levels (xhigh is its ceiling); the task-intensity gauge goes up
+        # to "ultra", and sending one of those is a 500 (observed 2026-09-11), so round down to the ceiling
+        return {"high": "xhigh", "max": "xhigh", "ultra": "xhigh"}.get(effort, effort)
+
     def _retrieval_engine(self) -> bool:
         return getattr(self, "_compaction_engine", "retrieval") == "retrieval"
 
@@ -7763,26 +7784,10 @@ class AIAgent:
                     }
 
         if "127.0.0.1" in self._base_url_lower or "localhost" in self._base_url_lower:
-            _local_effort = "medium"
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is not False:
-                    _local_effort = str(self.reasoning_config.get("effort") or "medium")
-                else:
-                    _local_effort = None
+            _local_effort = self._local_reasoning_effort()
             if _local_effort:
-                # This model's chat template only implements 3 levels (xhigh
-                # is its ceiling) -- the task-intensity gauge
-                # (agent/task_intensity.py) goes up to "ultra" for providers
-                # that support deeper tiers, and sending one of those here is
-                # a 500, not a graceful degrade:
-                #   Jinja Exception: Unexpected reasoning effort max.
-                #   Supported types are xhigh (default), medium, and low.
-                # (observed 2026-09-11, killed every call in the turn: 3
-                # retries, all identical). Round anything the template
-                # doesn't know down to its actual ceiling instead of relaying
-                # the gauge's value verbatim.
-                _local_effort = {"high": "xhigh", "max": "xhigh", "ultra": "xhigh"}.get(
-                    _local_effort, _local_effort)
+                # none/low/medium/xhigh as decided by _local_reasoning_effort (rounding to the template's ceiling, and
+                # an explicit OFF sent as "none", live there)
                 extra_body["reasoning_effort"] = _local_effort
 
             # llama-server chunk-reuse: when a turn's prompt has had a middle
@@ -9379,19 +9384,12 @@ class AIAgent:
                         "effort": "medium"
                     }
             if "127.0.0.1" in self._base_url_lower or "localhost" in self._base_url_lower:
-                _local_effort = "medium"
-                if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                    if self.reasoning_config.get("enabled") is not False:
-                        _local_effort = str(self.reasoning_config.get("effort") or "medium")
-                    else:
-                        _local_effort = None
+                _local_effort = self._local_reasoning_effort()
                 if _local_effort:
                     # see the matching comment on the main completion path:
                     # this template maxes out at xhigh, round the gauge's
                     # high/max/ultra down instead of sending a 500-causing
                     # value it doesn't recognize.
-                    _local_effort = {"high": "xhigh", "max": "xhigh", "ultra": "xhigh"}.get(
-                        _local_effort, _local_effort)
                     summary_extra_body["reasoning_effort"] = _local_effort
                 # see the matching comment on the main completion path: lets
                 # llama-server relocate a matching cached chunk instead of
