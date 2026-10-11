@@ -37,6 +37,7 @@ from daedalus_cli.transcript import (
     ToolCallBlock,
     Transcript,
     TranscriptTheme,
+    strip_ansi,
 )
 
 __all__ = ["TranscriptBridge"]
@@ -207,14 +208,14 @@ class TranscriptBridge:
             line, self._line_buffer = self._line_buffer.split("\n", 1)
             if line.strip():
                 self.transcript.append(
-                    MarkdownBlock(line, indent=2, style="class:transcript-dim"))
+                    MarkdownBlock(strip_ansi(line), indent=2, style="class:transcript-dim"))
         self.invalidate()
 
     def flush_line(self) -> None:
         """Emit any buffered partial status line."""
         if self._line_buffer.strip():
             self.transcript.append(MarkdownBlock(
-                self._line_buffer, indent=2, style="class:transcript-dim"))
+                strip_ansi(self._line_buffer), indent=2, style="class:transcript-dim"))
         self._line_buffer = ""
         self.invalidate()
 

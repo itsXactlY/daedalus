@@ -875,6 +875,20 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+def reasoning_pane_fragments(fragments) -> list:
+    """The reasoning pane's lines as one fragment list, newline-separated.
+
+    Each stored fragment is ONE wrapped line, and the pane's height is the
+    fragment count. Handed to a FormattedTextControl as-is they painted as a
+    single line ("| tok|  and stores| Wait, let me think") with the rest of the
+    pane height left blank.
+    """
+    frags = list(fragments or [])
+    last = len(frags) - 1
+    return [(style, text if i == last else text + "\n")
+            for i, (style, text) in enumerate(frags)]
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -8518,7 +8532,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # reasoning stream mutates the list from the agent thread and this
             # picks the change up on the next invalidate, with no printing and so
             # no run_in_terminal teardown.
-            return list(cli_ref._reasoning_fragments or [])
+            return reasoning_pane_fragments(cli_ref._reasoning_fragments)
 
         def get_reasoning_height():
             n = len(cli_ref._reasoning_fragments)

@@ -267,6 +267,20 @@ def classify_result(raw: str, *, tool_name: str = "") -> ClassifiedResult:
     return ClassifiedResult(ResultKind.MARKDOWN, text.strip())
 
 
+_BOOKKEEPING_ALWAYS = frozenset({"tool_calls_made", "duration_seconds", "elapsed", "elapsed_s"})
+
+
+def _is_bookkeeping(key: str, value) -> bool:
+    """Envelope fields that say nothing about the result when they are benign."""
+    if key in _BOOKKEEPING_ALWAYS:
+        return True
+    if key == "status":
+        return str(value).lower() in ("success", "ok", "completed")
+    if key in ("exit_code", "returncode"):
+        return value == 0
+    return False
+
+
 def _unwrap_envelope(parsed) -> str | None:
     """Pull the payload out of a JSON result envelope.
 
@@ -280,7 +294,11 @@ def _unwrap_envelope(parsed) -> str | None:
         value = parsed.get(key)
         if isinstance(value, str) and value.strip():
             # Only unwrap when there is little else of interest in the object.
-            others = [k for k in parsed if k != key and parsed[k] not in (None, "", [], {})]
+            # Plain bookkeeping (status ok, exit 0, call count, timing) is not
+            # "something else": execute_code returns all four beside its output.
+            others = [k for k in parsed
+                      if k != key and parsed[k] not in (None, "", [], {})
+                      and not _is_bookkeeping(k, parsed[k])]
             if len(others) <= 1:
                 return value
     return None

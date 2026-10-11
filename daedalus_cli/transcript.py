@@ -349,15 +349,12 @@ class ResultBlock(Block):
             return [(style, f"{pad}{ln}".rstrip() if ln.strip() else "")
                     for ln in rendered.split("\n")]
 
+        # No fence markers: nothing here interprets them, so they used to be
+        # printed as literal ``` lines around every code/data result.
         out: List[Tuple[str, str]] = []
-        if self.language:
-            out.append((f"{style} dim", f"{pad}```{self.language}"))
-        else:
-            out.append((f"{style} dim", f"{pad}```"))
         for ln in lines:
             # Code is never re-wrapped: its line structure is the content.
             out.append((style, f"{pad}{ln}" if ln.strip() else pad))
-        out.append((f"{style} dim", f"{pad}```"))
         return out
 
 
