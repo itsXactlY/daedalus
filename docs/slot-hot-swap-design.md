@@ -104,3 +104,21 @@ with `ContextCompressor`'s inline compaction as the fallback:
 
 Set `self._hot_swap_enabled = False`. Prep never starts and the blocking path
 behaves exactly as before.
+
+## One-conversation engines (Strata)
+
+Strata has no second slot: it keeps one conversation live and PARKS the one it moves away from (`--conversation-cache-slots 1`
+is exactly one parked conversation), and it resumes a parked conversation by exact prefix. The same architecture maps on:
+
+| fork (`-np 2`) | Strata |
+|---|---|
+| sidekick slot is prewarmed with the next epoch | the prewarm request runs live; the next epoch is left PARKED |
+| `_pinned_id_slot` swaps, sidekick follows | nothing to swap: main's next request resumes the parked next epoch (~60 ms) |
+| `erase_slot(previous)` right at the swap | `POST /v1/cache/drop_parked` after the promoted request is answered (that is when the old epoch becomes parked) |
+| prewarm runs beside main on slot 0 | prewarm only between turns and is CANCELLED (connection closed, server STOPs it) when main wants in |
+
+`_prime_slot_with_messages` takes this path only when `_server_slot_count() < 2` and `agent/backend_kind.is_single_sequence()`
+sees Strata. The hygiene-only `reserve(900)` is skipped there: it would stall user-blocking aux calls for 15 minutes, and an
+aux request that evicts the parked copy only costs the next rebase its prewarm. Code: `agent/strata_cache.py`
+(`cancellable_post`, `drop_parked`), `_prewarm_single_sequence`, `_flush_pending_drop_parked`. Needs an engine with the
+`DROP_PARKED` command (Strata branch `worktree-drop-parked`); without it the drop is a harmless no-op.

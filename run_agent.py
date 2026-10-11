@@ -3110,7 +3110,12 @@ class AIAgent:
             if self._compaction_generation != generation:
                 logger.info("hot-swap prep discarded after prefill: a compaction raced it")
                 return
-            if warmed:
+            from agent.backend_kind import is_single_sequence
+            single = bool(warmed) and self._server_slot_count() < 2 and is_single_sequence(self.base_url)
+            if warmed and not single:
+                # Hygiene-only until the swap lands. Not on a one-conversation engine: there it would stall
+                # every user-blocking aux call for up to 15 minutes, and there is no slot to protect, only a
+                # parked conversation that an aux request may evict (the next rebase then re-reads, as before).
                 from agent.sidekick_queue import sidekick_gate
                 sidekick_gate.reserve(900)
 
@@ -3118,7 +3123,9 @@ class AIAgent:
                 "compressed": compressed,
                 "snapshot_len": len(snapshot),
                 "generation": generation,
-                "slot": target_slot if warmed else None,
+                # a one-conversation engine has no slot to promote: the warm copy is a parked conversation
+                "slot": target_slot if warmed and not single else None,
+                "prewarmed_single": single,
             }
             logger.info(
                 "hot-swap prep ready: %d -> %d messages, slot %s",
@@ -3143,8 +3150,11 @@ class AIAgent:
         one token, and goes through the sidekick queue as hygiene.
         """
         try:
+            from agent.backend_kind import is_single_sequence
             from agent.kv_watermarks import server_root
-            if not server_root(self.base_url) or self._server_slot_count() < 2:
+            # llama-server with 2+ slots keeps the slot path; only a one-conversation engine (Strata) prewarms by parking
+            single = self._server_slot_count() < 2 and is_single_sequence(self.base_url)
+            if not server_root(self.base_url) or (self._server_slot_count() < 2 and not single):
                 return False
             cur = None
             for i in range(len(compressed) - 1, -1, -1):
@@ -3170,6 +3180,8 @@ class AIAgent:
             kwargs = self._build_api_kwargs(api_messages)
             kwargs.pop("stream", None)
             kwargs.pop("stream_options", None)
+            if single:
+                return self._prewarm_single_sequence(kwargs)
             extra = dict(kwargs.get("extra_body") or {})
             extra["id_slot"] = slot
             kwargs["extra_body"] = extra
@@ -3183,6 +3195,45 @@ class AIAgent:
         except Exception as e:
             logger.debug("hot-swap prefill of slot %s failed (non-fatal): %s", slot, e)
             return False
+
+    def _prewarm_single_sequence(self, kwargs: dict) -> bool:
+        """The prewarm on a one-conversation engine (Strata): no id_slot, and it can be cancelled.
+
+        The request runs live in the engine while main is parked, then leaves the next epoch parked, so main's
+        next request resumes it by exact prefix. A prewarm still reading when main wants in is closed (the server
+        STOPs it, its progress survives as checkpoints) instead of making main wait out a 60 s prefill."""
+        from agent.kv_watermarks import server_root
+        from agent.sidekick_queue import HYGIENE, sidekick_gate
+        from agent.strata_cache import DONE, cancellable_post
+        body = {k: v for k, v in kwargs.items() if k not in ("extra_body", "extra_headers", "timeout")}
+        body.update(dict(kwargs.get("extra_body") or {}))
+        for key in ("max_tokens", "max_completion_tokens"):
+            body.pop(key, None)
+        body["max_tokens"] = 1
+        body["stream"] = False
+        with sidekick_gate.hold(HYGIENE):
+            outcome = cancellable_post(server_root(self.base_url) + "/v1/chat/completions", body,
+                                       sidekick_gate.main_active)
+        if outcome != DONE:
+            logger.info("hot-swap prewarm on a one-conversation engine: %s", outcome)
+        return outcome == DONE
+
+    def _flush_pending_drop_parked(self) -> None:
+        """After a hot-swap promotion on a one-conversation engine, evict the old epoch for good.
+
+        The engine parks the conversation it moved away from, which after a promotion is the dead epoch (~2 GB
+        at 33k tokens) that never returns. Called after the promoted request has been answered, because that is
+        when the old epoch becomes parked; the fork's counterpart is erase_slot(previous) in the apply step."""
+        if not getattr(self, "_drop_parked_pending", False):
+            return
+        self._drop_parked_pending = False
+        base = self.base_url
+
+        def _go() -> None:
+            from agent.strata_cache import drop_parked
+            logger.info("hot-swap: dropped the old epoch's parked copy: %s", drop_parked(base))
+
+        threading.Thread(target=_go, daemon=True, name="drop-parked").start()
 
     def _retrieval_engine(self) -> bool:
         return getattr(self, "_compaction_engine", "retrieval") == "retrieval"
@@ -3398,6 +3449,9 @@ class AIAgent:
         tail = messages[snapshot_len:]
 
         merged = list(ready["compressed"]) + tail
+        if ready.get("prewarmed_single"):
+            # main's next request resumes the prewarmed copy; the old epoch it replaces is dead, drop it after
+            self._drop_parked_pending = True
         slot = ready["slot"]
         if slot is not None and slot != self._pinned_id_slot:
             previous = self._pinned_id_slot
@@ -10389,6 +10443,7 @@ class AIAgent:
                             prompt_tokens, completion_tokens, total_tokens,
                             api_duration, _cache_pct,
                         )
+                        self._flush_pending_drop_parked()
 
                         cost_result = estimate_usage_cost(
                             self.model,
