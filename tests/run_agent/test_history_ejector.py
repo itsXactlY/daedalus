@@ -22,8 +22,6 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, "/home/alca/.daedalus/daedalus-agent")
-
 from agent.history_ejector import HistoryEjector, server_root, EjectResult
 
 
@@ -118,7 +116,17 @@ class TestHeapRelease:
 
 
 class TestOnRebase:
-    def test_on_rebase_ejects_and_trims(self):
+    def test_on_rebase_does_not_eject_by_default_but_trims(self, monkeypatch):
+        monkeypatch.delenv("DAEDALUS_KV_EJECT", raising=False)
+        e = HistoryEjector("http://127.0.0.1:8080/v1")
+        with mock.patch.object(HistoryEjector, "eject_kv") as ej, \
+             mock.patch.object(HistoryEjector, "release_heap", return_value=True):
+            res = e.on_rebase([{"role": "user"}], cut_cells=150)
+        assert not ej.called, "the engine eject must be opt-in"
+        assert res.heap_trimmed and "off" in res.reason
+
+    def test_on_rebase_ejects_and_trims_when_enabled(self, monkeypatch):
+        monkeypatch.setenv("DAEDALUS_KV_EJECT", "1")
         e = HistoryEjector("http://127.0.0.1:8080/v1")
         with mock.patch.object(HistoryEjector, "eject_kv",
                                return_value=EjectResult(ok=True, cut_cells=150)) as ej, \
@@ -127,7 +135,8 @@ class TestOnRebase:
         assert ej.called
         assert res.heap_trimmed
 
-    def test_on_rebase_survives_a_raising_eject(self):
+    def test_on_rebase_survives_a_raising_eject(self, monkeypatch):
+        monkeypatch.setenv("DAEDALUS_KV_EJECT", "1")
         e = HistoryEjector("http://127.0.0.1:8080/v1")
         with mock.patch.object(HistoryEjector, "eject_kv",
                                side_effect=RuntimeError("boom")):

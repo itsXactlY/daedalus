@@ -15,7 +15,6 @@ import sys
 
 import pytest
 
-sys.path.insert(0, "/home/alca/.daedalus/daedalus-agent")
 
 from daedalus_cli.transcript import Transcript, TranscriptTheme
 from daedalus_cli.transcript_bridge import TranscriptBridge

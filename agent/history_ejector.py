@@ -36,6 +36,7 @@ import ctypes
 import ctypes.util
 import gc
 import json
+import os
 import logging
 import urllib.error
 import urllib.request
@@ -212,7 +213,16 @@ class HistoryEjector:
         message is not a cell, and mistaking one for the other would cut the
         wrong history).
         """
-        res = self.eject_kv(cut_cells)
+        # The engine eject is OPT-IN. The cut passed here is the whole pre-compression
+        # length, which covers the head the next epoch REUSES; the engine's own request
+        # path already treats every cell from the reused prefix on as stale and rewrites
+        # it, and the clock reclaims stale device slots, so the call frees nothing the
+        # tape needs freed. Set DAEDALUS_KV_EJECT=1 to experiment.
+        if os.environ.get("DAEDALUS_KV_EJECT", "").strip() == "1":
+            res = self.eject_kv(cut_cells)
+        else:
+            res = EjectResult(ok=False, cut_cells=cut_cells,
+                              reason="engine eject off (DAEDALUS_KV_EJECT=1 enables it)")
         if trim_heap:
             res.heap_trimmed = self.release_heap()
         logger.info("history eject: %s (kept %d messages)",

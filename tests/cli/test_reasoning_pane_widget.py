@@ -29,7 +29,6 @@ import pytest
 from prompt_toolkit.layout import Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 
-sys.path.insert(0, "/home/alca/.daedalus/daedalus-agent")
 
 import cli as C
 

@@ -16,7 +16,6 @@ import types
 
 import pytest
 
-sys.path.insert(0, "/home/alca/.daedalus/daedalus-agent")
 
 import cli as C
 

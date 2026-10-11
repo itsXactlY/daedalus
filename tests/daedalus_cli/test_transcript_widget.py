@@ -20,7 +20,6 @@ import time
 
 import pytest
 
-sys.path.insert(0, "/home/alca/.daedalus/daedalus-agent")
 
 from daedalus_cli.transcript import MarkdownBlock, NoticeBlock, ToolCallBlock, Transcript
 from daedalus_cli.transcript_widget import TranscriptWidget
