@@ -103,6 +103,22 @@ def build_compact_banner() -> str:
 
 
 
+def _banner_skills_mode() -> str:
+    """'compact' (one line, default), 'full' (per-category list) or 'none'.
+
+    The full list was ~30 lines at 460 skills and pushed the prompt off screen on
+    every launch. DAEDALUS_BANNER_SKILLS or display.banner_skills picks it.
+    """
+    mode = os.environ.get("DAEDALUS_BANNER_SKILLS", "").strip().lower()
+    if not mode:
+        try:
+            from daedalus_cli.config import load_config
+            mode = str(((load_config() or {}).get("display") or {}).get("banner_skills") or "").strip().lower()
+        except Exception:
+            mode = ""
+    return mode if mode in ("compact", "full", "none") else "compact"
+
+
 def get_available_skills() -> Dict[str, List[str]]:
     """Return skills grouped by category, filtered by platform and disabled state.
 
@@ -650,7 +666,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             preset_name = preset_name[:25] + "..."
         agg_str = f" [dim {dim}]·[/] [dim {dim}]agg {agg_label}[/]" if agg_label else ""
         ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-        left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+        left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str}")
     else:
         if not (model or "").strip() or (model or "").strip().lower() == "unknown":
             left_lines.append(
@@ -664,7 +680,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             if len(model_short) > 28:
                 model_short = model_short[:25] + "..."
             ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str}")
 
     if os.getenv("DAEDALUS_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
@@ -769,9 +785,11 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                     f"[red]— failed[/]"
                 )
 
-    right_lines.append("")
-    right_lines.append(f"[bold {accent}]Available Skills[/]")
+    _skills_mode = _banner_skills_mode()
     _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
+    if _skills_mode == "full":
+        right_lines.append("")
+        right_lines.append(f"[bold {accent}]Available Skills[/]")
     if _skills_enabled:
         skills_by_category = get_available_skills()
         total_skills = sum(len(s) for s in skills_by_category.values())
@@ -782,7 +800,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     _term_cols = shutil.get_terminal_size().columns
     _right_col_width = max(int(_term_cols * 0.6) - 10, 30)
 
-    if not _skills_enabled:
+    if _skills_mode != "full":
+        pass   # the summary line below carries the count
+    elif not _skills_enabled:
         right_lines.append(f"[dim {dim}]Skills toolset disabled[/]")
     elif skills_by_category:
         for category in sorted(skills_by_category.keys()):
@@ -808,7 +828,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     right_lines.append("")
     mcp_connected = sum(1 for s in mcp_status if s["connected"]) if mcp_status else 0
-    summary_parts = [f"{len(tools)} tools", f"{total_skills} skills"]
+    summary_parts = [f"{len(tools)} tools"]
+    if _skills_mode != "none":
+        _cats = len(skills_by_category)
+        summary_parts.append(f"{total_skills} skills" + (f" in {_cats} groups" if _skills_mode == "compact" and _cats else ""))
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
