@@ -1281,7 +1281,7 @@ def _a3b_argv(conf: StackConf, model: str) -> list:
         "--ctx-size", str(conf.int("A3B_CTX", conf.int("MAIN_CTX", 131072))),
         "-ctk", conf.str("MAIN_CTK", "q8_0"), "-ctv", conf.str("MAIN_CTV", "q4_0"), "-fa", "on",
         "-ngl", str(conf.int("MAIN_NGL", 99)),
-        "--n-cpu-moe", str(conf.int("A3B_N_CPU_MOE", 18)),
+        "--n-cpu-moe", str(conf.int("A3B_N_CPU_MOE", 0)), # 18
         "-t", str(conf.int("MAIN_THREADS", 8)),
         "-np", str(slots),
         "-b", "512", "-ub", "512",
