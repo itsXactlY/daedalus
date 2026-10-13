@@ -310,6 +310,15 @@ def _build_child_agent(
     child._print_fn = getattr(parent_agent, '_print_fn', None)
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
+    # Every AIAgent pins to slot 1 (main's), so parallel children queued
+    # behind each other on one slot while slots 2+ sat idle. Give each its own.
+    try:
+        n_slots = parent_agent._server_slot_count()
+    except Exception:
+        n_slots = 0
+    if isinstance(n_slots, int) and n_slots > 2:
+        child._pinned_id_slot = 2 + task_index % (n_slots - 2)
+
     child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
     if child_pool is not None:
         child._credential_pool = child_pool

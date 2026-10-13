@@ -294,6 +294,22 @@ class TestDelegateTask(unittest.TestCase):
         mock_child.thinking_callback("deliberating...")
         parent.tool_progress_callback.assert_not_called()
 
+    def test_parallel_children_get_their_own_slots(self):
+        """Children run on slots 2.. so they neither queue on main's slot 1 nor on each other."""
+        parent = _make_mock_parent(depth=0)
+        parent._server_slot_count = MagicMock(return_value=5)
+
+        slots = []
+        for i in range(4):
+            with patch("run_agent.AIAgent") as MockAgent:
+                mock_child = MagicMock()
+                MockAgent.return_value = mock_child
+                _build_child_agent(task_index=i, goal="g", context=None, toolsets=None,
+                                   model=None, max_iterations=10, parent_agent=parent)
+            slots.append(mock_child._pinned_id_slot)
+
+        self.assertEqual(slots, [2, 3, 4, 2])
+
 
 class TestToolNamePreservation(unittest.TestCase):
     """Verify _last_resolved_tool_names is restored after subagent runs."""
