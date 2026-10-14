@@ -89,6 +89,20 @@ class TestTheBaseIsBuiltFromRetrieval:
         assert a._memory_manager.queries == ["where is the pulse pod?"]
         assert base[2:] == msgs[-6:]
 
+    def test_a_cut_inside_the_turn_keeps_what_the_turn_already_did(self):
+        """A turn is soaked only when it ends: calls before the kept tail were in no memory,
+        and the model ran them again (2026-10-14)."""
+        base = _agent()._build_retrieval_base(_conversation(10))
+        note = base[1]["content"]
+        assert "[this turn so far]" in note
+        for i in range(7):                          # the 7 calls the 6-message tail drops
+            assert f"ls {i}" in note
+        assert "ls 9" not in note, "a call the tail still shows is not listed twice"
+
+    def test_no_turn_note_when_the_turn_is_inside_the_tail(self):
+        base = _agent()._build_retrieval_base(_conversation(2))
+        assert "[this turn so far]" not in base[1]["content"]
+
     def test_the_tail_never_starts_on_an_orphaned_tool_result(self):
         a = _agent()
         a.context_compressor.protect_last_n = 5

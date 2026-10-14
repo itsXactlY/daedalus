@@ -3320,6 +3320,7 @@ class AIAgent:
             pass
         if cur is not None and cur >= cut:
             cut = cur + 1  # the question leads the base; the tail starts after it
+        turn_so_far = self._turn_so_far_note(messages[cur + 1:cut]) if cur is not None else ""
 
         base = []
         query = ""
@@ -3339,6 +3340,8 @@ class AIAgent:
         card = self._build_state_card()
         if card:
             blocks.append(card)
+        if turn_so_far:
+            blocks.append(turn_so_far)
         mm = getattr(self, "_memory_manager", None)
         recalled = ""
         if query and mm is not None and self._maze_reachable():
@@ -3368,6 +3371,42 @@ class AIAgent:
         current = messages[cur] if cur is not None else None
         tail = [m for m in messages[cut:] if m is not current]
         return base + tail
+
+    _TURN_SO_FAR_MAX_CHARS = 2400
+
+    def _turn_so_far_note(self, dropped: list) -> str:
+        """What the running turn already did, for a rebase that cuts inside it.
+
+        A turn is soaked only when it ends, so the calls between the question and
+        the kept tail were in no memory at all: the model saw an empty stretch and
+        ran them again, in a loop. One line per call says they happened.
+        """
+        calls, notes = [], []
+        for m in dropped:
+            if m.get("role") != "assistant":
+                continue
+            for call in m.get("tool_calls") or []:
+                calls.append(self._describe_tool_call(call))
+            text = m.get("content")
+            if isinstance(text, str) and text.strip():
+                notes.append(" ".join(text.split())[:200])
+        if not calls and not notes:
+            return ""
+        head = ("[this turn so far] Before the rebase this turn already ran, in order: ")
+        foot = (". Their outputs are not kept; use what the tail below shows, and run a call "
+                "again only if you need its output.")
+        budget = self._TURN_SO_FAR_MAX_CHARS - len(head) - len(foot)
+        kept = []
+        for line in reversed(calls):   # the most recent calls matter most
+            if len(line) + 2 > budget:
+                kept.append(f"…{len(calls) - len(kept)} earlier calls")
+                break
+            kept.append(line)
+            budget -= len(line) + 2
+        out = head + "; ".join(reversed(kept)) + foot if kept else "[this turn so far]"
+        if notes:
+            out += "\nYour notes this turn: " + " | ".join(notes[-3:])
+        return out
 
     def _sidekick_hold(self):
         """The sidekick queue for background instances; a no-op for the live conversation."""
