@@ -308,7 +308,7 @@ class TestPinnedLaunch:
         assert argv[argv.index("--load-mode") + 1] == "mlock"
         assert argv[argv.index("-ctxcp") + 1] == "8"
         assert argv[argv.index("--ctx-checkpoints-total") + 1] == "6"
-        assert argv[argv.index("--temp") + 1] == "0.4"
+        assert argv[argv.index("--temp") + 1] == "1.0"
 
     def test_no_slot_window_unless_configured(self, monkeypatch):
         monkeypatch.setattr(stack, "model_path", _fake_model_path({}))

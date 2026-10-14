@@ -143,7 +143,7 @@ MAIN_THREADS=8
 # (titles, reviews). -1 = no thinking budget.
 MAIN_REASONING="auto"
 MAIN_REASONING_BUDGET=-1
-MAIN_TEMP=0.4
+MAIN_TEMP=1.0
 MAIN_SEED=12071
 # mlock keeps the weights out of swap; auto = plain mmap.
 MAIN_LOAD_MODE="mlock"
@@ -1161,7 +1161,7 @@ def _main_argv(conf: StackConf, model: str) -> list:
         "-ngl", str(conf.int("MAIN_NGL", 99)), "-t", str(conf.int("MAIN_THREADS", 8)),
         "-np", str(slots),
         "-b", "512", "-ub", "512",
-        "--temp", conf.str("MAIN_TEMP", "0.4"), "--top-k", "20", "--min-p", "0.00", "--top-p", "0.95",
+        "--temp", conf.str("MAIN_TEMP", "1.0"), "--top-k", "20", "--min-p", "0.00", "--top-p", "0.95",
     ]
     # jinja, deepseek reasoning format, preserve and cont-batching are the fork's
     # defaults. --reasoning on is not: it pinned enable_thinking=true in the
