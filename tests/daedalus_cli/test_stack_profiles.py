@@ -181,8 +181,9 @@ class TestStrataProfile:
 
     def test_main_profile_picks_the_bare_start(self):
         assert S.default_profile(_conf(MAIN_PROFILE="strata")) == "strata"
-        assert S.default_profile(_conf(MAIN_PROFILE="nonsense")) == "dense"
-        assert S.default_profile(_conf()) == "dense"
+        assert S.default_profile(_conf(MAIN_PROFILE="dense")) == "dense"
+        assert S.default_profile(_conf(MAIN_PROFILE="nonsense")) == "strata"
+        assert S.default_profile(_conf()) == "strata"
 
     def test_start_and_restart_accept_strata(self):
         assert _parser().parse_args(["start", "strata"]).model == "strata"

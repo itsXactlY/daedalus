@@ -109,9 +109,9 @@ MAIN_REPO="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
 MAIN_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
 MAIN_PORT=8080
 MAIN_HOST="127.0.0.1"
-# What a bare `daedalus doctor start` serves: dense (llama.cpp, the 27B), a3b, or
-# strata (the coder MoE through Strata, see below). dense fits the smallest box.
-MAIN_PROFILE="dense"
+# What a bare `daedalus doctor start` serves: strata (the coder MoE through
+# Strata, see below), dense (llama.cpp, the 27B) or a3b. dense fits the smallest box.
+MAIN_PROFILE="strata"
 # One -kvu pool shared by every slot, not a window per slot.
 MAIN_CTX=98304
 # Each slot's own ceiling inside that pool (llama-server --kv-unified-per-slot);
@@ -284,7 +284,7 @@ VIS_THREADS=4
 
 # --- main model profile: a3b ----------------------------------------------------
 # `daedalus doctor start a3b` serves Qwen3.6-35B-A3B on MAIN_PORT instead of the
-# dense 27B; a plain `daedalus doctor start` stays dense. Same port, slots and
+# dense 27B; a plain `daedalus doctor start` serves MAIN_PROFILE. Same port, slots and
 # context, so daedalus does not notice the switch. Defaults to the AFE file.
 # Its KV cache is small (10 full-attention layers, 2 KV heads), so there is no
 # block KV streaming here; the lever is how many layers' experts stay in RAM.
@@ -292,12 +292,13 @@ A3B_N_CPU_MOE=18
 
 # --- main model profile: strata --------------------------------------------------
 # `daedalus doctor start strata` serves Qwen3.8-Flash-Next (the coder MoE, IQ1_M)
-# through Strata on MAIN_PORT: experts stream from RAM, 50-60 t/s decode at
-# 30-50k context measured (strata-holygoat.log, 2026-10-12). It costs more RAM
-# than the dense 27B and runs one conversation at a time (daedalus parks
-# background work); the dense llama profile stays the fallback for smaller boxes.
-STRATA_DIR="$HOME/projects/llama.cpp-strata"
-STRATA_CONFIG="strata-holygoat.json"
+# through upstream Strata (0.1.44.1) on MAIN_PORT: experts stream from RAM,
+# 35-48 t/s decode at 20-42k context measured (2026-10-14). It costs more RAM
+# than the dense 27B and runs one conversation at a time: the config needs a
+# parking slot (--conversation-cache-slots 1) or every side call makes main
+# re-read its whole prompt. The dense llama profile is the fallback for smaller boxes.
+STRATA_DIR="$HOME/projects/strata-origin-upstream"
+STRATA_CONFIG="strata-coder-iq1_m.json"
 
 # --- mazemaker AFE model ------------------------------------------------------
 # mazemaker's nightly fact extraction calls an LLM on :8888. The doctor serves
@@ -1310,11 +1311,11 @@ def _main_argv(conf: StackConf, model: str) -> list:
 #          in system RAM so the rest fits the card beside the mazemaker pod.
 
 PROFILES = ("dense", "a3b", "strata")
-DEFAULT_PROFILE = "dense"
+DEFAULT_PROFILE = "strata"
 
 
 def default_profile(conf: StackConf = None) -> str:
-    """MAIN_PROFILE in stack.conf, else dense: the profile a bare start serves."""
+    """MAIN_PROFILE in stack.conf, else strata: the profile a bare start serves."""
     name = (conf or load_conf(create=False)).str("MAIN_PROFILE", DEFAULT_PROFILE)
     return name if name in PROFILES else DEFAULT_PROFILE
 
@@ -1339,8 +1340,8 @@ def _a3b_repo_file(conf: StackConf) -> tuple:
 
 
 def strata_config(conf: StackConf) -> Path:
-    base = Path(conf.path("STRATA_DIR", str(Path.home() / "projects/llama.cpp-strata")))
-    cfg = Path(os.path.expanduser(conf.str("STRATA_CONFIG", "strata-holygoat.json")))
+    base = Path(conf.path("STRATA_DIR", str(Path.home() / "projects/strata-origin-upstream")))
+    cfg = Path(os.path.expanduser(conf.str("STRATA_CONFIG", "strata-coder-iq1_m.json")))
     return cfg if cfg.is_absolute() else base / cfg
 
 
@@ -1787,7 +1788,7 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     p_start = add("start", "Start the inference servers: dense (default) or a3b")
     p_start.add_argument("model", nargs="?", choices=list(PROFILES), default=None,
                          help="dense = Qwen3.8-27B, a3b = Qwen3.6-35B-A3B MoE, strata = Qwen3.8-Flash-Next "
-                              "via Strata (default: MAIN_PROFILE in stack.conf, else dense)")
+                              "via Strata (default: MAIN_PROFILE in stack.conf, else strata)")
     p_start.set_defaults(func=cmd_start)
     add("stop", "Stop the inference servers").set_defaults(func=cmd_stop)
     p_restart = add("restart", "Stop, then start — the running model unless one is named")
