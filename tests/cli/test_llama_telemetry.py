@@ -345,3 +345,20 @@ class TestStrataMetrics:
         _, slot = __import__("daedalus_cli.llama_session_stats", fromlist=["x"]).strata_snapshot(self.PAYLOAD)
         text = _text(_snap(slots=[slot], session={"gen_tps": 50.0}), main_slot=1)
         assert "gen 52.3 ⌀50.0 t/s" in text
+
+
+class TestTapeSegment:
+    """With a rebase point the bar shows the epoch's way to it, not the window."""
+
+    def test_tape_progress_and_epoch(self):
+        snap = _snap()
+        snap.update(rebase_at=41800, rebase_at_label="41.8K", tape_percent=55, epoch=3,
+                    context_used_label="22.9K")
+        text = _text(snap)
+        assert "tape" in text and "22.9K→41.8K" in text and "55%" in text and "e3" in text
+        assert "57.3K" not in text
+
+    def test_first_epoch_has_no_tag(self):
+        snap = _snap()
+        snap.update(rebase_at=41800, rebase_at_label="41.8K", tape_percent=10, epoch=1)
+        assert " e1" not in _text(snap)

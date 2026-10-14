@@ -98,7 +98,26 @@ def _model(name: str) -> Dict[str, Any]:
                     [(PLAIN, "⚕ "), (STRONG, cut(14))], droppable=False)
 
 
+def _tape(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """The epoch on its way to the next rebase; the window behind it no longer matters."""
+    pct = snapshot["tape_percent"]
+    style = load_style(pct, 80, 95, 101)
+    used, at = snapshot["context_used_label"], snapshot["rebase_at_label"]
+    epoch = snapshot.get("epoch") or 1
+    tag = [(DIM, f" e{epoch}")] if epoch > 1 else []
+    return _segment(
+        2,
+        [(LABEL, "tape "), (style, gauge(pct)), (PLAIN, f" {used}→{at} "), (style, f"{pct}%")] + tag,
+        [(style, gauge(pct, 5)), (PLAIN, " "), (style, f"{pct}%")] + tag,
+        [(style, f"{pct}%")],
+        droppable=False,
+    )
+
+
 def _context(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    if snapshot.get("rebase_at") and snapshot.get("tape_percent") is not None \
+            and snapshot.get("context_used_label"):
+        return _tape(snapshot)
     pct = snapshot.get("context_percent")
     if not snapshot.get("context_length") or pct is None:
         return _segment(2, [(LABEL, "ctx "), (DIM, "--")], droppable=False)

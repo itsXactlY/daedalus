@@ -2530,6 +2530,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
                 snapshot["context_used_label"] = format_token_count_compact(context_tokens)
                 snapshot["context_total_label"] = _format_context_length(context_length)
+            # the tape: what counts is the way to the next rebase, not the window
+            rebase_at = int(getattr(compressor, "threshold_tokens", 0) or 0)
+            if 0 < rebase_at <= (context_length or rebase_at):
+                snapshot["rebase_at"] = rebase_at
+                snapshot["rebase_at_label"] = format_token_count_compact(rebase_at)
+                snapshot["tape_percent"] = max(0, min(100, round(context_tokens / rebase_at * 100)))
+                snapshot["epoch"] = int(snapshot.get("compressions") or 0) + 1
 
         return snapshot
 
