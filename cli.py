@@ -4197,8 +4197,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         A new process opens a new, empty session. The model then guessed what
         "continue" meant from recall snippets and an old closed plan, and each
         new "continue" session started further from the request (2026-10-14:
-        three in a row, the task given in the first). Sessions that hold only
-        "continue" are skipped, so the chain leads back to the actual work.
+        three in a row, the task given in the first). A session that itself
+        opened with "continue" is skipped, so the chain leads back to the work.
         """
         if self.conversation_history or getattr(self, "_resumed", False) or not self._session_db:
             return
@@ -4219,8 +4219,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                          if m.get("role") == "user"]
             except Exception:
                 continue
-            if users and all(isinstance(u, str) and self._CONTINUE_RE.match(u) for u in users):
-                continue
+            if users and isinstance(users[0], str) and self._CONTINUE_RE.match(users[0]):
+                continue  # itself a continuation: the work began in an earlier session
             self._handle_resume_command(f"/resume {sid}")
             return
 

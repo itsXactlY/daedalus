@@ -34,7 +34,7 @@ def _cli(sessions, current="20261014_170255_616bfc"):
 
 SESSIONS = [
     ("20261014_170255_616bfc", ["continue"]),
-    ("20261014_164351_451552", ["continue"]),
+    ("20261014_164351_451552", ["continue", "stop larping!"]),
     ("20261014_155834_ff904c", ["gather the optuna work from all branches"]),
 ]
 
