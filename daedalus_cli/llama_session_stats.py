@@ -50,6 +50,39 @@ def parse_metrics(text: str) -> Dict[str, float]:
     return out
 
 
+def strata_snapshot(payload) -> tuple:
+    """Strata's JSON /metrics -> (counters in llama-server's names, the one slot as the status bar wants it).
+
+    (None, None) for anything that is not a Strata payload. Strata has one conversation at a time, so its
+    single slot is main; it has no per-step draft count, so draft_per_step stays unknown."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("totals"), dict):
+        return None, None
+    t, live = payload["totals"], payload.get("live") or {}
+    prompt, reused = float(t.get("prompt_tokens") or 0), float(t.get("reused") or 0)
+    counters = {
+        "prompt_tokens_total": max(0.0, prompt - reused),
+        "prompt_tokens_cached_total": reused,
+        "prompt_seconds_total": float(t.get("prompt_ms") or 0) / 1000.0,
+        "tokens_predicted_total": float(t.get("output_tokens") or 0),
+        "tokens_predicted_seconds_total": float(t.get("decode_ms") or 0) / 1000.0,
+        "spec_decode_num_draft_tokens_total": float(t.get("drafts_offered") or 0),
+        "spec_decode_num_accepted_tokens_total": float(t.get("drafts_accepted") or 0),
+        "spec_decode_num_drafts_total": 0.0,
+    }
+    state = live.get("state")
+    phase = {"reading": "prefill", "generating": "decode"}.get(state, "idle")
+    slot = {"id": 0, "phase": phase,
+            "n_ctx": int((payload.get("engine") or {}).get("max_context") or 0),
+            "tape": int((live.get("prompt_tokens") or 0) + (live.get("generated") or 0)) if phase != "idle" else 0}
+    if phase == "decode" and live.get("tok_s"):
+        slot["decode_tps"] = float(live["tok_s"])
+    if phase == "prefill":
+        slot["prompt_processed"] = int(live.get("prompt_read") or 0)
+        if live.get("prefill_tok_s_mean"):
+            slot["prefill_tps"] = float(live["prefill_tok_s_mean"])
+    return counters, slot
+
+
 class SessionCounters:
     """Session totals of llama-server counters, across server restarts."""
 

@@ -314,3 +314,34 @@ class TestScrapeReportsWhy:
         out = capsys.readouterr().out
         assert "LOKALER SERVER" in out
         assert "nicht bereit (503)" in out
+
+
+class TestStrataMetrics:
+    """Strata answers /metrics with JSON; the bar used to show nothing on it."""
+
+    PAYLOAD = {"engine": {"max_context": 65536},
+               "live": {"state": "generating", "prompt_tokens": 33000, "generated": 400, "tok_s": 52.3},
+               "totals": {"prompt_tokens": 100000, "reused": 95000, "output_tokens": 5000,
+                          "prompt_ms": 10000.0, "decode_ms": 100000.0,
+                          "drafts_offered": 4000, "drafts_accepted": 3000}}
+
+    def test_counters_and_the_live_slot(self):
+        from daedalus_cli.llama_session_stats import SessionCounters, strata_snapshot
+        counters, slot = strata_snapshot(self.PAYLOAD)
+        assert slot == {"id": 0, "phase": "decode", "n_ctx": 65536, "tape": 33400, "decode_tps": 52.3}
+        stats = SessionCounters()
+        stats.update({k: 0 for k in counters})
+        stats.update(counters)
+        s = stats.summary()
+        assert s["gen_tps"] == 50.0 and s["prefill_tps"] == 500.0
+        assert round(s["cache_hit_pct"]) == 95 and s["draft_pct"] == 75.0
+        assert s["draft_per_step"] is None
+
+    def test_not_strata_is_none(self):
+        from daedalus_cli.llama_session_stats import strata_snapshot
+        assert strata_snapshot({"foo": 1}) == (None, None)
+
+    def test_the_single_slot_is_main(self):
+        _, slot = __import__("daedalus_cli.llama_session_stats", fromlist=["x"]).strata_snapshot(self.PAYLOAD)
+        text = _text(_snap(slots=[slot], session={"gen_tps": 50.0}), main_slot=1)
+        assert "gen 52.3 ⌀50.0 t/s" in text

@@ -7824,7 +7824,8 @@ class AIAgent:
                 extra_body["reasoning_effort"] = _local_effort
             _budget = getattr(self, "_thinking_budget", 0)
             if _budget and _local_effort != "none":
-                extra_body["thinking_budget_tokens"] = _budget
+                # llama-server reads it as an alias of thinking_budget_tokens; Strata knows only this name
+                extra_body["reasoning_budget_tokens"] = _budget
                 extra_body["reasoning_budget_message"] = THINKING_BUDGET_MESSAGE
 
             # llama-server chunk-reuse: when a turn's prompt has had a middle

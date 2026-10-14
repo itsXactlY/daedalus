@@ -78,12 +78,17 @@ def cancellable_post(url: str, body: dict, should_cancel: Callable[[], bool], *,
             pass
 
 
+# Servers whose engine has no DROP_PARKED: the server waits 10 s for an answer the engine never
+# prints (it says "ERR expected: GEN ...") and returns 409 timeout, holding the request lock.
+_NO_DROP_PARKED: set = set()
+
+
 def drop_parked(base_url: str, timeout: float = 35.0) -> Optional[dict]:
     """Evict every parked conversation on a local Strata (the dead epoch after a promotion).
 
     None when the endpoint is not there (not Strata, remote, an older engine) or unreachable."""
     root = server_root(base_url)
-    if not root:
+    if not root or root in _NO_DROP_PARKED:
         return None
     parts = urllib.parse.urlsplit(root)
     try:
@@ -92,6 +97,9 @@ def drop_parked(base_url: str, timeout: float = 35.0) -> Optional[dict]:
         resp = conn.getresponse()
         data = resp.read()
         conn.close()
+        if resp.status == 409 and b'"timeout"' in (data or b""):
+            _NO_DROP_PARKED.add(root)
+            logger.info("drop_parked: %s's engine has no DROP_PARKED; not asked again", root)
         if resp.status != 200:
             return None
         out = json.loads(data or b"{}")

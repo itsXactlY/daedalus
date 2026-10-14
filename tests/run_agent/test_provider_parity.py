@@ -845,13 +845,13 @@ class TestLocalThinkingBudget:
 
     def test_capped_by_default(self, monkeypatch):
         extra = self._extra(monkeypatch, {"enabled": True, "effort": "low"})
-        assert extra["thinking_budget_tokens"] == 1024
+        assert extra["reasoning_budget_tokens"] == 1024
         assert "Act on what is known now" in extra["reasoning_budget_message"]
 
     def test_no_cap_sent_when_thinking_is_off(self, monkeypatch):
         extra = self._extra(monkeypatch, {"enabled": False})
         assert extra["reasoning_effort"] == "none"
-        assert "thinking_budget_tokens" not in extra
+        assert "reasoning_budget_tokens" not in extra
 
     def test_config_value(self):
         from run_agent import thinking_budget_from

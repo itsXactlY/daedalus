@@ -114,7 +114,10 @@ def _context(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _main_slot(telemetry: Dict[str, Any], main_slot: int) -> Dict[str, Any]:
-    for slot in telemetry.get("slots") or []:
+    slots = telemetry.get("slots") or []
+    if len(slots) == 1:
+        return slots[0]  # one conversation (Strata, -np 1): that slot is main
+    for slot in slots:
         if slot.get("id") == main_slot:
             return slot
     return {}

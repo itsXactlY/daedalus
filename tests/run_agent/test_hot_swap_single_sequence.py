@@ -85,6 +85,14 @@ class TestDropParked:
         assert drop_parked(server + "/v1") is None
         assert drop_parked("https://api.example.com/v1") is None
 
+    def test_an_engine_without_drop_parked_is_asked_once(self, server):
+        """The holygoat engine has no DROP_PARKED: the server waits 10 s under its request lock and
+        answers 409 timeout. Asking after every promotion stalled the next request each time."""
+        _Handler.status, _Handler.reply = 409, {"ok": False, "raw": "timeout"}
+        assert drop_parked(server + "/v1") is None
+        assert drop_parked(server + "/v1") is None
+        assert [p for p, _ in _Handler.seen].count("/v1/cache/drop_parked") == 1
+
 
 # -- the agent side ---------------------------------------------------------------------------------------------
 

@@ -2364,9 +2364,19 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         }
 
         try:
-            from daedalus_cli.llama_session_stats import parse_metrics
+            from daedalus_cli.llama_session_stats import parse_metrics, strata_snapshot
             with urllib.request.urlopen(f"{url}/metrics", timeout=1.5) as resp:
-                out["metrics"] = parse_metrics(resp.read().decode("utf-8", "replace"))
+                text = resp.read().decode("utf-8", "replace")
+            if text.lstrip().startswith("{"):
+                # Strata: JSON, with its own totals and the live request
+                counters, slot = strata_snapshot(_json.loads(text))
+                if counters is not None:
+                    out["metrics"] = counters
+                    out["slots"] = [slot]
+                    out["busy"] = slot["phase"] != "idle"
+                    out["live_tps"] = slot.get("decode_tps", 0.0)
+            else:
+                out["metrics"] = parse_metrics(text)
         except Exception:
             pass
 
