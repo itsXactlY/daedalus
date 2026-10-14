@@ -339,8 +339,8 @@ class TestContextComposition:
         from agent.model_metadata import estimate_tokens_rough
 
         prompt = ("You are daedalus, the Architects Anomaly.\n"
-                  "## Skills (mandatory)\n" + "s" * 600 + "\n"
-                  "You have persistent memory across sessions.\n" + "m" * 300)
+                  "## Skills\n" + "s" * 600 + "\n"
+                  "# memory tool\n" + "m" * 300)
         parts = RA.AIAgent._system_prompt_parts(prompt)
         assert sum(parts.values()) == estimate_tokens_rough(prompt)
         assert "skills" in parts and "memory" in parts

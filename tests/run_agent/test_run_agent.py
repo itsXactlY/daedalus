@@ -242,11 +242,11 @@ class TestMazemakerBootstrap:
         # and the ban on claiming no memory without having asked. The wording
         # was rewritten (the tmpfs-spill line arrived with 18f89e5) and this
         # test kept asserting the old headline, so it sat red and hid others.
-        assert "# Mazemaker — persistent memory (MANDATORY)" in prompt
+        assert "# Mazemaker — memory" in prompt
         for tool in ("mazemaker_recall", "mazemaker_get",
                      "mazemaker_think", "mazemaker_remember"):
             assert tool in prompt, f"{tool} missing from the memory guidance"
-        assert "RETRIEVE BEFORE YOU WORK" in prompt
+        assert "does not show" in prompt
         assert "never say you cannot remember" in prompt
 
     def test_compact_mazemaker_recall_result_removes_graph_bloat(self, agent):

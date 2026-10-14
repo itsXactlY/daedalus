@@ -2420,8 +2420,8 @@ class AIAgent:
         """
         from agent.model_metadata import estimate_tokens_rough
         markers = [
-            ("skills", "## Skills (mandatory)"),
-            ("memory", "You have persistent memory"),
+            ("skills", "## Skills"),
+            ("memory", "# memory tool"),
             ("mazemaker", "MAZEMAKER MEMORY PROTOCOL"),
             ("session_search", "session_search"),
             ("tool_use", "TOOL USE"),

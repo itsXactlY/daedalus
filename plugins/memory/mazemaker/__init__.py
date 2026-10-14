@@ -1477,12 +1477,12 @@ class MazemakerMemoryProvider(MemoryProvider):
                 f"current context window is needed, say memory is down instead of "
                 f"answering as if it were recallable."
             )
+        # The tape carries the epoch; only turns before the last rebase are
+        # out of context. "NOT carried in context" sent the model recalling
+        # turns it could see.
         return (
-            f"Full conversation history for this session ({sid}) is stored in "
-            f"mazemaker as auto:turn:{sid}:* memories. It is NOT carried in "
-            f"context — recall specific turns with mazemaker_get, or ask the pod "
-            f"via mazemaker_recall when you need something from earlier in this "
-            f"conversation."
+            f"Turns of this session before what you see are in mazemaker as "
+            f"auto:turn:{sid}:* (mazemaker_get / mazemaker_recall)."
         )
 
     def on_session_switch(

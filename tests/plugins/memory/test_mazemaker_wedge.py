@@ -188,7 +188,7 @@ def test_history_pointer_says_memory_is_down_instead_of_claiming_safety(
 
 def test_history_pointer_is_normal_when_healthy(fresh_pod_health):
     ptr = mzm.MazemakerMemoryProvider().history_pointer(session_id="s1")
-    assert ptr.startswith("Full conversation history")
+    assert ptr.startswith("Turns of this session before what you see")
     assert "auto:turn:s1:" in ptr
 
 

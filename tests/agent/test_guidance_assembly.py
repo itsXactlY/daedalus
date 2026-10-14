@@ -42,7 +42,7 @@ def _prompt(tools=("mazemaker_recall", "memory", "session_search", "skill_manage
 class TestBlocksAreSeparated:
     def test_the_mandatory_heading_starts_a_line(self):
         prompt = _prompt()
-        assert "\n# Mazemaker — persistent memory (MANDATORY)" in prompt \
+        assert "\n# Mazemaker — memory" in prompt \
             or prompt.lstrip().startswith("# Mazemaker"), (
             "a heading buried mid-line is not a heading; it is prose"
         )
@@ -82,27 +82,28 @@ class TestOrdering:
         assert "recall from it first" in SESSION_SEARCH_GUIDANCE
 
 
-class TestTheRuleIsFirst:
-    def test_retrieve_before_you_work_is_near_the_top(self):
-        """It used to sit sixth, after the tool list and four bullets."""
-        block = build_mazemaker_guidance(3)
-        head = "\n".join(block.splitlines()[:3])
-        assert "RETRIEVE BEFORE YOU WORK" in head
+class TestRecallIsAToolNotARitual:
+    """2026-10-14: this block, the SOUL and a config prompt each demanded a recall
+    before any command, "no exceptions"; the model spent its thinking reciting
+    protocol instead of working."""
 
-    def test_it_names_the_failure_it_prevents(self):
+    def test_no_ritual(self):
         block = build_mazemaker_guidance(3)
-        assert "not a re-read" in block and "not starting over" in block
+        for ritual in ("RETRIEVE BEFORE YOU WORK", "no exceptions", "MANDATORY",
+                       "BEFORE the first terminal command"):
+            assert ritual not in block
+        assert "do not recall as a ritual" in block
 
-    def test_it_says_recall_comes_before_the_first_tool_call(self):
+    def test_one_recall_for_what_the_conversation_does_not_show(self):
         block = build_mazemaker_guidance(3)
-        assert "BEFORE the first terminal command, file read or search" in block
+        assert "does not show" in block and "one focused" in block
 
-    def test_it_explains_the_aged_out_marker(self):
-        """The collapsed tool-exchange line is new; without this the model
-        can read its own completed work as a suggestion to do it."""
+    def test_the_aged_out_marker_matches_what_the_harness_writes(self):
+        """The harness line says to run a call again when there is no path; the
+        guidance used to forbid exactly that."""
         block = build_mazemaker_guidance(3)
         assert "[aged out of context]" in block
-        assert "not a suggestion to redo it" in block
+        assert "read_file(path)" in block and "run the call again" in block
 
     def test_it_still_names_every_tool(self):
         block = build_mazemaker_guidance(3)
@@ -116,7 +117,7 @@ class TestWindowLine:
         assert "last 3 turns" in build_mazemaker_guidance(3)
 
     def test_full_history_case(self):
-        assert "full history is carried in context" in build_mazemaker_guidance(-1)
+        assert "the whole conversation" in build_mazemaker_guidance(-1)
 
     def test_current_turn_only_case(self):
         assert "only the current turn" in build_mazemaker_guidance(0)

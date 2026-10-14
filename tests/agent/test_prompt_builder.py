@@ -38,7 +38,7 @@ from daedalus_cli.nous_subscription import NousFeatureState, NousSubscriptionFea
 class TestGuidanceConstants:
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
-        assert "Do NOT save task progress" in MEMORY_GUIDANCE
+        assert "No task progress" in MEMORY_GUIDANCE
         assert "session_search" not in MEMORY_GUIDANCE, (
             "the tool is gated off whenever a memory graph indexes the "
             "transcripts, so the prompt must not send the model after it"
@@ -983,11 +983,11 @@ class TestToolUseEnforcementGuidance:
         assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
 
     def test_guidance_forbids_description_only(self):
-        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
-        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "same response" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "plan for later" in TOOL_USE_ENFORCEMENT_GUIDANCE
 
     def test_guidance_requires_action(self):
-        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "makes progress with tool calls" in TOOL_USE_ENFORCEMENT_GUIDANCE
 
     def test_enforcement_models_includes_gpt(self):
         assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS
