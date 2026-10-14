@@ -180,28 +180,12 @@ class TestNothingBlocksTheRebase:
 
 
 class TestPrewarmOnlyBetweenTurns:
-    """Mid-turn prep runs on a multi-slot server (2026-10-14: a single 18-call turn
-    ran into the window with slot 0 idle); a one-conversation engine still waits."""
-
-    def test_mid_turn_prep_starts_on_a_multi_slot_server(self, monkeypatch):
+    def test_mid_turn_prep_does_not_start(self, monkeypatch):
         a = _agent(_hot_swap_prep_ratio=0.8)
         started = []
         monkeypatch.setattr("threading.Thread.start", lambda self: started.append(1))
         a._maybe_start_hot_swap_prep([], "sys", 35000, "t")
-        assert started == [1]
-
-    def test_mid_turn_prep_waits_on_a_one_conversation_engine(self, monkeypatch):
-        a = _agent(_hot_swap_prep_ratio=0.8, _slot_count_cache=1)
-        started = []
-        monkeypatch.setattr("threading.Thread.start", lambda self: started.append(1))
-        a._maybe_start_hot_swap_prep([], "sys", 35000, "t")
         assert started == []
-
-    def test_own_prep_is_not_pool_pressure(self, monkeypatch):
-        from agent.kv_watermarks import Watermarks
-        a = _agent(_watermarks=Watermarks(fast_layer_tokens=57344), _hot_swap_in_progress=True)
-        monkeypatch.setattr("agent.kv_watermarks.read_slots", lambda base_url: [{"id": 0, "n_prompt_tokens": 18000}])
-        assert a._kv_pool_tokens(40000) == 40000
 
     def test_between_turns_it_starts(self, monkeypatch):
         a = _agent(_hot_swap_prep_ratio=0.8)

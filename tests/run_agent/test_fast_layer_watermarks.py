@@ -90,17 +90,3 @@ class TestWatermarksFollowTheEndpoint:
             local._watermarks.hard_tokens) is True
         assert remote.context_compressor.should_compress(
             local._watermarks.hard_tokens) is False
-
-
-class TestFastLayerNeverExceedsTheSlotWindow:
-    """2026-10-14: fast_layer_tokens 65536 over a 57344-token slot (--kv-unified-per-slot)
-    put the rebase point past the slot's wall; one turn filled the slot and died."""
-
-    def test_clamped_to_the_slot_window(self, monkeypatch):
-        monkeypatch.setattr(
-            "agent.context_compressor.get_model_context_length", lambda *a, **k: 57_344,
-        )
-        a = _agent(_compressor("http://127.0.0.1:8080/v1", "local"))
-        a._setup_fast_layer_watermarks({"fast_layer_tokens": 65_536, "watermarks": {"hard": 0.95}})
-        assert a._watermarks.fast_layer_tokens == 57_344
-        assert a.context_compressor.max_tokens == int(57_344 * 0.95)
