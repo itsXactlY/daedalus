@@ -39,10 +39,11 @@ class TestExplicitOff:
         assert a.reasoning_config == {"enabled": False}
         assert a._local_reasoning_effort() == "none"
 
-    def test_another_local_server_keeps_send_nothing(self, monkeypatch):
-        # the llama.cpp fork's template knows xhigh/medium/low only; an unknown effort is a 500 there
+    def test_llama_server_gets_none_too(self, monkeypatch):
+        # sending nothing left the fork's template at its xhigh default; the server maps "none" to
+        # enable_thinking=false before the template runs
         _strata(monkeypatch, False)
-        assert _agent({"enabled": False})._local_reasoning_effort() is None
+        assert _agent({"enabled": False})._local_reasoning_effort() == "none"
 
 
 class TestOtherLevelsUnchanged:

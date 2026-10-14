@@ -1976,6 +1976,9 @@ def call_llm(
             # Strata holds one conversation: no slots to pin, and a foreign request
             # parks the main tape first, so the gate defers work nobody waits for.
             sidekick_gate.single_sequence = is_single_sequence(_aux_base)
+            # housekeeping does not think: left unset, the template defaults to xhigh, and a
+            # 30-token title spent all 30 inside <think>
+            extra_body.setdefault("reasoning_effort", "none")
             if not sidekick_gate.single_sequence:
                 extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
                 extra_body.setdefault("n_cache_reuse", 256)
@@ -2180,6 +2183,7 @@ async def async_call_llm(
             # Strata holds one conversation: no slots to pin, and a foreign request
             # parks the main tape first, so the gate defers work nobody waits for.
             sidekick_gate.single_sequence = is_single_sequence(_aux_base)
+            extra_body.setdefault("reasoning_effort", "none")   # see the sync path
             if not sidekick_gate.single_sequence:
                 extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
                 extra_body.setdefault("n_cache_reuse", 256)

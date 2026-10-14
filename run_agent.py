@@ -3256,15 +3256,14 @@ class AIAgent:
         decision to whatever default the endpoint carries; when that default was removed (Strata commit
         35095d3) reasoning came back on although the user had set none. So an explicit OFF is sent as
         reasoning_effort="none", which Strata honors (a request that carries an effort is never overridden by
-        its shared settings). Other local servers keep "send nothing": the llama.cpp fork's chat template knows
-        only xhigh/medium/low and answers an effort it does not know with a 500.
+        its shared settings). llama-server takes "none" too: it turns enable_thinking off before the template
+        runs (fork commit 7e4c0a968), so only the efforts the template lacks (high/max/ultra) are a 500 there.
 
         The task-intensity auto mode never raises a disabled config (agent/task_intensity.py), and this is the
         single place both request builders take the value from."""
         cfg = self.reasoning_config if isinstance(self.reasoning_config, dict) else None
         if cfg is not None and cfg.get("enabled") is False:
-            from agent.backend_kind import is_single_sequence
-            return "none" if is_single_sequence(self.base_url) else None
+            return "none"
         effort = str((cfg or {}).get("effort") or "medium")
         # this model's chat template implements 3 levels (xhigh is its ceiling); the task-intensity gauge goes up
         # to "ultra", and sending one of those is a 500 (observed 2026-09-11), so round down to the ceiling
@@ -3617,6 +3616,9 @@ class AIAgent:
                         platform=self.platform,
                         provider=self.provider,
                         enabled_toolsets=["memory", "skills"],
+                        # housekeeping saves, it does not think: with reasoning left unset it ran at
+                        # "medium" for up to eight iterations on the sidekick slot
+                        reasoning_config={"enabled": False},
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled

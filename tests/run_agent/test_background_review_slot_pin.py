@@ -92,3 +92,15 @@ def test_default_pinned_id_slot_is_main_slot_for_a_fresh_instance():
     """Every AIAgent starts pinned to main's slot (1) unless overridden."""
     agent = _bare_agent()
     assert agent._pinned_id_slot == 1
+
+
+def test_review_agent_does_not_think(monkeypatch):
+    """Left unset it reasoned at "medium" for up to eight iterations on the sidekick slot."""
+    _StubReviewAgent.instances = []
+    monkeypatch.setattr(run_agent, "AIAgent", _StubReviewAgent)
+
+    agent = _bare_agent()
+    agent._spawn_background_review([{"role": "user", "content": "hi"}], review_memory=True)
+    agent._bg_review_thread.join(timeout=5)
+
+    assert _StubReviewAgent.instances[0].kwargs["reasoning_config"] == {"enabled": False}
