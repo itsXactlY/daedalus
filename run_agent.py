@@ -3393,6 +3393,19 @@ class AIAgent:
             logger.info("watermark %s at %s pool tokens: erased idle sidekick slot %s (%s tokens)",
                         level, f"{pool_tokens:,}", side, f"{held:,}")
 
+    def _free_review_slot(self, slot: int) -> None:
+        """A finished review's cells would sit in main's unified KV pool; drop them unless the slot holds a prewarm."""
+        if self._server_slot_count() < 2:
+            return
+        from agent.kv_watermarks import erase_slot
+        from agent.sidekick_queue import sidekick_gate
+        ready = getattr(self, "_hot_swap_ready", None)
+        if self._hot_swap_in_progress or (ready and ready.get("slot") == slot):
+            return  # it holds the next epoch's turn 0
+        if sidekick_gate.reserved() or sidekick_gate.is_busy():
+            return
+        erase_slot(self.base_url, slot, timeout=2.0)
+
     def _real_payload_tokens(self, messages: list, system_prompt: str) -> int:
         """Prompt size as the server counted it last call, else a rough estimate."""
         compressor = self.context_compressor
@@ -3675,6 +3688,7 @@ class AIAgent:
                         user_message=prompt,
                         conversation_history=messages_snapshot,
                     )
+                    self._free_review_slot(review_agent._pinned_id_slot)
 
                 actions = []
                 for msg in getattr(review_agent, "_session_messages", []):

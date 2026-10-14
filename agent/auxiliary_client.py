@@ -42,6 +42,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -148,6 +149,17 @@ _CODEX_AUX_MODEL = "gpt-5.2-codex"
 # which slot serves the main conversation, and this has to follow it or these
 # calls land on top of main. run_agent publishes the new value on every swap.
 _SIDEKICK_ID_SLOT = 0
+
+
+def _free_sidekick_slot(base_url: str, slot: int) -> None:
+    """One-shot housekeeping leaves nothing worth reusing; its cells would sit in main's unified KV pool."""
+    if sidekick_gate.reserved():
+        return  # the slot carries a prewarmed epoch
+    try:
+        from agent.kv_watermarks import erase_slot
+        erase_slot(base_url, slot, timeout=2.0)
+    except Exception:
+        logger.debug("freeing sidekick slot %s failed", slot, exc_info=True)
 
 
 def set_sidekick_id_slot(slot: int) -> None:
@@ -1945,6 +1957,7 @@ def call_llm(
             logger.debug("client has no with_options(max_retries)", exc_info=True)
 
     _gate_priority = None
+    _free_slot = None
     try:
         _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
         _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
@@ -1980,6 +1993,8 @@ def call_llm(
             # 30-token title spent all 30 inside <think>
             extra_body.setdefault("reasoning_effort", "none")
             if not sidekick_gate.single_sequence:
+                if "id_slot" not in extra_body:
+                    _free_slot = (_aux_base, _SIDEKICK_ID_SLOT)
                 extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
                 extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
@@ -2001,7 +2016,10 @@ def call_llm(
         if _gate_priority is None:
             return client.chat.completions.create(**kw)
         with sidekick_gate.hold(_gate_priority):
-            return client.chat.completions.create(**kw)
+            response = client.chat.completions.create(**kw)
+            if _free_slot is not None:
+                _free_sidekick_slot(*_free_slot)
+            return response
 
     try:
         return _create(**kwargs)
@@ -2166,6 +2184,7 @@ async def async_call_llm(
             logger.debug("client has no with_options(max_retries)", exc_info=True)
 
     _gate_priority = None
+    _free_slot = None
     try:
         _main_base = (_resolve_custom_runtime()[0] or "").rstrip("/")
         _aux_base = str(getattr(client, "base_url", "") or "").rstrip("/")
@@ -2185,6 +2204,8 @@ async def async_call_llm(
             sidekick_gate.single_sequence = is_single_sequence(_aux_base)
             extra_body.setdefault("reasoning_effort", "none")   # see the sync path
             if not sidekick_gate.single_sequence:
+                if "id_slot" not in extra_body:
+                    _free_slot = (_aux_base, _SIDEKICK_ID_SLOT)
                 extra_body.setdefault("id_slot", _SIDEKICK_ID_SLOT)
                 extra_body.setdefault("n_cache_reuse", 256)
     except Exception:
@@ -2200,7 +2221,10 @@ async def async_call_llm(
         if _gate_priority is None:
             return await client.chat.completions.create(**kw)
         async with sidekick_gate.ahold(_gate_priority):
-            return await client.chat.completions.create(**kw)
+            response = await client.chat.completions.create(**kw)
+            if _free_slot is not None:
+                await asyncio.to_thread(_free_sidekick_slot, *_free_slot)
+            return response
 
     try:
         return await _create(**kwargs)

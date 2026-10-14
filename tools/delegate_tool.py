@@ -470,6 +470,15 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to release credential lease: %s", exc)
 
+        # a finished child's cells would sit in the parent's unified KV pool (slots 2+ are children only)
+        child_slot = getattr(child, "_pinned_id_slot", 1)
+        if isinstance(child_slot, int) and child_slot >= 2:
+            try:
+                from agent.kv_watermarks import erase_slot
+                erase_slot(getattr(parent_agent, "base_url", "") or "", child_slot, timeout=2.0)
+            except Exception as exc:
+                logger.debug("Failed to free child slot %s: %s", child_slot, exc)
+
         import model_tools
 
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
