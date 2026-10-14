@@ -294,9 +294,8 @@ A3B_N_CPU_MOE=18
 # `daedalus doctor start strata` serves Qwen3.8-Flash-Next (the coder MoE, IQ1_M)
 # through upstream Strata (0.1.44.1) on MAIN_PORT: experts stream from RAM,
 # 35-48 t/s decode at 20-42k context measured (2026-10-14). It costs more RAM
-# than the dense 27B and runs one conversation at a time: the config needs a
-# parking slot (--conversation-cache-slots 1) or every side call makes main
-# re-read its whole prompt. The dense llama profile is the fallback for smaller boxes.
+# than the dense 27B and runs one conversation at a time; the dense llama
+# profile is the fallback for smaller boxes.
 STRATA_DIR="$HOME/projects/strata-origin-upstream"
 STRATA_CONFIG="strata-coder-iq1_m.json"
 
