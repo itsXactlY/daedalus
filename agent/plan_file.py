@@ -362,9 +362,11 @@ def render_plan_block(workdir: Optional[str] = None,
         return ""
     if _is_closed(text):
         # A finished plan is history, not a job: point at it, don't pin it.
+        # Named as "last plan" it read as the current task: a fresh "continue"
+        # went chasing a days-old closed plan instead of the conversation.
         return (
-            f"[Last plan is closed: {path}. For a new multi-step task, "
-            f"write .daedalus/PLAN-<task>.md instead — one plan per task.]"
+            f"[No active plan. {path.name} here is finished work, not the current task; "
+            f"for a new multi-step task write .daedalus/PLAN-<task>.md — one plan per task.]"
         )
     try:
         mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime))

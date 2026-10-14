@@ -47,7 +47,7 @@ def test_closed_plan_is_only_pointed_at(tmp_path):
     _write(tmp_path, "# fix recall\nStatus: done\n- [x] 1. probe")
     block = render_plan_block(str(tmp_path), session_id="s1")
     assert "<active-plan" not in block
-    assert "closed" in block
+    assert "No active plan" in block and "not the current task" in block
 
 
 def test_oversized_plan_is_truncated(tmp_path):

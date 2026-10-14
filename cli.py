@@ -4187,6 +4187,43 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not silent:
             print("(^_^)v New session started!")
 
+    _CONTINUE_RE = re.compile(
+        r"^\s*(continue|go on|keep going|resume|weiter|mach weiter|weitermachen|fortsetzen|fortfahren|mach fertig)"
+        r"[\s.!…]*$", re.IGNORECASE)
+
+    def _auto_resume_for_continue(self, message) -> None:
+        """"continue" as the first message of a fresh session resumes the last real one.
+
+        A new process opens a new, empty session. The model then guessed what
+        "continue" meant from recall snippets and an old closed plan, and each
+        new "continue" session started further from the request (2026-10-14:
+        three in a row, the task given in the first). Sessions that hold only
+        "continue" are skipped, so the chain leads back to the actual work.
+        """
+        if self.conversation_history or getattr(self, "_resumed", False) or not self._session_db:
+            return
+        if not isinstance(message, str) or not self._CONTINUE_RE.match(message):
+            return
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                source="cli", exclude_sources=["tool"], limit=8,
+                min_message_count=1, order_by_last_active=True)
+        except Exception:
+            return
+        for session in sessions:
+            sid = session.get("id")
+            if not sid or sid == self.session_id:
+                continue
+            try:
+                users = [m.get("content") for m in self._session_db.get_messages_as_conversation(sid)
+                         if m.get("role") == "user"]
+            except Exception:
+                continue
+            if users and all(isinstance(u, str) and self._CONTINUE_RE.match(u) for u in users):
+                continue
+            self._handle_resume_command(f"/resume {sid}")
+            return
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         parts = cmd_original.split(None, 1)
@@ -7041,6 +7078,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return None
         if _carried:
             self._restore_session_accounting(self.agent, _carried)
+        self._auto_resume_for_continue(message)
         
         if images:
             message = self._preprocess_images_with_vision(
