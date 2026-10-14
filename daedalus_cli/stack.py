@@ -109,7 +109,11 @@ MAIN_REPO="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
 MAIN_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
 MAIN_PORT=8080
 MAIN_HOST="127.0.0.1"
-MAIN_CTX=262144
+# One -kvu pool shared by every slot, not a window per slot.
+MAIN_CTX=98304
+# Each slot's own ceiling inside that pool (llama-server --kv-unified-per-slot);
+# /slots reports it as n_ctx. Fits the 33-56k tape daedalus works in.
+MAIN_SLOT_CTX=57344
 # --ctx-size 0 means the model's full trained context: llama.cpp's arg parser
 # sets fit_params_min_ctx = UINT32_MAX for it, which switches off context
 # reduction in the memory fit (the fit itself still runs for layers and the
@@ -125,17 +129,31 @@ MAIN_CTX=262144
 # a real ceiling above your compaction target, not headroom you'll never use.
 # Resident KV pool in VRAM, MiB. Raise it while watching peak VRAM; the rest of
 # the cache streams from host memory. Leave EMPTY to drop block KV streaming
-# entirely, which is what frees you to run more than one slot.
-MAIN_KV_POOL=2048
+# entirely. 1536 MiB holds ~60k tokens of the 27B resident (26.6 KB/token).
+MAIN_KV_POOL=1536
 # Prompt-cache budget in host RAM, MiB. llama-server defaults to 8192, which
 # is a lot to hand a machine that is also holding a multi-GiB pinned KV
 # buffer: the prompt cache is swappable, so it does not fail when RAM runs
 # short, it pages, and throughput decays over hours instead of stopping.
 # 0 disables the prompt cache; -1 is llama.cpp's "no limit".
-MAIN_CACHE_RAM=2048
+MAIN_CACHE_RAM=0
 MAIN_NGL=99
 MAIN_THREADS=8
-MAIN_REASONING_BUDGET=12000
+# auto lets the template think unless a request sends reasoning_effort "none"
+# (titles, reviews). -1 = no thinking budget.
+MAIN_REASONING="auto"
+MAIN_REASONING_BUDGET=-1
+MAIN_TEMP=0.4
+MAIN_SEED=12071
+# mlock keeps the weights out of swap; auto = plain mmap.
+MAIN_LOAD_MODE="mlock"
+# Checkpoints per slot / across all slots; each hybrid checkpoint is ~157 MB.
+MAIN_CTX_CHECKPOINTS=8
+MAIN_CTX_CHECKPOINTS_TOTAL=6
+# 1 = GGML_CUDA_ENABLE_UNIFIED_MEMORY: an oversized launch spills to host
+# instead of failing, and pays for it on every decode step. The dense launch
+# fits without it.
+MAIN_CUDA_UNIFIED_MEMORY=0
 # KV cache quantization. q8_0/q4_0 matches the benchmarked config
 # (~/projects/specbench/campaign/GOAT.sh) -- K-cache is more sensitive to
 # attention accuracy than V, so don't drop MAIN_CTK below q8_0 to save VRAM
@@ -161,7 +179,7 @@ MAIN_CTV="q4_0"
 #   E llama_init_from_model: failed to initialize the context:
 #     block KV streaming requires exactly one sequence (-np 1)
 # — that means `daedalus doctor setup` needs to rebuild the fork.
-MAIN_SLOTS=2
+MAIN_SLOTS=3
 # Only meaningful for MAIN_SLOTS>1 with MAIN_KV_POOL empty; see above.
 MAIN_KV_UNIFIED=0
 
@@ -177,10 +195,19 @@ MAIN_KV_UNIFIED=0
 # Do not economise on the drafter's quantization: a Q2 draft proposes badly
 # enough that acceptance collapses, and you pay for it in both speed and
 # output quality. Q4_K_M is the floor that held up here.
-MAIN_DRAFT_REPO="HermiHg/Qwen3.8-27B-DFlash2-Q2_K_S-MIX-GGUF"
-MAIN_DRAFT_FILE="Qwen3.8-27B-DFlash2-Q2_K_S-MIX.gguf"
-MAIN_DRAFT_N_MAX=4
-MAIN_DRAFT_N_MIN=1
+MAIN_DRAFT_REPO="Anbeeld/Qwen3.8-27B-DFlash2-GGUF"
+MAIN_DRAFT_FILE="Qwen3.8-27B-DFlash2-Q6_K.gguf"
+# The RS rollback buffer is slots x (1 + n-max) x ~150 MB: n-max 4 at 3 slots
+# did not fit. ngram-mod catches the long verbatim runs DFlash2 misses.
+MAIN_DRAFT_N_MAX=2
+MAIN_DRAFT_N_MIN=0
+MAIN_SPEC_TYPE="draft-dflash,ngram-mod"
+# ngram n-max stays under 32: a wider verify batch flips the kv-stream layout.
+MAIN_NGRAM_N_MATCH=16
+MAIN_NGRAM_N_MIN=16
+MAIN_NGRAM_N_MAX=31
+MAIN_DRAFT_CTK="q8_0"
+MAIN_DRAFT_CTV="q8_0"
 
 # --- vision -------------------------------------------------------------------
 # The projector is a SEPARATE artifact from the model GGUF. The text weights
@@ -1116,6 +1143,9 @@ def _main_argv(conf: StackConf, model: str) -> list:
         "--host", conf.str("MAIN_HOST", "127.0.0.1"), "--port", str(conf.int("MAIN_PORT", 8080)),
         "--ctx-size", str(conf.int("MAIN_CTX", 131072)),
     ]
+    # Per-slot window inside the one -kvu pool; /slots reports it as n_ctx.
+    if conf.str("MAIN_SLOT_CTX"):
+        argv += ["--kv-unified-per-slot", str(conf.int("MAIN_SLOT_CTX", 0))]
     # An empty pool means "no block KV streaming"; passing the flag with an
     # empty value would hand llama-server an argument it cannot parse.
     if kv_pool:
@@ -1131,11 +1161,27 @@ def _main_argv(conf: StackConf, model: str) -> list:
         "-ngl", str(conf.int("MAIN_NGL", 99)), "-t", str(conf.int("MAIN_THREADS", 8)),
         "-np", str(slots),
         "-b", "512", "-ub", "512",
-        "--temp", "1.0", "--top-k", "20", "--min-p", "0.00", "--top-p", "0.95",
-        "--presence-penalty", "0.0", "--repeat-penalty", "1.0",
-        "--reasoning", "on", "--reasoning-preserve", "--reasoning-format", "deepseek",
-        "--reasoning-budget", str(conf.int("MAIN_REASONING_BUDGET", 12000)),
-        "--jinja", "--cont-batching",
+        "--temp", conf.str("MAIN_TEMP", "0.4"), "--top-k", "20", "--min-p", "0.00", "--top-p", "0.95",
+    ]
+    # jinja, deepseek reasoning format, preserve and cont-batching are the fork's
+    # defaults. --reasoning on is not: it pinned enable_thinking=true in the
+    # template kwargs, so reasoning_effort "none" (titles, reviews) still thought
+    # until fork 870f9b595. auto lets the template think unless a request says none.
+    reasoning = conf.str("MAIN_REASONING", "auto")
+    if reasoning != "auto":
+        argv += ["--reasoning", reasoning]
+    budget = conf.int("MAIN_REASONING_BUDGET", -1)
+    if budget != -1:
+        argv += ["--reasoning-budget", str(budget)]
+    # mlock keeps the ~10 GB of weights out of swap beside the pinned KV buffer.
+    if conf.str("MAIN_LOAD_MODE", "mlock") != "auto":
+        argv += ["--load-mode", conf.str("MAIN_LOAD_MODE", "mlock")]
+    # Each hybrid checkpoint holds ~157 MB of GDN state; the total caps all slots together.
+    argv += ["-ctxcp", str(conf.int("MAIN_CTX_CHECKPOINTS", 8)),
+             "--ctx-checkpoints-total", str(conf.int("MAIN_CTX_CHECKPOINTS_TOTAL", 6))]
+    if conf.str("MAIN_SEED"):
+        argv += ["--seed", str(conf.int("MAIN_SEED", -1))]
+    argv += [
         # llama-server's prompt cache lives in ordinary host RAM and defaults
         # to 8192 MiB. Unlike the block-KV host buffer it is swappable, so on
         # a box that is already tight it does not fail -- it pages, and every
@@ -1182,17 +1228,28 @@ def _main_argv(conf: StackConf, model: str) -> list:
     draft_file = conf.str("MAIN_DRAFT_FILE")
     draft = model_path(draft_repo, draft_file) if draft_file else ""
     if draft:
+        spec_type = conf.str("MAIN_SPEC_TYPE", "draft-dflash,ngram-mod")
         argv += [
             "--model-draft", draft,
             # -ngld defaults to auto (-1), which lets the memory fitter decide
             # how much of the drafter to offload. It is ~1.1GB; offload it all
             # -- a drafter running partly on CPU costs more than it saves.
             "-ngld", str(conf.int("MAIN_NGL", 99)),
-            "--spec-type", "draft-dflash",
-            "--spec-draft-n-max", str(conf.int("MAIN_DRAFT_N_MAX", 4)),
-            "--spec-draft-n-min", str(conf.int("MAIN_DRAFT_N_MIN", 1)),
+            "--spec-type", spec_type,
+            # The RS rollback buffer is slots x (1 + n-max) x ~150 MB: n-max 4 at -np 3 OOMed.
+            "--spec-draft-n-max", str(conf.int("MAIN_DRAFT_N_MAX", 2)),
+            "--spec-draft-n-min", str(conf.int("MAIN_DRAFT_N_MIN", 0)),
         ]
-        dim(f"speculative: DFlash2 ({os.path.basename(draft)})")
+        if "ngram-mod" in spec_type:
+            # n-max stays under 32: a wider verify batch flips the kv-stream layout.
+            argv += [
+                "--spec-ngram-mod-n-match", str(conf.int("MAIN_NGRAM_N_MATCH", 16)),
+                "--spec-ngram-mod-n-min", str(conf.int("MAIN_NGRAM_N_MIN", 16)),
+                "--spec-ngram-mod-n-max", str(conf.int("MAIN_NGRAM_N_MAX", 31)),
+            ]
+        # The drafter keeps its own KV, ~70 MiB at q8_0.
+        argv += ["-ctkd", conf.str("MAIN_DRAFT_CTK", "q8_0"), "-ctvd", conf.str("MAIN_DRAFT_CTV", "q8_0")]
+        dim(f"speculative: {spec_type} ({os.path.basename(draft)})")
     else:
         argv += [
             "--spec-type", "draft-mtp,ngram-mod", "--spec-draft-n-max", "2",
@@ -1320,11 +1377,15 @@ def main_launch(conf: StackConf, profile: str) -> tuple:
     model, _how = profile_model(conf, profile)
     if not model:
         return "", [], {}
-    argv = _a3b_argv(conf, model) if profile == "a3b" else _main_argv(conf, model)
-    # Unified memory lets an allocation that overshoots VRAM spill to the host
-    # instead of failing the launch. See cmd_start for why the dense stack
-    # needs it; the a3b profile keeps parity rather than a second behaviour.
-    return model, argv, {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
+    if profile == "a3b":
+        # Unified memory lets an allocation that overshoots VRAM spill to the
+        # host instead of failing the launch; a3b with its experts on the card
+        # leans on that.
+        return model, _a3b_argv(conf, model), {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
+    # The dense launch fits outright (measured 2026-10-14). A spill there is
+    # paid on every decode step instead of failing loudly, so it is opt-in.
+    env = {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"} if conf.flag("MAIN_CUDA_UNIFIED_MEMORY", False) else {}
+    return model, _main_argv(conf, model), env
 
 
 def cmd_start(args=None) -> int:
@@ -1352,13 +1413,6 @@ def cmd_start(args=None) -> int:
         return 1
 
     section(f"Starting ({profile})")
-    # Block KV streaming keeps most of the cache in pinned host memory and
-    # pages it in; unified memory is what lets an allocation that overshoots
-    # VRAM spill to the host instead of failing the launch outright. Without
-    # it, MAIN_KV_POOL is a hard ceiling and overshooting it is an OOM at
-    # startup rather than a slowdown. The hand-written launch this stack
-    # mirrors has always set it; the stack did not, so the two behaved
-    # differently under exactly the conditions that matter.
     main_host, main_port = conf.host_port("main")
     if state_of("main") == "stopped" and port_up(main_host, main_port):
         # Something daedalus did not start already serves the port — a
@@ -1431,6 +1485,31 @@ def cmd_start(args=None) -> int:
             ])
             wait_ready("vis", vis_host, vis_port, 300)
             note(f"point auxiliary.vision.base_url at http://{vis_host}:{vis_port}/v1")
+    return 0
+
+
+def cmd_command(args=None) -> int:
+    """Print the exact main-server launch `start` would run, ready to paste."""
+    import contextlib
+    import io
+    import shlex
+    conf = load_conf()
+    profile = getattr(args, "model", None) or running_profile() or DEFAULT_PROFILE
+    with contextlib.redirect_stdout(io.StringIO()):
+        model, argv, env = main_launch(conf, profile)
+    if not model:
+        bad(f"{profile} model missing", f"— run: {profile_model(conf, profile)[1]}")
+        return 1
+    words = [f"{k}={shlex.quote(v)}" for k, v in env.items()]
+    words.append(shlex.quote(argv[0]))
+    line, rest = " ".join(words), argv[1:]
+    out = [line]
+    while rest:
+        # one option per line: the flag plus its value, when it takes one
+        take = 2 if len(rest) > 1 and not re.match(r"--?[a-z]", rest[1]) else 1
+        out.append("  " + " ".join(shlex.quote(w) for w in rest[:take]))
+        rest = rest[take:]
+    print(" \\\n".join(out))
     return 0
 
 
@@ -1667,6 +1746,10 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     add("pause", "Freeze the servers, keeping the weights loaded").set_defaults(func=cmd_pause)
     add("resume", "Unfreeze paused servers").set_defaults(func=cmd_resume)
     add("conf", "Show the stack.conf path and the values in force").set_defaults(func=cmd_conf)
+    p_command = add("command", "Print the exact main-server launch line from stack.conf")
+    p_command.add_argument("model", nargs="?", choices=list(PROFILES), default=None,
+                           help="dense or a3b; omit for the running one")
+    p_command.set_defaults(func=cmd_command)
 
     from daedalus_cli import stack_afe
     stack_afe.register(subs)

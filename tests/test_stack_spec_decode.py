@@ -67,7 +67,8 @@ class TestSpeculativeDecoding:
         argv = stack._main_argv(conf, "/models/main.gguf")
         assert "--model-draft" in argv
         assert argv[argv.index("--model-draft") + 1] == draft
-        assert "draft-dflash" in argv
+        assert argv[argv.index("--spec-type") + 1] == "draft-dflash,ngram-mod"
+        assert argv[argv.index("--spec-ngram-mod-n-max") + 1] == "31"
         assert argv[argv.index("--spec-draft-n-max") + 1] == "4"
         assert argv[argv.index("--spec-draft-n-min") + 1] == "1"
         assert "draft-mtp,ngram-mod" not in argv
@@ -194,7 +195,7 @@ class TestLocallyBuiltDraftModel:
                   MAIN_DRAFT_N_MAX="5", MAIN_DRAFT_N_MIN="0"),
             "/models/main.gguf")
         assert argv[argv.index("--model-draft") + 1] == str(gguf)
-        assert argv[argv.index("--spec-type") + 1] == "draft-dflash"
+        assert argv[argv.index("--spec-type") + 1] == "draft-dflash,ngram-mod"
         assert argv[argv.index("--spec-draft-n-max") + 1] == "5"
         assert argv[argv.index("-ngld") + 1] == "99"
 
@@ -277,3 +278,60 @@ class TestPromptCacheBudget:
         monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
         argv = stack._main_argv(_conf(MAIN_CACHE_RAM="0"), "/models/main.gguf")
         assert argv[argv.index("--cache-ram") + 1] == "0"
+
+
+class TestPinnedLaunch:
+    """2026-10-14: the doctor launch drifted from the measured -np 3 one.
+
+    --reasoning on put enable_thinking=true in the template kwargs, which beat
+    reasoning_effort "none", so titles and reviews thought on slot 0; the dense
+    stack also forced unified memory, which spills instead of failing.
+    """
+
+    def test_reasoning_is_left_to_the_template_by_default(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(MAIN_REASONING_BUDGET="-1"), "/models/main.gguf")
+        assert "--reasoning" not in argv
+        assert "--reasoning-budget" not in argv
+
+    def test_reasoning_and_budget_pass_through_when_set(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(MAIN_REASONING="on"), "/models/main.gguf")
+        assert argv[argv.index("--reasoning") + 1] == "on"
+        assert argv[argv.index("--reasoning-budget") + 1] == "12000"
+
+    def test_slot_window_and_measured_knobs(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(MAIN_SLOT_CTX="57344", MAIN_SEED="12071"), "/models/main.gguf")
+        assert argv[argv.index("--kv-unified-per-slot") + 1] == "57344"
+        assert argv[argv.index("--seed") + 1] == "12071"
+        assert argv[argv.index("--load-mode") + 1] == "mlock"
+        assert argv[argv.index("-ctxcp") + 1] == "8"
+        assert argv[argv.index("--ctx-checkpoints-total") + 1] == "6"
+        assert argv[argv.index("--temp") + 1] == "0.4"
+
+    def test_no_slot_window_unless_configured(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", _fake_model_path({}))
+        argv = stack._main_argv(_conf(), "/models/main.gguf")
+        assert "--kv-unified-per-slot" not in argv
+        assert "--seed" not in argv
+
+    def test_dense_unified_memory_is_opt_in(self, monkeypatch):
+        monkeypatch.setattr(stack, "model_path", lambda repo, name: "/models/x.gguf")
+        _m, _a, env = stack.main_launch(_conf(), "dense")
+        assert env == {}
+        _m, _a, env = stack.main_launch(_conf(MAIN_CUDA_UNIFIED_MEMORY="1"), "dense")
+        assert env == {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
+        _m, _a, env = stack.main_launch(_conf(), "a3b")
+        assert env == {"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}
+
+    def test_command_prints_a_line_the_shell_runs_as_start_would(self, monkeypatch, capsys):
+        import argparse
+        import shlex
+        monkeypatch.setattr(stack, "model_path", lambda repo, name: "/models/x.gguf")
+        monkeypatch.setattr(stack, "load_conf", lambda: _conf(MAIN_CUDA_UNIFIED_MEMORY="1"))
+        assert stack.cmd_command(argparse.Namespace(model="dense")) == 0
+        # the shell drops backslash-newline; shlex keeps it as a word
+        words = shlex.split(capsys.readouterr().out.replace("\\\n", ""))
+        _m, argv, _e = stack.main_launch(_conf(MAIN_CUDA_UNIFIED_MEMORY="1"), "dense")
+        assert words == ["GGML_CUDA_ENABLE_UNIFIED_MEMORY=1"] + argv
