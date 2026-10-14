@@ -76,7 +76,7 @@ class TestSegments:
             text = "".join(t for _, t in frags)
             if width >= 30:
                 assert sb.cell_width(text) <= width, width
-                assert "40%" in text and "3m" in text, width
+                assert "40%" in text and "3m" in text, width  # "work 3m" or bare "3m"
 
     def test_optional_segments_shorten_before_any_is_dropped(self):
         snap = _snap(vram=(15202, 16380), session={"gen_tps": 31.0, "draft_pct": 60.0, "cache_hit_pct": 90.0},

@@ -51,6 +51,18 @@ def tokens(n: float) -> str:
     return f"{n / 1_000_000:.2f}M"
 
 
+def work_time(seconds: float) -> str:
+    """Seconds while short, then minutes:seconds, then hours:minutes: it ticks visibly."""
+    seconds = int(max(0.0, seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, sec = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{sec:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
 def load_style(percent: Optional[float], warn: float, bad: float, critical: float) -> str:
     """Higher is worse: context, VRAM."""
     if percent is None:
@@ -196,7 +208,7 @@ def segments(snapshot: Dict[str, Any], main_slot: int = 1) -> List[Dict[str, Any
     session = telemetry.get("session") or {}
     main = _main_slot(telemetry, main_slot)
     out = [
-        _model(snapshot.get("model_short") or "?"),
+        _model(snapshot.get("model_label") or snapshot.get("model_short") or "?"),
         _context(snapshot),
         _generation(main, session),
         _prefill(main, session),
@@ -205,7 +217,9 @@ def segments(snapshot: Dict[str, Any], main_slot: int = 1) -> List[Dict[str, Any
         _slots(telemetry, main_slot),
         _vram(telemetry),
         _background(snapshot),
-        _segment(1, [(PLAIN, snapshot.get("duration") or "")], droppable=False),
+        # turn time only: the clock stops at the idle prompt
+        _segment(1, [(LABEL, "work "), (PLAIN, snapshot.get("duration") or "")],
+                 [(PLAIN, snapshot.get("duration") or "")], droppable=False),
     ]
     return [s for s in out if s and s["variants"]]
 

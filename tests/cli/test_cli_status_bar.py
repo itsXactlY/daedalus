@@ -11,6 +11,8 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    # 14m32s of turns; the session itself has been open longer
+    cli_obj._work = {"key": cli_obj.session_start, "done": 872.0, "since": None}
     return cli_obj
 
 
@@ -77,7 +79,7 @@ class TestCLIStatusBar:
         assert "12.4K/200K" in text
         assert "6%" in text
         assert "$0.06" not in text
-        assert "15m" in text
+        assert "14m32s" in text
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
@@ -194,7 +196,7 @@ class TestCLIStatusBar:
 
         assert "⚕" in text
         assert "$0.06" not in text
-        assert "15m" in text
+        assert "14m32s" in text
         assert "200K" not in text
 
     def test_build_status_bar_text_handles_missing_agent(self):
@@ -482,3 +484,42 @@ class TestContextGrowth:
         g, src, drops = S._context_growth_per_call(self._agent([]))
         assert g == 0 and drops == 0
         assert S._context_growth_per_call(object()) == (0, "sessionmittel", 0)
+
+
+class TestWorkClock:
+    """The bar's time counts turns only; the idle prompt does not tick (2026-10-14)."""
+
+    def test_idle_session_shows_no_work(self):
+        cli_obj = DaedalusCLI.__new__(DaedalusCLI)
+        cli_obj.session_start = datetime.now() - timedelta(hours=3)
+        assert cli_obj._work_seconds() == 0.0
+
+    def test_only_turns_count(self, monkeypatch):
+        import time as _time
+        clock = [1000.0]
+        monkeypatch.setattr(_time, "monotonic", lambda: clock[0])
+        cli_obj = DaedalusCLI.__new__(DaedalusCLI)
+        cli_obj.session_start = datetime.now()
+        cli_obj._work_begin()
+        clock[0] += 30
+        assert cli_obj._work_seconds() == 30.0, "a running turn ticks live"
+        cli_obj._work_end()
+        clock[0] += 600
+        assert cli_obj._work_seconds() == 30.0, "idle time is not work"
+        cli_obj._work_begin()
+        clock[0] += 12
+        cli_obj._work_end()
+        assert cli_obj._work_seconds() == 42.0
+
+    def test_a_new_session_starts_at_zero(self):
+        cli_obj = DaedalusCLI.__new__(DaedalusCLI)
+        cli_obj.session_start = datetime.now()
+        cli_obj._work = {"key": cli_obj.session_start, "done": 99.0, "since": None}
+        cli_obj.session_start = datetime.now() + timedelta(seconds=1)
+        assert cli_obj._work_seconds() == 0.0
+
+    def test_format(self):
+        from daedalus_cli.status_bar import work_time
+        assert work_time(9) == "9s"
+        assert work_time(872) == "14m32s"
+        assert work_time(3 * 3600 + 5 * 60) == "3h05m"

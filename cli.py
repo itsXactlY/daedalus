@@ -2372,6 +2372,34 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         return out
 
+    def _work_clock(self) -> Dict[str, Any]:
+        """Turn time of this session: it runs only while the agent works, never at the idle prompt."""
+        key = getattr(self, "session_start", None)
+        clock = getattr(self, "_work", None)
+        if clock is None or clock["key"] != key:
+            clock = {"key": key, "done": 0.0, "since": None}
+            self._work = clock
+        return clock
+
+    def _work_begin(self) -> None:
+        import time as _time
+        clock = self._work_clock()
+        if clock["since"] is None:
+            clock["since"] = _time.monotonic()
+
+    def _work_end(self) -> None:
+        import time as _time
+        clock = self._work_clock()
+        if clock["since"] is not None:
+            clock["done"] += _time.monotonic() - clock["since"]
+            clock["since"] = None
+
+    def _work_seconds(self) -> float:
+        import time as _time
+        clock = self._work_clock()
+        running = _time.monotonic() - clock["since"] if clock["since"] is not None else 0.0
+        return clock["done"] + running
+
     def _llama_session_stats(self):
         """Session-lifetime counters for the local llama-server.
 
@@ -2425,11 +2453,12 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
-        elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
+        from daedalus_cli.status_bar import work_time
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
-            "duration": format_duration_compact(elapsed_seconds),
+            "model_label": model_name.split("/")[-1].removesuffix(".gguf"),
+            "duration": work_time(self._work_seconds()),
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
@@ -5931,8 +5960,9 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         used = int(getattr(comp, "last_prompt_tokens", 0) or 0)
         threshold = int(getattr(comp, "threshold_tokens", 0) or 0)
         compressions = int(getattr(comp, "compression_count", 0) or 0)
-        elapsed = format_duration_compact(
-            (datetime.now() - self.session_start).total_seconds())
+        from daedalus_cli.status_bar import work_time
+        elapsed = (f"{work_time(self._work_seconds())} arbeit · "
+                   f"{format_duration_compact((datetime.now() - self.session_start).total_seconds())} offen")
 
         print()
         print(f"  ⚕ {agent.model}  ·  {getattr(agent, 'provider', '?')}  ·  {elapsed}")
@@ -8713,11 +8743,13 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
                     self._agent_running = True
+                    self._work_begin()
                     app.invalidate()
 
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
+                        self._work_end()
                         self._agent_running = False
                         self._spinner_text = ""
 
