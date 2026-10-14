@@ -2219,6 +2219,12 @@ class AIAgent:
                     self.context_compressor.threshold_percent * 100,
                 )
                 return
+            # A slot never holds more than its window (--kv-unified-per-slot):
+            # a 65536 fast layer over a 57344 slot put the rebase past the wall.
+            _window = int(getattr(self.context_compressor, "context_length", 0) or 0)
+            if 0 < _window < _fast:
+                logger.info("fast layer %d clamped to the slot window %d", _fast, _window)
+                _fast = _window
             from agent.kv_watermarks import Watermarks
             _wm = (comp_cfg or {}).get("watermarks") or {}
             self._watermarks = Watermarks(
@@ -3052,14 +3058,17 @@ class AIAgent:
         compaction threshold. Returns immediately; never blocks the turn.
 
         With the retrieval engine the prep includes a prefill of the next turn
-        0 on the sidekick, and a prefill beside a decoding main slot stalls it:
-        2026-09-17 a 16.9k prime took main from ~20 to 1-3 t/s for 42 s. So it
-        only starts between turns, while the operator reads. Mid-turn, the hard
-        watermark rebases inline instead.
+        0 on the sidekick. 2026-09-17 that prefill took main from ~20 to 1-3 t/s
+        for 42 s, so it waited for a turn boundary. The server now caps prompt
+        work beside a generating slot (--prefill-share, default 0.5: main kept
+        12 of 22 t/s), so a multi-slot llama-server preps mid-turn: one long
+        agentic turn otherwise runs into the window with slot 0 idle
+        (2026-10-14, 14.6k -> 57.3k in one 18-call turn). A one-conversation
+        engine still waits: there the prewarm parks main's tape.
         """
         if not getattr(self, "_hot_swap_enabled", False):
             return
-        if self._retrieval_engine() and not between_turns:
+        if self._retrieval_engine() and not between_turns and self._server_slot_count() < 2:
             return
         if self._hot_swap_in_progress or self._hot_swap_ready is not None:
             return
@@ -3360,9 +3369,16 @@ class AIAgent:
         return sidekick_gate.hold(priority)
 
     def _kv_pool_tokens(self, main_tokens: int) -> int:
-        """Main's tokens plus what the sidekick slot still holds, as the server reports it."""
+        """Main's tokens plus what the sidekick slot still holds, as the server reports it.
+
+        Not while the sidekick holds our own prep: counting the next epoch's
+        turn 0 as pressure pushed a half-done prewarm past the hard ceiling
+        and compacted inline, throwing the prewarm away.
+        """
         wm = getattr(self, "_watermarks", None)
         if wm is None or self._server_slot_count() < 2:
+            return main_tokens
+        if self._hot_swap_in_progress or self._hot_swap_ready is not None:
             return main_tokens
         from agent.kv_watermarks import read_slots, slot_tokens
         slots = read_slots(self.base_url)
@@ -9929,12 +9945,16 @@ class AIAgent:
         self._current_turn_injections = _turn_injections
         self._current_bootstrap = _mazemaker_bootstrap_messages
 
+        # Once per turn, never per call: on a local llama the effort line heads the
+        # system prompt, so a level that flips as tool errors pile up re-reads the
+        # whole window mid-turn.
+        try:
+            from agent.task_intensity import adjust_agent_reasoning
+            adjust_agent_reasoning(self, messages)
+        except Exception:
+            pass
+
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
-            try:
-                from agent.task_intensity import adjust_agent_reasoning
-                adjust_agent_reasoning(self, messages)
-            except Exception:
-                pass
 
             self._checkpoint_mgr.new_turn()
 
