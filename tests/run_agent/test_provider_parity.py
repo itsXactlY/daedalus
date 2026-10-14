@@ -832,3 +832,30 @@ class TestReasoningEffortDefaults:
         agent.reasoning_config = {"enabled": True, "effort": "medium"}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"
+
+
+class TestLocalThinkingBudget:
+    """2026-10-14: a 1.5-2.5k-token think per call at effort low; the server now ends it at agent.thinking_budget."""
+
+    def _extra(self, monkeypatch, reasoning):
+        # a dead local port: the local branch without touching a live server
+        agent = _make_agent(monkeypatch, "custom", base_url="http://127.0.0.1:9/v1")
+        agent.reasoning_config = reasoning
+        return agent._build_api_kwargs([{"role": "user", "content": "hi"}]).get("extra_body") or {}
+
+    def test_capped_by_default(self, monkeypatch):
+        extra = self._extra(monkeypatch, {"enabled": True, "effort": "low"})
+        assert extra["thinking_budget_tokens"] == 1024
+        assert "Act on what is known now" in extra["reasoning_budget_message"]
+
+    def test_no_cap_sent_when_thinking_is_off(self, monkeypatch):
+        extra = self._extra(monkeypatch, {"enabled": False})
+        assert extra["reasoning_effort"] == "none"
+        assert "thinking_budget_tokens" not in extra
+
+    def test_config_value(self):
+        from run_agent import thinking_budget_from
+        assert thinking_budget_from({}) == 1024
+        assert thinking_budget_from({"thinking_budget": 512}) == 512
+        assert thinking_budget_from({"thinking_budget": 0}) == 0
+        assert thinking_budget_from({"thinking_budget": "lots"}) == 1024

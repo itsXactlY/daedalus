@@ -919,6 +919,43 @@ _BROWSE_MAX_LIMIT = 200
 _RESTORE_MAX_TURNS = 20
 
 
+def _local_previous_session(current: str) -> str:
+    """The newest interactive session on disk that started before `current`.
+
+    Session ids start with their start time, so they sort chronologically.
+    Cron sessions (session_cron_*) never match the id pattern.
+    """
+    try:
+        from daedalus_constants import get_daedalus_home
+        names = [p.name[len("session_"):-len(".json")]
+                 for p in (Path(get_daedalus_home()) / "sessions").glob("session_*.json")]
+    except Exception:
+        return ""
+    ids = [s for s in names if _DAEDALUS_SESSION_RE.match(s) and (not current or s < current)]
+    return max(ids) if ids else ""
+
+
+def _local_session_turns(sid: str, limit: int) -> list:
+    """The last (user, assistant) text exchanges of a session file, newest first."""
+    try:
+        from daedalus_constants import get_daedalus_home
+        path = Path(get_daedalus_home()) / "sessions" / f"session_{sid}.json"
+        messages = json.loads(path.read_text(encoding="utf-8")).get("messages") or []
+    except Exception:
+        return []
+    pairs, user = [], None
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if m.get("role") == "user":
+            user = content
+        elif m.get("role") == "assistant" and user is not None:
+            pairs.append((user, content))
+            user = None
+    return pairs[::-1][:limit]
+
+
 def _split_soaked_turn(content: str) -> tuple:
     """Split a soaked turn back into (user, assistant)."""
     if not content:
@@ -1583,36 +1620,64 @@ class MazemakerMemoryProvider(MemoryProvider):
     def _compose_resume(self, session_id: str) -> str:
         parts = []
 
-        tail_lines = []
-        try:
-            res = _tool("mazemaker_browse", {
-                "label_prefix": "auto:turn:", "limit": RESUME_TAIL_FETCH,
-            }, timeout=RESUME_TIMEOUT)
-            rows = []
-            if isinstance(res, dict):
-                rows = res.get("memories") or res.get("result") or []
-            elif isinstance(res, list):
-                rows = res
-            turns = []
-            for m in rows:
-                label = str(m.get("label", "") or "")
-                content = str(m.get("content", "") or "")
-                if not label.startswith("auto:turn:"):
-                    continue
-                if "Review the conversation above" in content:
-                    continue
-                _sid = label[len("auto:turn:"):].rsplit(":", 1)[0]
-                if not _DAEDALUS_SESSION_RE.match(_sid):
-                    continue
-                turns.append((_sid, content))
-            if turns:
-                for _s, c in turns[:RESUME_TAIL_LIMIT]:
-                    body = c.split("\n", 1)[1] if "\n" in c else c
-                    body = self._clip(self._clean(body), RECALL_CLIP)
+        # The tail is THIS session's own turns on a continuation, else the
+        # newest interactive session on disk before it. It used to be the first
+        # auto:turn rows the pod returned, newest by write time: turns spooled
+        # while the pod was down replay later with a fresh write time, so on
+        # 2026-10-14 a 3-day-old cron refiner's turns came back as "previous
+        # session" and the footer told the model to continue them.
+        tail_lines, tail_sid = [], ""
+        previous = _local_previous_session(session_id)
+        for sid in dict.fromkeys(s for s in (session_id, previous) if s):
+            try:
+                res = _tool("mazemaker_browse", {
+                    "label_prefix": f"auto:turn:{sid}:", "limit": RESUME_TAIL_FETCH,
+                }, timeout=RESUME_TIMEOUT)
+            except Exception as e:
+                logger.debug("session_resume tail failed for %s: %s", sid, e)
+                continue
+            rows = (res.get("memories") or res.get("result") or []) if isinstance(res, dict) else (res or [])
+            rows = sorted((r for r in rows if str(r.get("label", "")).startswith(f"auto:turn:{sid}:")
+                           and "Review the conversation above" not in str(r.get("content", ""))),
+                          key=lambda r: _turn_sort_key(str(r.get("label", ""))), reverse=True)
+            for r in rows[:RESUME_TAIL_LIMIT]:
+                c = str(r.get("content", "") or "")
+                body = self._clip(self._clean(c.split("\n", 1)[1] if "\n" in c else c), RECALL_CLIP)
+                if body:
+                    tail_lines.append(f"[session {sid[:16]}] {body}")
+            if tail_lines:
+                tail_sid = sid
+                break
+        if not tail_lines and previous:
+            # never soaked (pod down at the time): the session file is the record
+            for user, asst in _local_session_turns(previous, RESUME_TAIL_LIMIT):
+                body = self._clip(self._clean(
+                    f"=== USER ===\n{user}\n\n=== ASSISTANT ===\n{_scrub_think(asst)}"), RECALL_CLIP)
+                if body:
+                    tail_lines.append(f"[session {previous[:16]}] {body}")
+            tail_sid = previous if tail_lines else ""
+        if not tail_lines and not previous:
+            # no session files to go by (gateway): the newest session by turn time, not write time
+            try:
+                res = _tool("mazemaker_browse", {
+                    "label_prefix": "auto:turn:", "limit": RESUME_TAIL_FETCH,
+                }, timeout=RESUME_TIMEOUT)
+                rows = (res.get("memories") or res.get("result") or []) if isinstance(res, dict) else (res or [])
+                turns = sorted(((str(r.get("label", "")), str(r.get("content", "") or "")) for r in rows),
+                               key=lambda t: _turn_sort_key(t[0]), reverse=True)
+                for label, c in turns:
+                    sid = label[len("auto:turn:"):].rsplit(":", 1)[0]
+                    if (not label.startswith("auto:turn:") or not _DAEDALUS_SESSION_RE.match(sid)
+                            or "Review the conversation above" in c or (tail_sid and sid != tail_sid)):
+                        continue
+                    body = self._clip(self._clean(c.split("\n", 1)[1] if "\n" in c else c), RECALL_CLIP)
                     if body:
-                        tail_lines.append(f"[session {_s[:16]}] {body}")
-        except Exception as e:
-            logger.debug("session_resume tail failed: %s", e)
+                        tail_sid = sid
+                        tail_lines.append(f"[session {sid[:16]}] {body}")
+                    if len(tail_lines) >= RESUME_TAIL_LIMIT:
+                        break
+            except Exception as e:
+                logger.debug("session_resume tail failed: %s", e)
 
         if not tail_lines:
             return ""
@@ -1644,7 +1709,11 @@ class MazemakerMemoryProvider(MemoryProvider):
 
         # Goals and footer are reserved first; a blind slice of the whole
         # block used to cut the goals off mid-word every time.
-        tail_head = "Previous session — last turns (recalled from mazemaker):"
+        _started = ""
+        if _DAEDALUS_SESSION_RE.match(tail_sid):
+            _started = f" (started {tail_sid[:4]}-{tail_sid[4:6]}-{tail_sid[6:8]} {tail_sid[9:11]}:{tail_sid[11:13]})"
+        tail_head = (f"This session so far{_started}:" if tail_sid == session_id
+                     else f"Previous session{_started} — last turns:")
         footer = (
             "[Prior-session context only — not new user input. Continue the work "
             "above; full history is recallable on demand via mazemaker_recall / "

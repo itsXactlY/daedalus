@@ -175,6 +175,22 @@ def hot_swap_hard_ratio_from(comp_cfg: dict) -> float:
     return v if 0.5 < v <= 0.99 else 0.85
 
 
+THINKING_BUDGET_MESSAGE = "\n\nThinking budget reached. Act on what is known now.\n"
+
+
+def thinking_budget_from(agent_cfg: dict) -> int:
+    """Max thinking tokens per call on a local llama-server (agent.thinking_budget, default 1024; 0 = no cap).
+
+    2026-10-14: even at effort low the 27B spent 1.5-2.5k tokens per call talking itself
+    through which task "continue" meant; the server ends the think block at this count and
+    the model acts. 978 chars (~250 tokens) of thinking were enough to break a tool loop."""
+    try:
+        v = int((agent_cfg or {}).get("thinking_budget", 1024))
+    except (TypeError, ValueError):
+        return 1024
+    return max(0, v)
+
+
 def _install_safe_stdio() -> None:
     """Wrap stdout/stderr so best-effort console output cannot crash the agent."""
     for stream_name in ("stdout", "stderr"):
@@ -2109,6 +2125,8 @@ class AIAgent:
         # fraction of the real context window does the turn stop and compact
         # inline, because continuing risks overflowing the server context.
         self._hot_swap_hard_ratio = hot_swap_hard_ratio_from(_comp_cfg)
+        self._thinking_budget = thinking_budget_from(
+            (_agent_cfg.get("agent") or {}) if isinstance(_agent_cfg, dict) else {})
         # A failing summarizer must not be re-fired on every iteration.
         self._hot_swap_failed_at = 0.0
         self._hot_swap_retry_after_s = 60.0
@@ -7804,6 +7822,10 @@ class AIAgent:
                 # none/low/medium/xhigh as decided by _local_reasoning_effort (rounding to the template's ceiling, and
                 # an explicit OFF sent as "none", live there)
                 extra_body["reasoning_effort"] = _local_effort
+            _budget = getattr(self, "_thinking_budget", 0)
+            if _budget and _local_effort != "none":
+                extra_body["thinking_budget_tokens"] = _budget
+                extra_body["reasoning_budget_message"] = THINKING_BUDGET_MESSAGE
 
             # llama-server chunk-reuse: when a turn's prompt has had a middle
             # block removed (our own context-spill placing a shorter pointer

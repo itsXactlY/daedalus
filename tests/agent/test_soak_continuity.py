@@ -64,8 +64,8 @@ class TestContinuity:
             p.initialize("20260809_000000_new")
             cc = p.continuity_context()
         assert "Previous session" in cc
-        assert "website showcase" in cc
         assert "shader approach" in cc
+        assert "website showcase" not in cc, "one session's tail, never a mix of sessions"
         assert "GOAL" in cc
         assert "Review the conversation above" not in cc
         assert "20260809_000000_new" not in cc
@@ -102,3 +102,60 @@ class TestContinuity:
             second = p.continuity_context()
         assert first == second
         assert len(calls) <= 5
+
+
+class TestTailIsTheRealPreviousSession:
+    """2026-10-14: turns spooled while the pod was down replayed days later with a
+    fresh write time, so a 3-day-old cron refiner became "previous session" and the
+    footer told the model to continue it. The tail now follows the session files."""
+
+    @staticmethod
+    def _session_file(sid, pairs):
+        import json, os
+        from pathlib import Path
+        msgs = []
+        for u, a in pairs:
+            msgs += [{"role": "user", "content": u}, {"role": "assistant", "content": a}]
+        path = Path(os.environ["DAEDALUS_HOME"]) / "sessions" / f"session_{sid}.json"
+        path.write_text(json.dumps({"messages": msgs}))
+
+    @staticmethod
+    def _tool(rows_by_prefix):
+        def _t(name, arguments, timeout=8.0):
+            if name == "mazemaker_browse":
+                return {"memories": rows_by_prefix.get(arguments.get("label_prefix", ""), [])}
+            return {"memories": 0}
+        return _t
+
+    def test_replayed_old_turns_lose_to_the_real_previous_session(self):
+        self._session_file("20261014_155834_ff904c", [("gather optuna", "done")])
+        rows = {
+            "auto:turn:": [{"label": "auto:turn:20261011_191359_cbde91:6acbc6ca",
+                            "content": "h\n=== USER ===\nrefine seven-showcase\n\n=== ASSISTANT ===\nok"}],
+            "auto:turn:20261014_155834_ff904c:": [
+                {"label": "auto:turn:20261014_155834_ff904c:6acf1000",
+                 "content": "h\n=== USER ===\ngather optuna branches\n\n=== ASSISTANT ===\nlisted 9"}],
+        }
+        with patch.object(mz, "_tool", side_effect=self._tool(rows)):
+            block = mz.MazemakerMemoryProvider.__new__(mz.MazemakerMemoryProvider)._compose_resume(
+                "20261014_164351_451552")
+        assert "gather optuna branches" in block
+        assert "seven-showcase" not in block
+        assert "Previous session (started 2026-10-14 15:58)" in block
+
+    def test_unsoaked_previous_session_comes_from_its_file(self):
+        self._session_file("20261014_155834_ff904c", [("first", "a1"), ("strip secrets on tpad", "stripped")])
+        with patch.object(mz, "_tool", side_effect=self._tool({})):
+            block = mz.MazemakerMemoryProvider.__new__(mz.MazemakerMemoryProvider)._compose_resume(
+                "20261014_164351_451552")
+        assert "strip secrets on tpad" in block
+
+    def test_a_continued_session_shows_its_own_turns(self):
+        self._session_file("20261014_155834_ff904c", [("older", "x")])
+        rows = {"auto:turn:20261014_164351_451552:": [
+            {"label": "auto:turn:20261014_164351_451552:6acf2000",
+             "content": "h\n=== USER ===\nconsolidate optuna\n\n=== ASSISTANT ===\nbranch made"}]}
+        with patch.object(mz, "_tool", side_effect=self._tool(rows)):
+            block = mz.MazemakerMemoryProvider.__new__(mz.MazemakerMemoryProvider)._compose_resume(
+                "20261014_164351_451552")
+        assert "This session so far" in block and "consolidate optuna" in block
