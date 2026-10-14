@@ -2216,7 +2216,11 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent.session_cost_source = snap["cost_source"]
 
     def _ensure_llama_telemetry_poller(self) -> None:
-        """Start/stop the background llama-server telemetry poller to match verbose mode.
+        """Start/stop the background llama-server telemetry poller: on for any local endpoint.
+
+        The status bar shows the server's numbers whenever Daedalus talks to
+        its own llama-server, /verbose or not (2026-10-14: it was verbose-only,
+        so the stats came bundled with the debug log flood).
 
         The status bar (both render paths below) only ever reads
         self._llama_telemetry -- never fetches inline. prompt_toolkit's
@@ -2227,11 +2231,10 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         base_url = (getattr(self, "base_url", "") or "").lower()
         is_local = "127.0.0.1" in base_url or "localhost" in base_url
-        should_run = bool(getattr(self, "verbose", False) and is_local)
+        should_run = is_local
 
-        # The session baseline is taken at session start whether or not the
-        # status bar is in verbose mode, so /usage and a later /verbose both
-        # report the whole session, not whatever followed the first poll.
+        # The session baseline is taken at session start, so /usage reports
+        # the whole session, not whatever followed the first poll.
         if is_local and not self._llama_session_stats().has_baseline:
             base_thread = getattr(self, "_llama_baseline_thread", None)
             if base_thread is None or not base_thread.is_alive():
@@ -2258,12 +2261,18 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._llama_telemetry = None
 
     def _llama_telemetry_loop(self, stop_event) -> None:
+        import time as _time
         url = self._llama_base()
         last: Dict[int, tuple] = {}
+        vram, vram_at = None, 0.0
         while not stop_event.is_set():
             try:
                 snap = self._fetch_llama_telemetry(url, last)
                 if snap is not None:
+                    # nvidia-smi is a process spawn; VRAM moves slowly anyway
+                    if _time.monotonic() - vram_at >= 5.0:
+                        vram, vram_at = self._read_vram(), _time.monotonic()
+                    snap["vram"] = vram
                     stats = self._llama_session_stats()
                     if snap.get("metrics"):
                         stats.update(snap["metrics"])
@@ -2276,18 +2285,34 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             stop_event.wait(1.0)
 
     @staticmethod
-    def _fetch_llama_telemetry(url: str, last: Dict[int, tuple]) -> Optional[Dict[str, Any]]:
-        """One snapshot: live tok/s (busiest slot), KV usage%, DFlash2 accept%.
+    def _read_vram() -> Optional[tuple]:
+        """(used MiB, total MiB) of the first GPU, or None without nvidia-smi."""
+        import shutil as _shutil
+        import subprocess as _subprocess
+        exe = _shutil.which("nvidia-smi")
+        if not exe:
+            return None
+        try:
+            out = _subprocess.run(
+                [exe, "--query-gpu=memory.used,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2.0,
+            ).stdout
+            used, total = (int(x) for x in out.splitlines()[0].split(","))
+            return used, total
+        except Exception:
+            return None
 
-        `last` carries (n_decoded, monotonic_ts) per slot id across calls so
-        live tok/s can be derived from the delta -- same technique as
-        specbench/monitor.py's dashboard, condensed to the handful of numbers
-        that fit on a status-bar line.
+    @staticmethod
+    def _fetch_llama_telemetry(url: str, last: Dict[int, tuple]) -> Optional[Dict[str, Any]]:
+        """One snapshot: every slot's phase, tape and live rates, plus /metrics.
+
+        `last` carries (id_task, [(ts, n_decoded, n_prompt_processed), ...])
+        per slot across calls. Rates span the last ~4 s of samples, not one
+        poll: a speculative step lands up to 3 tokens at once, so one-second
+        deltas jump around.
         """
         import json as _json
-        import re as _re
         import time as _time
-        import urllib.error
         import urllib.request
 
         try:
@@ -2297,34 +2322,45 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return None
 
         now = _time.monotonic()
+        out_slots = []
         best_tps = 0.0
         kv_used = kv_ctx = 0
         any_busy = False
         for s in slots or []:
             sid = s.get("id", 0)
-            n_decoded = int(((s.get("next_token") or [{}])[0]).get("n_decoded") or 0)
-            processing = bool(s.get("is_processing"))
-            if processing:
+            n_gen = int(((s.get("next_token") or [{}])[0]).get("n_decoded") or 0)
+            n_proc = int(s.get("n_prompt_tokens_processed") or 0)
+            busy = bool(s.get("is_processing"))
+            task = s.get("id_task")
+            entry = {"id": sid, "tape": int(s.get("n_prompt_tokens") or 0),
+                     "n_ctx": int(s.get("n_ctx") or 0), "phase": "idle"}
+            if busy:
                 any_busy = True
-                if s.get("n_prompt_tokens", 0) or 0:
-                    kv_used = s.get("n_prompt_tokens", 0) or 0
-                    kv_ctx = s.get("n_ctx", 0) or 0
-                prev = last.get(sid)
-                if prev and n_decoded >= prev[0]:
-                    dt = now - prev[1]
-                    if dt > 0.05:
-                        best_tps = max(best_tps, (n_decoded - prev[0]) / dt)
-                last[sid] = (n_decoded, now)
+                entry["phase"] = "decode" if n_gen else "prefill"
+                entry["prompt_processed"] = n_proc
+                if entry["tape"]:
+                    kv_used, kv_ctx = entry["tape"], entry["n_ctx"]
+                task_id, window = last.get(sid, (None, []))
+                if task_id != task or (window and (n_gen < window[-1][1] or n_proc < window[-1][2])):
+                    window = []
+                window = [w for w in window if now - w[0] <= 4.0] + [(now, n_gen, n_proc)]
+                last[sid] = (task, window)
+                span = window[-1][0] - window[0][0]
+                if span >= 0.5:
+                    entry["decode_tps"] = (window[-1][1] - window[0][1]) / span
+                    entry["prefill_tps"] = (window[-1][2] - window[0][2]) / span
+                    best_tps = max(best_tps, entry["decode_tps"])
             else:
                 last.pop(sid, None)
-                if kv_ctx == 0:
-                    kv_ctx = s.get("n_ctx", 0) or kv_ctx
+                kv_ctx = kv_ctx or entry["n_ctx"]
+            out_slots.append(entry)
 
         out: Dict[str, Any] = {
             "busy": any_busy,
             "live_tps": best_tps,
             "kv_used": kv_used,
             "kv_ctx": kv_ctx,
+            "slots": out_slots,
         }
 
         try:
@@ -2341,8 +2377,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         Keyed to session_start so /new and friends get a fresh session, and
         kept on the CLI rather than on the poller thread: the poller is torn
-        down whenever verbose goes off, and the session's numbers must not
-        go with it.
+        down whenever the backend stops being local, and the session's
+        numbers must not go with it.
         """
         from daedalus_cli.llama_session_stats import SessionCounters
         key = getattr(self, "session_start", None)
@@ -2453,6 +2489,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             snapshot["compressions"] = getattr(compressor, "compression_count", 0) or 0
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+                snapshot["context_used_label"] = format_token_count_compact(context_tokens)
+                snapshot["context_total_label"] = _format_context_length(context_length)
 
         return snapshot
 
@@ -2499,96 +2537,31 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             width += ch_width
         return "".join(out).rstrip() + ellipsis
 
-    @staticmethod
-    def _format_llama_telemetry_label(telemetry: Optional[Dict[str, Any]]) -> str:
-        """Compact verbose-mode label: live/avg tok/s, KV usage%, DFlash2 accept%.
+    def _status_bar_width(self) -> int:
+        try:
+            from prompt_toolkit.application import get_app
+            return get_app().output.get_size().columns
+        except Exception:
+            return shutil.get_terminal_size((80, 24)).columns
 
-        Empty until the background poller (_ensure_llama_telemetry_poller)
-        has completed at least one /slots round-trip -- silently absent
-        rather than a placeholder, since the status bar already omits every
-        other snapshot field that has nothing to show yet.
-        """
-        if not telemetry:
-            return ""
-        session = telemetry.get("session") or {}
-        bits = []
-        # Throughput: live while a slot generates, and the whole-session mean
-        # always — the mean alone once idle.
-        tps = []
-        if telemetry.get("busy") and telemetry.get("live_tps"):
-            tps.append(f"{telemetry['live_tps']:.0f}")
-        if session.get("gen_tps"):
-            tps.append(f"⌀{session['gen_tps']:.0f}")
-        if tps:
-            bits.append(" ".join(tps) + " tok/s")
-        kv_ctx = telemetry.get("kv_ctx") or 0
-        if kv_ctx:
-            kv_pct = (telemetry.get("kv_used") or 0) / kv_ctx * 100.0
-            kv = f"kv {kv_pct:.0f}%"
-            if session.get("kv_avg_pct") is not None:
-                kv += f" ⌀{session['kv_avg_pct']:.0f}%"
-            if session.get("kv_peak_pct"):
-                kv += f" ▲{session['kv_peak_pct']:.0f}%"
-            bits.append(kv)
-        if session.get("cache_hit_pct") is not None:
-            bits.append(f"cache {session['cache_hit_pct']:.0f}%")
-        if session.get("draft_pct") is not None:
-            bits.append(f"draft {session['draft_pct']:.0f}%")
-        return " · ".join(bits)
+    def _status_bar_main_slot(self) -> int:
+        return int(getattr(getattr(self, "agent", None), "_pinned_id_slot", 1) or 1)
+
+    def _status_bar_frags(self, width: int) -> list:
+        """Segments fitted to one row (daedalus_cli/status_bar.py): never wraps."""
+        from daedalus_cli import status_bar
+        frags = status_bar.fit(
+            status_bar.segments(self._get_status_bar_snapshot(), self._status_bar_main_slot()), width)
+        if sum(self._status_bar_display_width(t) for _, t in frags) > width:
+            plain = "".join(t for _, t in frags)
+            return [("class:status-bar", self._trim_status_bar_text(plain, width))]
+        return frags
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         try:
-            snapshot = self._get_status_bar_snapshot()
             if width is None:
-                try:
-                    from prompt_toolkit.application import get_app
-                    width = get_app().output.get_size().columns
-                except Exception:
-                    width = shutil.get_terminal_size((80, 24)).columns
-            percent = snapshot["context_percent"]
-            percent_label = f"{percent}%" if percent is not None else "--"
-            duration_label = snapshot["duration"]
-
-            if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
-                return self._trim_status_bar_text(text, width)
-            if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
-                bg_count = snapshot.get("active_background_tasks", 0)
-                if bg_count:
-                    parts.append(f"▶ {bg_count}")
-                bg_proc_count = snapshot.get("active_background_processes", 0)
-                if bg_proc_count:
-                    parts.append(f"⚙ {bg_proc_count}")
-                bg_subagent_count = snapshot.get("active_background_subagents", 0)
-                if bg_subagent_count:
-                    parts.append(f"⛓ {bg_subagent_count}")
-                parts.append(duration_label)
-                return self._trim_status_bar_text(" · ".join(parts), width)
-
-            if snapshot["context_length"]:
-                ctx_total = _format_context_length(snapshot["context_length"])
-                ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                context_label = f"{ctx_used}/{ctx_total}"
-            else:
-                context_label = "ctx --"
-
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
-            bg_count = snapshot.get("active_background_tasks", 0)
-            if bg_count:
-                parts.append(f"▶ {bg_count}")
-            bg_proc_count = snapshot.get("active_background_processes", 0)
-            if bg_proc_count:
-                parts.append(f"⚙ {bg_proc_count}")
-            bg_subagent_count = snapshot.get("active_background_subagents", 0)
-            if bg_subagent_count:
-                parts.append(f"⛓ {bg_subagent_count}")
-            if getattr(self, "verbose", False):
-                llama_label = self._format_llama_telemetry_label(snapshot.get("llama_telemetry"))
-                if llama_label:
-                    parts.append(llama_label)
-            parts.append(duration_label)
-            return self._trim_status_bar_text(" │ ".join(parts), width)
+                width = self._status_bar_width()
+            return "".join(t for _, t in self._status_bar_frags(width)).strip()
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Daedalus'}"
 
@@ -2596,73 +2569,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not self._status_bar_visible:
             return []
         try:
-            snapshot = self._get_status_bar_snapshot()
-            try:
-                from prompt_toolkit.application import get_app
-                width = get_app().output.get_size().columns
-            except Exception:
-                width = shutil.get_terminal_size((80, 24)).columns
-            duration_label = snapshot["duration"]
-
-            if width < 52:
-                frags = [
-                    ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
-                    ("class:status-bar-dim", " · "),
-                    ("class:status-bar-dim", duration_label),
-                    ("class:status-bar", " "),
-                ]
-            else:
-                percent = snapshot["context_percent"]
-                percent_label = f"{percent}%" if percent is not None else "--"
-                if width < 76:
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
-                        ("class:status-bar-dim", " · "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
-                    ]
-                else:
-                    if snapshot["context_length"]:
-                        ctx_total = _format_context_length(snapshot["context_length"])
-                        ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                        context_label = f"{ctx_used}/{ctx_total}"
-                    else:
-                        context_label = "ctx --"
-
-                    bar_style = self._status_bar_context_style(percent)
-                    frags = [
-                        ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", context_label),
-                        ("class:status-bar-dim", " │ "),
-                        (bar_style, self._build_context_bar(percent)),
-                        ("class:status-bar-dim", " "),
-                        (bar_style, percent_label),
-                    ]
-                    if getattr(self, "verbose", False):
-                        llama_label = self._format_llama_telemetry_label(snapshot.get("llama_telemetry"))
-                        if llama_label:
-                            frags += [
-                                ("class:status-bar-dim", " │ "),
-                                ("class:status-bar-strong", llama_label),
-                            ]
-                    frags += [
-                        ("class:status-bar-dim", " │ "),
-                        ("class:status-bar-dim", duration_label),
-                        ("class:status-bar", " "),
-                    ]
-
-            total_width = sum(self._status_bar_display_width(text) for _, text in frags)
-            if total_width > width:
-                plain_text = "".join(text for _, text in frags)
-                trimmed = self._trim_status_bar_text(plain_text, width)
-                return [("class:status-bar", trimmed)]
-            return frags
+            return self._status_bar_frags(self._status_bar_width())
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
 
@@ -6151,7 +6058,7 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     row("kv-füllung", pct(s["kv_now_pct"]),
                         f"⌀ {pct(s['kv_avg_pct'])} · spitze {pct(s['kv_peak_pct'])}")
                 else:
-                    row("kv-füllung", "--", "nur mit /verbose gemessen")
+                    row("kv-füllung", "--", "noch kein slot beschäftigt gemessen")
                 if s["restarts"]:
                     row("", "", f"server {int(s['restarts'])}× neu gestartet — "
                                 "zähler über die neustarts summiert")
@@ -8595,6 +8502,8 @@ class DaedalusCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             'status-bar': 'bg:#1a1a2e #C0C0C0',
             'status-bar-strong': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-dim': 'bg:#1a1a2e #8B8682',
+            'status-bar-label': 'bg:#1a1a2e #CD7F32',
+            'status-bar-accent': 'bg:#1a1a2e #DA70D6 bold',
             'status-bar-good': 'bg:#1a1a2e #8FBC8F bold',
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',

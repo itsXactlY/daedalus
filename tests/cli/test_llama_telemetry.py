@@ -1,16 +1,16 @@
-"""Verbose-mode llama-server telemetry in the status bar.
+"""llama-server telemetry in the status bar.
 
-/verbose is supposed to turn this on automatically and off just as cleanly --
-the poller must never run (or keep running) when verbose is off or the
-backend isn't a local llama-server, and the render path must never touch the
-network directly (see _ensure_llama_telemetry_poller's own docstring for why:
-a blocking call from prompt_toolkit's bottom-toolbar render path would make
-typing feel laggy the moment the server is slow).
+Since 2026-10-14 it runs for any local endpoint, /verbose or not: the stats
+used to come only bundled with the debug log flood. The poller must never run
+for a remote backend, and the render path must never touch the network (a
+blocking call from prompt_toolkit's bottom-toolbar render path would make
+typing lag the moment the server is slow).
 """
 
 import time
 
 from cli import DaedalusCLI
+from daedalus_cli import status_bar as sb
 
 
 def _make_cli(verbose=False, base_url="http://127.0.0.1:8080/v1"):
@@ -20,46 +20,70 @@ def _make_cli(verbose=False, base_url="http://127.0.0.1:8080/v1"):
     return cli_obj
 
 
-class TestFormatLabel:
-    def test_empty_when_no_telemetry_yet(self):
-        assert DaedalusCLI._format_llama_telemetry_label(None) == ""
-        assert DaedalusCLI._format_llama_telemetry_label({}) == ""
+def _text(snapshot, width=400, main_slot=1):
+    return "".join(t for _, t in sb.fit(sb.segments(snapshot, main_slot), width))
 
-    def test_busy_slot_shows_live_tps(self):
-        label = DaedalusCLI._format_llama_telemetry_label(
-            {"busy": True, "live_tps": 27.9, "kv_used": 32000, "kv_ctx": 81920}
-        )
-        assert "28 tok/s" in label
-        assert "kv 39%" in label
 
-    def test_idle_shows_the_whole_session_average(self):
-        label = DaedalusCLI._format_llama_telemetry_label(
-            {"busy": False, "kv_used": 0, "kv_ctx": 81920, "session": {"gen_tps": 31.2}}
-        )
-        assert "⌀31 tok/s" in label
+def _snap(**telemetry):
+    return {"model_short": "m", "duration": "3m", "context_percent": 40, "context_length": 57344,
+            "context_used_label": "22.9K", "context_total_label": "57.3K", "llama_telemetry": telemetry}
 
-    def test_busy_shows_live_and_session_average_together(self):
-        label = DaedalusCLI._format_llama_telemetry_label(
-            {"busy": True, "live_tps": 58.4, "kv_used": 8192, "kv_ctx": 81920,
-             "session": {"gen_tps": 49.6, "kv_avg_pct": 7.2, "kv_peak_pct": 31.0,
-                         "cache_hit_pct": 87.4, "draft_pct": 71.4}}
-        )
-        assert "58 ⌀50 tok/s" in label
-        assert "kv 10% ⌀7% ▲31%" in label
-        assert "cache 87%" in label
-        assert "draft 71%" in label
 
-    def test_session_stats_only_shown_once_measured(self):
-        label = DaedalusCLI._format_llama_telemetry_label(
-            {"busy": True, "live_tps": 10.0, "kv_used": 1, "kv_ctx": 100}
-        )
-        assert "⌀" not in label and "cache" not in label and "draft" not in label
+class TestSegments:
+    def test_nothing_from_the_server_until_the_first_poll(self):
+        text = _text(_snap())
+        assert "gen" not in text and "draft" not in text and "slots" not in text
 
-    def test_zero_ctx_does_not_divide_by_zero(self):
-        label = DaedalusCLI._format_llama_telemetry_label(
-            {"busy": True, "live_tps": 5.0, "kv_used": 0, "kv_ctx": 0}
-        )
-        assert "kv" not in label
+    def test_main_decoding_shows_live_and_session_rate(self):
+        text = _text(_snap(slots=[{"id": 0, "phase": "decode", "tape": 900, "decode_tps": 80.0},
+                                  {"id": 1, "phase": "decode", "tape": 30000, "decode_tps": 34.27}],
+                           session={"gen_tps": 30.96}))
+        assert "gen 34.3 ⌀31.0 t/s" in text, "live rate is main's, not the busiest slot's"
+
+    def test_idle_shows_only_the_session_rate(self):
+        text = _text(_snap(slots=[{"id": 1, "phase": "idle", "tape": 30000}], session={"gen_tps": 31.2}))
+        assert "gen ⌀31.2 t/s" in text
+
+    def test_prefill_shows_progress_and_rate(self):
+        text = _text(_snap(slots=[{"id": 1, "phase": "prefill", "tape": 20480,
+                                   "prompt_processed": 12345, "prefill_tps": 478.2}]))
+        assert "prefill +12.3K 478 t/s" in text
+
+    def test_slot_map_marks_main_and_tapes(self):
+        text = _text(_snap(slots=[{"id": 0, "phase": "idle", "tape": 1115},
+                                  {"id": 1, "phase": "decode", "tape": 32588},
+                                  {"id": 2, "phase": "idle", "tape": 0}]))
+        assert "slots ◇1.1K ◆32.6K ◇" in text
+
+    def test_draft_cache_vram(self):
+        text = _text(_snap(vram=(15202, 16380),
+                           session={"draft_pct": 66.8, "draft_per_step": 3.69, "cache_hit_pct": 90.2}))
+        assert "draft 67% ×3.7" in text
+        assert "cache 90%" in text
+        assert "vram 14.8/16.0G" in text
+
+    def test_gauge_has_eighth_cell_resolution(self):
+        assert sb.gauge(0) == "░" * 10
+        assert sb.gauge(100) == "█" * 10
+        assert sb.gauge(56) == "█████▋░░░░"
+        assert all(len(sb.gauge(p)) == 10 for p in range(101))
+
+    def test_fit_keeps_context_and_duration_and_never_overflows(self):
+        snap = _snap(vram=(15202, 16380), session={"gen_tps": 31.0, "draft_pct": 60.0, "cache_hit_pct": 90.0},
+                     slots=[{"id": 0, "phase": "idle", "tape": 1}, {"id": 1, "phase": "idle", "tape": 2}])
+        for width in range(24, 220):
+            frags = sb.fit(sb.segments(snap), width)
+            text = "".join(t for _, t in frags)
+            if width >= 30:
+                assert sb.cell_width(text) <= width, width
+                assert "40%" in text and "3m" in text, width
+
+    def test_optional_segments_shorten_before_any_is_dropped(self):
+        snap = _snap(vram=(15202, 16380), session={"gen_tps": 31.0, "draft_pct": 60.0, "cache_hit_pct": 90.0},
+                     slots=[{"id": 0, "phase": "idle", "tape": 1}, {"id": 1, "phase": "idle", "tape": 2}])
+        full = sb.cell_width(_text(snap))
+        text = _text(snap, width=full - 8)
+        assert "vram 93%" in text and "slots" in text
 
 
 class TestPollerLifecycle:
@@ -82,7 +106,7 @@ class TestPollerLifecycle:
         assert cli_obj._llama_telemetry_thread.is_alive()
         cli_obj._llama_telemetry_stop.set()
 
-    def test_does_not_start_when_not_verbose(self, monkeypatch):
+    def test_starts_for_a_local_backend_without_verbose(self, monkeypatch):
         cli_obj = _make_cli(verbose=False, base_url="http://127.0.0.1:8080/v1")
         started = []
         self._stub_loop(monkeypatch, cli_obj, started)
@@ -90,8 +114,8 @@ class TestPollerLifecycle:
         cli_obj._ensure_llama_telemetry_poller()
         time.sleep(0.05)
 
-        assert started == []
-        assert getattr(cli_obj, "_llama_telemetry_thread", None) is None
+        assert started == [True]
+        cli_obj._llama_telemetry_stop.set()
 
     def test_does_not_start_for_a_remote_backend(self, monkeypatch):
         cli_obj = _make_cli(verbose=True, base_url="https://api.example.com/v1")
@@ -103,8 +127,8 @@ class TestPollerLifecycle:
 
         assert started == []
 
-    def test_stops_when_verbose_is_toggled_off(self, monkeypatch):
-        cli_obj = _make_cli(verbose=True, base_url="http://127.0.0.1:8080/v1")
+    def test_stops_when_the_backend_turns_remote(self, monkeypatch):
+        cli_obj = _make_cli(base_url="http://127.0.0.1:8080/v1")
         started = []
         self._stub_loop(monkeypatch, cli_obj, started)
 
@@ -113,7 +137,7 @@ class TestPollerLifecycle:
         thread = cli_obj._llama_telemetry_thread
         assert thread.is_alive()
 
-        cli_obj.verbose = False
+        cli_obj.base_url = "https://api.example.com/v1"
         cli_obj._ensure_llama_telemetry_poller()
         thread.join(timeout=1.0)
 
@@ -141,6 +165,79 @@ class TestPollerLifecycle:
 
         assert snapshot["llama_telemetry"] is None
         cli_obj._llama_telemetry_stop.set()
+
+
+class TestFetchSlots:
+    """Per-slot phase, tape and windowed rates from a real /slots answer."""
+
+    @staticmethod
+    def _serve(payloads):
+        import http.server
+        import json
+        import threading
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path != "/slots":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                body = json.dumps(payloads.pop(0) if len(payloads) > 1 else payloads[0]).encode()
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server
+
+    @staticmethod
+    def _slot(sid, busy, task, tape, decoded, processed):
+        return {"id": sid, "n_ctx": 57344, "is_processing": busy, "id_task": task,
+                "n_prompt_tokens": tape, "n_prompt_tokens_processed": processed,
+                "next_token": [{"n_decoded": decoded}]}
+
+    def test_phases_and_rate_over_the_window(self, monkeypatch):
+        clock = [100.0]
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        server = self._serve([
+            [self._slot(0, True, 7, 500, 0, 300), self._slot(1, True, 9, 30000, 100, 0)],
+            [self._slot(0, True, 7, 900, 0, 700), self._slot(1, True, 9, 30060, 160, 0)],
+        ])
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}"
+            last = {}
+            DaedalusCLI._fetch_llama_telemetry(url, last)
+            clock[0] += 2.0
+            snap = DaedalusCLI._fetch_llama_telemetry(url, last)
+        finally:
+            server.shutdown()
+            server.server_close()
+        prefill, decode = snap["slots"]
+        assert prefill["phase"] == "prefill" and prefill["prefill_tps"] == 200.0
+        assert decode["phase"] == "decode" and decode["decode_tps"] == 30.0
+        assert decode["tape"] == 30060
+
+    def test_a_new_task_restarts_the_window(self, monkeypatch):
+        clock = [100.0]
+        monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+        server = self._serve([
+            [self._slot(1, True, 9, 30000, 500, 0)],
+            [self._slot(1, True, 10, 30010, 10, 0)],
+        ])
+        try:
+            url = f"http://127.0.0.1:{server.server_address[1]}"
+            last = {}
+            DaedalusCLI._fetch_llama_telemetry(url, last)
+            clock[0] += 2.0
+            snap = DaedalusCLI._fetch_llama_telemetry(url, last)
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert "decode_tps" not in snap["slots"][0], "one sample of a new task is no rate"
 
 
 class TestScrapeReportsWhy:

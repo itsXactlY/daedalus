@@ -675,8 +675,20 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     label = skin.get_color("ui_label", title)
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
+    ok = skin.get_color("ui_ok", "#8FBC8F")
+    accent = skin.get_color("ui_accent", label)
+    bar = f"bg:{skin.get_color('status_bar_bg', '#1a1a2e')}"
 
     return {
+        "status-bar": f"{bar} {text}",
+        "status-bar-strong": f"{bar} {title} bold",
+        "status-bar-dim": f"{bar} {dim}",
+        "status-bar-label": f"{bar} {label}",
+        "status-bar-accent": f"{bar} {accent} bold",
+        "status-bar-good": f"{bar} {ok} bold",
+        "status-bar-warn": f"{bar} {warn} bold",
+        "status-bar-bad": f"{bar} {error} bold",
+        "status-bar-critical": f"{bar} {error} bold reverse",
         "input-area": prompt,
         "placeholder": f"{dim} italic",
         "prompt": prompt,

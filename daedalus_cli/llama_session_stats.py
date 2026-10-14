@@ -31,6 +31,7 @@ COUNTERS = (
     "tokens_predicted_seconds_total",
     "spec_decode_num_draft_tokens_total",
     "spec_decode_num_accepted_tokens_total",
+    "spec_decode_num_drafts_total",
 )
 
 _LINE = re.compile(r"^llamacpp:([A-Za-z0-9_]+)\s+([0-9.eE+-]+)\s*$")
@@ -113,6 +114,9 @@ class SessionCounters:
             "draft_accepted": t["spec_decode_num_accepted_tokens_total"],
             "draft_pct": ratio(t["spec_decode_num_accepted_tokens_total"],
                                t["spec_decode_num_draft_tokens_total"], 100.0),
+            # tokens one verify pass yields: the sampled one plus the accepted draft
+            "draft_per_step": (1.0 + t["spec_decode_num_accepted_tokens_total"] / t["spec_decode_num_drafts_total"]
+                               if t["spec_decode_num_drafts_total"] > 0 else None),
             "kv_now_pct": self.kv_now_pct,
             "kv_avg_pct": ratio(self._kv_sum, float(self._kv_samples)),
             "kv_peak_pct": self.kv_peak_pct if self._kv_samples else None,
