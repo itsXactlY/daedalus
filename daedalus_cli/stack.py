@@ -109,6 +109,9 @@ MAIN_REPO="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF"
 MAIN_FILE="Qwen3.8-27B-GSQ-RCO-IQ3_XXS-mtp.gguf"
 MAIN_PORT=8080
 MAIN_HOST="127.0.0.1"
+# What a bare `daedalus doctor start` serves: dense (llama.cpp, the 27B), a3b, or
+# strata (the coder MoE through Strata, see below). dense fits the smallest box.
+MAIN_PROFILE="dense"
 # One -kvu pool shared by every slot, not a window per slot.
 MAIN_CTX=98304
 # Each slot's own ceiling inside that pool (llama-server --kv-unified-per-slot);
@@ -286,6 +289,15 @@ VIS_THREADS=4
 # Its KV cache is small (10 full-attention layers, 2 KV heads), so there is no
 # block KV streaming here; the lever is how many layers' experts stay in RAM.
 A3B_N_CPU_MOE=18
+
+# --- main model profile: strata --------------------------------------------------
+# `daedalus doctor start strata` serves Qwen3.8-Flash-Next (the coder MoE, IQ1_M)
+# through Strata on MAIN_PORT: experts stream from RAM, 50-60 t/s decode at
+# 30-50k context measured (strata-holygoat.log, 2026-10-12). It costs more RAM
+# than the dense 27B and runs one conversation at a time (daedalus parks
+# background work); the dense llama profile stays the fallback for smaller boxes.
+STRATA_DIR="$HOME/projects/llama.cpp-strata"
+STRATA_CONFIG="strata-holygoat.json"
 
 # --- mazemaker AFE model ------------------------------------------------------
 # mazemaker's nightly fact extraction calls an LLM on :8888. The doctor serves
@@ -764,7 +776,7 @@ def socket_up(host: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
-def start_one(name: str, argv: list, env: dict | None = None) -> bool:
+def start_one(name: str, argv: list, env: dict | None = None, cwd: str | None = None) -> bool:
     state = state_of(name)
     if state != "stopped":
         warn(f"{name} already {state}")
@@ -786,6 +798,7 @@ def start_one(name: str, argv: list, env: dict | None = None) -> bool:
             stdin=subprocess.DEVNULL,
             start_new_session=True,
             env=({**os.environ, **env} if env else None),
+            cwd=cwd,
         )
     except OSError as exc:
         bad(f"{name} failed to launch", f"({exc})")
@@ -832,7 +845,7 @@ def wait_ready(name: str, host: str, port: int, seconds: int = 180) -> bool:
     return False
 
 
-def stop_one(name: str) -> None:
+def stop_one(name: str, grace_s: float = 10.0) -> None:
     pid = pid_of(name)
     if not alive(pid):
         pid_file(name).unlink(missing_ok=True)
@@ -844,7 +857,7 @@ def stop_one(name: str) -> None:
             os.kill(pid, sig)
         except OSError:
             pass
-    for _ in range(20):
+    for _ in range(int(grace_s * 2)):
         _reap(name)
         if not alive(pid):
             break
@@ -1296,8 +1309,14 @@ def _main_argv(conf: StackConf, model: str) -> list:
 #          streaming; expert weights of the first A3B_N_CPU_MOE layers stay
 #          in system RAM so the rest fits the card beside the mazemaker pod.
 
-PROFILES = ("dense", "a3b")
+PROFILES = ("dense", "a3b", "strata")
 DEFAULT_PROFILE = "dense"
+
+
+def default_profile(conf: StackConf = None) -> str:
+    """MAIN_PROFILE in stack.conf, else dense: the profile a bare start serves."""
+    name = (conf or load_conf(create=False)).str("MAIN_PROFILE", DEFAULT_PROFILE)
+    return name if name in PROFILES else DEFAULT_PROFILE
 
 
 def profile_file() -> Path:
@@ -1319,8 +1338,26 @@ def _a3b_repo_file(conf: StackConf) -> tuple:
             conf.str("A3B_FILE", stack_afe._get(conf, "AFE_FILE")))
 
 
+def strata_config(conf: StackConf) -> Path:
+    base = Path(conf.path("STRATA_DIR", str(Path.home() / "projects/llama.cpp-strata")))
+    cfg = Path(os.path.expanduser(conf.str("STRATA_CONFIG", "strata-holygoat.json")))
+    return cfg if cfg.is_absolute() else base / cfg
+
+
 def profile_model(conf: StackConf, profile: str) -> tuple:
     """(gguf path or '', the command that fetches it)."""
+    if profile == "strata":
+        # the run config names the engine and the model; both must be there
+        cfg = strata_config(conf)
+        how = f"check STRATA_DIR / STRATA_CONFIG in {conf_path()}"
+        try:
+            import json as _json
+            run = _json.loads(cfg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "", how
+        if not os.access(run.get("exe", ""), os.X_OK):
+            return "", how
+        return str(cfg), how
     if profile == "a3b":
         repo, name = _a3b_repo_file(conf)
         return model_path(repo, name), "daedalus doctor setup"
@@ -1372,11 +1409,20 @@ def _a3b_argv(conf: StackConf, model: str) -> list:
     return argv
 
 
+def _strata_argv(conf: StackConf, cfg: str) -> list:
+    base = Path(cfg).parent if not conf.str("STRATA_DIR") else Path(conf.path("STRATA_DIR"))
+    python = base / ".venv/bin/python"
+    return [str(python if python.exists() else "python3"), str(base / "serve/server.py"),
+            "--engine", "strata", "--config", cfg, "--port", str(conf.int("MAIN_PORT", 8080))]
+
+
 def main_launch(conf: StackConf, profile: str) -> tuple:
     """(model, argv, env) for the main server; model is '' when not on disk."""
     model, _how = profile_model(conf, profile)
     if not model:
         return "", [], {}
+    if profile == "strata":
+        return model, _strata_argv(conf, model), {}
     if profile == "a3b":
         # Unified memory lets an allocation that overshoots VRAM spill to the
         # host instead of failing the launch; a3b with its experts on the card
@@ -1390,8 +1436,8 @@ def main_launch(conf: StackConf, profile: str) -> tuple:
 
 def cmd_start(args=None) -> int:
     conf = load_conf()
-    profile = getattr(args, "model", None) or DEFAULT_PROFILE
-    if not os.access(conf.server, os.X_OK):
+    profile = getattr(args, "model", None) or default_profile(conf)
+    if profile != "strata" and not os.access(conf.server, os.X_OK):
         bad("llama-server not built", "— run: daedalus doctor setup")
         return 1
     model, how = profile_model(conf, profile)
@@ -1422,14 +1468,16 @@ def cmd_start(args=None) -> int:
             "— never two models: stop that server, or keep using it as it is")
         return 1
     _model, argv, main_env = main_launch(conf, profile)
-    if not start_one("main", argv, env=main_env):
+    cwd = str(Path(argv[1]).parent.parent) if profile == "strata" else None
+    if not start_one("main", argv, env=main_env, cwd=cwd):
         return 1
 
     # The main model must be READY before the helper starts. Both loading at
     # once means two processes fighting for RAM while the big one is pinning
     # its KV cache: the machine swaps, and anything else on it (a memory pod
     # running consolidation, for one) stalls behind the page-outs.
-    if not wait_ready("main", main_host, main_port, 300):
+    # Strata maps the expert arena before it answers: minutes, not seconds
+    if not wait_ready("main", main_host, main_port, 900 if profile == "strata" else 300):
         profile_file().unlink(missing_ok=True)
         return 1
     profile_file().write_text(profile, encoding="utf-8")
@@ -1494,7 +1542,7 @@ def cmd_command(args=None) -> int:
     import io
     import shlex
     conf = load_conf()
-    profile = getattr(args, "model", None) or running_profile() or DEFAULT_PROFILE
+    profile = getattr(args, "model", None) or running_profile() or default_profile()
     with contextlib.redirect_stdout(io.StringIO()):
         model, argv, env = main_launch(conf, profile)
     if not model:
@@ -1517,7 +1565,9 @@ def cmd_stop(args=None) -> int:
     section("Stopping")
     # Reverse of start: the dependents go first, the main model last.
     for name in ("vis", "aux", "main"):
-        stop_one(name)
+        # Strata's server QUITs its engine on SIGTERM; freeing the expert arena takes longer than 10 s, and a
+        # SIGKILL then would orphan the engine with all of it still held
+        stop_one(name, 120.0 if name == "main" and running_profile() == "strata" else 10.0)
     profile_file().unlink(missing_ok=True)
     return 0
 
@@ -1525,7 +1575,7 @@ def cmd_stop(args=None) -> int:
 def cmd_restart(args=None) -> int:
     # No model named: restart what is running. A plain restart, or the
     # watchdog's, must never quietly turn an a3b session back into dense.
-    profile = getattr(args, "model", None) or running_profile() or DEFAULT_PROFILE
+    profile = getattr(args, "model", None) or running_profile() or default_profile()
     cmd_stop(args)
     return cmd_start(argparse.Namespace(model=profile))
 
@@ -1698,7 +1748,7 @@ def cmd_watch(args) -> int:
                 dim(f"cooldown: {cooldown - since:.0f}s before another restart")
                 continue
             bad("sustained slow generation", "— restarting the main server")
-            profile = running_profile() or DEFAULT_PROFILE
+            profile = running_profile() or default_profile()
             stop_one("main")
             model, argv, env = main_launch(conf, profile)
             if not model:
@@ -1736,7 +1786,8 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     add("setup", "Clone and build llama.cpp, then fetch the models").set_defaults(func=cmd_setup)
     p_start = add("start", "Start the inference servers: dense (default) or a3b")
     p_start.add_argument("model", nargs="?", choices=list(PROFILES), default=None,
-                         help="dense = Qwen3.8-27B (default), a3b = Qwen3.6-35B-A3B MoE")
+                         help="dense = Qwen3.8-27B, a3b = Qwen3.6-35B-A3B MoE, strata = Qwen3.8-Flash-Next "
+                              "via Strata (default: MAIN_PROFILE in stack.conf, else dense)")
     p_start.set_defaults(func=cmd_start)
     add("stop", "Stop the inference servers").set_defaults(func=cmd_stop)
     p_restart = add("restart", "Stop, then start — the running model unless one is named")

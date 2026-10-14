@@ -153,3 +153,37 @@ def test_wait_ready_does_not_accept_a_loading_server(monkeypatch):
     monkeypatch.setattr(S, "alive", lambda pid: True)
     monkeypatch.setattr(S.time, "sleep", lambda s: None)
     assert S.wait_ready("main", "127.0.0.1", 8080, seconds=4) is False
+
+
+class TestStrataProfile:
+    """2026-10-14: the coder MoE through Strata is the main engine on the reference box; the dense
+    llama profile stays the fallback for smaller ones."""
+
+    def _strata(self, tmp_path, exe_ok=True):
+        exe = tmp_path / "engine" / "strata"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755 if exe_ok else 0o644)
+        (tmp_path / "serve").mkdir()
+        (tmp_path / "run.json").write_text('{"exe": "%s"}' % exe)
+        return _conf(STRATA_DIR=tmp_path, STRATA_CONFIG="run.json", MAIN_PORT=8080)
+
+    def test_launch_is_the_strata_server_on_the_main_port(self, tmp_path):
+        conf = self._strata(tmp_path)
+        model, argv, env = S.main_launch(conf, "strata")
+        assert model == str(tmp_path / "run.json") and env == {}
+        assert argv[1] == str(tmp_path / "serve/server.py")
+        assert argv[argv.index("--config") + 1] == model
+        assert argv[argv.index("--port") + 1] == "8080"
+
+    def test_a_missing_engine_is_not_launchable(self, tmp_path):
+        assert S.main_launch(self._strata(tmp_path, exe_ok=False), "strata") == ("", [], {})
+
+    def test_main_profile_picks_the_bare_start(self):
+        assert S.default_profile(_conf(MAIN_PROFILE="strata")) == "strata"
+        assert S.default_profile(_conf(MAIN_PROFILE="nonsense")) == "dense"
+        assert S.default_profile(_conf()) == "dense"
+
+    def test_start_and_restart_accept_strata(self):
+        assert _parser().parse_args(["start", "strata"]).model == "strata"
+        assert _parser().parse_args(["restart", "strata"]).model == "strata"
