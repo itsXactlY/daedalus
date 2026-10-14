@@ -8,9 +8,10 @@ compaction wanted the same slot, dropping main's decode from 16 to 1.5 t/s --
 and under a unified KV cache every job's prompt also eats the fast layer main
 is reading from.
 
-This gate serialises them. A waiting request with a better priority always
-goes next, so a compaction never waits behind a skill review; a request that
-is already running is never interrupted.
+This gate serialises them against each other, not against main (except on a
+one-conversation engine). A waiting request with a better priority always goes
+next, so a compaction never waits behind a skill review; a request that is
+already running is never interrupted.
 """
 
 from __future__ import annotations
@@ -60,13 +61,11 @@ class SidekickGate:
         self.single_sequence = False
 
     # -- main interlock -------------------------------------------------
-    # The gate above serialises background jobs against EACH OTHER, but never
-    # against the live conversation, so main could decode on slot 1 while a
-    # background job prompt-processed slot 0. This fork is not built for two
-    # slots on unrelated tasks: 2026-09-24 main.log shows slot 0 generating
-    # (task 12) while slot 1 processed 19,949 prompt tokens (task 209), then
-    # ggml-cuda.cu:109 "CUDA error: invalid argument". Slot 0 is housekeeping,
-    # and housekeeping waits for main to finish.
+    # Only a one-conversation engine (Strata) holds background work until main
+    # is done: there a foreign request parks main's tape. A llama-server with
+    # -np 2+ runs the sidekick slot beside main. The 2026-09-24 interlock here
+    # blamed two slots for a ggml-cuda.cu:109 MMVQ launch failure, but the same
+    # crash recurred in main.log with only slot 1 busy (35B-A3B, prompt end).
     def main_begin(self) -> None:
         with self._cond:
             self._main_depth += 1
@@ -85,7 +84,7 @@ class SidekickGate:
 
     @contextlib.contextmanager
     def main_turn(self):
-        """Main never waits; it only blocks background work while it runs."""
+        """Main never waits; on a one-conversation engine it blocks background work while it runs."""
         self.main_begin()
         try:
             yield
@@ -127,7 +126,7 @@ class SidekickGate:
         with self._cond:
             heapq.heappush(self._waiting, ticket)
             while (self._busy or self._waiting[0] != ticket
-                   or self._main_depth > 0
+                   or (self.single_sequence and self._main_depth > 0)
                    or self._must_defer(ticket[0], since)
                    or (ticket[0] > HYGIENE and self.reserved())):
                 self._cond.wait(timeout=1.0)

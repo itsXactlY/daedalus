@@ -153,3 +153,27 @@ def test_a_reservation_expires_on_its_own():
     t = _start_waiter(gate, BACKGROUND, order, "review", ev)
     t.join(3)
     assert order == ["review"]
+
+
+def test_multi_slot_background_runs_beside_main():
+    gate = SidekickGate()
+    with gate.main_turn():
+        t0 = time.monotonic()
+        with gate.hold(HYGIENE):
+            pass
+        assert time.monotonic() - t0 < 0.2, "the sidekick slot must not wait out main's turn"
+
+
+def test_one_conversation_engine_holds_background_until_main_ends():
+    gate = SidekickGate()
+    gate.single_sequence = True
+    order = []
+    gate.main_begin()
+    ev = threading.Event()
+    t = _start_waiter(gate, HYGIENE, order, "compaction", ev)
+    ev.wait()
+    time.sleep(0.2)
+    assert order == []
+    gate.main_end()
+    t.join(3)
+    assert order == ["compaction"]

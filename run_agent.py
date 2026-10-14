@@ -3224,6 +3224,7 @@ class AIAgent:
             body.pop(key, None)
         body["max_tokens"] = 1
         body["stream"] = False
+        sidekick_gate.single_sequence = True   # keeps the main interlock on, even before any aux call set it
         with sidekick_gate.hold(HYGIENE):
             outcome = cancellable_post(server_root(self.base_url) + "/v1/chat/completions", body,
                                        sidekick_gate.main_active)
@@ -6903,11 +6904,9 @@ class AIAgent:
 
             _max_stream_retries = int(os.getenv("DAEDALUS_STREAM_RETRIES", 2))
 
-            # Hold the main interlock for the whole request. Background jobs
-            # take the sidekick slot only when main is not on the card: this
-            # fork is not built for two slots on unrelated tasks, and doing it
-            # anyway crashed it (ggml-cuda.cu:109, 2026-09-24). Main itself
-            # never waits here — main_turn only blocks the background side.
+            # Hold the main interlock for the whole request. On a one-conversation
+            # engine background jobs wait for main; on llama-server -np 2+ they run
+            # beside it (agent/sidekick_queue.py). Main itself never waits here.
             from agent.sidekick_queue import sidekick_gate as _gate
             try:
               with _gate.main_turn():
