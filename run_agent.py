@@ -952,6 +952,176 @@ class AIAgent:
     #: _SPILL_VALUE_MIN_CHARS so both sides of the payload agree on what
     #: "large" means.
     _RESULT_SPILL_MIN_CHARS = 800
+    #: A tool result enters the payload capped: one may take this share of the
+    #: window, one batch (the results of one assistant message) this share
+    #: together. A few hundred KB of docs arrived as ~46 KB results, or six
+    #: parallel 450-line reads at once; the window filled, the rebase cut inside
+    #: the turn three times and the answer was written from fragments
+    #: (2026-10-15).
+    _RESULT_WINDOW_SHARE = 0.10
+    _RESULT_BATCH_SHARE = 0.40
+    _RESULT_EXCERPT_MIN_CHARS = 4000
+    _RESULT_ON_DISK = "[[RESULT CONTINUES ON DISK"
+
+    @staticmethod
+    def _stepped_window(old_ctx: int, error_msg: str) -> tuple:
+        """(the window to step down to or None, the window the server named or None).
+
+        A server that names a window no smaller than ours has confirmed it: the
+        prompt is too big, and halving the window only forces more compaction.
+        """
+        parsed = parse_context_limit_from_error(error_msg)
+        if parsed and parsed < old_ctx:
+            return parsed, parsed
+        if parsed:
+            return None, parsed
+        return get_next_probe_tier(old_ctx), None
+
+    def _real_per_estimated_token(self) -> float:
+        """Server tokens per chars/4 token, as measured on the last call (1.0 unmeasured).
+
+        Line-numbered reads tokenize far denser than chars/4: a subagent's
+        50,132 estimated tokens were 69,591 on the server.
+        """
+        return float(getattr(self, "_token_ratio", 0.0) or 1.0)
+
+    def _note_token_ratio(self, real_tokens: int, estimated_tokens: int) -> None:
+        if real_tokens > 0 and estimated_tokens > 1000:
+            self._token_ratio = min(2.5, max(0.8, real_tokens / estimated_tokens))
+
+    def _result_budget_chars(self, siblings: int = 1) -> int:
+        """Characters one of `siblings` results may occupy in the payload (0: no cap known)."""
+        ctx = int(getattr(getattr(self, "context_compressor", None), "context_length", 0) or 0)
+        if ctx <= 0:
+            return 0
+        share = min(self._RESULT_WINDOW_SHARE, self._RESULT_BATCH_SHARE / max(1, siblings))
+        chars = ctx * share * 4 / self._real_per_estimated_token()
+        return max(self._RESULT_EXCERPT_MIN_CHARS, int(chars))
+
+    @staticmethod
+    def _call_for_result(source: list, call_id: str) -> tuple:
+        """(the tool call a result answers, how many calls its batch has)."""
+        if call_id:
+            for msg in reversed(source or []):
+                calls = (msg.get("tool_calls") or []) if isinstance(msg, dict) else []
+                for call in calls:
+                    if AIAgent._get_tool_call_id_static(call) == call_id:
+                        return call, len(calls)
+        return None, 1
+
+    def _cap_tool_result(self, msg: dict, source: list):
+        """The capped content of a tool result, or None when it fits as it is.
+
+        Applied as a result enters the payload, so the tape freezes the capped
+        rendering and every later call reuses it. A read_file excerpt points
+        back into the file itself; anything else goes to disk first.
+        """
+        content = msg.get("content")
+        if not isinstance(content, str) or len(content) <= self._RESULT_EXCERPT_MIN_CHARS:
+            return None
+        if "[SPILLED RESULT" in content or self._RESULT_ON_DISK in content:
+            return None
+        call, siblings = self._call_for_result(source, msg.get("tool_call_id", ""))
+        budget = self._result_budget_chars(siblings)
+        if not budget or len(content) <= budget:
+            return None
+        fn = (call or {}).get("function") or {}
+        tool_name = str(fn.get("name") or "")
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (TypeError, ValueError):
+            args = {}
+        text = self._readable_result(content)
+        if tool_name == "read_file" and isinstance(args, dict) and args.get("path"):
+            try:
+                total = int(json.loads(content).get("total_lines") or 0)
+            except (TypeError, ValueError, AttributeError):
+                total = 0
+            return self._excerpt_result(text, "", tool_name, budget,
+                                        read_args=args, total_lines=total)
+        compressor = getattr(self, "context_compressor", None)
+        write_spill = getattr(compressor, "_write_spill", None)
+        if not callable(write_spill):
+            return None
+        try:
+            path = write_spill(tool_name or "tool-result", text)
+        except Exception:
+            path = None
+        if not path:
+            return None
+        note = getattr(compressor, "_note_offload", None)
+        if callable(note):
+            note({"path": str(path), "tool": tool_name or "tool",
+                  "chars": len(text), "subject": ""})
+        return self._excerpt_result(text, str(path), tool_name, budget)
+
+    def _pending_result_tokens(self, messages: list) -> int:
+        """Server tokens the newest tool results will add to the next request, capped as rendered."""
+        end = len(messages)
+        start = end
+        while start > 0 and messages[start - 1].get("role") == "tool":
+            start -= 1
+        if start == end:
+            return 0
+        chars = 0
+        for msg in messages[start:end]:
+            content = msg.get("content")
+            if not isinstance(content, str):
+                content = str(content or "")
+            call, siblings = self._call_for_result(messages, msg.get("tool_call_id", ""))
+            budget = self._result_budget_chars(siblings) or len(content)
+            chars += min(len(content), budget + 600) + 40
+        return int(chars / 4 * self._real_per_estimated_token())
+
+    @staticmethod
+    def _readable_result(content: str) -> str:
+        """The text a result carries, without its JSON envelope.
+
+        execute_code and terminal answer {"output": "..."} and read_file
+        {"content": "..."}: spilled as-is that is one escaped line, which
+        read_file cannot page by offset/limit. The field the model reads is
+        what goes to disk.
+        """
+        try:
+            parsed = json.loads(content)
+        except (TypeError, ValueError):
+            return content
+        if isinstance(parsed, dict):
+            for key in ("output", "content", "result", "text"):
+                value = parsed.get(key)
+                if isinstance(value, str) and len(value) >= 0.8 * len(content):
+                    return value
+        return content
+
+    def _excerpt_result(self, text: str, path: str, tool_name: str, budget: int,
+                        read_args: dict = None, total_lines: int = 0) -> str:
+        """The head of an oversized result and where the rest is."""
+        head = text[:int(budget * 0.85)]
+        nl = head.rfind("\n")
+        if nl > len(head) // 2:
+            head = head[:nl]
+        lines = max(1, head.count("\n") + 1)
+        page = max(50, int(lines * 0.9))
+        if read_args is not None:
+            # read_file numbers its lines "     N|"; the file itself is the rest.
+            last = re.search(r"^\s*(\d+)\|", head.rsplit("\n", 1)[-1])
+            start = int(read_args.get("offset") or 1)
+            next_line = int(last.group(1)) + 1 if last else start + lines
+            asked = int(read_args.get("limit") or 500)
+            stop = start + asked - 1
+            if total_lines:
+                stop = min(stop, total_lines)
+            return (f"{head}\n\n{self._RESULT_ON_DISK} - NOT REAL CONTENT, do not copy this "
+                    f"marker. Lines {next_line}-{stop} of this read did not fit this "
+                    f"window. Continue with read_file(path=\"{read_args['path']}\", "
+                    f"offset={next_line}, limit={page}), part by part, and keep notes of "
+                    f"what matters.]]")
+        next_line = lines + 1
+        return (f"{head}\n\n{self._RESULT_ON_DISK} - NOT REAL CONTENT, do not copy this "
+                f"marker. {tool_name or 'tool'} returned {len(text)} chars; this window "
+                f"holds the first {len(head)}. The whole output is read_file(\"{path}\"): "
+                f"continue at offset={next_line} with limit={page}, part by part, and keep "
+                f"notes of what matters. Do not run the call again.]]")
 
     def _spill_tool_results(self, messages: list, keep_recent: int = 2) -> list:
         """Move big tool RESULTS to disk, leaving a pointer the model can read back.
@@ -1029,7 +1199,9 @@ class AIAgent:
             call_id = msg.get("tool_call_id", "")
             tool_name = self._tool_name_for_call_id(messages, call_id)
             try:
-                path = write_spill(tool_name or "tool-result", content)
+                # The same readable text an oversized newest result went to disk
+                # as, so aging it out names the same file (content-addressed).
+                path = write_spill(tool_name or "tool-result", self._readable_result(content))
             except Exception:
                 path = None
             if not path:
@@ -3372,7 +3544,7 @@ class AIAgent:
         tail = [m for m in messages[cut:] if m is not current]
         return base + tail
 
-    _TURN_SO_FAR_MAX_CHARS = 2400
+    _TURN_SO_FAR_MAX_CHARS = 3600   # room for a read_file path per call
 
     def _turn_so_far_note(self, dropped: list) -> str:
         """What the running turn already did, for a rebase that cuts inside it.
@@ -3381,20 +3553,48 @@ class AIAgent:
         the kept tail were in no memory at all: the model saw an empty stretch and
         ran them again, in a loop. One line per call says they happened.
         """
-        calls, notes = [], []
+        # What each dropped call returned. A big output goes to disk and its line
+        # names the path: "not kept, run it again" is what sent the model back to
+        # re-read the same documents after every cut (2026-10-15).
+        results = {m.get("tool_call_id"): m.get("content") for m in dropped
+                   if m.get("role") == "tool" and isinstance(m.get("content"), str)}
+        compressor = getattr(self, "context_compressor", None)
+        write_spill = getattr(compressor, "_write_spill", None)
+        calls, notes, on_disk = [], [], 0
         for m in dropped:
             if m.get("role") != "assistant":
                 continue
             for call in m.get("tool_calls") or []:
-                calls.append(self._describe_tool_call(call))
+                line = self._describe_tool_call(call)
+                content = results.get(self._get_tool_call_id_static(call)) or ""
+                name = (call.get("function") or {}).get("name") or "tool-result"
+                path = ""
+                # A read_file line already names its file and range.
+                if len(content) >= self._RESULT_SPILL_MIN_CHARS and name != "read_file":
+                    if "[SPILLED RESULT" in content or self._RESULT_ON_DISK in content:
+                        path = self._spill_path_in(content)
+                    elif callable(write_spill):
+                        try:
+                            path = str(write_spill(name, self._readable_result(content)) or "")
+                        except Exception:
+                            path = ""
+                if path:
+                    line = f"{line} -> read_file(\"{path}\")"
+                    on_disk += 1
+                calls.append(line)
             text = m.get("content")
             if isinstance(text, str) and text.strip():
                 notes.append(" ".join(text.split())[:200])
         if not calls and not notes:
             return ""
         head = ("[this turn so far] Before the rebase this turn already ran, in order: ")
-        foot = (". Their outputs are not kept; use what the tail below shows, and run a call "
-                "again only if you need its output.")
+        if on_disk:
+            foot = (". Outputs shown with a path are on disk: read them back with read_file, "
+                    "part by part with offset/limit, instead of running the call again. Run "
+                    "a call without a path again only if you need its output.")
+        else:
+            foot = (". Their outputs are not kept; use what the tail below shows, and run a "
+                    "call again only if you need its output.")
         budget = self._TURN_SO_FAR_MAX_CHARS - len(head) - len(foot)
         kept = []
         for line in reversed(calls):   # the most recent calls matter most
@@ -4975,9 +5175,14 @@ class AIAgent:
 
     def _render_payload_message(self, msg: dict, *, is_current: bool,
                                 reasoning_text, injections: list,
-                                bootstrap_messages: list) -> list:
+                                bootstrap_messages: list, source: list = None) -> list:
         """One source message as it goes on the wire, plus any bootstrap after it."""
         api_msg = msg.copy()
+
+        if msg.get("role") == "tool":
+            capped = self._cap_tool_result(msg, source or [])
+            if capped is not None:
+                api_msg["content"] = capped
 
         if is_current and msg.get("role") == "user" and injections:
             _base = api_msg.get("content", "")
@@ -5083,6 +5288,7 @@ class AIAgent:
                             reasoning_text=msg.get("reasoning"),
                             injections=turn_injections,
                             bootstrap_messages=bootstrap_messages,
+                            source=view,
                         )
                         api_messages.extend(rendered)
                         # A thinking prefill is popped again after the call;
@@ -5149,6 +5355,7 @@ class AIAgent:
                 reasoning_text=_reasoning_keep.get(idx),
                 injections=turn_injections,
                 bootstrap_messages=bootstrap_messages,
+                source=_iter_messages,
             ))
 
         if tape is not None and not any(m.get("_thinking_prefill") for m in sources):
@@ -5344,9 +5551,13 @@ class AIAgent:
         if normalized in self.valid_tool_names:
             return normalized
 
-        matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
-        if matches:
-            return matches[0]
+        # A typo may be repaired, the verb may not: 'list_files' scored 0.7
+        # against 'write_file' and a directory listing became a write.
+        from difflib import SequenceMatcher
+        verb = normalized.split("_", 1)[0]
+        for match in get_close_matches(normalized, self.valid_tool_names, n=5, cutoff=0.7):
+            if SequenceMatcher(None, verb, match.split("_", 1)[0]).ratio() >= 0.75:
+                return match
 
         return None
 
@@ -10491,6 +10702,8 @@ class AIAgent:
                             "total_tokens": total_tokens,
                         }
                         self.context_compressor.update_from_response(usage_dict)
+                        if not canonical_usage.prompt_field_missing:
+                            self._note_token_ratio(prompt_tokens, approx_tokens)
 
                         if self.context_compressor._context_probed:
                             ctx = self.context_compressor.context_length
@@ -10925,12 +11138,9 @@ class AIAgent:
                         compressor = self.context_compressor
                         old_ctx = compressor.context_length
 
-                        parsed_limit = parse_context_limit_from_error(error_msg)
-                        if parsed_limit and parsed_limit < old_ctx:
-                            new_ctx = parsed_limit
+                        new_ctx, parsed_limit = self._stepped_window(old_ctx, error_msg)
+                        if parsed_limit and new_ctx:
                             self._vprint(f"{self.log_prefix}⚠️  Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
-                        else:
-                            new_ctx = get_next_probe_tier(old_ctx)
 
                         if new_ctx and new_ctx < old_ctx:
                             compressor.context_length = new_ctx
@@ -10940,6 +11150,8 @@ class AIAgent:
                                 parsed_limit and parsed_limit == new_ctx
                             )
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
+                        elif parsed_limit:
+                            self._vprint(f"{self.log_prefix}⚠️  Prompt exceeds the {old_ctx:,}-token window — compressing...", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)
 
@@ -10964,7 +11176,10 @@ class AIAgent:
                         # server counted 77,649 — a 40% undercount, so every
                         # decision below was made on a number that was wrong.
                         _server_tokens = parse_prompt_tokens_from_error(error_msg)
-                        _before = _server_tokens or approx_tokens
+                        if _server_tokens:
+                            self._note_token_ratio(_server_tokens, approx_tokens)
+                        _before = _server_tokens or int(
+                            approx_tokens * self._real_per_estimated_token())
 
                         messages, active_system_prompt = self._compress_context(
                             messages, system_message, approx_tokens=approx_tokens,
@@ -10977,12 +11192,12 @@ class AIAgent:
                         # yet retried all three times because the ctx tier had
                         # stepped down — a condition that says nothing about
                         # the payload we are about to resend.
-                        _after = self._estimate_tokens_for_messages(messages) \
-                            if hasattr(self, "_estimate_tokens_for_messages") else None
-                        if _after is None:
-                            _after = sum(len(str(m.get("content") or "")) for m in messages) // 3
-                        if _server_tokens and approx_tokens:
-                            _after = int(_after * max(1.0, _server_tokens / max(1, approx_tokens)))
+                        # Same estimator as approx_tokens, scaled to server
+                        # tokens: a content-only chars/3 count against a
+                        # chars/4 one read "50,132 -> 61,253" for a compaction.
+                        _after = int(estimate_request_tokens_rough(
+                            messages, system_prompt=active_system_prompt or "",
+                            tools=self.tools) * self._real_per_estimated_token())
 
                         _shrank = _after < _before * 0.95
                         if _shrank:
@@ -11534,9 +11749,13 @@ class AIAgent:
                     
                     _compressor = self.context_compressor
                     if _compressor.last_prompt_tokens > 0:
+                        # The results just posted go out with the next request:
+                        # six parallel reads put a subagent from 30k to 70k and
+                        # the window was only checked by the server's 400.
                         _real_tokens = (
                             _compressor.last_prompt_tokens
                             + _compressor.last_completion_tokens
+                            + self._pending_result_tokens(messages)
                         )
                     else:
                         _real_tokens = estimate_messages_tokens_rough(messages)

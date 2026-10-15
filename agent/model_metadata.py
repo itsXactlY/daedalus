@@ -553,6 +553,10 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         # caller fell back to guessing probe tiers (64k/32k/16k) while the
         # server had already told it the answer.
         r'context\s*size\s*\((\d{4,})\s*tokens?\)',
+        # Strata: "prompt (69591 tokens) leaves no room to answer in the
+        # context (65536)". Missed, it read as "no limit given" and the window
+        # was stepped down to 64k, then 32k, while the server had said 65,536.
+        r'context\s*\((\d{4,})\s*(?:tokens?)?\)',
         r'[\'"]?n_ctx[\'"]?\s*[:=]\s*(\d{4,})',
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
         r'context\s*(?:length|size|window)\s*(?:is|of|:)?\s*(\d{4,})',
@@ -970,6 +974,7 @@ def parse_prompt_tokens_from_error(error_msg: str) -> Optional[int]:
     """
     patterns = [
         r'request\s*\((\d{3,})\s*tokens?\)',
+        r'prompt\s*\((\d{3,})\s*tokens?\)',
         r'[\'"]?n_prompt_tokens[\'"]?\s*[:=]\s*(\d{3,})',
         r'(?:your\s+)?(?:messages?|prompt|input)\s+resulted\s+in\s+(\d{3,})\s*tokens',
         r'requested\s+(\d{3,})\s*tokens',
