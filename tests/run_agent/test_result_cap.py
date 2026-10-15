@@ -4,6 +4,9 @@
 from 30k to 69,591 tokens. The server refused the request, the window was
 stepped down to 64k and then 32k, the compaction check read "50,132 -> 61,253"
 and 'list_files' was repaired into 'write_file'.
+
+While the maze answers nothing goes to disk and no path enters the payload:
+Mazemaker is the history, a cut result is a narrower call away.
 """
 
 import json
@@ -19,7 +22,15 @@ STRATA_ERR = ("HTTP 400: request exceeds the context window: prompt (69591 token
               "truncated")
 
 
-def _agent(tmp_path, monkeypatch, ctx=65536):
+class _Memory:
+    def __init__(self, reachable):
+        self.reachable = reachable
+
+    def retrieval_reachable(self):
+        return self.reachable
+
+
+def _agent(tmp_path, monkeypatch, ctx=65536, maze=True):
     root = str(tmp_path / "spill")
     monkeypatch.setattr(_RealAIAgent, "_spill_root", classmethod(lambda cls: root))
     c = ContextCompressor(model="test/model", quiet_mode=True)
@@ -30,6 +41,7 @@ def _agent(tmp_path, monkeypatch, ctx=65536):
     a.context_compressor = c
     a.api_mode = "chat_completions"
     a.model = "qwen3.8-flash-next-coder-iq1_m"
+    a._memory_manager = _Memory(maze)
     return a
 
 
@@ -71,7 +83,7 @@ class TestABatchSharesOneBudget:
         msgs = _batch("read_file", [_doc(i) for i in range(6)],
                       args=lambda i: {"path": f"/docs/D{i}.md", "offset": 1, "limit": 450})
         out = _render(a, msgs, msgs[2])
-        head, marker = out.split(_RealAIAgent._RESULT_ON_DISK)
+        head, marker = out.split(_RealAIAgent._RESULT_CUT)
         last = int(head.rstrip().rsplit("\n", 1)[-1].split("|")[0])
         assert f'read_file(path="/docs/D0.md", offset={last + 1}' in marker
         assert f"Lines {last + 1}-450" in marker
@@ -87,8 +99,17 @@ class TestABatchSharesOneBudget:
         msgs = _batch("execute_code", [json.dumps({"output": "x" * 60000})])
         assert _render(a, msgs, msgs[2]) == _render(a, msgs, msgs[2])
 
-    def test_other_tools_go_to_disk_as_readable_text(self, tmp_path, monkeypatch):
+    def test_with_the_maze_up_nothing_goes_to_disk(self, tmp_path, monkeypatch):
         a = _agent(tmp_path, monkeypatch)
+        msgs = _batch("execute_code", [json.dumps({"output": "row\n" * 20000})])
+        out = _render(a, msgs, msgs[2])
+        assert "narrower call" in out
+        assert "read_file(" not in out
+        assert not os.path.exists(tmp_path / "spill")
+        assert a.context_compressor.offloaded == []
+
+    def test_a_dead_maze_falls_back_to_disk_as_readable_text(self, tmp_path, monkeypatch):
+        a = _agent(tmp_path, monkeypatch, maze=False)
         text = "\n".join(f"section {n}: the release pushes through the tunnel"
                          for n in range(3000))
         msgs = _batch("execute_code", [json.dumps({"status": "success", "output": text})])
@@ -96,7 +117,6 @@ class TestABatchSharesOneBudget:
         path = out.split('read_file("', 1)[1].split('"', 1)[0]
         with open(path) as f:
             assert f.read() == text, "the spill is the output, not its JSON envelope"
-        assert len(out) < len(text) / 2
         assert [e["path"] for e in a.context_compressor.offloaded] == [path]
 
     def test_a_denser_tokenizer_shrinks_the_budget(self, tmp_path, monkeypatch):
@@ -159,23 +179,41 @@ class TestRepairKeepsTheVerb:
         assert self._agent()._repair_tool_call("mazemaker_get") == "mazemaker"
 
 
-class TestTheTurnNoteNamesWhereOutputsAre:
-    def test_dropped_output_is_on_disk_and_reads_are_named_by_their_file(
+class TestOldResultsLeaveAsALine:
+    def _conversation(self, groups=4):
+        msgs = [{"role": "user", "content": "build it"}]
+        for i in range(groups):
+            msgs.append({"role": "assistant", "content": "", "tool_calls": [
+                {"id": f"c{i}", "type": "function",
+                 "function": {"name": "terminal", "arguments": json.dumps({"command": f"ls {i}"})}}]})
+            msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "entry\n" * 400})
+        return msgs
+
+    def test_with_the_maze_up_an_old_result_names_its_call_and_nothing_else(
             self, tmp_path, monkeypatch):
         a = _agent(tmp_path, monkeypatch)
-        text = "\n".join(f"row {n}" for n in range(400))
+        out = a._spill_tool_results(self._conversation())
+        old = [m["content"] for m in out[:5] if m["role"] == "tool"]
+        assert all(c.startswith(_RealAIAgent._RESULT_LEFT) for c in old)
+        assert all("run the call again" in c and "read_file(" not in c for c in old)
+        assert out[-1]["content"] == "entry\n" * 400, "the newest exchanges stay"
+        assert not os.path.exists(tmp_path / "spill")
+
+    def test_a_dead_maze_still_spills(self, tmp_path, monkeypatch):
+        a = _agent(tmp_path, monkeypatch, maze=False)
+        out = a._spill_tool_results(self._conversation())
+        assert "[SPILLED RESULT" in out[2]["content"]
+
+
+class TestTheTurnNoteNamesCallsNotPaths:
+    def test_dropped_calls_are_named_and_nothing_is_written(self, tmp_path, monkeypatch):
+        a = _agent(tmp_path, monkeypatch)
         dropped = [
             {"role": "assistant", "content": "", "tool_calls": [
                 {"id": "x", "type": "function", "function": {
-                    "name": "execute_code", "arguments": json.dumps({"code": "print(1)"})}},
-                {"id": "r", "type": "function", "function": {
-                    "name": "read_file", "arguments": json.dumps({"path": "/docs/A.md"})}}]},
-            {"role": "tool", "tool_call_id": "x", "content": json.dumps({"output": text})},
-            {"role": "tool", "tool_call_id": "r", "content": _doc(0)},
+                    "name": "execute_code", "arguments": json.dumps({"code": "print(1)"})}}]},
+            {"role": "tool", "tool_call_id": "x", "content": json.dumps({"output": "r\n" * 900})},
         ]
         note = a._turn_so_far_note(dropped)
-        path = note.split('read_file("', 1)[1].split('"', 1)[0]
-        with open(path) as f:
-            assert f.read() == text
-        assert note.count('-> read_file("') == 1, "a read is not copied to a spill"
-        assert "read them back with read_file" in note
+        assert "execute_code" in note and "read_file(" not in note
+        assert not os.path.exists(tmp_path / "spill")

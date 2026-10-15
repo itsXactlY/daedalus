@@ -961,7 +961,8 @@ class AIAgent:
     _RESULT_WINDOW_SHARE = 0.10
     _RESULT_BATCH_SHARE = 0.40
     _RESULT_EXCERPT_MIN_CHARS = 4000
-    _RESULT_ON_DISK = "[[RESULT CONTINUES ON DISK"
+    _RESULT_CUT = "[[RESULT CUT"
+    _RESULT_LEFT = "[[RESULT LEFT THE WINDOW"
 
     @staticmethod
     def _stepped_window(old_ctx: int, error_msg: str) -> tuple:
@@ -1013,13 +1014,13 @@ class AIAgent:
         """The capped content of a tool result, or None when it fits as it is.
 
         Applied as a result enters the payload, so the tape freezes the capped
-        rendering and every later call reuses it. A read_file excerpt points
-        back into the file itself; anything else goes to disk first.
+        rendering and every later call reuses it. The rest is a narrower call
+        away (a read continues by offset); only a dead maze sends it to disk.
         """
         content = msg.get("content")
         if not isinstance(content, str) or len(content) <= self._RESULT_EXCERPT_MIN_CHARS:
             return None
-        if "[SPILLED RESULT" in content or self._RESULT_ON_DISK in content:
+        if "[SPILLED RESULT" in content or self._RESULT_CUT in content:
             return None
         call, siblings = self._call_for_result(source, msg.get("tool_call_id", ""))
         budget = self._result_budget_chars(siblings)
@@ -1039,6 +1040,9 @@ class AIAgent:
                 total = 0
             return self._excerpt_result(text, "", tool_name, budget,
                                         read_args=args, total_lines=total)
+        if self._maze_reachable():
+            # Retrieval is the memory: no disk copy, no path. Disk only when the maze is dead.
+            return self._excerpt_result(text, "", tool_name, budget)
         compressor = getattr(self, "context_compressor", None)
         write_spill = getattr(compressor, "_write_spill", None)
         if not callable(write_spill):
@@ -1111,13 +1115,18 @@ class AIAgent:
             stop = start + asked - 1
             if total_lines:
                 stop = min(stop, total_lines)
-            return (f"{head}\n\n{self._RESULT_ON_DISK} - NOT REAL CONTENT, do not copy this "
+            return (f"{head}\n\n{self._RESULT_CUT} - NOT REAL CONTENT, do not copy this "
                     f"marker. Lines {next_line}-{stop} of this read did not fit this "
                     f"window. Continue with read_file(path=\"{read_args['path']}\", "
                     f"offset={next_line}, limit={page}), part by part, and keep notes of "
                     f"what matters.]]")
+        if not path:
+            return (f"{head}\n\n{self._RESULT_CUT} - NOT REAL CONTENT, do not copy this "
+                    f"marker. {tool_name or 'tool'} returned {len(text)} chars; this window "
+                    f"holds the first {len(head)}. For the rest run a narrower call (a "
+                    f"slice, a grep, less printed) and keep notes of what matters.]]")
         next_line = lines + 1
-        return (f"{head}\n\n{self._RESULT_ON_DISK} - NOT REAL CONTENT, do not copy this "
+        return (f"{head}\n\n{self._RESULT_CUT} - NOT REAL CONTENT, do not copy this "
                 f"marker. {tool_name or 'tool'} returned {len(text)} chars; this window "
                 f"holds the first {len(head)}. The whole output is read_file(\"{path}\"): "
                 f"continue at offset={next_line} with limit={page}, part by part, and keep "
@@ -1179,8 +1188,11 @@ class AIAgent:
         compressor = getattr(self, "context_compressor", None)
         if compressor is None:
             return messages
+        # Retrieval is the memory: while the maze answers, an old result leaves
+        # as a line naming its call, no file and no path.
+        maze = self._maze_reachable()
         write_spill = getattr(compressor, "_write_spill", None)
-        if not callable(write_spill):
+        if not maze and not callable(write_spill):
             return messages
 
         out = list(messages)
@@ -1194,13 +1206,18 @@ class AIAgent:
                 continue
             if len(content) < self._RESULT_SPILL_MIN_CHARS:
                 continue
-            if "[SPILLED RESULT" in content:
+            if "[SPILLED RESULT" in content or self._RESULT_LEFT in content:
                 continue          # already moved out on an earlier turn
             call_id = msg.get("tool_call_id", "")
             tool_name = self._tool_name_for_call_id(messages, call_id)
+            if maze:
+                out[i] = dict(msg)
+                out[i]["content"] = (
+                    f"{self._RESULT_LEFT} - NOT REAL CONTENT, do not copy this marker. "
+                    f"{tool_name or 'tool'} returned {len(content)} chars; run the call "
+                    f"again if you need its output.]]")
+                continue
             try:
-                # The same readable text an oversized newest result went to disk
-                # as, so aging it out names the same file (content-addressed).
                 path = write_spill(tool_name or "tool-result", self._readable_result(content))
             except Exception:
                 path = None
@@ -3544,7 +3561,7 @@ class AIAgent:
         tail = [m for m in messages[cut:] if m is not current]
         return base + tail
 
-    _TURN_SO_FAR_MAX_CHARS = 3600   # room for a read_file path per call
+    _TURN_SO_FAR_MAX_CHARS = 2400
 
     def _turn_so_far_note(self, dropped: list) -> str:
         """What the running turn already did, for a rebase that cuts inside it.
@@ -3553,48 +3570,20 @@ class AIAgent:
         the kept tail were in no memory at all: the model saw an empty stretch and
         ran them again, in a loop. One line per call says they happened.
         """
-        # What each dropped call returned. A big output goes to disk and its line
-        # names the path: "not kept, run it again" is what sent the model back to
-        # re-read the same documents after every cut (2026-10-15).
-        results = {m.get("tool_call_id"): m.get("content") for m in dropped
-                   if m.get("role") == "tool" and isinstance(m.get("content"), str)}
-        compressor = getattr(self, "context_compressor", None)
-        write_spill = getattr(compressor, "_write_spill", None)
-        calls, notes, on_disk = [], [], 0
+        calls, notes = [], []
         for m in dropped:
             if m.get("role") != "assistant":
                 continue
             for call in m.get("tool_calls") or []:
-                line = self._describe_tool_call(call)
-                content = results.get(self._get_tool_call_id_static(call)) or ""
-                name = (call.get("function") or {}).get("name") or "tool-result"
-                path = ""
-                # A read_file line already names its file and range.
-                if len(content) >= self._RESULT_SPILL_MIN_CHARS and name != "read_file":
-                    if "[SPILLED RESULT" in content or self._RESULT_ON_DISK in content:
-                        path = self._spill_path_in(content)
-                    elif callable(write_spill):
-                        try:
-                            path = str(write_spill(name, self._readable_result(content)) or "")
-                        except Exception:
-                            path = ""
-                if path:
-                    line = f"{line} -> read_file(\"{path}\")"
-                    on_disk += 1
-                calls.append(line)
+                calls.append(self._describe_tool_call(call))
             text = m.get("content")
             if isinstance(text, str) and text.strip():
                 notes.append(" ".join(text.split())[:200])
         if not calls and not notes:
             return ""
         head = ("[this turn so far] Before the rebase this turn already ran, in order: ")
-        if on_disk:
-            foot = (". Outputs shown with a path are on disk: read them back with read_file, "
-                    "part by part with offset/limit, instead of running the call again. Run "
-                    "a call without a path again only if you need its output.")
-        else:
-            foot = (". Their outputs are not kept; use what the tail below shows, and run a "
-                    "call again only if you need its output.")
+        foot = (". Their outputs are not kept; use what the tail below shows, and run a call "
+                "again only if you need its output.")
         budget = self._TURN_SO_FAR_MAX_CHARS - len(head) - len(foot)
         kept = []
         for line in reversed(calls):   # the most recent calls matter most
