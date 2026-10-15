@@ -18,6 +18,7 @@ from tools.file_tools import (
     read_file_tool,
     clear_read_tracker,
     reset_file_dedup,
+    sandbox_reads,
     _is_blocked_device,
     _get_max_read_chars,
     _DEFAULT_MAX_READ_CHARS,
@@ -199,6 +200,57 @@ class TestFileDedup(unittest.TestCase):
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="task_b"))
         self.assertNotEqual(r2.get("dedup"), True)
 
+
+
+class TestSandboxReadsBypassDedup(unittest.TestCase):
+    """execute_code sees what its script prints, not the read itself.
+
+    A doc read inside a script recorded the dedup key, and the later real
+    read_file answered "unchanged since last read" for content the model had
+    never been shown (2026-10-15).
+    """
+
+    def setUp(self):
+        clear_read_tracker()
+        self._tmpdir = tempfile.mkdtemp()
+        self._tmpfile = os.path.join(self._tmpdir, "doc.md")
+        with open(self._tmpfile, "w") as f:
+            f.write("line one\nline two\n")
+
+    def tearDown(self):
+        clear_read_tracker()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_a_sandbox_read_is_not_recorded(self, mock_ops):
+        mock_ops.return_value = _make_fake_ops(content="line one\nline two\n", file_size=20)
+        with sandbox_reads():
+            read_file_tool(self._tmpfile, task_id="sb")
+        r = json.loads(read_file_tool(self._tmpfile, task_id="sb"))
+        self.assertNotEqual(r.get("dedup"), True)
+        self.assertIn("line one", r.get("content", ""))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_a_sandbox_read_never_gets_the_stub(self, mock_ops):
+        mock_ops.return_value = _make_fake_ops(content="line one\nline two\n", file_size=20)
+        read_file_tool(self._tmpfile, task_id="sb")
+        with sandbox_reads():
+            r = json.loads(read_file_tool(self._tmpfile, task_id="sb"))
+        self.assertNotEqual(r.get("dedup"), True)
+        self.assertIn("line one", r.get("content", ""))
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_real_reads_still_dedup_after_the_block(self, mock_ops):
+        mock_ops.return_value = _make_fake_ops(content="line one\nline two\n", file_size=20)
+        with sandbox_reads():
+            pass
+        read_file_tool(self._tmpfile, task_id="sb")
+        r = json.loads(read_file_tool(self._tmpfile, task_id="sb"))
+        self.assertTrue(r.get("dedup"))
 
 
 class TestDedupResetOnCompression(unittest.TestCase):

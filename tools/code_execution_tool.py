@@ -300,6 +300,7 @@ def _rpc_server_loop(
     the client disconnects or the call limit is reached.
     """
     from model_tools import handle_function_call
+    from tools.file_tools import sandbox_reads
 
     conn = None
     try:
@@ -365,9 +366,10 @@ def _rpc_server_loop(
                     try:
                         sys.stdout = devnull
                         sys.stderr = devnull
-                        result = handle_function_call(
-                            tool_name, tool_args, task_id=task_id
-                        )
+                        with sandbox_reads():
+                            result = handle_function_call(
+                                tool_name, tool_args, task_id=task_id
+                            )
                     finally:
                         sys.stdout, sys.stderr = _real_stdout, _real_stderr
                         devnull.close()
@@ -528,6 +530,7 @@ def _rpc_poll_loop(
     ``env.execute()`` (important for persistent-shell backends like SSH).
     """
     from model_tools import handle_function_call
+    from tools.file_tools import sandbox_reads
 
     poll_interval = 0.1
 
@@ -600,9 +603,10 @@ def _rpc_poll_loop(
                         try:
                             sys.stdout = devnull
                             sys.stderr = devnull
-                            tool_result = handle_function_call(
-                                tool_name, tool_args, task_id=task_id
-                            )
+                            with sandbox_reads():
+                                tool_result = handle_function_call(
+                                    tool_name, tool_args, task_id=task_id
+                                )
                         finally:
                             sys.stdout, sys.stderr = _real_stdout, _real_stderr
                             devnull.close()

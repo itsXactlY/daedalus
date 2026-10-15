@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """File Tools Module - LLM agent file manipulation tools."""
 
+import contextlib
+import contextvars
 import errno
 import json
 import logging
@@ -255,6 +257,22 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
+#: A read inside execute_code reaches the model only through what the script
+#: prints. Recording it let a later real read_file answer "unchanged since last
+#: read" for a document the model had never seen (2026-10-15).
+_sandbox_read = contextvars.ContextVar("daedalus_sandbox_read", default=False)
+
+
+@contextlib.contextmanager
+def sandbox_reads():
+    """Reads in this block neither answer with nor record the dedup stub."""
+    token = _sandbox_read.set(True)
+    try:
+        yield
+    finally:
+        _sandbox_read.reset(token)
+
+
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
@@ -298,12 +316,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
+        sandboxed = _sandbox_read.get()
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
             })
-            cached_mtime = task_data.get("dedup", {}).get(dedup_key)
+            cached_mtime = None if sandboxed else task_data.get("dedup", {}).get(dedup_key)
 
         if cached_mtime is not None:
             try:
@@ -369,7 +388,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
             try:
                 _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
+                if not sandboxed:
+                    task_data["dedup"][dedup_key] = _mtime_now
                 task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
             except OSError:
                 pass
