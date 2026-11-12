@@ -358,6 +358,15 @@ def start(conf: S.StackConf, ready_timeout: Optional[int] = None) -> tuple:
     share_key_with_pod()
     if not launch(argv(conf, gguf)):
         return False, "llama-server failed to launch — daedalus doctor logs afe"
+    # A server counts as used from the moment it starts. The idle clock is the
+    # last-used file, which only a request moves: without this a start found it
+    # at the previous session's last request, and the idle-stop timer (every
+    # minute) stopped the server while it was still loading the model — seen
+    # 2026-11-12: "afe idle 4341286s — stopping" 17 s after the wake.
+    try:
+        last_used_file().write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
     timeout = ready_timeout if ready_timeout is not None else _int(conf, "AFE_READY_TIMEOUT")
     if not wait_healthy(conf, timeout):
         died = not S.alive(S.pid_of(NAME))
